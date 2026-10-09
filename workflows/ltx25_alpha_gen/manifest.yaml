@@ -1,0 +1,88 @@
+# What the gateway exposes for this workflow, and which nodes each parameter drives.
+#
+# Every target names the node id AND its class_type. If you re-export the workflow and
+# ComfyUI renumbers nodes, `python -m comfyfarm check` fails loudly instead of the
+# gateway silently writing a value into the wrong node.
+
+name: ltx25_alpha_gen
+label: LTX 2.5 alpha generation
+description: >
+  Generates an alpha matte sequence from a plate/preprocess image sequence with the
+  LTX 2.5 IC-LoRA alpha model. Outputs a numbered PNG sequence plus an MP4 preview.
+tag: alpha                      # used in output folder and file names
+template: workflow_api.json
+
+params:
+  input:
+    type: sequence
+    label: Input sequence
+    required: true
+    help: >
+      Image sequence with frame pattern and range, as copied from the pipeline, e.g.
+      /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158. Without a range the whole
+      sequence is used. png/jpg/tif/webp only.
+
+  positive_prompt:
+    type: text
+    label: Positive prompt
+    default: ""
+    targets:
+      - {node: "5508", input: value, class: PrimitiveStringMultiline}
+
+  negative_prompt:
+    type: text
+    label: Negative prompt
+    default: ""
+    targets:
+      - {node: "5509", input: value, class: PrimitiveStringMultiline}
+
+  seed:
+    type: int
+    label: Seed
+    default: 42
+    min: 0
+    max: 18446744073709551615
+    targets:
+      - {node: "5516:4832", input: noise_seed, class: RandomNoise}
+
+  enhance_prompt:
+    type: bool
+    label: Enhance prompt (Gemma text enhancer)
+    default: false
+    targets:
+      - {node: "5014:5556", input: switch, class: ComfySwitchNode}
+
+  shorter_side:
+    type: int
+    label: Working resolution (shorter side, px)
+    default: 1088
+    min: 256
+    max: 2176
+    multiple_of: 32
+    help: Plates are resized so their shorter side matches this before generation.
+    targets:
+      - {node: "5548:5026", input: resize_type.shorter_size, class: ResizeImageMaskNode}
+
+  fps:
+    type: int
+    label: Frame rate
+    default: 24
+    min: 1
+    max: 120
+    targets:
+      - {node: "9107", input: fps, class: CreateVideo}
+      - {node: "9048", input: frame_rate, class: VHS_VideoCombine}
+
+# How the 'sequence' parameter is wired in.
+sequence:
+  path_node: {node: "9094", input: value, class: PrimitiveString}   # informational
+  loader: {node: "9104", class: VHS_LoadImagesPath}                 # directory/skip/cap set directly
+
+outputs:
+  # Gets the job's output folder (informational, feeds the workflow's own preview nodes).
+  root_node: {node: "9093", input: value, class: PrimitiveString}
+  # Writes the frames. The gateway points it at a fresh per-job version folder, then
+  # renames the frames to the studio naming with the input's frame numbers.
+  frames: {node: "9109", class: "Image Save", path_input: output_path, prefix_input: filename_prefix, ext: png}
+  # MP4 preview, written into ComfyUI's output folder, then copied next to the frames.
+  preview: {node: "9048", class: VHS_VideoCombine, prefix_input: filename_prefix}

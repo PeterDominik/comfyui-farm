@@ -1,0 +1,50 @@
+# Copy to config.yaml (git ignores it) and edit for this machine.
+# scripts/setup.ps1 does the copy for you on first install.
+
+server:
+  host: 0.0.0.0        # listen on the studio network
+  port: 8000
+
+database: data/comfyfarm.db
+log_dir: logs
+workflows_dir: workflows
+
+# ComfyUI instances that run jobs. Keep ComfyUI itself on 127.0.0.1 (no --listen);
+# only the gateway talks to it. Add more GPU machines here later.
+workers:
+  - name: rtx5090
+    url: http://127.0.0.1:8188
+    max_inflight: 2      # one running + one waiting, so the GPU never idles between jobs
+
+paths:
+  # Linux workstations see /rdo/shows; this Windows machine sees the same share as UNC.
+  mappings:
+    - posix: /rdo/shows
+      windows: //rodeofx.com/smb/shows
+
+  # Read from the (farm-side) input path / input file name.
+  show_regex: '/shows/(?P<show>[^/]+)/'
+  shot_regex: '(?P<shot>[A-Za-z]+_\d+)'
+
+  # Where results go. Each job gets the next free version folder.
+  #   {show} {shot} from the input path, {tag} from the workflow (e.g. "alpha")
+  output_root: '//rodeofx.com/smb/shows/{show}/_project_ref/_cg/comfyui/renders'
+  output_dir: '{root}/{shot}/{shot}_{tag}_v{version:03d}'
+  frame_name: '{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}'
+  preview_name: '{shot}_{tag}_v{version:03d}_preview.mp4'
+
+  validate_inputs: true
+
+auth:
+  # Leave empty to run without keys (artists' user names are taken on trust).
+  # To require keys:   api_keys: {"long-random-string": "peter", "another-one": "jane"}
+  api_keys: {}
+  admins: []           # user names allowed to cancel anyone's job and raise priority
+
+farm:
+  max_attempts: 2
+  reconcile_seconds: 20
+  health_seconds: 5
+  lost_after_seconds: 300
+  delete_comfy_history: true
+  strict_preflight: true
