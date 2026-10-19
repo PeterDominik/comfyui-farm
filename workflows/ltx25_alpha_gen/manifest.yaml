@@ -22,20 +22,6 @@ params:
       /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158. Without a range the whole
       sequence is used. png/jpg/tif/webp only.
 
-  positive_prompt:
-    type: text
-    label: Positive prompt
-    default: ""
-    targets:
-      - {node: "5508", input: value, class: PrimitiveStringMultiline}
-
-  negative_prompt:
-    type: text
-    label: Negative prompt
-    default: ""
-    targets:
-      - {node: "5509", input: value, class: PrimitiveStringMultiline}
-
   seed:
     type: int
     label: Seed
@@ -71,7 +57,7 @@ params:
     max: 120
     targets:
       - {node: "9107", input: fps, class: CreateVideo}
-      - {node: "9048", input: frame_rate, class: VHS_VideoCombine}
+
 
 # How the 'sequence' parameter is wired in.
 sequence:
@@ -84,5 +70,3 @@ outputs:
   # Writes the frames. The gateway points it at a fresh per-job version folder, then
   # renames the frames to the studio naming with the input's frame numbers.
   frames: {node: "9109", class: "Image Save", path_input: output_path, prefix_input: filename_prefix, ext: png}
-  # MP4 preview, written into ComfyUI's output folder, then copied next to the frames.
-  preview: {node: "9048", class: VHS_VideoCombine, prefix_input: filename_prefix}

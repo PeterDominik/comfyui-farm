@@ -29,28 +29,6 @@
       "title": "Effective positive prompt (enhanced if enabled)"
     }
   },
-  "9048": {
-    "inputs": {
-      "frame_rate": 24,
-      "loop_count": 0,
-      "filename_prefix": "LTX_2.5/Alpha_Generation/ltx25_ag_alpha",
-      "format": "video/h264-mp4",
-      "pix_fmt": "yuv420p",
-      "crf": 19,
-      "save_metadata": true,
-      "trim_to_audio": false,
-      "pingpong": false,
-      "save_output": true,
-      "images": [
-        "5518:5538",
-        0
-      ]
-    },
-    "class_type": "VHS_VideoCombine",
-    "_meta": {
-      "title": "Video Combine 🎥🅥🅗🅢"
-    }
-  },
   "9069": {
     "inputs": {
       "value": 1088
@@ -69,12 +47,12 @@
     },
     "class_type": "PrimitiveString",
     "_meta": {
-      "title": "INPIUT_PATH"
+      "title": "INPIUT_PATH_WIN"
     }
   },
   "9093": {
     "inputs": {
-      "value": ""
+      "value": "//rodeofx.com/smb/shows/raa/_project_ref/_cg/comfyui/renders"
     },
     "class_type": "PrimitiveString",
     "_meta": {
@@ -83,11 +61,11 @@
   },
   "9094": {
     "inputs": {
-      "value": ""
+      "value": "/rdo/shows/raa/.published/bpash/bpash_1545/render.comp/preprocess.mp01_png/v1/main/hi/bpash_1545.preprocess.mp01_png.v1.%d.png 1001-1158"
     },
     "class_type": "PrimitiveString",
     "_meta": {
-      "title": "PATH"
+      "title": "INPUT_PATH"
     }
   },
   "9097": {
@@ -102,18 +80,6 @@
     "class_type": "StringReplace",
     "_meta": {
       "title": "Replace Text"
-    }
-  },
-  "9098": {
-    "inputs": {
-      "source": [
-        "9097",
-        0
-      ]
-    },
-    "class_type": "PreviewAny",
-    "_meta": {
-      "title": "Preview as Text"
     }
   },
   "9099": {
@@ -224,7 +190,7 @@
   "9106": {
     "inputs": {
       "source": [
-        "9102",
+        "9110",
         0
       ]
     },
@@ -265,7 +231,7 @@
         "9106",
         0
       ],
-      "filename_prefix": "comfyfarm",
+      "filename_prefix": "alphaGen",
       "filename_delimiter": "_",
       "filename_number_padding": 4,
       "filename_number_start": "false",
@@ -287,6 +253,20 @@
     "class_type": "Image Save",
     "_meta": {
       "title": "Image Save"
+    }
+  },
+  "9110": {
+    "inputs": {
+      "string": [
+        "9093",
+        0
+      ],
+      "find": "/rdo/shows",
+      "replace": "//rodeofx.com/smb/shows"
+    },
+    "class_type": "StringReplace",
+    "_meta": {
+      "title": "Replace Text"
     }
   },
   "5004:5600": {
