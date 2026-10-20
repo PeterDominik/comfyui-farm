@@ -60,7 +60,8 @@ convert:
   max_parallel_jobs: 1     # conversions at once; they run while the GPU works on other jobs
   frame_workers: 6         # oiiotool processes per EXR job
   keep_failed: false       # keep converted frames of failed jobs for debugging
-  # Empty = the gateway's venv (oiiotool comes with OpenImageIO), then PATH.
+  # Empty = the gateway's venv (oiiotool from OpenImageIO, ffmpeg from imageio-ffmpeg),
+  # then PATH. ffprobe is optional: without it, movie info is read with ffmpeg.
   tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}
   exr:
     ocio_config: '/rdo/shows/{show}/_project_ref/_lut/_ocio/current/config.ocio'
