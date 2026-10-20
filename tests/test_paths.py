@@ -3,8 +3,9 @@ import tempfile
 import unittest
 
 from comfyfarm.config import PathMapping, PathsConfig
-from comfyfarm.paths import (SequenceError, frame_pattern, output_dir, output_root, parse_input,
-                             resolve_sequence, to_farm, to_posix)
+from comfyfarm.paths import (SequenceError, default_output_root_display, frame_pattern, output_dir,
+                             output_root, parse_input, resolve_output_root, resolve_sequence, to_farm,
+                             to_posix)
 
 MAP = [PathMapping(posix="/rdo/shows", windows="//rodeofx.com/smb/shows")]
 
@@ -88,6 +89,25 @@ class SequenceTests(unittest.TestCase):
     def test_missing_folder(self):
         with self.assertRaisesRegex(SequenceError, "can't open the input folder"):
             resolve_sequence(f"{self.root}/nope/a.%04d.png 1-2", self.cfg)
+
+    def test_picked_output_folder(self):
+        os.makedirs(f"{self.root}/shows/xyz/my_renders")
+        self.assertEqual(resolve_output_root("/rdo/shows/xyz/my_renders/", self.cfg),
+                         f"{self.root}/shows/xyz/my_renders")
+        with self.assertRaisesRegex(SequenceError, "doesn't exist"):
+            resolve_output_root("/rdo/shows/xyz/typo_renders", self.cfg)
+        with self.assertRaisesRegex(SequenceError, "must be under /rdo/shows"):
+            resolve_output_root("/home/peter/renders", self.cfg)
+        with self.assertRaisesRegex(SequenceError, "must be under"):
+            resolve_output_root("C:/Windows/Temp", self.cfg)
+        with self.assertRaisesRegex(SequenceError, r"'\.\.'"):
+            resolve_output_root("/rdo/shows/xyz/../../etc", self.cfg)
+        with self.assertRaisesRegex(SequenceError, "not a frame pattern"):
+            resolve_output_root("/rdo/shows/xyz/my_renders/a.%04d.png 1-5", self.cfg)
+        self.cfg.allowed_output_roots = ["/rdo/shows/xyz/my_renders"]
+        with self.assertRaisesRegex(SequenceError, "must be under /rdo/shows/xyz/my_renders"):
+            resolve_output_root("/rdo/shows/xyz", self.cfg)
+        self.assertEqual(default_output_root_display(self.cfg), "/rdo/shows/{show}/renders")
 
     def test_output_dirs(self):
         root = output_root(self.cfg, "xyz", "abc_0010")

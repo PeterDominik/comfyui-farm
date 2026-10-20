@@ -7,7 +7,7 @@ real save nodes would.
 
     python tools/mock_comfyui.py --port 8188 --output ./mock_output [--delay 0.05]
 
-Put MOCK_FAIL in a prompt text to make the sampler raise.
+To make a job fail: put MOCK_FAIL in any text input, or use seed 666.
 """
 
 from __future__ import annotations
@@ -137,7 +137,8 @@ class Mock:
                 ct, inp = node["class_type"], node["inputs"]
                 await self.send("executing", {"node": node_id, "display_node": node_id, "prompt_id": pid}, cid)
                 await asyncio.sleep(self.delay)
-                if any(isinstance(v, str) and "MOCK_FAIL" in v for v in inp.values()):
+                if any(isinstance(v, str) and "MOCK_FAIL" in v for v in inp.values()) \
+                        or (ct == "RandomNoise" and inp.get("noise_seed") == 666):
                     raise RuntimeError("Mock failure requested")
                 if ct == "SamplerCustomAdvanced":
                     for step in range(1, 9):

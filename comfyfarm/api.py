@@ -17,7 +17,7 @@ from .config import Config
 from .db import ACTIVE, JobStore
 from .events import EventBus
 from .farm import Farm, FarmError
-from .paths import SequenceError
+from .paths import SequenceError, default_output_root_display
 from .workflows import ParamError, WorkflowRegistry
 
 HERE = Path(__file__).resolve().parent
@@ -110,6 +110,9 @@ def create_app(cfg: Config) -> FastAPI:
         out = []
         for wf in registry.workflows.values():
             s = wf.schema()
+            for p in s["params"]:
+                if p["type"] == "output_folder":   # shown greyed-out in the empty field
+                    p["placeholder"] = default_output_root_display(cfg.paths)
             s["worker_problems"] = {w.name: w.problems[wf.name] for w in farm.workers.values()
                                     if wf.name in w.problems}
             out.append(s)

@@ -1,4 +1,5 @@
 # What the gateway exposes for this workflow, and which nodes each parameter drives.
+# Full reference: "Workflow manifests" in README.md.
 #
 # Every target names the node id AND its class_type. If you re-export the workflow and
 # ComfyUI renumbers nodes, `python -m comfyfarm check` fails loudly instead of the
@@ -8,7 +9,7 @@ name: ltx25_alpha_gen
 label: LTX 2.5 alpha generation
 description: >
   Generates an alpha matte sequence from a plate/preprocess image sequence with the
-  LTX 2.5 IC-LoRA alpha model. Outputs a numbered PNG sequence plus an MP4 preview.
+  LTX 2.5 IC-LoRA alpha model. Outputs a numbered PNG sequence, numbered like the input.
 tag: alpha                      # used in output folder and file names
 template: workflow_api.json
 
@@ -21,6 +22,17 @@ params:
       Image sequence with frame pattern and range, as copied from the pipeline, e.g.
       /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158. Without a range the whole
       sequence is used. png/jpg/tif/webp only.
+
+  # Replaces the OUTPUT_PATH node (9093) in the ComfyUI graph. No targets: like
+  # `input`, the gateway wires this in itself (see `outputs` below), because it still
+  # adds <shot>/<shot>_alpha_vNNN inside the folder so jobs never overwrite each other.
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      Leave empty for the show's standard renders folder. Otherwise a folder that
+      already exists on show storage; each job goes into <shot>/<shot>_alpha_vNNN
+      inside it.
 
   seed:
     type: int
@@ -58,14 +70,13 @@ params:
     targets:
       - {node: "9107", input: fps, class: CreateVideo}
 
-
 # How the 'sequence' parameter is wired in.
 sequence:
   path_node: {node: "9094", input: value, class: PrimitiveString}   # informational
   loader: {node: "9104", class: VHS_LoadImagesPath}                 # directory/skip/cap set directly
 
 outputs:
-  # Gets the job's output folder (informational, feeds the workflow's own preview nodes).
+  # OUTPUT_PATH: gets the job's final versioned folder (informational; the graph shows it).
   root_node: {node: "9093", input: value, class: PrimitiveString}
   # Writes the frames. The gateway points it at a fresh per-job version folder, then
   # renames the frames to the studio naming with the input's frame numbers.

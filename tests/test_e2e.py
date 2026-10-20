@@ -132,7 +132,7 @@ farm: {{reconcile_seconds: 1.5, health_seconds: 0.5, lost_after_seconds: 60}}
 
     # ------------------------------------------------------------ tests
     def test_01_happy_path(self):
-        job = self.submit("1003-1010", positive_prompt="clean alpha", seed=7)
+        job = self.submit("1003-1010", seed=7)
         self.assertEqual(job["status"], "queued")
         self.assertEqual((job["info"]["input"]["skip"], job["info"]["input"]["cap"]), (2, 8))
         done = self.wait_for(job["id"], ("done", "failed"))
@@ -142,7 +142,6 @@ farm: {{reconcile_seconds: 1.5, health_seconds: 0.5, lost_after_seconds: 60}}
         self.assertTrue(out["frame_pattern_posix"].startswith("/rdo/shows/xyz/_project_ref/"))
         names = self.outputs(done)
         self.assertIn("abc_0010_alpha_v001.1003.png", names)
-        self.assertIn("abc_0010_alpha_v001_preview.mp4", names)
         self.assertFalse([n for n in names if "_raw_" in n], "raw frames should be renamed")
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 7)
@@ -167,12 +166,32 @@ farm: {{reconcile_seconds: 1.5, health_seconds: 0.5, lost_after_seconds: 60}}
         self.assertEqual(self.wait_for(job["id"], ("cancelled", "done", "failed"))["status"], "cancelled")
 
     def test_04_failure_reports_node_and_traceback(self):
-        job = self.submit(positive_prompt="MOCK_FAIL")
+        job = self.submit(seed=666)
         failed = self.wait_for(job["id"], ("failed", "done"))
         self.assertEqual(failed["status"], "failed")
         self.assertIn("Mock failure requested", failed["error"])
-        self.assertIn("Prompt (positive)", failed["error"])
+        self.assertIn("RandomNoise (node 5516:4832", failed["error"])
         self.assertTrue(failed["info"].get("traceback"))
+
+    def test_045_picked_output_folder(self):
+        picked = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/peter_tests"
+        picked.mkdir(parents=True)
+        job = self.submit("1001-1003", output_path="/rdo/shows/xyz/_project_ref/_cg/comfyui/peter_tests")
+        self.assertEqual(job["info"]["output_dir_posix"],
+                         "/rdo/shows/xyz/_project_ref/_cg/comfyui/peter_tests/abc_0010/abc_0010_alpha_v001")
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertTrue((picked / "abc_0010/abc_0010_alpha_v001/abc_0010_alpha_v001.1001.png").is_file())
+        again = farm.retry(job["id"])     # same folder, next version
+        self.assertTrue(again["info"]["output_dir"].endswith("peter_tests/abc_0010/abc_0010_alpha_v002"))
+        self.wait_for(again["id"], ("done", "failed"))
+        with self.assertRaisesRegex(farm.FarmError, "doesn't exist"):
+            self.submit(output_path="/rdo/shows/xyz/not_there")
+        with self.assertRaisesRegex(farm.FarmError, "must be under /rdo/shows"):
+            self.submit(output_path="/tmp")
+        wfs = {w["name"]: w for w in farm.workflows()}
+        p = {x["name"]: x for x in wfs["ltx25_alpha_gen"]["params"]}
+        self.assertEqual(p["output_path"]["placeholder"], "/rdo/shows/{show}/_project_ref/_cg/comfyui/renders")
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):

@@ -24,6 +24,12 @@ class ParamError(ValueError):
     """Bad job parameter; the message is shown to the artist."""
 
 
+# Param types the gateway wires in itself (no `targets` in the manifest):
+#   sequence       -> input image sequence: path mapping, frame range, loader skip/cap
+#   output_folder  -> where results go; the gateway still adds <shot>/<shot>_<tag>_vNNN
+GATEWAY_TYPES = ("sequence", "output_folder")
+
+
 @dataclass
 class Target:
     node: str
@@ -55,7 +61,7 @@ class Param:
 
     def coerce(self, value: Any) -> Any:
         n = self.label or self.name
-        if self.type in ("text", "string", "sequence"):
+        if self.type in ("text", "string", "sequence", "output_folder"):
             if not isinstance(value, str):
                 raise ParamError(f"{n} must be text.")
             if len(value) > 20000:
@@ -146,6 +152,10 @@ class Workflow:
     def sequence_param(self) -> str | None:
         return next((n for n, p in self.params.items() if p.type == "sequence"), None)
 
+    @property
+    def output_folder_param(self) -> str | None:
+        return next((n for n, p in self.params.items() if p.type == "output_folder"), None)
+
     def title(self, node_id: str) -> str:
         n = self.template.get(node_id) or {}
         return (n.get("_meta") or {}).get("title") or n.get("class_type") or node_id
@@ -164,10 +174,20 @@ class Workflow:
     def static_check(self) -> list[str]:
         problems = []
         for p in self.params.values():
-            if p.type != "sequence" and not p.targets:
+            if p.type in GATEWAY_TYPES:
+                if p.targets:
+                    problems.append(f"param {p.name}: type {p.type} is wired in by the gateway; "
+                                    f"remove its targets")
+            elif not p.targets:
                 problems.append(f"param {p.name}: no targets")
             for t in p.targets:
                 problems += self._check_target(f"param {p.name}", t.node, t.cls, t.input)
+        for t in GATEWAY_TYPES:
+            names = [n for n, p in self.params.items() if p.type == t]
+            if len(names) > 1:
+                problems.append(f"only one param may have type {t} (found {', '.join(names)})")
+        if self.output_folder_param and not self.outputs.get("frames"):
+            problems.append(f"param {self.output_folder_param}: type output_folder needs outputs.frames")
         if self.sequence_param:
             pn = self.sequence.get("path_node")
             if pn:

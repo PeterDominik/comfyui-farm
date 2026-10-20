@@ -19,7 +19,8 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
   gateway maps it to the farm path. It checks for missing frames and works out exactly
   which files the loader will read. Bad input is refused at submit, not 10 minutes in.
 - **Versioned outputs:** `renders/<shot>/<shot>_alpha_v003/<shot>_alpha_v003.1001.png`
-  numbered to match the plate, with an MP4 preview alongside.
+  numbered to match the plate, plus an MP4 preview when the workflow declares one.
+  Artists can pick the output folder; versioning still applies inside it.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -88,7 +89,7 @@ Queued and running jobs carry on across the restart.
 
 **Dashboard:** `http://<farm-machine>:8000`. Pick the workflow, paste the sequence path,
 submit. The job table updates live. Click a row for input/output paths (copy buttons),
-warnings, errors with traceback, the MP4 preview, *Run again* and *API JSON*.
+warnings, errors with traceback, the MP4 preview (if any), *Run again* and *API JSON*.
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
@@ -104,7 +105,7 @@ python comfyfarm_client.py cancel 3f2a9c1e
 
 ```python
 import comfyfarm_client as farm
-job = farm.submit("ltx25_alpha_gen", {"input": ".../plate.%04d.png 1001-1158", "positive_prompt": "..."})
+job = farm.submit("ltx25_alpha_gen", {"input": ".../plate.%04d.png 1001-1158", "seed": 7})
 job = farm.wait(job["id"])                  # call from a thread inside a DCC
 farm.output_pattern(job)                    # /rdo/shows/.../<shot>_alpha_v001.%04d.png
 ```
@@ -119,7 +120,7 @@ range. When a job finishes, a Read node for the result appears next to its sourc
 | Param | Default | Notes |
 |---|---|---|
 | `input` | required | Sequence path with `%04d` / `%d` / `####` and optional `first-last` range. png/jpg/tif/webp only |
-| `positive_prompt`, `negative_prompt` | `""` | |
+| `output_path` | show default | Folder on show storage that already exists; jobs go into `<shot>/<shot>_alpha_vNNN` inside it. Empty = `paths.output_root` from `config.yaml` |
 | `seed` | 42 | |
 | `enhance_prompt` | false | Gemma prompt enhancer |
 | `shorter_side` | 1088 | Working resolution; multiple of 32 |
@@ -155,13 +156,62 @@ Job statuses: `queued` → `dispatched` (waiting in ComfyUI) → `running` →
 1. In ComfyUI: **Workflow → Export (API)**. Save it as `workflows/<name>/workflow_api.json`.
    Blank out show-specific paths. The gateway fills those per job, and this keeps show
    codes out of git.
-2. Write `workflows/<name>/manifest.yaml` (copy `ltx25_alpha_gen`). Each parameter lists
-   the node id, the input, and the node's `class`.
+2. Write `workflows/<name>/manifest.yaml` (copy `ltx25_alpha_gen`, see below).
 3. `python -m comfyfarm check`, then restart the gateway.
+
+Paths left in the export from your last ComfyUI session are harmless: the gateway
+overwrites the input, output and save-path nodes on every job.
 
 Re-exporting can renumber nodes. Because every manifest target names its node class,
 a renumbered workflow fails the check with a clear message. It can't silently write
 the seed into the wrong node.
+
+### Workflow manifests
+
+The manifest says what artists can set and where each value goes in the API JSON.
+Anything not listed stays exactly as exported.
+
+```yaml
+name: ltx25_alpha_gen          # id used by the API and clients
+label: LTX 2.5 alpha generation
+tag: alpha                     # goes into output folder and file names
+template: workflow_api.json
+
+params:                        # becomes the form in the dashboard, in this order
+  seed:
+    type: int                  # int | float | bool | text | string | choice
+    label: Seed
+    default: 42
+    min: 0                     # optional: min, max, multiple_of, choices (for choice), help
+    targets:                   # where the value is written; one param can drive several nodes
+      - {node: "5516:4832", input: noise_seed, class: RandomNoise}
+
+  input:  {type: sequence, label: Input sequence, required: true}
+  output_path: {type: output_folder, label: Output folder}
+
+sequence:                      # nodes the `sequence` param drives
+  path_node: {node: "9094", input: value, class: PrimitiveString}
+  loader: {node: "9104", class: VHS_LoadImagesPath}
+
+outputs:                       # nodes the gateway points at each job's versioned folder
+  root_node: {node: "9093", input: value, class: PrimitiveString}
+  frames: {node: "9109", class: "Image Save", path_input: output_path, prefix_input: filename_prefix, ext: png}
+  preview: {node: "...", class: VHS_VideoCombine, prefix_input: filename_prefix}   # optional
+```
+
+- **Plain params** (`int`, `text`, …) are written straight into `targets`: node id as
+  it appears in the API JSON (`"5516:4832"` for nodes inside groups/subgraphs), the
+  input name, and the class as a guard. Validation (min/max/required) happens before
+  anything reaches ComfyUI.
+- **`sequence` and `output_folder`** take no `targets`; the gateway wires them in.
+  A sequence is mapped to the farm path, frame-checked and turned into the loader's
+  directory/skip/cap. An output folder is checked (exists, on show storage) and used
+  as the root for `<shot>/<shot>_<tag>_vNNN`.
+- **Nodes in `sequence` and `outputs` belong to the gateway.** A plain param targeting
+  them would be overwritten on every job, which is why the output folder is its own type
+  rather than a param pointed at `OUTPUT_PATH`.
+- Removing a param from the manifest changes the API: clients still sending it get
+  "Unknown parameter". Update `client/nuke/comfyfarm_nuke.py` to match.
 
 ## Operations notes
 

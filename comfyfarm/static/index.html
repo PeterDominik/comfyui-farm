@@ -158,7 +158,10 @@ function renderForm() {
   const field = p => {
     const id = "p_" + p.name, help = p.help ? `<span class="help">${esc(p.help)}</span>` : "";
     const saved = store.get("comfyfarm.last." + wf.name + "." + p.name);
-    const val = p.type === "sequence" ? "" : (saved || (p.default ?? ""));
+    // Paths are never pre-filled from last time: a remembered folder from another show
+    // would quietly send renders to the wrong place.
+    const perJob = p.type === "sequence" || p.type === "output_folder";
+    const val = perJob ? "" : (saved || (p.default ?? ""));
     if (p.type === "bool")
       return `<label class="check"><input type="checkbox" id="${id}" ${(saved ? saved === "true" : p.default) ? "checked" : ""}> ${esc(p.label)}</label>`;
     if (p.type === "choice")
@@ -167,7 +170,8 @@ function renderForm() {
       return `<label class="wide">${esc(p.label)}<textarea id="${id}">${esc(val)}</textarea>${help}</label>`;
     if (p.type === "int" || p.type === "float")
       return `<label>${esc(p.label)}<input type="number" id="${id}" value="${esc(val)}" ${p.min != null ? `min="${p.min}"` : ""} ${p.max != null ? `max="${p.max}"` : ""} step="${p.multiple_of || (p.type === "int" ? 1 : "any")}">${help}</label>`;
-    return `<label class="wide">${esc(p.label)}${p.required ? " *" : ""}<input id="${id}" class="mono" value="${esc(val)}" placeholder="/rdo/shows/…/shot.step.%04d.png 1001-1100">${help}</label>`;
+    const ph = p.placeholder || (p.type === "sequence" ? "/rdo/shows/…/shot.step.%04d.png 1001-1100" : "");
+    return `<label class="wide">${esc(p.label)}${p.required ? " *" : ""}<input id="${id}" class="mono" value="${esc(val)}" placeholder="${esc(ph)}">${help}</label>`;
   };
   f.innerHTML = (wf.enabled ? "" : `<div class="msg err" style="grid-column:1/-1">Workflow disabled: ${esc(wf.problems.join("; "))}</div>`)
     + (Object.keys(wf.worker_problems || {}).length ? `<div class="msg err" style="grid-column:1/-1">Preflight: ${esc(Object.entries(wf.worker_problems).map(([w, p]) => w + ": " + p.join("; ")).join(" | "))}</div>` : "")
@@ -183,7 +187,7 @@ function renderForm() {
       let v = p.type === "bool" ? el.checked : el.value;
       if ((p.type === "int" || p.type === "float") && v !== "") v = Number(v);
       if (v !== "" && v != null) params[p.name] = v;
-      if (p.type !== "sequence") store.set("comfyfarm.last." + wf.name + "." + p.name, String(v));
+      if (p.type !== "sequence" && p.type !== "output_folder") store.set("comfyfarm.last." + wf.name + "." + p.name, String(v));
     }
     const msg = $("#formMsg");
     if (!state.auth && !$("#user").value.trim()) { msg.className = "msg err"; msg.textContent = "Enter your user name (top right) first."; return; }
