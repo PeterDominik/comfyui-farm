@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import re
+import string
 from dataclasses import asdict, dataclass
 
 from .config import PathMapping, PathsConfig
@@ -76,6 +77,8 @@ class Sequence:
     cap: int                # -> VHS image_load_cap (0 = all)
     show: str | None
     shot: str | None
+    seq_name: str | None = None   # sequence code from the path, e.g. "bpash"
+    source: str = ""              # input file name without frame number/extension
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -104,11 +107,47 @@ def _pattern_regex(filename: str) -> re.Pattern | None:
     )
 
 
-def _extract(regex: str, text: str, group: str) -> str | None:
-    m = re.search(regex, text)
-    if not m:
-        return None
-    return m.groupdict().get(group) or m.group(0)
+def _compile_context(pattern: str) -> re.Pattern:
+    """'/shows/{show}/.published/{seq}/{shot}/' -> regex; each {name} is one folder."""
+    out, pos = [], 0
+    for m in re.finditer(r"\{(\w+)\}", pattern):
+        out.append(re.escape(pattern[pos:m.start()]))
+        out.append(f"(?P<{m.group(1)}>[^/]+)")
+        pos = m.end()
+    out.append(re.escape(pattern[pos:]))
+    return re.compile("".join(out), re.IGNORECASE)
+
+
+def context_from_path(path: str, patterns: list[str]) -> dict:
+    """show / seq / shot from where they sit in the path, not from what they're called,
+    so any shot naming works. Earlier patterns win; later ones only fill gaps."""
+    ctx: dict = {}
+    path = normalize(path)
+    for pat in patterns:
+        m = _compile_context(pat).search(path)
+        if m:
+            for k, v in m.groupdict().items():
+                ctx.setdefault(k, v)
+    return ctx
+
+
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def source_stem(filename: str, directory: str) -> str:
+    """'bpash_1545.preprocess.mp01_png.v1.%d.png' -> 'bpash_1545.preprocess.mp01_png.v1'
+    (frame number and extension dropped). Used to name outputs after their source."""
+    if not filename:
+        stem = directory.rstrip("/").rpartition("/")[2]
+    else:
+        base, _ext = os.path.splitext(filename)
+        t = _TOKEN_RE.search(base)
+        if t:
+            before, after = base[: t.start()].rstrip("._-"), base[t.end():].strip("._-")
+            stem = before + (f"_{after}" if after else "")
+        else:
+            stem = base
+    return _SAFE_NAME.sub("_", stem).strip("._-") or "output"
 
 
 def _format_frames(frames: list[int], limit: int = 12) -> str:
@@ -153,13 +192,13 @@ def resolve_sequence(
                 f"(convert EXRs first)."
             )
 
-    show = show or _extract(cfg.show_regex, farm_path, "show")
-    shot = shot or _extract(cfg.shot_regex, filename, "shot") or _extract(cfg.shot_regex, farm_path, "shot")
-    if not shot:
-        shot = re.sub(r"[^A-Za-z0-9_]+", "_", directory.rstrip("/").rpartition("/")[2]) or "noshot"
+    ctx = context_from_path(farm_path, cfg.context_patterns)
+    show = show or ctx.get("show")
+    shot = shot or ctx.get("shot")   # None when the path isn't a publish path; never guessed
 
     seq = Sequence(raw=raw.strip(), farm_path=farm_path, directory=directory, filename=filename,
-                   first=first, last=last, frame_count=None, skip=0, cap=0, show=show, shot=shot)
+                   first=first, last=last, frame_count=None, skip=0, cap=0, show=show, shot=shot,
+                   seq_name=ctx.get("seq"), source=source_stem(filename, directory))
     if not cfg.validate_inputs:
         if first is not None:
             seq.frame_count = last - first + 1
@@ -213,12 +252,21 @@ def resolve_sequence(
     return seq
 
 
-def output_root(cfg: PathsConfig, show: str | None, shot: str) -> str:
+def check_writable(path: str, cfg: PathsConfig) -> None:
+    """Refuse locked areas such as .published (publishing goes through Tractor)."""
+    parts = {p.lower() for p in normalize(path).split("/")}
+    for d in cfg.no_write_dirs:
+        if d.lower() in parts:
+            raise SequenceError(f"Can't write into {d}: it's locked, and publishing goes through "
+                                f"Tractor. Pick a folder outside {d}.")
+
+
+def output_root(cfg: PathsConfig, show: str | None, seq: str | None = None, shot: str | None = None) -> str:
     if "{show}" in cfg.output_root and not show:
         raise SequenceError(
-            "Couldn't work out the show from the input path; pass 'show' with the job."
+            "Couldn't work out the show from the input path. Give an Output folder instead."
         )
-    return normalize(cfg.output_root.format(show=show or "", shot=shot)).rstrip("/")
+    return normalize(cfg.output_root.format(show=show or "", seq=seq or "", shot=shot or "")).rstrip("/")
 
 
 def default_output_root_display(cfg: PathsConfig) -> str:
@@ -227,30 +275,88 @@ def default_output_root_display(cfg: PathsConfig) -> str:
     return to_posix(root, cfg.mappings) or root
 
 
-def resolve_output_root(raw: str, cfg: PathsConfig, isdir=os.path.isdir) -> str:
-    """An output folder an artist picked -> farm path, refusing anything unsafe.
+def default_output_dir_display(cfg: PathsConfig, tag: str) -> str:
+    """e.g. /rdo/shows/{show}/.../renders/{shot}/{shot}_alpha_v###"""
+    d = cfg.output_dir.replace("{root}", default_output_root_display(cfg)).replace("{tag}", tag)
+    return re.sub(r"\{version[^}]*\}", "###", d)
 
-    The folder must already exist (catches typos that would otherwise create junk
-    folders on the share) and sit on storage the farm writes to."""
+
+def resolve_output_folder(raw: str, cfg: PathsConfig, isdir=os.path.isdir) -> str:
+    """The folder an artist typed -> farm path. It is the final destination: frames go
+    straight into it. Its parent must exist (catches typos without creating junk folder
+    trees on the share); the folder itself is created if needed."""
     path = to_farm(raw, cfg.mappings).rstrip("/")
     if not path:
         raise SequenceError("Output folder is empty.")
-    if _TOKEN_RE.search(path.rpartition("/")[2]) or re.search(r"\s\d+\s*-\s*\d+$", path):
-        raise SequenceError("Output folder should be a folder, not a frame pattern or range.")
+    if _TOKEN_RE.search(path.rpartition("/")[2]) or re.search(r"\s\d+\s*-\s*\d+$", path) \
+            or os.path.splitext(path)[1].lower() in LOADER_EXTENSIONS | {".exr", ".mov", ".mp4"}:
+        raise SequenceError("Output folder should be a folder, not a file, frame pattern or range.")
     if ".." in path.split("/"):
         raise SequenceError("Output folder can't contain '..'.")
+    if not (path.startswith("//") or re.match(r"^[A-Za-z]:/", path) or path.startswith("/")):
+        raise SequenceError("Output folder must be a full path.")
     allowed = [to_farm(a, cfg.mappings).rstrip("/") for a in cfg.allowed_output_roots] \
         or [normalize(m.windows).rstrip("/") for m in cfg.mappings]
     if allowed and not any(_starts_with(path, a, case_insensitive=True) for a in allowed):
         shown = ", ".join(to_posix(a, cfg.mappings) or a for a in allowed)
         raise SequenceError(f"Output folder must be under {shown}.")
-    if not (path.startswith("//") or re.match(r"^[A-Za-z]:/", path) or path.startswith("/")):
-        raise SequenceError("Output folder must be a full path.")
-    if cfg.validate_inputs and not isdir(path):
-        raise SequenceError(f"Output folder {raw.strip()} doesn't exist, or the farm machine can't see it. "
-                            f"Create it first.")
+    check_writable(path, cfg)
+    parent = path.rpartition("/")[0]
+    if cfg.validate_inputs and parent and not isdir(parent):
+        shown = to_posix(parent, cfg.mappings) or parent
+        raise SequenceError(f"{shown} doesn't exist, or the farm machine can't see it. "
+                            f"Create it first (only the last folder is created for you).")
     return path
 
 
-def output_dir(cfg: PathsConfig, root: str, show: str | None, shot: str, tag: str, version: int) -> str:
-    return normalize(cfg.output_dir.format(root=root, show=show or "", shot=shot, tag=tag, version=version))
+# A trailing version on a folder name: "test_v003", "alpha.v12", "V01" (not "dev2").
+_FOLDER_VERSION = re.compile(r"^(?P<base>.*?)(?P<sep>(?:^|[._-]))(?P<v>[vV])(?P<num>\d+)$")
+
+
+def version_candidates(folder: str, limit: int = 999):
+    """Where a job may go, in order: the folder as typed, then its next versions as
+    siblings. 'test' -> test, test_v002, test_v003 ...; 'x_v003' -> x_v003, x_v004 ...
+    Yields (path, version)."""
+    parent, _, leaf = folder.rpartition("/")
+    m = _FOLDER_VERSION.match(leaf)
+    if m:
+        start, width = int(m.group("num")), len(m.group("num"))
+        stem = m.group("base") + m.group("sep") + m.group("v")
+        for v in range(start, start + limit):
+            yield f"{parent}/{stem}{v:0{width}d}", v
+    else:
+        yield folder, 1
+        for v in range(2, limit + 1):
+            yield f"{parent}/{leaf}_v{v:03d}", v
+
+
+# Anything that looks like rendered output; a folder holding any of these is "used".
+FRAME_EXTENSIONS = LOADER_EXTENSIONS | {".exr", ".dpx", ".mov", ".mp4"}
+
+
+def folder_has_frames(path: str, listdir=os.listdir) -> bool:
+    try:
+        return any(os.path.splitext(n)[1].lower() in FRAME_EXTENSIONS for n in listdir(path))
+    except OSError:   # doesn't exist yet
+        return False
+
+
+def template_fields(template: str) -> set[str]:
+    return {f.split(".")[0].split("[")[0] for _, f, _, _ in string.Formatter().parse(template) if f}
+
+
+def render(template: str, what: str, **tokens) -> str:
+    """str.format, but a token we couldn't work out gives a readable error instead of
+    'None' ending up in a file name."""
+    missing = sorted(k for k in template_fields(template) if tokens.get(k) in (None, "") and k != "frame")
+    if missing:
+        raise SequenceError(
+            f"Can't build the {what}: no {', '.join(missing)} from the input path (expected "
+            f".../shows/<show>/.published/<seq>/<shot>/...). Give an Output folder instead.")
+    return template.format(**tokens)
+
+
+def output_dir(cfg: PathsConfig, root: str, show: str | None, seq: str | None, shot: str | None,
+               tag: str, version: int) -> str:
+    return normalize(render(cfg.output_dir, "output folder", root=root, show=show, seq=seq, shot=shot,
+                            tag=tag, version=version))

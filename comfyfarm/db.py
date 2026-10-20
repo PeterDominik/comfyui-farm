@@ -164,8 +164,11 @@ class JobStore:
             ORDER BY j.priority DESC, user_inflight ASC, j.created_at ASC""")
         return [self._row(r, with_prompt=with_prompt) for r in rows]
 
-    def output_dir_taken(self, path: str) -> bool:
-        return bool(self._q("SELECT 1 FROM jobs WHERE output_dir=? COLLATE NOCASE LIMIT 1", (path,)))
+    def output_dir_reserved(self, path: str) -> bool:
+        """Promised to a job that hasn't finished (it may not have written frames yet)."""
+        marks = ",".join("?" * len(ACTIVE))
+        return bool(self._q(f"SELECT 1 FROM jobs WHERE output_dir=? COLLATE NOCASE AND status IN ({marks}) LIMIT 1",
+                            (path, *ACTIVE)))
 
     def delete_finished_before(self, ts: float) -> int:
         with self._lock:

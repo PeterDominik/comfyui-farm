@@ -18,9 +18,17 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 - **Pipeline-aware inputs.** Paste `/rdo/shows/.../shot.step.%04d.png 1001-1158` and the
   gateway maps it to the farm path. It checks for missing frames and works out exactly
   which files the loader will read. Bad input is refused at submit, not 10 minutes in.
-- **Versioned outputs:** `renders/<shot>/<shot>_alpha_v003/<shot>_alpha_v003.1001.png`
-  numbered to match the plate, plus an MP4 preview when the workflow declares one.
-  Artists can pick the output folder; versioning still applies inside it.
+- **Outputs that never overwrite.** Frames go exactly where the artist points, named
+  after their source and numbered like the plate:
+  `.../comfy/test/bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png`. If the folder
+  already has frames, the job takes the next version next to it (`test_v002`). Left
+  empty, it goes to the show's renders folder (`renders/<shot>/<shot>_alpha_v001`).
+  The form shows the exact destination before you submit. Nothing is ever written
+  into `.published`.
+- **Any shot naming.** Show, sequence and shot are read from their position in the
+  publish path (`/shows/<show>/.published/<seq>/<shot>/`), so `bpash_1545` and
+  `15454_656551` both work. If a path doesn't follow it, the gateway asks for an
+  output folder instead of guessing.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -120,14 +128,20 @@ range. When a job finishes, a Read node for the result appears next to its sourc
 | Param | Default | Notes |
 |---|---|---|
 | `input` | required | Sequence path with `%04d` / `%d` / `####` and optional `first-last` range. png/jpg/tif/webp only |
-| `output_path` | show default | Folder on show storage that already exists; jobs go into `<shot>/<shot>_alpha_vNNN` inside it. Empty = `paths.output_root` from `config.yaml` |
+| `output_path` | show default | The exact destination folder (its parent must exist; never inside `.published`). If it already has frames the job goes to the next version: `test` → `test_v002`, `x_v003` → `x_v004`. Empty = `renders/<shot>/<shot>_alpha_vNNN` under the show |
 | `seed` | 42 | |
 | `enhance_prompt` | false | Gemma prompt enhancer |
 | `shorter_side` | 1088 | Working resolution; multiple of 32 |
 | `fps` | 24 | |
 
 Optional job fields: `name`, `priority` (−10…10; above 0 is admin only when keys are on),
-and `show` / `shot` overrides for paths the regexes can't parse.
+and `show` / `shot` overrides for inputs outside the publish layout.
+
+**Naming and layout** live in `config.yaml` under `paths`: `context_patterns` (where
+show/seq/shot sit in a path), `output_root` + `output_dir` (the default destination),
+`frame_name` / `preview_name` (file names; tokens `{source} {folder} {show} {seq} {shot}
+{tag} {version} {frame} {ext}`) and `no_write_dirs`. `config.example.yaml` documents each.
+Changing `frame_name` only affects jobs submitted afterwards.
 
 ### REST API
 
@@ -136,6 +150,7 @@ and `show` / `shot` overrides for paths the regexes can't parse.
 | GET | `/api/v1/health` | Liveness, auth on/off, queue size |
 | GET | `/api/v1/workflows` | Workflows and parameter schemas, plus any preflight problems |
 | POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?}` → job |
+| POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing |
 | GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs, with `queue_position` and `eta_seconds` |
 | GET | `/api/v1/jobs/{id}` | One job (full id or 8-char prefix) |
 | DELETE | `/api/v1/jobs/{id}` | Cancel (queued, waiting in ComfyUI, or running) |
@@ -205,8 +220,9 @@ outputs:                       # nodes the gateway points at each job's versione
   anything reaches ComfyUI.
 - **`sequence` and `output_folder`** take no `targets`; the gateway wires them in.
   A sequence is mapped to the farm path, frame-checked and turned into the loader's
-  directory/skip/cap. An output folder is checked (exists, on show storage) and used
-  as the root for `<shot>/<shot>_<tag>_vNNN`.
+  directory/skip/cap. An output folder is checked (parent exists, on show storage,
+  outside `.published`) and used as the exact destination, bumped to the next version
+  if it already has frames. `POST /api/v1/plan` shows the result without queuing.
 - **Nodes in `sequence` and `outputs` belong to the gateway.** A plain param targeting
   them would be overwritten on every job, which is why the output folder is its own type
   rather than a param pointed at `OUTPUT_PATH`.

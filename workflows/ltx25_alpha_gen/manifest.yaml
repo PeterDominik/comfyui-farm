@@ -24,15 +24,16 @@ params:
       sequence is used. png/jpg/tif/webp only.
 
   # Replaces the OUTPUT_PATH node (9093) in the ComfyUI graph. No targets: like
-  # `input`, the gateway wires this in itself (see `outputs` below), because it still
-  # adds <shot>/<shot>_alpha_vNNN inside the folder so jobs never overwrite each other.
+  # `input`, the gateway wires this in itself (see `outputs` below). Frames go straight
+  # into the folder; if it already has frames the job takes the next version instead
+  # (test -> test_v002, x_v003 -> x_v004), so nothing is ever overwritten.
   output_path:
     type: output_folder
     label: Output folder
     help: >
-      Leave empty for the show's standard renders folder. Otherwise a folder that
-      already exists on show storage; each job goes into <shot>/<shot>_alpha_vNNN
-      inside it.
+      Where the frames go, exactly. If it already has frames, the job goes to the next
+      version next to it (test -> test_v002). Its parent folder must exist. Leave empty
+      for the show's renders folder. Never inside .published.
 
   seed:
     type: int
