@@ -79,6 +79,9 @@ class Sequence:
     shot: str | None
     seq_name: str | None = None   # sequence code from the path, e.g. "bpash"
     source: str = ""              # input file name without frame number/extension
+    kind: str = "frames"          # frames (read directly) | exr | movie (converted first)
+    load_dir: str | None = None   # where the loader reads from, when not `directory`
+    convert: dict | None = None   # how to make the frames the loader reads (exr/movie)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -155,6 +158,39 @@ def _format_frames(frames: list[int], limit: int = 12) -> str:
     return shown + (f" … ({len(frames)} total)" if len(frames) > limit else "")
 
 
+# Sequences converted to PNG before the workflow (see convert.py).
+CONVERTED_SEQUENCE_EXTENSIONS = {".exr"}
+
+
+def _resolve_converted_sequence(seq: Sequence, regex, cfg: PathsConfig, listdir) -> Sequence:
+    """EXR etc: every wanted frame must exist; the converter writes exactly those frames,
+    so the loader needs no skip/cap."""
+    first, last = seq.first, seq.last
+    if not cfg.validate_inputs:
+        seq.frame_count = (last - first + 1) if first is not None else None
+        return seq
+    try:
+        names = listdir(seq.directory)
+    except OSError as e:
+        raise SequenceError(f"The farm machine can't open the input folder {seq.directory} ({e.strerror or e}).")
+    if regex is None:   # one file
+        if seq.filename not in names:
+            raise SequenceError(f"{seq.filename} not found in {seq.directory}.")
+        seq.first = seq.last = first if first is not None else 1
+        seq.frame_count = 1
+        return seq
+    frames = {int(m.group(1)) for m in map(regex.match, names) if m}
+    if not frames:
+        raise SequenceError(f"No frames matching {seq.filename} in {seq.directory}.")
+    if first is None:
+        first, last = min(frames), max(frames)
+    missing = [f for f in range(first, last + 1) if f not in frames]
+    if missing:
+        raise SequenceError(f"Missing frames in {seq.filename}: {_format_frames(missing)}.")
+    seq.first, seq.last, seq.frame_count = first, last, last - first + 1
+    return seq
+
+
 def resolve_sequence(
     raw: str,
     cfg: PathsConfig,
@@ -184,13 +220,12 @@ def resolve_sequence(
             directory, filename = farm_path + "/", ""   # a folder without trailing slash
 
     regex = _pattern_regex(filename) if filename else None
-    if filename:
-        ext = os.path.splitext(filename)[1].lower()
-        if ext not in LOADER_EXTENSIONS:
-            raise SequenceError(
-                f"The loader can't read '{ext}' files. Use png, jpg, tif or webp "
-                f"(convert EXRs first)."
-            )
+    ext = os.path.splitext(filename)[1].lower() if filename else ""
+    if filename and ext not in LOADER_EXTENSIONS and ext not in CONVERTED_SEQUENCE_EXTENSIONS:
+        raise SequenceError(
+            f"Can't use '{ext}' files. Use a png, jpg, tif, webp or EXR sequence, or a "
+            f".mov/.mp4 movie."
+        )
 
     ctx = context_from_path(farm_path, cfg.context_patterns)
     show = show or ctx.get("show")
@@ -199,6 +234,9 @@ def resolve_sequence(
     seq = Sequence(raw=raw.strip(), farm_path=farm_path, directory=directory, filename=filename,
                    first=first, last=last, frame_count=None, skip=0, cap=0, show=show, shot=shot,
                    seq_name=ctx.get("seq"), source=source_stem(filename, directory))
+    if ext in CONVERTED_SEQUENCE_EXTENSIONS:
+        seq.kind = "exr"
+        return _resolve_converted_sequence(seq, regex, cfg, listdir)
     if not cfg.validate_inputs:
         if first is not None:
             seq.frame_count = last - first + 1

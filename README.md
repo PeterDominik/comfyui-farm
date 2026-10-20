@@ -18,6 +18,9 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 - **Pipeline-aware inputs.** Paste `/rdo/shows/.../shot.step.%04d.png 1001-1158` and the
   gateway maps it to the farm path. It checks for missing frames and works out exactly
   which files the loader will read. Bad input is refused at submit, not 10 minutes in.
+- **PNG/JPG/TIF, EXR and movies, one workflow.** EXR sequences are converted with the
+  show's OCIO config and the shot's client LUT; `.mov`/`.mp4` are numbered from their
+  timecode. See *Input formats* below.
 - **Outputs that never overwrite.** Frames go to `<output folder>/<shot>/`, named after
   their source and numbered like the plate:
   `.../comfy/test/bpash_1545/bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png`.
@@ -47,8 +50,10 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 ## Install on the Windows farm machine
 
 Needs **Git for Windows**, **Python 3.10+** (python.org, tick *Add to PATH*), and for the
-services, **[NSSM](https://nssm.cc)**. ComfyUI must have the custom node packs this
-workflow uses: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo.
+services, **[NSSM](https://nssm.cc)**. Movie inputs need **ffmpeg/ffprobe** on PATH
+(`winget install Gyan.FFmpeg`); EXR inputs use `oiiotool`, which `setup.ps1` installs with
+the OpenImageIO Python package. ComfyUI must have the custom node packs this workflow
+uses: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo.
 
 ```powershell
 git clone https://github.com/<org>/comfyui-farm.git C:\comfyfarm
@@ -126,7 +131,7 @@ range. When a job finishes, a Read node for the result appears next to its sourc
 
 | Param | Default | Notes |
 |---|---|---|
-| `input` | required | Sequence path with `%04d` / `%d` / `####` and optional `first-last` range. png/jpg/tif/webp only |
+| `input` | required | Sequence path with `%04d` / `%d` / `####` and optional `first-last` range (png/jpg/tif/webp/exr), or a `.mov`/`.mp4` with an optional range in timecode frame numbers |
 | `output_path` | show default | Root folder: frames go to `<this>/<shot>/<source>.alpha_vNNN.<frame>.png`, each run taking the next free version. Its parent must exist; never inside `.published`. Empty = the show's renders folder. Inputs outside the publish layout (no shot) go straight into it |
 | `seed` | 42 | |
 | `enhance_prompt` | false | Gemma prompt enhancer |
@@ -163,8 +168,35 @@ Changing it only affects jobs submitted afterwards.
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`
 when `auth.api_keys` is set in `config.yaml`.
 
-Job statuses: `queued` → `dispatched` (waiting in ComfyUI) → `running` →
-`postprocessing` (renaming frames, copying preview) → `done`, or `failed` / `cancelled`.
+Job statuses: `preparing` (EXR/movie inputs being converted) → `queued` → `dispatched`
+(waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, copying preview) →
+`done`, or `failed` / `cancelled`.
+
+### Input formats
+
+The ComfyUI workflow only ever reads PNG frames. Other inputs are converted on the farm
+machine first, into `convert.scratch_dir`. Conversion runs while the GPU works on other
+jobs, and the frames are deleted when the job finishes. Settings live under `convert:`
+in `config.yaml`.
+
+- **PNG / JPG / TIF / WebP:** read directly, as before.
+- **EXR sequences:** converted with `oiiotool` using the show's OCIO config
+  (`convert.exr.ocio_config`, default `/rdo/shows/{show}/_project_ref/_lut/_ocio/current`)
+  through the `sRGB-monitor` display and `Client-look` view, from `scene_linear`.
+  - The config finds the shot's client LUT itself through its `search_path`
+    (`../../_color_bundle/${SEQ}_${SHOT}`, then `${SEQ}`, `${SHOT}`, then the show LUTs).
+    The gateway sets `SEQ`/`SHOT` per job from the publish path: `bpash_1545` in seq
+    `bpash` gives `SEQ=bpash`, `SHOT=1545`. A shot without a colour bundle gets the show
+    default LUTs, and the preview says which one applies.
+  - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
+  - Output is 8-bit sRGB PNG at plate resolution. The workflow then works at its own
+    resolution, as for PNG inputs.
+- **Movies (.mov/.mp4/.m4v/.mxf):** extracted with `ffmpeg`, numbered from the movie's
+  timecode (`00:00:41:17` at 24 fps = frame 1001; drop-frame handled). A range on the
+  input picks frames by those numbers. With no timecode, numbering starts at
+  `convert.movie.default_start` (1001) and the job carries a warning. Movies are assumed
+  to be display-referred with the look already baked in, like the PNG preprocess, so
+  they get no colour transform. Untagged movies are decoded as BT.709.
 
 ## Adding or updating a workflow
 

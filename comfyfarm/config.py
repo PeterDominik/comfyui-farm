@@ -61,6 +61,39 @@ class PathsConfig(BaseModel):
     validate_inputs: bool = True
 
 
+class ExrConvertConfig(BaseModel):
+    # The show's OCIO config. It finds the per-shot client LUTs itself through its
+    # search_path (../../_color_bundle/${SEQ}_${SHOT}:...), so SEQ/SHOT are set per job.
+    ocio_config: str = "/rdo/shows/{show}/_project_ref/_lut/_ocio/current/config.ocio"
+    # OCIO context variables. {shot_short} = shot folder without its "<seq>_" prefix
+    # (bpash_1545 in seq bpash -> 1545), so ${SEQ}_${SHOT} names the shot's bundle.
+    context: dict[str, str] = Field(default_factory=lambda: {"SEQ": "{seq}", "SHOT": "{shot_short}"})
+    input_colorspace: str = "scene_linear"   # role or colorspace of the EXR plates
+    display: str = "sRGB-monitor"
+    view: str = "Client-look"
+    # Plain RGB, cropped to the display window (drops overscan), before the transform.
+    extra_args: list[str] = Field(default_factory=lambda: ["--ch", "R,G,B", "--croptofull"])
+
+
+class MovieConvertConfig(BaseModel):
+    # Frame numbers come from the movie's timecode; this is used when it has none.
+    default_start: int = 1001
+
+
+class ConvertConfig(BaseModel):
+    """EXR sequences and movies are converted to PNG frames on the farm machine before
+    the workflow runs, so one ComfyUI graph handles every input format."""
+    scratch_dir: str = "data/scratch"
+    max_parallel_jobs: int = 1      # conversions at once (CPU/disk); they overlap GPU work
+    frame_workers: int = 6          # oiiotool processes per EXR job
+    keep_failed: bool = False       # keep converted frames of failed jobs for debugging
+    # Empty = look next to the gateway's Python (the venv), then on PATH.
+    # A path, or a command as a list (e.g. [python, script.py]).
+    tools: dict[str, str | list[str]] = Field(default_factory=lambda: {"oiiotool": "", "ffmpeg": "", "ffprobe": ""})
+    exr: ExrConvertConfig = Field(default_factory=ExrConvertConfig)
+    movie: MovieConvertConfig = Field(default_factory=MovieConvertConfig)
+
+
 class AuthConfig(BaseModel):
     # api key -> user name. Empty = no keys required; users identify themselves.
     api_keys: dict[str, str] = Field(default_factory=dict)
@@ -87,6 +120,7 @@ class Config(BaseModel):
     workers: list[WorkerConfig] = Field(default_factory=lambda: [WorkerConfig(name="local")])
     paths: PathsConfig = Field(default_factory=PathsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    convert: ConvertConfig = Field(default_factory=ConvertConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)

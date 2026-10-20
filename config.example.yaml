@@ -53,6 +53,27 @@ paths:
 
   validate_inputs: true
 
+convert:
+  # EXR sequences and movies are converted to PNG frames here (on the farm machine's
+  # local disk) before the workflow runs; deleted when the job finishes.
+  scratch_dir: data/scratch
+  max_parallel_jobs: 1     # conversions at once; they run while the GPU works on other jobs
+  frame_workers: 6         # oiiotool processes per EXR job
+  keep_failed: false       # keep converted frames of failed jobs for debugging
+  # Empty = the gateway's venv (oiiotool comes with OpenImageIO), then PATH.
+  tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}
+  exr:
+    ocio_config: '/rdo/shows/{show}/_project_ref/_lut/_ocio/current/config.ocio'
+    # The config's search_path (../../_color_bundle/${SEQ}_${SHOT}:...) finds the shot's
+    # client LUT. {shot_short} = shot folder without "<seq>_": bpash_1545 -> 1545.
+    context: {SEQ: '{seq}', SHOT: '{shot_short}'}
+    input_colorspace: scene_linear
+    display: sRGB-monitor
+    view: Client-look
+    extra_args: ['--ch', 'R,G,B', '--croptofull']
+  movie:
+    default_start: 1001    # when a movie has no timecode
+
 auth:
   # Leave empty to run without keys (artists' user names are taken on trust).
   # To require keys:   api_keys: {"long-random-string": "peter", "another-one": "jane"}

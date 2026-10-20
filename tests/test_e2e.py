@@ -6,6 +6,7 @@ and a missing node pack.
 """
 
 import importlib
+import json
 import os
 import shutil
 import signal
@@ -57,6 +58,7 @@ class E2E(unittest.TestCase):
         (loose / "plate.1001.png").write_bytes(b"x")
         for f in range(1001, 1013):
             (plates / f"abc_0010.pre.v1.{f}.png").write_bytes(b"x")
+        cls.make_conversion_fixtures()
         cls.comfy_port, cls.gw_port = free_port(), free_port()
         root = cls.tmp.as_posix()
         (cls.tmp / "config.yaml").write_text(f"""
@@ -69,11 +71,47 @@ paths:
   mappings: [{{posix: /rdo/shows, windows: "{root}/shows"}}]
   output_root: "{root}/shows/{{show}}/_project_ref/_cg/comfyui/renders"
 farm: {{reconcile_seconds: 1.5, health_seconds: 0.5, lost_after_seconds: 60}}
+convert:
+  scratch_dir: {root}/scratch
+  frame_workers: 3
+  tools: {{oiiotool: ["{Path(sys.executable).as_posix()}", "{(REPO / 'tests/fake_oiiotool.py').as_posix()}"]}}
 """)
+        os.environ["FAKE_OIIOTOOL_LOG"] = str(cls.tmp / "oiiotool.log")
         os.environ["COMFYFARM_URL"] = f"http://127.0.0.1:{cls.gw_port}"
         cls.comfy = cls.gw = None
         cls.start_comfy()
         cls.start_gateway()
+
+    @classmethod
+    def make_conversion_fixtures(cls):
+        # Show OCIO config with Rodeo's search path; the shot's colour bundle exists.
+        lut = cls.tmp / "shows/xyz/_project_ref/_lut"
+        (lut / "_ocio/current").mkdir(parents=True)
+        (lut / "_color_bundle/abc_0010").mkdir(parents=True)
+        (lut / "_ocio/current/config.ocio").write_text(
+            "ocio_profile_version: 1\n"
+            'search_path: "../../_color_bundle/${SEQ}_${SHOT}:../../_color_bundle/${SEQ}:'
+            '../../_color_bundle/${SHOT}:project_luts:rodeo_luts:ACES_luts"\n'
+            "displays:\n  sRGB-monitor:\n"
+            "    - !<View> {name: Rodeo-look, colorspace: Rodeo-look}\n"
+            "    - !<View> {name: Client-look, colorspace: Client-look}\n")
+        shot = cls.tmp / "shows/xyz/.published/abc/abc_0010"
+        exr = shot / "plate/v1"
+        exr.mkdir(parents=True)
+        for name, frames in (("plate", range(1001, 1006)), ("slow", range(1001, 1004)), ("broken", range(1001, 1003))):
+            for f in frames:
+                (exr / f"abc_0010.{name}.v1.{f}.exr").write_bytes(b"x")
+        (shot / "edit").mkdir()
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "12",
+                        "-timecode", "00:00:41:17", "-c:v", "prores_ks", str(shot / "edit/abc_0010_ref.mov")], check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=25", "-frames:v", "4",
+                        "-c:v", "prores_ks", str(cls.tmp / "shows/ply/work/notc.mov")], check=True)
+
+    def oiiotool_calls(self):
+        try:
+            return [json.loads(line) for line in (self.tmp / "oiiotool.log").read_text().splitlines()]
+        except FileNotFoundError:
+            return []
 
     @classmethod
     def tearDownClass(cls):
@@ -240,17 +278,83 @@ farm: {{reconcile_seconds: 1.5, health_seconds: 0.5, lost_after_seconds: 60}}
         self.assertEqual(ok["name"], "plate")
         # No shot to make a folder from: straight into the output folder, and the job says so.
         self.assertTrue(ok["info"]["output_dir_posix"].endswith("/work/plates_alpha"))
-        self.assertIn("No shot in the input path", ok["info"]["note"])
+        self.assertIn("No shot in the input path", " ".join(ok["info"]["notes"]))
         self.assertEqual(self.wait_for(ok["id"], ("done", "failed"))["status"], "done")
         self.assertTrue((self.tmp / "shows/ply/work/plates_alpha/plate.alpha_v001.1001.png").is_file())
+
+    def test_047_exr_input_converted_with_shot_ocio(self):
+        src = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010.plate.v1.%04d.exr"
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "ltx25_alpha_gen", "params": {"input": f"{src} 1002-1005"}})
+        c = plan["convert"]
+        self.assertEqual((plan["input_kind"], c["view"], c["display"], c["context"]),
+                         ("exr", "Client-look", "sRGB-monitor", {"SEQ": "abc", "SHOT": "0010"}))
+        self.assertEqual(c["bundle"], "/rdo/shows/xyz/_project_ref/_lut/_color_bundle/abc_0010")
+        self.assertEqual(c["config"], "/rdo/shows/xyz/_project_ref/_lut/_ocio/current/config.ocio")
+        job = farm.submit("ltx25_alpha_gen", {"input": f"{src} 1002-1005"})
+        self.assertEqual(job["status"], "preparing")
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual((done["outputs"]["frames"], done["outputs"]["first"], done["outputs"]["last"]), (4, 1002, 1005))
+        out = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/renders/abc_0010"
+        self.assertTrue((out / "abc_0010.plate.v1.alpha_v001.1002.png").is_file())
+        calls = [c for c in self.oiiotool_calls() if "plate" in " ".join(c["args"])]
+        self.assertEqual(len(calls), 4)
+        a = calls[0]
+        self.assertEqual((a["SEQ"], a["SHOT"]), ("abc", "0010"))
+        self.assertIn("--ociodisplay:from=scene_linear", a["args"])
+        i = a["args"].index("--ociodisplay:from=scene_linear")
+        self.assertEqual(a["args"][i + 1:i + 3], ["sRGB-monitor", "Client-look"])
+        self.assertTrue(a["args"][a["args"].index("--colorconfig") + 1].endswith("/_lut/_ocio/current/config.ocio"))
+        self.assertEqual(a["args"][a["args"].index("-d") + 1], "uint8")
+        self.assertFalse((self.tmp / "scratch" / job["id"]).exists(), "scratch frames should be cleaned up")
+
+    def test_048_movie_numbered_from_timecode(self):
+        mov = "/rdo/shows/xyz/.published/abc/abc_0010/edit/abc_0010_ref.mov"
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "ltx25_alpha_gen", "params": {"input": mov}})
+        self.assertEqual((plan["convert"]["timecode"], plan["convert"]["start"], plan["convert"]["end"]),
+                         ("00:00:41:17", 1001, 1012))
+        self.assertEqual((plan["first_file"], plan["last_file"]),
+                         ("abc_0010_ref.alpha_v001.1001.png", "abc_0010_ref.alpha_v001.1012.png"))
+        job = farm.submit("ltx25_alpha_gen", {"input": f"{mov} 1004-1007"})
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual((done["outputs"]["frames"], done["outputs"]["first"], done["outputs"]["last"]), (4, 1004, 1007))
+        out = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/renders/abc_0010"
+        self.assertTrue((out / "abc_0010_ref.alpha_v001.1004.png").is_file())
+        with self.assertRaisesRegex(farm.FarmError, "outside the movie, which runs 1001-1012"):
+            farm.submit("ltx25_alpha_gen", {"input": f"{mov} 990-1005"})
+        # No timecode: numbered from the default, and the job says so.
+        nt = farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/ply/work/notc.mov",
+                                             "output_path": "/rdo/shows/ply/work/notc_alpha"})
+        self.assertIn("no timecode", " ".join(nt["warnings"]))
+        done = self.wait_for(nt["id"], ("done", "failed"))
+        self.assertEqual((done["status"], done["outputs"]["first"], done["outputs"]["last"]), ("done", 1001, 1004))
+
+    def test_049_conversion_cancel_and_failure(self):
+        base = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010"
+        slow = farm.submit("ltx25_alpha_gen", {"input": f"{base}.slow.v1.%04d.exr"})
+        end = time.time() + 10
+        while "converting" not in (farm.get(slow["id"])["stage"] or "") and time.time() < end:
+            time.sleep(0.1)
+        self.assertEqual(farm.get(slow["id"])["status"], "preparing")
+        self.assertEqual(farm.cancel(slow["id"])["status"], "cancelled")
+        time.sleep(0.5)
+        self.assertFalse((self.tmp / "scratch" / slow["id"]).exists())
+        broken = farm.submit("ltx25_alpha_gen", {"input": f"{base}.broken.v1.%04d.exr"})
+        failed = self.wait_for(broken["id"], ("failed", "done"))
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("Converting the input failed: oiiotool failed on abc_0010.broken.v1.", failed["error"])
+        self.assertIn("bad EXR header", failed["error"])
+        with self.assertRaisesRegex(farm.FarmError, "Missing frames"):
+            farm.submit("ltx25_alpha_gen", {"input": f"{base}.plate.v1.%04d.exr 1001-1009"})
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
             self.submit("1001-1014")
         with self.assertRaisesRegex(farm.FarmError, "multiple of 32"):
             self.submit(shorter_side=1000)
-        with self.assertRaisesRegex(farm.FarmError, "can't read '.exr'"):
-            farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/xyz/a.%04d.exr 1-2"})
+        with self.assertRaisesRegex(farm.FarmError, "Can't use '.dpx' files"):
+            farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/xyz/a.%04d.dpx 1-2"})
 
     def test_06_gateway_restart_mid_job(self):
         job = self.submit()

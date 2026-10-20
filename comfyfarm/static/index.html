@@ -56,7 +56,7 @@
   tr.row:hover td { background: #22262b; }
   .mono { font-family: var(--mono); font-size: 12px; }
   .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
-  .s-queued { background: #3a3346; color: #cdbdf0; } .s-dispatched { background: #2f3540; color: #b8c6d8; }
+  .s-preparing { background: #3d3424; color: #ecc98a; } .s-queued { background: #3a3346; color: #cdbdf0; } .s-dispatched { background: #2f3540; color: #b8c6d8; }
   .s-running, .s-postprocessing { background: #1f3346; color: #9fcdf2; } .s-done { background: #1f3a29; color: #93d6a6; }
   .s-failed { background: #45231f; color: #f0a59c; } .s-cancelled { background: #33363a; color: #a3a9b0; }
   .bar { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; min-width: 120px; }
@@ -213,6 +213,16 @@ function renderForm() {
 }
 
 // ------------------------------------------------------------- destination preview
+function convertLine(c) {
+  if (!c) return "";
+  if (c.kind === "exr")
+    return `<br>EXR converted first: <code>${esc(c.input_colorspace)}</code> → <code>${esc(c.display)} / ${esc(c.view)}</code>, `
+      + (c.bundle ? `shot LUTs from <code>${esc(c.bundle)}</code>` : "show default LUTs");
+  if (c.kind === "movie")
+    return `<br>Movie: ${esc(c.codec || "")} ${c.width || "?"}×${c.height || "?"} at ${+c.fps.toFixed(3)} fps, `
+      + (c.timecode ? `timecode <code>${esc(c.timecode)}</code> → frames ${c.start}-${c.end}` : `frames ${c.start}-${c.end}`);
+  return "";
+}
 // Shows exactly where the frames will land and what they'll be called, before submitting.
 let destTimer, destSeq = 0;
 function scheduleDest(wf, seqP, outP, delay = 450) {
@@ -236,7 +246,8 @@ async function updateDest(wf, seqP, outP) {
     el.className = "dest";
     el.innerHTML = `<b>Will write</b> ${r.frames ? r.frames + " frames" : "frames"} to <code>${esc(dir)}/</code><br>as ${files}`
       + (r.version > 1 ? `<br><span class="warn">Earlier versions of these frames already exist in that folder (or are queued), so this run is v${String(r.version).padStart(3, "0")}.</span>` : "")
-      + (r.note ? `<br><span class="warn">${esc(r.note)}</span>` : "")
+      + convertLine(r.convert)
+      + (r.notes || []).map(n => `<br><span class="warn">${esc(n)}</span>`).join("")
       + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the publish path.` : "");
   } catch (err) {
     if (n !== destSeq) return;
@@ -276,7 +287,7 @@ function detail(j) {
     ${i.traceback ? `<div></div><div><details><summary>traceback</summary><pre>${esc(i.traceback)}</pre></details></div>` : ""}
     ${o.preview ? `<div>Preview</div><div class="vslot" data-vid="${j.id}" data-src="/api/v1/jobs/${j.id}/preview${keyq}"></div>` : ""}
     <div></div><div style="display:flex;gap:8px">
-      ${["queued", "dispatched", "running"].includes(j.status) ? `<button class="small" data-cancel="${j.id}">Cancel</button>` : ""}
+      ${["preparing", "queued", "dispatched", "running"].includes(j.status) ? `<button class="small" data-cancel="${j.id}">Cancel</button>` : ""}
       ${["done", "failed", "cancelled"].includes(j.status) ? `<button class="small" data-retry="${j.id}">Run again</button>` : ""}
       <button class="small" data-prompt="${j.id}">API JSON</button>
     </div></div></td></tr>`;
