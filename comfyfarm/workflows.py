@@ -288,7 +288,7 @@ class Workflow:
                 rng = f" {seq.first}-{seq.last}" if seq.first is not None else ""
                 prompt[str(pn["node"])]["inputs"][pn["input"]] = seq.farm_path + rng
             ld = prompt[str(self.sequence["loader"]["node"])]["inputs"]
-            ld["directory"] = seq.directory
+            ld["directory"] = seq.load_dir or seq.directory
             ld["skip_first_images"] = seq.skip
             ld["image_load_cap"] = seq.cap
         o = self.outputs

@@ -85,9 +85,16 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(SequenceError, "sort between"):
             resolve_sequence(f"{self.shot_dir}/abc_0010.pre.v1.%04d.png 1001-1005", self.cfg)
 
-    def test_exr_refused(self):
-        with self.assertRaisesRegex(SequenceError, "can't read '.exr'"):
-            resolve_sequence(f"{self.shot_dir}/abc_0010.%04d.exr 1-2", self.cfg)
+    def test_unsupported_format_refused(self):
+        with self.assertRaisesRegex(SequenceError, "Can't use '.dpx' files"):
+            resolve_sequence(f"{self.shot_dir}/abc_0010.%04d.dpx 1-2", self.cfg)
+
+    def test_exr_sequence_checked_for_conversion(self):
+        touch(self.shot_dir, *[f"abc_0010.plate.v1.{f}.exr" for f in (1001, 1002, 1004)])
+        s = resolve_sequence(f"{self.shot_dir}/abc_0010.plate.v1.%04d.exr 1001-1002", self.cfg)
+        self.assertEqual((s.kind, s.first, s.last, s.frame_count, s.source), ("exr", 1001, 1002, 2, "abc_0010.plate.v1"))
+        with self.assertRaisesRegex(SequenceError, "Missing frames.*1003"):
+            resolve_sequence(f"{self.shot_dir}/abc_0010.plate.v1.%04d.exr", self.cfg)
 
     def test_missing_folder(self):
         with self.assertRaisesRegex(SequenceError, "can't open the input folder"):

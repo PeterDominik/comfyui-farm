@@ -20,8 +20,9 @@ params:
     required: true
     help: >
       Image sequence with frame pattern and range, as copied from the pipeline, e.g.
-      /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158. Without a range the whole
-      sequence is used. png/jpg/tif/webp only.
+      /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158, or a .mov/.mp4. Without a
+      range the whole sequence or movie is used. EXRs are converted with the shot's OCIO
+      look first; movies are numbered from their timecode.
 
   # Replaces the OUTPUT_PATH node (9093) in the ComfyUI graph. No targets: like
   # `input`, the gateway wires this in itself (see `outputs` below). Frames go to

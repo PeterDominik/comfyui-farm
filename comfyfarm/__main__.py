@@ -7,6 +7,8 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import re
+import subprocess
 import sys
 
 from . import __version__
@@ -48,6 +50,26 @@ async def run_check(cfg: Config) -> int:
                 print(f"         - {p}")
         else:
             print(f"  [ ok ] workflow {wf.name} ({len(wf.params)} params)")
+
+    from . import convert as C
+    for tool, args, use in (("oiiotool", ["--buildinfo"], "EXR inputs"), ("ffmpeg", ["-version"], "movie inputs"),
+                            ("ffprobe", ["-version"], "movie inputs")):
+        cmd = C.find_tool(tool, cfg.convert.tools.get(tool))
+        if not cmd:
+            print(f"  [WARN] {tool} not found: {use} will be refused (see README, 'Input formats')")
+            continue
+        try:
+            out = subprocess.run([*cmd, *args], capture_output=True, text=True, timeout=30)
+            text = (out.stdout or out.stderr).strip()
+            first = text.splitlines()[0] if text else f"exit {out.returncode}"
+            ocio = ""
+            if tool == "oiiotool":
+                m = re.search(r"OpenColorIO[^\n,;]*", text)
+                ocio = f"  ({m.group(0).strip()})" if m else "  (no OpenColorIO support found!)"
+            print(f"  [ ok ] {tool}: {first[:70]}{ocio}")
+        except Exception as e:  # noqa: BLE001
+            bad += 1
+            print(f"  [FAIL] {tool} ({' '.join(cmd)}): {e}")
 
     for m in cfg.paths.mappings:
         ok = os.path.isdir(m.windows)

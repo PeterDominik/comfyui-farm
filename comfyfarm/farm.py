@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from pathlib import Path
 import httpx
 import websockets
 
+from . import convert as C
 from . import paths as P
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
 from .config import Config, WorkerConfig
@@ -108,6 +110,9 @@ class Farm:
         self._submit_lock = threading.Lock()
         self._tasks: list[asyncio.Task] = []
         self._bg: set[asyncio.Task] = set()
+        self._converting: dict[str, asyncio.Task] = {}   # job id -> conversion task
+        self._convert_wake: asyncio.Event | None = None
+        self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
 
     # ================================================================ lifecycle
     async def start(self) -> None:
@@ -123,6 +128,9 @@ class Farm:
                             asyncio.create_task(self._ws_loop(w), name=f"ws-{w.name}"),
                             asyncio.create_task(self._reconcile_loop(w), name=f"reconcile-{w.name}")]
         self._tasks.append(asyncio.create_task(self._dispatch_loop(), name="dispatch"))
+        self._convert_wake = asyncio.Event()
+        self._tasks.append(asyncio.create_task(self._convert_loop(), name="convert"))
+        await asyncio.to_thread(self._clean_orphan_scratch)
         log.info("farm started with workers: %s", ", ".join(self.workers) or "none")
 
     async def stop(self) -> None:
@@ -135,6 +143,8 @@ class Farm:
     def wake(self) -> None:
         if self.loop and self._wake:
             self.loop.call_soon_threadsafe(self._wake.set)
+        if self.loop and self._convert_wake:
+            self.loop.call_soon_threadsafe(self._convert_wake.set)
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -190,13 +200,16 @@ class Farm:
         wf = self.registry.get(workflow)
         values = wf.validate(params or {})
         pc = self.cfg.paths
-        seq = P.resolve_sequence(values[wf.sequence_param], pc, show=show, shot=shot) \
+        seq = C.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot) \
             if wf.sequence_param else None
+        if seq is not None and seq.convert:
+            C.point_loader_at_scratch(seq, self.scratch_root, job_id)
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
         seq_name = seq.seq_name if seq else None
         source = seq.source if seq else wf.tag
-        plan = {"wf": wf, "values": values, "seq": seq, "show": show_, "shot": shot_, "seq_name": seq_name,
+        plan = {"notes": list((seq.convert or {}).get("notes", [])) if seq else [],
+                "wf": wf, "values": values, "seq": seq, "show": show_, "shot": shot_, "seq_name": seq_name,
                 "source": source, "out_dir": None, "version": None, "picked": None,
                 "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
                 "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
@@ -208,7 +221,7 @@ class Farm:
         dir_template = pc.output_dir
         if picked and not shot_ and "{shot" in dir_template:
             dir_template = "{root}"
-            plan["note"] = "No shot in the input path, so the frames go straight into the output folder."
+            plan["notes"].append("No shot in the input path, so the frames go straight into the output folder.")
         versioned = "{version" in pc.frame_name or "{version" in dir_template
         exists = P.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
         base = {"source": source, "show": show_, "seq": seq_name, "shot": shot_, "tag": wf.tag,
@@ -246,7 +259,8 @@ class Farm:
             "frames": seq.frame_count if seq else None,
             "first": seq.first if seq else None, "last": seq.last if seq else None,
             "output_dir": out, "output_dir_posix": P.to_posix(out, pc.mappings) if out else None,
-            "picked": plan["picked"], "version": plan["version"], "note": plan.get("note"),
+            "picked": plan["picked"], "version": plan["version"], "notes": plan["notes"],
+            "input_kind": seq.kind if seq else None, "convert": C.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
         }
 
@@ -268,7 +282,8 @@ class Farm:
                 "expected_frames": seq.frame_count if seq else None,
                 "output_dir": out_dir, "output_dir_picked": plan["picked"],
                 "output_dir_posix": P.to_posix(out_dir, pc.mappings) if out_dir else None,
-                "note": plan.get("note"),
+                "notes": plan["notes"], "input_kind": seq.kind if seq else None,
+                "convert_summary": C.summary(seq, pc),
                 "frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"],
                 # Frozen per job, so a config edit can't rename frames of jobs already queued.
                 "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
@@ -277,10 +292,11 @@ class Farm:
             job = self.store.insert({
                 "id": job_id, "workflow": wf.name, "user": user,
                 "name": name or plan["shot"] or plan["source"],
-                "status": "queued", "priority": priority, "params": values, "info": info,
+                "status": "preparing" if seq and seq.convert else "queued",
+                "priority": priority, "params": values, "info": info,
                 "prompt": prompt, "output_dir": out_dir, "output_key": plan.get("output_key"),
-                "created_at": now(), "stage": "queued",
-                "warnings": [],
+                "created_at": now(), "stage": "waiting to convert input" if seq and seq.convert else "queued",
+                "warnings": list(plan["notes"]),
             })
         log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, plan["source"], out_dir)
         self._emit(job)
@@ -300,9 +316,14 @@ class Farm:
         if not job:
             raise FarmError("Job not found.", 404)
         jid = job["id"]
-        if job["status"] == "queued":
-            j = self.store.transition(jid, ("queued",), status="cancelled", stage="cancelled", finished_at=now())
+        if job["status"] in ("preparing", "queued"):
+            j = self.store.transition(jid, ("preparing", "queued"), status="cancelled", stage="cancelled",
+                                      finished_at=now())
             if j:
+                task = self._converting.pop(jid, None)
+                if task:
+                    task.cancel()   # kills oiiotool/ffmpeg
+                self._cleanup_scratch(j)
                 self._emit(j)
                 return j
             job = self.store.get(jid)
@@ -338,6 +359,8 @@ class Farm:
                                   stage="cancelled", finished_at=now())
         if j and j.get("prompt_id"):
             self.runtime.pop(j["prompt_id"], None)
+        if j:
+            self._cleanup_scratch(j)
         self._emit(j)
         self.wake()
         return j or self.store.get(job_id)
@@ -354,9 +377,92 @@ class Farm:
                 j = self.store.update(job_id, info=info)
             if j.get("prompt_id"):
                 self.runtime.pop(j["prompt_id"], None)
+            if not self.cfg.convert.keep_failed:
+                self._cleanup_scratch(j)
         self._emit(j)
         self.wake()
         return j
+
+    # ================================================================ input conversion
+    def _scratch_dir(self, job: dict) -> str | None:
+        conv = ((job.get("info") or {}).get("input") or {}).get("convert")
+        return conv.get("dst_dir") if conv else None
+
+    def _cleanup_scratch(self, job: dict) -> None:
+        d = self._scratch_dir(job)
+        if d and P.normalize(d).startswith(self.scratch_root + "/"):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _clean_orphan_scratch(self) -> None:
+        """Converted frames of jobs that are gone (finished while the gateway was down)."""
+        if not os.path.isdir(self.scratch_root):
+            return
+        active = {j["id"] for j in self.store.list(statuses=ACTIVE, limit=100000)}
+        failed_keep = self.cfg.convert.keep_failed
+        for name in os.listdir(self.scratch_root):
+            if name in active:
+                continue
+            job = self.store.get(name)
+            if failed_keep and job and job["status"] == "failed":
+                continue
+            shutil.rmtree(os.path.join(self.scratch_root, name), ignore_errors=True)
+
+    async def _convert_loop(self) -> None:
+        """Convert EXR/movie inputs ahead of the GPU: jobs wait in 'preparing', then join
+        the queue in their original order once their frames are ready."""
+        while True:
+            try:
+                await asyncio.wait_for(self._convert_wake.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            self._convert_wake.clear()
+            try:
+                waiting = [j for j in reversed(self.store.list(statuses=("preparing",), limit=10000))
+                           if j["id"] not in self._converting]
+                for job in waiting:
+                    if len(self._converting) >= max(1, self.cfg.convert.max_parallel_jobs):
+                        break
+                    task = asyncio.create_task(self._convert_job(job["id"]), name=f"convert-{job['id'][:8]}")
+                    self._converting[job["id"]] = task
+                    task.add_done_callback(lambda _t, jid=job["id"]: self._converting.pop(jid, None))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("convert loop error")
+
+    async def _convert_job(self, job_id: str) -> None:
+        job = self.store.get(job_id)
+        if not job or job["status"] != "preparing":
+            return
+        seq_info = (job["info"] or {}).get("input") or {}
+        kind = seq_info.get("convert", {}).get("kind", "?")
+        label = {"exr": "converting EXR with the shot's OCIO look", "movie": "extracting movie frames"}.get(kind, kind)
+        t0 = now()
+        last = [0.0]
+
+        def progress(done: int, total: int) -> None:
+            if now() - last[0] < 0.5 and done < total:
+                return
+            last[0] = now()
+            self._emit(self.store.transition(job_id, ("preparing",), stage=f"{label} {done}/{total}"))
+
+        self._emit(self.store.transition(job_id, ("preparing",), stage=label))
+        log.info("job %s: %s", job_id[:8], label)
+        try:
+            await C.convert(seq_info, self.cfg.convert, progress)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            msg = str(e) if isinstance(e, (C.ConvertError, P.SequenceError)) else f"{type(e).__name__}: {e}"
+            self._fail(job_id, f"Converting the input failed: {msg}", ("preparing",))
+            return
+        j = self.store.transition(job_id, ("preparing",), status="queued", stage="queued")
+        if j:
+            log.info("job %s: input ready in %.0fs", job_id[:8], now() - t0)
+            self._emit(j)
+            self.wake()
+        else:   # cancelled meanwhile
+            self._cleanup_scratch(self.store.get(job_id) or {})
 
     async def _requeue_or_fail(self, w: Worker, job: dict, reason: str) -> None:
         if job.get("prompt_id"):
@@ -726,6 +832,7 @@ class Farm:
                                          stage="done", finished_at=t, outputs=outputs,
                                          warnings=j["warnings"] + warnings)
             self._emit(done)
+            self._cleanup_scratch(j)
             started = j["started_at"] or j["dispatched_at"] or t
             nodes = len(rt.done | ({rt.current} if rt.current else set())) if rt else None
             self.store.record_run(j["workflow"], t - started, nodes or None)

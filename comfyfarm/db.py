@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-ACTIVE = ("queued", "dispatched", "running", "postprocessing")
+ACTIVE = ("preparing", "queued", "dispatched", "running", "postprocessing")
 ON_WORKER = ("dispatched", "running")
 FINISHED = ("done", "failed", "cancelled")
 JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt")
