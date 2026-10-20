@@ -39,11 +39,12 @@ class PathsConfig(BaseModel):
         "/shows/{show}/.published/{seq}/{shot}/",
         "/shows/{show}/",
     ])
-    # Default destination when the artist leaves "Output folder" empty. Each job takes
-    # the first version whose folder has no frames yet.
+    # Where frames go: output_dir inside output_root. The artist's "Output folder"
+    # replaces output_root. Each job takes the first {version} not already used in
+    # that folder (by files, or by a queued job), so runs never overwrite each other.
     # Tokens: {root} {show} {seq} {shot} {tag} {version}
     output_root: str = "//server/share/shows/{show}/comfyui/renders"
-    output_dir: str = "{root}/{shot}/{shot}_{tag}_v{version:03d}"
+    output_dir: str = "{root}/{shot}"
     # File names. {source} = the input file name without frame number and extension,
     # {folder} = the output folder's name.
     # Tokens: {source} {folder} {show} {seq} {shot} {tag} {version} {frame} {ext}
@@ -119,10 +120,12 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
                                      f"paths.context_patterns); remove it")
     # config.yaml is copied once from the example and never updated by git pull, so
     # flag the old naming defaults that would otherwise silently pin the old behaviour.
-    old_defaults = {"frame_name": "{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}",
-                    "preview_name": "{shot}_{tag}_v{version:03d}_preview.mp4"}
-    for key, old in old_defaults.items():
+    old_defaults = {
+        "frame_name": ("{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}", "name files after their source"),
+        "preview_name": ("{shot}_{tag}_v{version:03d}_preview.mp4", "name files after their source"),
+        "output_dir": ("{root}/{shot}/{shot}_{tag}_v{version:03d}", "write to {root}/{shot}"),
+    }
+    for key, (old, new) in old_defaults.items():
         if paths.get(key) == old:
-            cfg.obsolete_keys.append(f"paths.{key} is the old default; delete the line to name files "
-                                     f"after their source")
+            cfg.obsolete_keys.append(f"paths.{key} is the old default; delete the line to {new}")
     return cfg

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     warnings TEXT,
     outputs TEXT,
     output_dir TEXT,
+    output_key TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
@@ -62,6 +63,11 @@ class JobStore:
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.executescript(SCHEMA)
+            # Columns added after the first release (CREATE TABLE IF NOT EXISTS won't add them).
+            have = {r[1] for r in self._db.execute("PRAGMA table_info(jobs)")}
+            if "output_key" not in have:
+                self._db.execute("ALTER TABLE jobs ADD COLUMN output_key TEXT")
+            self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
 
     # ---------------------------------------------------------------- helpers
     @staticmethod
@@ -164,11 +170,12 @@ class JobStore:
             ORDER BY j.priority DESC, user_inflight ASC, j.created_at ASC""")
         return [self._row(r, with_prompt=with_prompt) for r in rows]
 
-    def output_dir_reserved(self, path: str) -> bool:
-        """Promised to a job that hasn't finished (it may not have written frames yet)."""
+    def output_reserved(self, key: str) -> bool:
+        """This output (folder + file pattern) is promised to a job that hasn't finished,
+        so it may not have written anything yet."""
         marks = ",".join("?" * len(ACTIVE))
-        return bool(self._q(f"SELECT 1 FROM jobs WHERE output_dir=? COLLATE NOCASE AND status IN ({marks}) LIMIT 1",
-                            (path, *ACTIVE)))
+        return bool(self._q(f"SELECT 1 FROM jobs WHERE output_key=? COLLATE NOCASE AND status IN ({marks}) LIMIT 1",
+                            (key, *ACTIVE)))
 
     def delete_finished_before(self, ts: float) -> int:
         with self._lock:

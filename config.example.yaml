@@ -29,16 +29,17 @@ paths:
     - '/shows/{show}/.published/{seq}/{shot}/'
     - '/shows/{show}/'
 
-  # Default destination when "Output folder" is left empty. Each job takes the
-  # first version whose folder has no frames yet.
+  # Where frames go: output_dir inside output_root. The artist's "Output folder"
+  # replaces output_root. Each job takes the first {version} not already used in that
+  # folder (by files there, or by a queued job), so runs never overwrite each other.
   #   tokens: {root} {show} {seq} {shot} {tag} {version}
   output_root: '//rodeofx.com/smb/shows/{show}/_project_ref/_cg/comfyui/renders'
-  output_dir: '{root}/{shot}/{shot}_{tag}_v{version:03d}'
+  output_dir: '{root}/{shot}'
 
   # File names. {source} = input file name without frame number and extension,
   # e.g. bpash_1545.preprocess.mp01_png.v1 -> bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png
   #   tokens: {source} {folder} {show} {seq} {shot} {tag} {version} {frame} {ext}
-  #   (to name frames after their folder instead: '{folder}.{frame:04d}.{ext}')
+  #   Keep {version} in here: it's what keeps runs in the same folder apart.
   frame_name: '{source}.{tag}_v{version:03d}.{frame:04d}.{ext}'
   preview_name: '{source}.{tag}_v{version:03d}_preview.mp4'
 
