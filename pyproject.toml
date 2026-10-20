@@ -11,6 +11,7 @@ dependencies = [
     "pyyaml>=6",
     "OpenImageIO>=3.0",
     "imageio-ffmpeg>=0.5",
+    "opencolorio>=2.2",
 ]
 
 [tool.pytest.ini_options]

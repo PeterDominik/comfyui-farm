@@ -349,6 +349,14 @@ async def _run(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
     return proc.returncode, (err or b"").decode(errors="replace") + (out or b"").decode(errors="replace")
 
 
+def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, input_colorspace: str | None = None,
+                view: str | None = None) -> list[str]:
+    """The oiiotool call for one EXR frame (also used by `comfyfarm color-debug`)."""
+    return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
+            f"--ociodisplay:from={input_colorspace or c['input_colorspace']}", c["display"], view or c["view"],
+            "-d", "uint8", "-o", dst]
+
+
 async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
     oiiotool = require_tool(cc, "oiiotool")
     try:
@@ -370,9 +378,7 @@ async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
         nonlocal done
         src = c["src_dir"] + by_frame[frame]
         dst = c["dst_dir"] + (c["dst_pattern"] % frame)
-        cmd = [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
-               f"--ociodisplay:from={c['input_colorspace']}", c["display"], c["view"],
-               "-d", "uint8", "-o", dst]
+        cmd = exr_command(oiiotool, c, src, dst)
         async with sem:
             code, out = await _run(cmd, env)
         if code != 0 or not os.path.isfile(dst):

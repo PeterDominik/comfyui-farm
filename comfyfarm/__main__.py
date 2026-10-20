@@ -114,6 +114,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="run the gateway")
     sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
+    cd = sub.add_parser("color-debug", help="compare EXR conversion settings against a reference frame")
+    cd.add_argument("exr", help="EXR file, or sequence pattern with --frame (Linux or farm path)")
+    cd.add_argument("--frame", type=int, help="frame number when giving a pattern")
+    cd.add_argument("--reference", help="a frame you trust, e.g. the same frame of the shot's PNG preprocess")
+    cd.add_argument("--out", help="folder for the results (default data/color_debug/<time>)")
+    cd.add_argument("--input", action="append", help="input colour space to try (repeatable)")
+    cd.add_argument("--view", action="append", help="view to try (repeatable)")
     args = ap.parse_args(argv)
 
     # Node titles contain emoji (VHS nodes); a service's redirected stdout on Windows
@@ -127,6 +134,14 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     if args.cmd == "check":
         return asyncio.run(run_check(cfg))
+    if args.cmd == "color-debug":
+        from . import colordebug
+        from .paths import SequenceError
+        try:
+            return colordebug.run(cfg, args.exr, args.frame, args.reference, args.out, args.input, args.view)
+        except SequenceError as e:
+            print(f"error: {e}")
+            return 2
 
     setup_logging(cfg, args.verbose)
     for note in cfg.obsolete_keys:
