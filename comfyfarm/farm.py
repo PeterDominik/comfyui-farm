@@ -182,56 +182,110 @@ class Farm:
         return jobs
 
     # ================================================================ submit / cancel
-    def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
-               priority: int = 0, show: str | None = None, shot: str | None = None) -> dict:
-        """Validate and queue a job. Runs in a thread (touches network storage)."""
+    def plan(self, workflow: str, params: dict, show: str | None = None, shot: str | None = None,
+             job_id: str = "preview") -> dict:
+        """Work out everything about a job without queuing it: validated params, what the
+        loader reads, and exactly where the frames will land and what they're called.
+        Used by submit() and by the dashboard's live destination preview."""
         wf = self.registry.get(workflow)
         values = wf.validate(params or {})
         pc = self.cfg.paths
-        seq = None
-        if wf.sequence_param:
-            seq = P.resolve_sequence(values[wf.sequence_param], pc, show=show, shot=shot)
-        shot_ = (seq.shot if seq else None) or shot or "job"
-        show_ = (seq.show if seq else None) or show
-        picked_root = None
-        if wf.output_folder_param and values.get(wf.output_folder_param):
-            picked_root = P.resolve_output_root(values[wf.output_folder_param], pc)
-        job_id = str(uuid.uuid4())
-        out_dir, version, root = None, None, None
-        frames_prefix = f"{shot_}_{wf.tag}_raw"
-        preview_prefix = f"comfyfarm/{shot_}/{job_id[:8]}_{shot_}_{wf.tag}"
-        exists = os.path.isdir if pc.validate_inputs else (lambda _p: False)
+        seq = P.resolve_sequence(values[wf.sequence_param], pc, show=show, shot=shot) \
+            if wf.sequence_param else None
+        show_ = seq.show if seq else show
+        shot_ = seq.shot if seq else shot
+        seq_name = seq.seq_name if seq else None
+        source = seq.source if seq else wf.tag
+        plan = {"wf": wf, "values": values, "seq": seq, "show": show_, "shot": shot_, "seq_name": seq_name,
+                "source": source, "out_dir": None, "version": None, "picked": None, "bumped_from": None,
+                "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
+                "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
+        if not wf.outputs.get("frames"):
+            return plan
 
-        with self._submit_lock:   # version numbers are reserved by inserting the job
-            if wf.outputs.get("frames"):
-                root = picked_root or P.output_root(pc, show_, shot_)
-                for v in range(1, 1000):
-                    candidate = P.output_dir(pc, root, show_, shot_, wf.tag, v)
-                    if not exists(candidate) and not self.store.output_dir_taken(candidate):
-                        out_dir, version = candidate, v
-                        break
-                else:
-                    raise FarmError(f"No free version folder under {root}/{shot_}.")
-            prompt = wf.build(values, seq, out_dir, frames_prefix, preview_prefix)
+        picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
+        if picked:
+            base = P.resolve_output_folder(picked, pc)
+            candidates = P.version_candidates(base)
+        else:
+            root = P.output_root(pc, show_, seq_name, shot_)
+            candidates = ((P.output_dir(pc, root, show_, seq_name, shot_, wf.tag, v), v) for v in range(1, 1000))
+        has_frames = P.folder_has_frames if pc.validate_inputs else (lambda _p: False)
+        first_candidate = None
+        for path, v in candidates:
+            first_candidate = first_candidate or path
+            # Taken = already has frames, or promised to a job that hasn't written yet.
+            if self.store.output_dir_reserved(path) or has_frames(path):
+                continue
+            plan["out_dir"], plan["version"] = path, v
+            break
+        else:
+            raise FarmError(f"No free version of {first_candidate} (999 tried).")
+        P.check_writable(plan["out_dir"], pc)
+        plan["picked"] = bool(picked)
+        if plan["out_dir"] != first_candidate:
+            plan["bumped_from"] = first_candidate
+
+        tokens = {"source": source, "folder": plan["out_dir"].rpartition("/")[2], "show": show_,
+                  "seq": seq_name, "shot": shot_, "tag": wf.tag, "version": plan["version"],
+                  "ext": wf.outputs["frames"].get("ext", "png")}
+        plan["name_tokens"] = tokens
+        first = seq.first if seq and seq.first is not None else 1
+        count = seq.frame_count if seq else None
+        plan["first_frame"] = first
+        plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
+        plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
+        return plan
+
+    def plan_summary(self, plan: dict) -> dict:
+        """The JSON-safe part of a plan, as the dashboard shows it."""
+        pc = self.cfg.paths
+        seq = plan["seq"]
+        out = plan["out_dir"]
+        return {
+            "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"], "source": plan["source"],
+            "frames": seq.frame_count if seq else None,
+            "first": seq.first if seq else None, "last": seq.last if seq else None,
+            "output_dir": out, "output_dir_posix": P.to_posix(out, pc.mappings) if out else None,
+            "picked": plan["picked"], "version": plan["version"],
+            "bumped_from": plan["bumped_from"],
+            "bumped_from_posix": P.to_posix(plan["bumped_from"], pc.mappings) if plan["bumped_from"] else None,
+            "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
+        }
+
+    def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
+               priority: int = 0, show: str | None = None, shot: str | None = None) -> dict:
+        """Validate and queue a job. Runs in a thread (touches network storage)."""
+        pc = self.cfg.paths
+        job_id = str(uuid.uuid4())
+        with self._submit_lock:   # output folders are reserved by inserting the job
+            plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id)
+            wf, values, seq, out_dir = plan["wf"], plan["values"], plan["seq"], plan["out_dir"]
+            prompt = wf.build(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"])
             info = {
-                "show": show_, "shot": shot_, "tag": wf.tag, "version": version,
+                "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"], "source": plan["source"],
+                "tag": wf.tag, "version": plan["version"],
                 "input": seq.as_dict() if seq else None,
                 "input_posix": P.to_posix(seq.farm_path, pc.mappings) if seq else None,
-                "first_frame": seq.first if seq else None,
+                "first_frame": plan.get("first_frame"),
                 "expected_frames": seq.frame_count if seq else None,
-                "output_root": root, "output_root_picked": bool(picked_root),
-                "output_root_posix": P.to_posix(root, pc.mappings) if root else None,
-                "output_dir": out_dir,
+                "output_dir": out_dir, "output_dir_picked": plan["picked"],
                 "output_dir_posix": P.to_posix(out_dir, pc.mappings) if out_dir else None,
-                "frames_prefix": frames_prefix, "preview_prefix": preview_prefix,
+                "bumped_from": plan["bumped_from"],
+                "bumped_from_posix": P.to_posix(plan["bumped_from"], pc.mappings) if plan["bumped_from"] else None,
+                "frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"],
+                # Frozen per job, so a config edit can't rename frames of jobs already queued.
+                "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
+                "preview_name": pc.preview_name,
             }
             job = self.store.insert({
-                "id": job_id, "workflow": wf.name, "user": user, "name": name or (shot_ if seq else wf.label),
+                "id": job_id, "workflow": wf.name, "user": user,
+                "name": name or plan["shot"] or plan["source"],
                 "status": "queued", "priority": priority, "params": values, "info": info,
                 "prompt": prompt, "output_dir": out_dir, "created_at": now(), "stage": "queued",
                 "warnings": [],
             })
-        log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, shot_, out_dir)
+        log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, plan["source"], out_dir)
         self._emit(job)
         self.wake()
         return job
@@ -693,8 +747,7 @@ class Farm:
         out_dir = info.get("output_dir")
         outputs: dict = {"output_dir": out_dir, "output_dir_posix": info.get("output_dir_posix")}
         warnings: list[str] = []
-        fmt = {"show": info.get("show") or "", "shot": info.get("shot"), "tag": info.get("tag"),
-               "version": info.get("version") or 0}
+        tokens = dict(info.get("name_tokens") or {})
         if wf is None:
             return outputs, ["Workflow no longer loaded; outputs left as ComfyUI wrote them."]
 
@@ -713,7 +766,7 @@ class Farm:
             entries = node_out.get("gifs") or node_out.get("videos") or node_out.get("images") or []
             if entries and out_dir:
                 e = entries[-1]
-                dest = Path(out_dir) / pc.preview_name.format(**fmt)
+                dest = Path(out_dir) / (info.get("preview_name") or pc.preview_name).format(**tokens)
                 try:
                     await w.client.download(e["filename"], e.get("subfolder", ""), e.get("type", "output"), dest)
                     outputs["preview"] = P.normalize(str(dest))
@@ -734,11 +787,11 @@ class Farm:
             raise RuntimeError(f"no frames were written to {out_dir}")
         first = info.get("first_frame")
         first = 1 if first is None else first
-        fmt = {"show": info.get("show") or "", "shot": info.get("shot"), "tag": info.get("tag"),
-               "version": info.get("version") or 0, "ext": ext}
+        template = info.get("frame_name") or pc.frame_name
+        tokens = dict(info.get("name_tokens") or {}, ext=ext)
         for i, n in enumerate(names):
-            os.replace(os.path.join(out_dir, n), os.path.join(out_dir, pc.frame_name.format(frame=first + i, **fmt)))
-        pattern = f"{out_dir}/{P.frame_pattern(pc.frame_name).format(**fmt)}"
+            os.replace(os.path.join(out_dir, n), os.path.join(out_dir, template.format(frame=first + i, **tokens)))
+        pattern = f"{out_dir}/{P.frame_pattern(template).format(**tokens)}"
         return {"frames": len(names), "first": first, "last": first + len(names) - 1,
                 "frame_pattern": pattern, "frame_pattern_posix": P.to_posix(pattern, pc.mappings)}
 

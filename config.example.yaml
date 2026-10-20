@@ -22,16 +22,28 @@ paths:
     - posix: /rdo/shows
       windows: //rodeofx.com/smb/shows
 
-  # Read from the (farm-side) input path / input file name.
-  show_regex: '/shows/(?P<show>[^/]+)/'
-  shot_regex: '(?P<shot>[A-Za-z]+_\d+)'
+  # Where show / seq / shot sit in an input path. {name} = one folder, so any shot
+  # naming works (bpash_1545, 15454_656551, ...). Tried in order; later patterns
+  # only fill in what earlier ones didn't find.
+  context_patterns:
+    - '/shows/{show}/.published/{seq}/{shot}/'
+    - '/shows/{show}/'
 
-  # Where results go. Each job gets the next free version folder.
-  #   {show} {shot} from the input path, {tag} from the workflow (e.g. "alpha")
+  # Default destination when "Output folder" is left empty. Each job takes the
+  # first version whose folder has no frames yet.
+  #   tokens: {root} {show} {seq} {shot} {tag} {version}
   output_root: '//rodeofx.com/smb/shows/{show}/_project_ref/_cg/comfyui/renders'
   output_dir: '{root}/{shot}/{shot}_{tag}_v{version:03d}'
-  frame_name: '{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}'
-  preview_name: '{shot}_{tag}_v{version:03d}_preview.mp4'
+
+  # File names. {source} = input file name without frame number and extension,
+  # e.g. bpash_1545.preprocess.mp01_png.v1 -> bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png
+  #   tokens: {source} {folder} {show} {seq} {shot} {tag} {version} {frame} {ext}
+  #   (to name frames after their folder instead: '{folder}.{frame:04d}.{ext}')
+  frame_name: '{source}.{tag}_v{version:03d}.{frame:04d}.{ext}'
+  preview_name: '{source}.{tag}_v{version:03d}_preview.mp4'
+
+  # Never written into (locked; publishing goes through Tractor).
+  no_write_dirs: ['.published']
 
   # Where artists may point the "Output folder" field. Empty = anywhere under the
   # mappings above (i.e. anywhere on show storage). To narrow it, list real folders:

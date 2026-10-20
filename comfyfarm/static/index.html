@@ -38,6 +38,11 @@
   form label.wide { grid-column: 1 / -1; }
   form label.check { display: flex; align-items: center; gap: 8px; padding-top: 24px; }
   form .help { font-size: 11px; color: var(--muted); }
+  .dest { grid-column: 1 / -1; font-size: 12px; color: var(--muted); border-left: 2px solid var(--line); padding: 4px 10px; line-height: 1.7; }
+  .dest:empty { display: none; }
+  .dest code { font-family: var(--mono); color: var(--text); word-break: break-all; }
+  .dest b { color: var(--ok); font-weight: 600; }
+  .dest.err { color: var(--bad); border-color: var(--bad); }
   form .actions { grid-column: 1 / -1; display: flex; gap: 12px; align-items: center; }
   .msg { font-size: 13px; }
   .msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
@@ -155,6 +160,8 @@ function renderForm() {
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value) || state.workflows[0];
   const f = $("#form");
   if (!wf) { f.innerHTML = '<div class="empty">No workflows loaded.</div>'; return; }
+  const seqP = wf.params.find(p => p.type === "sequence"), outP = wf.params.find(p => p.type === "output_folder");
+  const destAfter = (outP || seqP || {}).name;
   const field = p => {
     const id = "p_" + p.name, help = p.help ? `<span class="help">${esc(p.help)}</span>` : "";
     const saved = store.get("comfyfarm.last." + wf.name + "." + p.name);
@@ -176,9 +183,10 @@ function renderForm() {
   f.innerHTML = (wf.enabled ? "" : `<div class="msg err" style="grid-column:1/-1">Workflow disabled: ${esc(wf.problems.join("; "))}</div>`)
     + (Object.keys(wf.worker_problems || {}).length ? `<div class="msg err" style="grid-column:1/-1">Preflight: ${esc(Object.entries(wf.worker_problems).map(([w, p]) => w + ": " + p.join("; ")).join(" | "))}</div>` : "")
     + `<div class="help" style="grid-column:1/-1">${esc(wf.description)}</div>`
-    + wf.params.map(field).join("")
+    + wf.params.map(p => field(p) + (p.name === destAfter ? '<div class="dest" id="dest" aria-live="polite"></div>' : "")).join("")
     + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>
        <div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
+  for (const p of [seqP, outP]) if (p) $("#p_" + p.name).addEventListener("input", () => scheduleDest(wf, seqP, outP));
   f.onsubmit = async e => {
     e.preventDefault();
     const params = {};
@@ -198,9 +206,41 @@ function renderForm() {
       upsert(job); state.open.add(job.id); render();
       msg.className = "msg ok"; msg.textContent = `Queued ${job.short_id} → ${job.info.output_dir_posix || job.info.output_dir}`;
       $("#p_" + wf.params.find(p => p.type === "sequence")?.name)?.select();
+      scheduleDest(wf, seqP, outP, 0);   // that folder is now taken; show where the next run would go
     } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
     finally { f.querySelector("button[type=submit]").disabled = false; }
   };
+}
+
+// ------------------------------------------------------------- destination preview
+// Shows exactly where the frames will land and what they'll be called, before submitting.
+let destTimer, destSeq = 0;
+function scheduleDest(wf, seqP, outP, delay = 450) {
+  clearTimeout(destTimer);
+  destTimer = setTimeout(() => updateDest(wf, seqP, outP), delay);
+}
+async function updateDest(wf, seqP, outP) {
+  const el = $("#dest");
+  if (!el) return;
+  const params = {};
+  if (seqP) params[seqP.name] = $("#p_" + seqP.name).value.trim();
+  if (outP && $("#p_" + outP.name).value.trim()) params[outP.name] = $("#p_" + outP.name).value.trim();
+  if (seqP && !params[seqP.name]) { el.className = "dest"; el.innerHTML = ""; return; }
+  const n = ++destSeq;
+  try {
+    const r = await api("/api/v1/plan", { method: "POST", body: JSON.stringify({ workflow: wf.name, params }) });
+    if (n !== destSeq) return;   // a newer request is on its way
+    const dir = r.output_dir_posix || r.output_dir;
+    const files = r.last_file && r.last_file !== r.first_file
+      ? `<code>${esc(r.first_file)}</code> … <code>${esc(r.last_file)}</code>` : `<code>${esc(r.first_file)}</code>`;
+    el.className = "dest";
+    el.innerHTML = `<b>Will write</b> ${r.frames ? r.frames + " frames" : "frames"} to <code>${esc(dir)}/</code><br>as ${files}`
+      + (r.bumped_from ? `<br><span class="warn">${esc(r.bumped_from_posix || r.bumped_from)} already has frames, so this goes to the next version.</span>` : "")
+      + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the publish path.` : "");
+  } catch (err) {
+    if (n !== destSeq) return;
+    el.className = "dest err"; el.textContent = err.message;
+  }
 }
 
 // ------------------------------------------------------------- jobs table

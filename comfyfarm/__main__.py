@@ -34,6 +34,8 @@ async def run_check(cfg: Config) -> int:
     """Preflight: workflows load, workers reachable, node packs/models present, storage visible."""
     bad = 0
     print(f"comfyfarm {__version__}  config: {cfg.base_dir}")
+    for note in cfg.obsolete_keys:
+        print(f"  [WARN] config.yaml: {note}")
     reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
     for name, err in reg.load_errors.items():
         print(f"  [FAIL] workflow {name}: {err}")
@@ -102,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(run_check(cfg))
 
     setup_logging(cfg, args.verbose)
+    for note in cfg.obsolete_keys:
+        logging.getLogger("comfyfarm").warning("config.yaml: %s", note)
     import uvicorn
 
     from .api import create_app

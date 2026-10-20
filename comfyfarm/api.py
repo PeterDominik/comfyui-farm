@@ -17,7 +17,7 @@ from .config import Config
 from .db import ACTIVE, JobStore
 from .events import EventBus
 from .farm import Farm, FarmError
-from .paths import SequenceError, default_output_root_display
+from .paths import SequenceError, default_output_dir_display
 from .workflows import ParamError, WorkflowRegistry
 
 HERE = Path(__file__).resolve().parent
@@ -112,7 +112,7 @@ def create_app(cfg: Config) -> FastAPI:
             s = wf.schema()
             for p in s["params"]:
                 if p["type"] == "output_folder":   # shown greyed-out in the empty field
-                    p["placeholder"] = default_output_root_display(cfg.paths)
+                    p["placeholder"] = "Empty = " + default_output_dir_display(cfg.paths, wf.tag)
             s["worker_problems"] = {w.name: w.problems[wf.name] for w in farm.workers.values()
                                     if wf.name in w.problems}
             out.append(s)
@@ -127,6 +127,11 @@ def create_app(cfg: Config) -> FastAPI:
         job = farm.submit(req.workflow, req.params, user, name=req.name, priority=req.priority,
                           show=req.show, shot=req.shot)
         return farm.annotate([job])[0]
+
+    @app.post("/api/v1/plan")
+    def plan(req: JobRequest, ident: Identity = Depends(identity)):
+        """Dry run: where a job with these params would write, without queuing it."""
+        return farm.plan_summary(farm.plan(req.workflow, req.params, show=req.show, shot=req.shot))
 
     @app.get("/api/v1/jobs")
     def list_jobs(user: str | None = None, status: str | None = None,

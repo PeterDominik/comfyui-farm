@@ -32,14 +32,25 @@ class PathMapping(BaseModel):
 
 class PathsConfig(BaseModel):
     mappings: list[PathMapping] = Field(default_factory=list)
-    # Applied to the farm-side input path / the input file name.
-    show_regex: str = r"/shows/(?P<show>[^/]+)/"
-    shot_regex: str = r"(?P<shot>[A-Za-z]+_\d+)"
-    # Output layout. Placeholders: {show} {shot} {tag} {version} {root} {frame} {ext}
+    # Where show / seq / shot sit in an input path. Each {name} matches one folder, so
+    # shot naming doesn't matter (bpash_1545, 15454_656551, ...). Tried in order; later
+    # patterns only fill in what earlier ones didn't find.
+    context_patterns: list[str] = Field(default_factory=lambda: [
+        "/shows/{show}/.published/{seq}/{shot}/",
+        "/shows/{show}/",
+    ])
+    # Default destination when the artist leaves "Output folder" empty. Each job takes
+    # the first version whose folder has no frames yet.
+    # Tokens: {root} {show} {seq} {shot} {tag} {version}
     output_root: str = "//server/share/shows/{show}/comfyui/renders"
     output_dir: str = "{root}/{shot}/{shot}_{tag}_v{version:03d}"
-    frame_name: str = "{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}"
-    preview_name: str = "{shot}_{tag}_v{version:03d}_preview.mp4"
+    # File names. {source} = the input file name without frame number and extension,
+    # {folder} = the output folder's name.
+    # Tokens: {source} {folder} {show} {seq} {shot} {tag} {version} {frame} {ext}
+    frame_name: str = "{source}.{tag}_v{version:03d}.{frame:04d}.{ext}"
+    preview_name: str = "{source}.{tag}_v{version:03d}_preview.mp4"
+    # Folder names nothing may ever be written into.
+    no_write_dirs: list[str] = Field(default_factory=lambda: [".published"])
     # Folders an artist may pick as the output folder (workflow param of type
     # output_folder). Empty = anywhere on the mapped storage above. Use either the
     # Linux (/rdo/shows/...) or the farm (UNC) form.
@@ -78,6 +89,7 @@ class Config(BaseModel):
     farm: FarmConfig = Field(default_factory=FarmConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)
+    obsolete_keys: list[str] = Field(default_factory=list, exclude=True)
 
     def resolve(self, p: str) -> Path:
         path = Path(p)
@@ -100,4 +112,17 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     data = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     cfg = Config.model_validate(data)
     cfg.base_dir = cfg_path.resolve().parent
+    paths = data.get("paths") or {}
+    for key in ("show_regex", "shot_regex"):
+        if key in paths:
+            cfg.obsolete_keys.append(f"paths.{key} is no longer used (show/shot now come from "
+                                     f"paths.context_patterns); remove it")
+    # config.yaml is copied once from the example and never updated by git pull, so
+    # flag the old naming defaults that would otherwise silently pin the old behaviour.
+    old_defaults = {"frame_name": "{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}",
+                    "preview_name": "{shot}_{tag}_v{version:03d}_preview.mp4"}
+    for key, old in old_defaults.items():
+        if paths.get(key) == old:
+            cfg.obsolete_keys.append(f"paths.{key} is the old default; delete the line to name files "
+                                     f"after their source")
     return cfg
