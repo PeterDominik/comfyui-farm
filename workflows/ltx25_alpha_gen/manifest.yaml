@@ -24,16 +24,16 @@ params:
       sequence is used. png/jpg/tif/webp only.
 
   # Replaces the OUTPUT_PATH node (9093) in the ComfyUI graph. No targets: like
-  # `input`, the gateway wires this in itself (see `outputs` below). Frames go straight
-  # into the folder; if it already has frames the job takes the next version instead
-  # (test -> test_v002, x_v003 -> x_v004), so nothing is ever overwritten.
+  # `input`, the gateway wires this in itself (see `outputs` below). Frames go to
+  # <folder>/<shot>/, named <source>.alpha_vNNN.<frame>.png; each run takes the next
+  # free vNNN, so nothing is ever overwritten.
   output_path:
     type: output_folder
     label: Output folder
     help: >
-      Where the frames go, exactly. If it already has frames, the job goes to the next
-      version next to it (test -> test_v002). Its parent folder must exist. Leave empty
-      for the show's renders folder. Never inside .published.
+      Frames go into a folder named after the shot inside this one, as
+      <source>.alpha_vNNN.<frame>.png. Each run takes the next free version. Its parent
+      folder must exist. Leave empty for the show's renders folder. Never inside .published.
 
   seed:
     type: int
@@ -77,8 +77,8 @@ sequence:
   loader: {node: "9104", class: VHS_LoadImagesPath}                 # directory/skip/cap set directly
 
 outputs:
-  # OUTPUT_PATH: gets the job's final versioned folder (informational; the graph shows it).
+  # OUTPUT_PATH: gets the job's final folder (informational; the graph shows it).
   root_node: {node: "9093", input: value, class: PrimitiveString}
-  # Writes the frames. The gateway points it at a fresh per-job version folder, then
-  # renames the frames to the studio naming with the input's frame numbers.
+  # Writes the frames. The gateway points it at the job's folder, then renames the
+  # frames to paths.frame_name with the input's frame numbers.
   frames: {node: "9109", class: "Image Save", path_input: output_path, prefix_input: filename_prefix, ext: png}

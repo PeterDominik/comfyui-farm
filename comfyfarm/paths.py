@@ -282,9 +282,9 @@ def default_output_dir_display(cfg: PathsConfig, tag: str) -> str:
 
 
 def resolve_output_folder(raw: str, cfg: PathsConfig, isdir=os.path.isdir) -> str:
-    """The folder an artist typed -> farm path. It is the final destination: frames go
-    straight into it. Its parent must exist (catches typos without creating junk folder
-    trees on the share); the folder itself is created if needed."""
+    """The folder an artist typed -> farm path. It replaces output_root; the shot
+    folder goes inside it. Its parent must exist (catches typos without creating junk
+    folder trees on the share); the folder itself is created if needed."""
     path = to_farm(raw, cfg.mappings).rstrip("/")
     if not path:
         raise SequenceError("Output folder is empty.")
@@ -309,36 +309,14 @@ def resolve_output_folder(raw: str, cfg: PathsConfig, isdir=os.path.isdir) -> st
     return path
 
 
-# A trailing version on a folder name: "test_v003", "alpha.v12", "V01" (not "dev2").
-_FOLDER_VERSION = re.compile(r"^(?P<base>.*?)(?P<sep>(?:^|[._-]))(?P<v>[vV])(?P<num>\d+)$")
-
-
-def version_candidates(folder: str, limit: int = 999):
-    """Where a job may go, in order: the folder as typed, then its next versions as
-    siblings. 'test' -> test, test_v002, test_v003 ...; 'x_v003' -> x_v003, x_v004 ...
-    Yields (path, version)."""
-    parent, _, leaf = folder.rpartition("/")
-    m = _FOLDER_VERSION.match(leaf)
-    if m:
-        start, width = int(m.group("num")), len(m.group("num"))
-        stem = m.group("base") + m.group("sep") + m.group("v")
-        for v in range(start, start + limit):
-            yield f"{parent}/{stem}{v:0{width}d}", v
-    else:
-        yield folder, 1
-        for v in range(2, limit + 1):
-            yield f"{parent}/{leaf}_v{v:03d}", v
-
-
-# Anything that looks like rendered output; a folder holding any of these is "used".
-FRAME_EXTENSIONS = LOADER_EXTENSIONS | {".exr", ".dpx", ".mov", ".mp4"}
-
-
-def folder_has_frames(path: str, listdir=os.listdir) -> bool:
+def sequence_exists(directory: str, pattern: str, listdir=os.listdir) -> bool:
+    """Any file of this frame pattern (e.g. 'x.alpha_v002.%04d.png') already in the folder?"""
     try:
-        return any(os.path.splitext(n)[1].lower() in FRAME_EXTENSIONS for n in listdir(path))
-    except OSError:   # doesn't exist yet
+        names = listdir(directory)
+    except OSError:   # folder doesn't exist yet
         return False
+    rx = _pattern_regex(pattern)
+    return any(rx.match(n) for n in names) if rx else pattern in names
 
 
 def template_fields(template: str) -> set[str]:
@@ -356,7 +334,5 @@ def render(template: str, what: str, **tokens) -> str:
     return template.format(**tokens)
 
 
-def output_dir(cfg: PathsConfig, root: str, show: str | None, seq: str | None, shot: str | None,
-               tag: str, version: int) -> str:
-    return normalize(render(cfg.output_dir, "output folder", root=root, show=show, seq=seq, shot=shot,
-                            tag=tag, version=version))
+def output_dir(template: str, **tokens) -> str:
+    return normalize(render(template, "output folder", **tokens)).rstrip("/")

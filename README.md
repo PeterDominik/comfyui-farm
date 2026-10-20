@@ -18,13 +18,12 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 - **Pipeline-aware inputs.** Paste `/rdo/shows/.../shot.step.%04d.png 1001-1158` and the
   gateway maps it to the farm path. It checks for missing frames and works out exactly
   which files the loader will read. Bad input is refused at submit, not 10 minutes in.
-- **Outputs that never overwrite.** Frames go exactly where the artist points, named
-  after their source and numbered like the plate:
-  `.../comfy/test/bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png`. If the folder
-  already has frames, the job takes the next version next to it (`test_v002`). Left
-  empty, it goes to the show's renders folder (`renders/<shot>/<shot>_alpha_v001`).
-  The form shows the exact destination before you submit. Nothing is ever written
-  into `.published`.
+- **Outputs that never overwrite.** Frames go to `<output folder>/<shot>/`, named after
+  their source and numbered like the plate:
+  `.../comfy/test/bpash_1545/bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png`.
+  Each run takes the next free version (`alpha_v002`, …) in that folder. Left empty,
+  the output folder is the show's renders folder. The form shows the exact
+  destination before you submit. Nothing is ever written into `.published`.
 - **Any shot naming.** Show, sequence and shot are read from their position in the
   publish path (`/shows/<show>/.published/<seq>/<shot>/`), so `bpash_1545` and
   `15454_656551` both work. If a path doesn't follow it, the gateway asks for an
@@ -128,7 +127,7 @@ range. When a job finishes, a Read node for the result appears next to its sourc
 | Param | Default | Notes |
 |---|---|---|
 | `input` | required | Sequence path with `%04d` / `%d` / `####` and optional `first-last` range. png/jpg/tif/webp only |
-| `output_path` | show default | The exact destination folder (its parent must exist; never inside `.published`). If it already has frames the job goes to the next version: `test` → `test_v002`, `x_v003` → `x_v004`. Empty = `renders/<shot>/<shot>_alpha_vNNN` under the show |
+| `output_path` | show default | Root folder: frames go to `<this>/<shot>/<source>.alpha_vNNN.<frame>.png`, each run taking the next free version. Its parent must exist; never inside `.published`. Empty = the show's renders folder. Inputs outside the publish layout (no shot) go straight into it |
 | `seed` | 42 | |
 | `enhance_prompt` | false | Gemma prompt enhancer |
 | `shorter_side` | 1088 | Working resolution; multiple of 32 |
@@ -138,10 +137,11 @@ Optional job fields: `name`, `priority` (−10…10; above 0 is admin only when 
 and `show` / `shot` overrides for inputs outside the publish layout.
 
 **Naming and layout** live in `config.yaml` under `paths`: `context_patterns` (where
-show/seq/shot sit in a path), `output_root` + `output_dir` (the default destination),
+show/seq/shot sit in a path), `output_root` (default root) + `output_dir` (`{root}/{shot}`),
 `frame_name` / `preview_name` (file names; tokens `{source} {folder} {show} {seq} {shot}
 {tag} {version} {frame} {ext}`) and `no_write_dirs`. `config.example.yaml` documents each.
-Changing `frame_name` only affects jobs submitted afterwards.
+Keep `{version}` in `frame_name`: it's what keeps runs in the same shot folder apart.
+Changing it only affects jobs submitted afterwards.
 
 ### REST API
 
@@ -221,8 +221,9 @@ outputs:                       # nodes the gateway points at each job's versione
 - **`sequence` and `output_folder`** take no `targets`; the gateway wires them in.
   A sequence is mapped to the farm path, frame-checked and turned into the loader's
   directory/skip/cap. An output folder is checked (parent exists, on show storage,
-  outside `.published`) and used as the exact destination, bumped to the next version
-  if it already has frames. `POST /api/v1/plan` shows the result without queuing.
+  outside `.published`) and used as the root for `paths.output_dir` (`{root}/{shot}`);
+  the version is the first one with no files there and no queued job claiming it.
+  `POST /api/v1/plan` shows the result without queuing.
 - **Nodes in `sequence` and `outputs` belong to the gateway.** A plain param targeting
   them would be overwritten on every job, which is why the output folder is its own type
   rather than a param pointed at `OUTPUT_PATH`.

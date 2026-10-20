@@ -235,7 +235,8 @@ async function updateDest(wf, seqP, outP) {
       ? `<code>${esc(r.first_file)}</code> … <code>${esc(r.last_file)}</code>` : `<code>${esc(r.first_file)}</code>`;
     el.className = "dest";
     el.innerHTML = `<b>Will write</b> ${r.frames ? r.frames + " frames" : "frames"} to <code>${esc(dir)}/</code><br>as ${files}`
-      + (r.bumped_from ? `<br><span class="warn">${esc(r.bumped_from_posix || r.bumped_from)} already has frames, so this goes to the next version.</span>` : "")
+      + (r.version > 1 ? `<br><span class="warn">Earlier versions of these frames already exist in that folder (or are queued), so this run is v${String(r.version).padStart(3, "0")}.</span>` : "")
+      + (r.note ? `<br><span class="warn">${esc(r.note)}</span>` : "")
       + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the publish path.` : "");
   } catch (err) {
     if (n !== destSeq) return;

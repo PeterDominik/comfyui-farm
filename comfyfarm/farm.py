@@ -197,38 +197,37 @@ class Farm:
         seq_name = seq.seq_name if seq else None
         source = seq.source if seq else wf.tag
         plan = {"wf": wf, "values": values, "seq": seq, "show": show_, "shot": shot_, "seq_name": seq_name,
-                "source": source, "out_dir": None, "version": None, "picked": None, "bumped_from": None,
+                "source": source, "out_dir": None, "version": None, "picked": None,
                 "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
                 "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
         if not wf.outputs.get("frames"):
             return plan
 
         picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
-        if picked:
-            base = P.resolve_output_folder(picked, pc)
-            candidates = P.version_candidates(base)
+        root = P.resolve_output_folder(picked, pc) if picked else P.output_root(pc, show_, seq_name, shot_)
+        dir_template = pc.output_dir
+        if picked and not shot_ and "{shot" in dir_template:
+            dir_template = "{root}"
+            plan["note"] = "No shot in the input path, so the frames go straight into the output folder."
+        versioned = "{version" in pc.frame_name or "{version" in dir_template
+        exists = P.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
+        base = {"source": source, "show": show_, "seq": seq_name, "shot": shot_, "tag": wf.tag,
+                "ext": wf.outputs["frames"].get("ext", "png")}
+        for v in range(1, 1000):
+            out_dir = P.output_dir(dir_template, root=root, version=v, **base)
+            tokens = dict(base, version=v, folder=out_dir.rpartition("/")[2])
+            pattern = P.render(P.frame_pattern(pc.frame_name), "file name", **tokens)
+            key = f"{out_dir}/{pattern}"
+            # Taken = files of this version already there, or promised to a queued job.
+            if not (self.store.output_reserved(key) or exists(out_dir, pattern)):
+                break
+            if not versioned:
+                raise FarmError(f"{P.to_posix(key, pc.mappings) or key} already exists. Add {{version}} "
+                                f"to paths.frame_name so new runs don't overwrite it.", 409)
         else:
-            root = P.output_root(pc, show_, seq_name, shot_)
-            candidates = ((P.output_dir(pc, root, show_, seq_name, shot_, wf.tag, v), v) for v in range(1, 1000))
-        has_frames = P.folder_has_frames if pc.validate_inputs else (lambda _p: False)
-        first_candidate = None
-        for path, v in candidates:
-            first_candidate = first_candidate or path
-            # Taken = already has frames, or promised to a job that hasn't written yet.
-            if self.store.output_dir_reserved(path) or has_frames(path):
-                continue
-            plan["out_dir"], plan["version"] = path, v
-            break
-        else:
-            raise FarmError(f"No free version of {first_candidate} (999 tried).")
-        P.check_writable(plan["out_dir"], pc)
-        plan["picked"] = bool(picked)
-        if plan["out_dir"] != first_candidate:
-            plan["bumped_from"] = first_candidate
-
-        tokens = {"source": source, "folder": plan["out_dir"].rpartition("/")[2], "show": show_,
-                  "seq": seq_name, "shot": shot_, "tag": wf.tag, "version": plan["version"],
-                  "ext": wf.outputs["frames"].get("ext", "png")}
+            raise FarmError(f"No free version in {out_dir} (999 tried).")
+        P.check_writable(out_dir, pc)
+        plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=key)
         plan["name_tokens"] = tokens
         first = seq.first if seq and seq.first is not None else 1
         count = seq.frame_count if seq else None
@@ -247,9 +246,7 @@ class Farm:
             "frames": seq.frame_count if seq else None,
             "first": seq.first if seq else None, "last": seq.last if seq else None,
             "output_dir": out, "output_dir_posix": P.to_posix(out, pc.mappings) if out else None,
-            "picked": plan["picked"], "version": plan["version"],
-            "bumped_from": plan["bumped_from"],
-            "bumped_from_posix": P.to_posix(plan["bumped_from"], pc.mappings) if plan["bumped_from"] else None,
+            "picked": plan["picked"], "version": plan["version"], "note": plan.get("note"),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
         }
 
@@ -271,8 +268,7 @@ class Farm:
                 "expected_frames": seq.frame_count if seq else None,
                 "output_dir": out_dir, "output_dir_picked": plan["picked"],
                 "output_dir_posix": P.to_posix(out_dir, pc.mappings) if out_dir else None,
-                "bumped_from": plan["bumped_from"],
-                "bumped_from_posix": P.to_posix(plan["bumped_from"], pc.mappings) if plan["bumped_from"] else None,
+                "note": plan.get("note"),
                 "frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"],
                 # Frozen per job, so a config edit can't rename frames of jobs already queued.
                 "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
@@ -282,7 +278,8 @@ class Farm:
                 "id": job_id, "workflow": wf.name, "user": user,
                 "name": name or plan["shot"] or plan["source"],
                 "status": "queued", "priority": priority, "params": values, "info": info,
-                "prompt": prompt, "output_dir": out_dir, "created_at": now(), "stage": "queued",
+                "prompt": prompt, "output_dir": out_dir, "output_key": plan.get("output_key"),
+                "created_at": now(), "stage": "queued",
                 "warnings": [],
             })
         log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, plan["source"], out_dir)

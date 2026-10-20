@@ -4,9 +4,9 @@ import unittest
 
 from comfyfarm.config import PathMapping, PathsConfig
 from comfyfarm.paths import (SequenceError, context_from_path, default_output_dir_display,
-                             default_output_root_display, folder_has_frames, frame_pattern, output_dir,
-                             output_root, parse_input, render, resolve_output_folder, resolve_sequence,
-                             source_stem, to_farm, to_posix, version_candidates)
+                             default_output_root_display, frame_pattern, output_dir, output_root,
+                             parse_input, render, resolve_output_folder, resolve_sequence,
+                             sequence_exists, source_stem, to_farm, to_posix)
 
 PATTERNS = ["/shows/{show}/.published/{seq}/{shot}/", "/shows/{show}/"]
 
@@ -93,7 +93,7 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(SequenceError, "can't open the input folder"):
             resolve_sequence(f"{self.root}/nope/a.%04d.png 1-2", self.cfg)
 
-    def test_picked_output_folder_is_the_destination(self):
+    def test_picked_output_folder(self):
         os.makedirs(f"{self.root}/shows/xyz/comfy")
         # The folder itself may not exist yet; its parent must.
         self.assertEqual(resolve_output_folder("/rdo/shows/xyz/comfy/test/", self.cfg),
@@ -114,28 +114,17 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaisesRegex(SequenceError, "must be under /rdo/shows/xyz/comfy"):
             resolve_output_folder("/rdo/shows/xyz/other", self.cfg)
         self.assertEqual(default_output_root_display(self.cfg), "/rdo/shows/{show}/renders")
-        self.assertEqual(default_output_dir_display(self.cfg, "alpha"),
-                         "/rdo/shows/{show}/renders/{shot}/{shot}_alpha_v###")
+        self.assertEqual(default_output_dir_display(self.cfg, "alpha"), "/rdo/shows/{show}/renders/{shot}")
 
-    def test_version_candidates(self):
-        def names(f, n=3):
-            it = version_candidates(f)
-            return [next(it)[0].rpartition("/")[2] for _ in range(n)]
-        self.assertEqual(names("//s/comfy/test"), ["test", "test_v002", "test_v003"])
-        self.assertEqual(names("//s/comfy/test_v003"), ["test_v003", "test_v004", "test_v005"])
-        self.assertEqual(names("//s/comfy/alpha.V01"), ["alpha.V01", "alpha.V02", "alpha.V03"])
-        self.assertEqual(names("//s/comfy/v7"), ["v7", "v8", "v9"])
-        self.assertEqual(names("//s/comfy/dev2"), ["dev2", "dev2_v002", "dev2_v003"])   # not a version
-        self.assertEqual([v for _, v in list(version_candidates("//s/test"))[:2]], [1, 2])
-
-    def test_folder_has_frames(self):
+    def test_sequence_exists(self):
         d = f"{self.root}/out"
-        self.assertFalse(folder_has_frames(d))          # missing
+        pat = "a.v1.alpha_v002.%04d.png"
+        self.assertFalse(sequence_exists(d, pat))          # folder missing
         os.makedirs(d)
-        touch(d, "notes.txt", "comp.nk")
-        self.assertFalse(folder_has_frames(d))          # no frames
-        touch(d, "old.1001.exr")
-        self.assertTrue(folder_has_frames(d))
+        touch(d, "a.v1.alpha_v001.1001.png", "b.v1.alpha_v002.1001.png", "a.v1.alpha_v002_notes.txt")
+        self.assertFalse(sequence_exists(d, pat))          # other versions / sources don't count
+        touch(d, "a.v1.alpha_v002.1004.png")
+        self.assertTrue(sequence_exists(d, pat))
 
     def test_context_by_position_any_shot_naming(self):
         self.assertEqual(context_from_path("/rdo/shows/raa/.published/bpash/bpash_1545/render.comp/x.%d.png", PATTERNS),
@@ -157,7 +146,7 @@ class SequenceTests(unittest.TestCase):
         s = resolve_sequence("/rdo/shows/ply/work/hi/plate.%04d.png", self.cfg)
         self.assertEqual((s.show, s.shot), ("ply", None))   # not 'hi'
         with self.assertRaisesRegex(SequenceError, "no shot from the input path.*Give an Output folder"):
-            output_dir(self.cfg, "//r", s.show, s.seq_name, s.shot, "alpha", 1)
+            output_dir(self.cfg.output_dir, root="//r", show=s.show, seq=s.seq_name, shot=s.shot, tag="alpha", version=1)
 
     def test_source_stem(self):
         self.assertEqual(source_stem("bpash_1545.preprocess.mp01_png.v1.%d.png", ""), "bpash_1545.preprocess.mp01_png.v1")
@@ -169,8 +158,8 @@ class SequenceTests(unittest.TestCase):
 
     def test_output_dirs(self):
         root = output_root(self.cfg, "xyz", "abc", "abc_0010")
-        self.assertEqual(output_dir(self.cfg, root, "xyz", "abc", "abc_0010", "alpha", 3),
-                         f"{self.root}/shows/xyz/renders/abc_0010/abc_0010_alpha_v003")
+        self.assertEqual(output_dir(self.cfg.output_dir, root=root, show="xyz", seq="abc", shot="abc_0010",
+                                    tag="alpha", version=3), f"{self.root}/shows/xyz/renders/abc_0010")
         with self.assertRaises(SequenceError):
             output_root(self.cfg, None, "abc", "abc_0010")
 
