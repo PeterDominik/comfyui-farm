@@ -40,6 +40,10 @@ class PathsConfig(BaseModel):
     output_dir: str = "{root}/{shot}/{shot}_{tag}_v{version:03d}"
     frame_name: str = "{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}"
     preview_name: str = "{shot}_{tag}_v{version:03d}_preview.mp4"
+    # Folders an artist may pick as the output folder (workflow param of type
+    # output_folder). Empty = anywhere on the mapped storage above. Use either the
+    # Linux (/rdo/shows/...) or the farm (UNC) form.
+    allowed_output_roots: list[str] = Field(default_factory=list)
     # Check input sequences exist (and work out frame ranges) when a job is submitted.
     # Turn off only if the gateway runs somewhere that cannot see the show storage.
     validate_inputs: bool = True

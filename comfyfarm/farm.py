@@ -193,6 +193,9 @@ class Farm:
             seq = P.resolve_sequence(values[wf.sequence_param], pc, show=show, shot=shot)
         shot_ = (seq.shot if seq else None) or shot or "job"
         show_ = (seq.show if seq else None) or show
+        picked_root = None
+        if wf.output_folder_param and values.get(wf.output_folder_param):
+            picked_root = P.resolve_output_root(values[wf.output_folder_param], pc)
         job_id = str(uuid.uuid4())
         out_dir, version, root = None, None, None
         frames_prefix = f"{shot_}_{wf.tag}_raw"
@@ -201,7 +204,7 @@ class Farm:
 
         with self._submit_lock:   # version numbers are reserved by inserting the job
             if wf.outputs.get("frames"):
-                root = P.output_root(pc, show_, shot_)
+                root = picked_root or P.output_root(pc, show_, shot_)
                 for v in range(1, 1000):
                     candidate = P.output_dir(pc, root, show_, shot_, wf.tag, v)
                     if not exists(candidate) and not self.store.output_dir_taken(candidate):
@@ -216,7 +219,9 @@ class Farm:
                 "input_posix": P.to_posix(seq.farm_path, pc.mappings) if seq else None,
                 "first_frame": seq.first if seq else None,
                 "expected_frames": seq.frame_count if seq else None,
-                "output_root": root, "output_dir": out_dir,
+                "output_root": root, "output_root_picked": bool(picked_root),
+                "output_root_posix": P.to_posix(root, pc.mappings) if root else None,
+                "output_dir": out_dir,
                 "output_dir_posix": P.to_posix(out_dir, pc.mappings) if out_dir else None,
                 "frames_prefix": frames_prefix, "preview_prefix": preview_prefix,
             }

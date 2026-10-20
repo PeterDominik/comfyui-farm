@@ -24,11 +24,10 @@ def _reads():
 
 
 def _ask(defaults: dict) -> dict | None:
+    # Only send params the workflow's manifest exposes; the gateway rejects unknown ones.
     p = nuke.Panel("ComfyFarm: alpha generation")
-    p.addMultilineTextInput("Positive prompt", defaults.get("positive_prompt", ""))
-    p.addMultilineTextInput("Negative prompt", defaults.get("negative_prompt", ""))
     p.addSingleLineInput("Seed", str(defaults.get("seed", 42)))
-    p.addBooleanCheckBox("Enhance prompt", bool(defaults.get("enhance_prompt", False)))
+    p.addFilenameSearch("Output folder (empty = show default)", defaults.get("output_path", ""))
     if not p.show():
         return None
     try:
@@ -36,8 +35,11 @@ def _ask(defaults: dict) -> dict | None:
     except ValueError:
         nuke.message("Seed must be a whole number.")
         return None
-    return {"positive_prompt": p.value("Positive prompt"), "negative_prompt": p.value("Negative prompt"),
-            "seed": seed, "enhance_prompt": bool(p.value("Enhance prompt"))}
+    params = {"seed": seed}
+    out = (p.value("Output folder (empty = show default)") or "").strip()
+    if out:
+        params["output_path"] = out
+    return params
 
 
 def _make_read(job: dict, source_name: str) -> None:
@@ -75,6 +77,7 @@ def submit_selected(workflow: str = WORKFLOW) -> None:
     params = _ask(_last)
     if params is None:
         return
+    _last.clear()
     _last.update(params)
     lines = []
     for r in reads:

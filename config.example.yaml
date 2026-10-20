@@ -33,6 +33,11 @@ paths:
   frame_name: '{shot}_{tag}_v{version:03d}.{frame:04d}.{ext}'
   preview_name: '{shot}_{tag}_v{version:03d}_preview.mp4'
 
+  # Where artists may point the "Output folder" field. Empty = anywhere under the
+  # mappings above (i.e. anywhere on show storage). To narrow it, list real folders:
+  #   allowed_output_roots: ['/rdo/shows/raa/_project_ref', '/rdo/shows/xyz/_project_ref']
+  allowed_output_roots: []
+
   validate_inputs: true
 
 auth:

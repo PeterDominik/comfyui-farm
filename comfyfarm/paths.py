@@ -221,5 +221,36 @@ def output_root(cfg: PathsConfig, show: str | None, shot: str) -> str:
     return normalize(cfg.output_root.format(show=show or "", shot=shot)).rstrip("/")
 
 
+def default_output_root_display(cfg: PathsConfig) -> str:
+    """The config default as artists see it, e.g. /rdo/shows/{show}/.../renders."""
+    root = normalize(cfg.output_root).rstrip("/")
+    return to_posix(root, cfg.mappings) or root
+
+
+def resolve_output_root(raw: str, cfg: PathsConfig, isdir=os.path.isdir) -> str:
+    """An output folder an artist picked -> farm path, refusing anything unsafe.
+
+    The folder must already exist (catches typos that would otherwise create junk
+    folders on the share) and sit on storage the farm writes to."""
+    path = to_farm(raw, cfg.mappings).rstrip("/")
+    if not path:
+        raise SequenceError("Output folder is empty.")
+    if _TOKEN_RE.search(path.rpartition("/")[2]) or re.search(r"\s\d+\s*-\s*\d+$", path):
+        raise SequenceError("Output folder should be a folder, not a frame pattern or range.")
+    if ".." in path.split("/"):
+        raise SequenceError("Output folder can't contain '..'.")
+    allowed = [to_farm(a, cfg.mappings).rstrip("/") for a in cfg.allowed_output_roots] \
+        or [normalize(m.windows).rstrip("/") for m in cfg.mappings]
+    if allowed and not any(_starts_with(path, a, case_insensitive=True) for a in allowed):
+        shown = ", ".join(to_posix(a, cfg.mappings) or a for a in allowed)
+        raise SequenceError(f"Output folder must be under {shown}.")
+    if not (path.startswith("//") or re.match(r"^[A-Za-z]:/", path) or path.startswith("/")):
+        raise SequenceError("Output folder must be a full path.")
+    if cfg.validate_inputs and not isdir(path):
+        raise SequenceError(f"Output folder {raw.strip()} doesn't exist, or the farm machine can't see it. "
+                            f"Create it first.")
+    return path
+
+
 def output_dir(cfg: PathsConfig, root: str, show: str | None, shot: str, tag: str, version: int) -> str:
     return normalize(cfg.output_dir.format(root=root, show=show or "", shot=shot, tag=tag, version=version))
