@@ -22,7 +22,9 @@ import comfyfarm_client as farm
 
 WORKFLOW = "ltx25_alpha_gen"
 PANEL_ID = "com.rodeofx.comfyfarm"
-PANEL_WIDGET = "comfyfarm_panel.ComfyFarmPanel"
+# Nuke evaluates this text in its own __main__ namespace when it builds the panel, where
+# comfyfarm_panel was never imported, so the expression imports it itself.
+PANEL_WIDGET = "__import__('comfyfarm_panel').ComfyFarmPanel"
 MOVIE_EXTENSIONS = (".mov", ".mp4", ".m4v", ".mxf")
 SOURCE_CLASSES = ("Read", "Write", "WriteGeo", "DeepRead")
 
