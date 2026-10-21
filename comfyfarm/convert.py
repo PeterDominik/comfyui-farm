@@ -211,7 +211,7 @@ def resolve_movie(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
         raise SequenceError(f"{to_posix(farm_path, pc.mappings) or farm_path} doesn't exist, or the farm "
                             f"machine can't see it.")
     directory, _, filename = farm_path.rpartition("/")
-    ctx = context_from_path(farm_path, pc.context_patterns)
+    ctx = context_from_path(farm_path, pc.context_patterns, pc.shot_name)
     info = read_movie_info(farm_path, cc)
     notes = []
     if info["timecode"]:

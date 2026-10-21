@@ -37,8 +37,12 @@ class PathsConfig(BaseModel):
     # patterns only fill in what earlier ones didn't find.
     context_patterns: list[str] = Field(default_factory=lambda: [
         "/shows/{show}/.published/{seq}/{shot}/",
+        "/shows/{show}/{seq}/{shot_short}/movhistory/",
         "/shows/{show}/",
     ])
+    # Full shot name when a pattern only has the short one (shot work areas are
+    # /shows/raa/bpash/1545/..., the shot is bpash_1545).
+    shot_name: str = "{seq}_{shot_short}"
     # Where frames go: output_dir inside output_root. The artist's "Output folder"
     # replaces output_root. Each job takes the first {version} not already used in
     # that folder (by files, or by a queued job), so runs never overwrite each other.
@@ -162,4 +166,9 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     for key, (old, new) in old_defaults.items():
         if paths.get(key) == old:
             cfg.obsolete_keys.append(f"paths.{key} is the old default; delete the line to {new}")
+    patterns = paths.get("context_patterns")
+    if patterns and not any("movhistory" in p for p in patterns):
+        cfg.obsolete_keys.append("paths.context_patterns has no shot movhistory pattern; add "
+                                 "'/shows/{show}/{seq}/{shot_short}/movhistory/' (or delete the list "
+                                 "to use the defaults)")
     return cfg

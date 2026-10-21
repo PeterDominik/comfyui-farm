@@ -141,6 +141,17 @@ class SequenceTests(unittest.TestCase):
         self.assertEqual(context_from_path("/rdo/shows/ply/_project_ref/_cg/comfy/test/a.png", PATTERNS), {"show": "ply"})
         self.assertEqual(context_from_path("/home/peter/a.png", PATTERNS), {})
 
+    def test_shot_work_area_movhistory(self):
+        pats = PATTERNS[:1] + ["/shows/{show}/{seq}/{shot_short}/movhistory/"] + PATTERNS[1:]
+        self.assertEqual(
+            context_from_path("/rdo/shows/raa/bpash/1545/movhistory/bpash_1545.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov", pats),
+            {"show": "raa", "seq": "bpash", "shot_short": "1545", "shot": "bpash_1545"})
+        self.assertEqual(context_from_path("//srv/shows/ply/15454/656551/movhistory/v3/a.mov", pats)["shot"], "15454_656551")
+        self.assertEqual(context_from_path("/rdo/shows/raa/bpash/1545/movhistory/a.mov", pats, "{shot_short}")["shot"], "1545")
+        # Not a movhistory folder: no shot is invented.
+        self.assertNotIn("shot", context_from_path("/rdo/shows/raa/_project_ref/_cg/comfy/a.png", pats))
+        self.assertNotIn("shot", context_from_path("/rdo/shows/raa/bpash/1545/comp/a.png", pats))
+
     def test_numeric_shot_and_no_guessing(self):
         d = f"{self.root}/shows/ply/.published/15454/15454_656551/render.comp/pre/v1/main/hi"
         os.makedirs(d)
