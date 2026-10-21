@@ -141,6 +141,14 @@ class NukeHelpers(unittest.TestCase):
         v3 = done_job(short_id="ffff0000", outputs=dict(done_job()["outputs"], frame_pattern_posix="/rdo/v3.%04d.png"))
         self.assertEqual(nk.create_read(v3).xpos(), 340)        # next to the earlier result, not on it
 
+    def test_panel_expression_needs_no_imports(self):
+        # Nuke builds the panel by evaluating this text in __main__, which hasn't imported
+        # anything of ours (a bare "comfyfarm_panel.ComfyFarmPanel" gave a NameError there).
+        nk, _ = self.load([])
+        widget_class = type("ComfyFarmPanel", (), {})
+        with mock.patch.dict(sys.modules, {"comfyfarm_panel": types.SimpleNamespace(ComfyFarmPanel=widget_class)}):
+            self.assertIs(eval(nk.PANEL_WIDGET, {"__builtins__": __builtins__}), widget_class)
+
     def test_create_read_near_named_node_and_unfinished_job(self):
         other = Node("Write", "WritePre", x=-50, y=10, file="/x/y.%04d.png")
         nodes = [other]
