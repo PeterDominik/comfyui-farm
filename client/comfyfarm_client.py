@@ -40,11 +40,27 @@ class FarmError(Exception):
     pass
 
 
+_url_override: str | None = None
+
+
+def set_url(url: str | None) -> None:
+    """Use this farm address instead of $COMFYFARM_URL (the Nuke panel's setting)."""
+    global _url_override
+    _url_override = (url or "").strip().rstrip("/") or None
+
+
 def _base() -> str:
-    url = os.environ.get("COMFYFARM_URL", "").rstrip("/")
+    url = _url_override or os.environ.get("COMFYFARM_URL", "").rstrip("/")
     if not url:
         raise FarmError("Set COMFYFARM_URL to the farm address, e.g. http://comfyfarm01:8000")
     return url
+
+
+def base_url() -> str | None:
+    try:
+        return _base()
+    except FarmError:
+        return None
 
 
 def _request(method: str, path: str, body: dict | None = None, timeout: float = 60) -> dict:
@@ -71,8 +87,21 @@ def _request(method: str, path: str, body: dict | None = None, timeout: float = 
 
 
 # ---------------------------------------------------------------- API
+def health() -> dict:
+    return _request("GET", "/api/v1/health", timeout=10)
+
+
+def workers() -> list:
+    return _request("GET", "/api/v1/workers", timeout=10)["workers"]
+
+
 def workflows() -> list:
     return _request("GET", "/api/v1/workflows")["workflows"]
+
+
+def plan(workflow: str, params: dict, show: str | None = None, shot: str | None = None) -> dict:
+    """Dry run: where a job would write and what its files are called, without queuing it."""
+    return _request("POST", "/api/v1/plan", {"workflow": workflow, "params": params, "show": show, "shot": shot})
 
 
 def submit(workflow: str, params: dict, name: str | None = None, priority: int = 0,

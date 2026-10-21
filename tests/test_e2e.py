@@ -349,6 +349,42 @@ convert:
         out = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/renders/abc_0010"
         self.assertTrue((out / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.alpha_v001.1001.png").is_file())
 
+    def test_0486_nuke_panel_model(self):
+        """The Nuke panel's logic, against the real gateway (the Qt part needs Nuke)."""
+        sys.path.insert(0, str(REPO / "client/nuke"))
+        panel = importlib.import_module("comfyfarm_panel")
+        m = panel.PanelModel()
+        m.load_workflows()
+        wf = m.workflow("ltx25_alpha_gen")
+        self.assertEqual((m.sequence_param(wf), m.output_param(wf)), ("input", "output_path"))
+        # Form values as the widgets hold them: text, blanks for "use the default".
+        raw = {"input": f"{SEQ} 1001-1004", "output_path": "  ", "seed": " 11 ", "enhance_prompt": False,
+               "shorter_side": "", "fps": "24"}
+        text = m.destination_html(m.plan("ltx25_alpha_gen", raw))
+        self.assertIn("Will write</b> 4 frames", text)
+        self.assertIn("/comfyui/renders/abc_0010/</code>", text)
+        job = m.submit("ltx25_alpha_gen", raw, source_node="Read3")
+        prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
+        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 11)
+        finished, end = [], time.time() + 40
+        while not finished and time.time() < end:
+            jobs, finished = m.poll(mine=True, active_only=True)
+            time.sleep(0.2)
+        self.assertEqual([(j["id"], j["status"]) for j in finished], [(job["id"], "done")])   # once,
+        self.assertEqual(m.poll(mine=True, active_only=True)[1], [])                          # not twice
+        self.assertEqual(m.sources[job["id"]], "Read3")
+        row = m.row(finished[0])
+        self.assertEqual(row[3], "done")
+        self.assertRegex(row[1], r"abc_0010  v\d{3}")
+        mov = "/rdo/shows/xyz/abc/0010/movhistory/abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov"
+        self.assertIn("first frame (1000) is a slate", m.destination_html(m.plan("ltx25_alpha_gen", {"input": mov})))
+        with self.assertRaises(farm.FarmError):
+            m.plan("ltx25_alpha_gen", {"input": "/rdo/shows/xyz/nope.%04d.png 1-3"})
+        results = m.submit_many("ltx25_alpha_gen", raw, [("Read1", f"{SEQ} 1001-1002"),
+                                                         ("Read2", "/rdo/shows/xyz/nope.%04d.png 1-3")])
+        self.assertEqual([(n, bool(j), bool(e)) for n, j, e in results], [("Read1", True, False), ("Read2", False, True)])
+        self.assertEqual(self.wait_for(results[0][1]["id"], ("done", "failed"))["status"], "done")
+
     def test_049_conversion_cancel_and_failure(self):
         base = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010"
         slow = farm.submit("ltx25_alpha_gen", {"input": f"{base}.slow.v1.%04d.exr"})

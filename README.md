@@ -46,7 +46,7 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 | `comfyfarm/` | The gateway: API, dispatcher/monitor, job DB, workflow builder, dashboard |
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed) |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
-| `client/nuke/` | Nuke menu: submit selected Read nodes, auto-create Reads for results |
+| `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `scripts/` | Windows setup, services (NSSM), firewall, update |
 | `tools/mock_comfyui.py` | Fake ComfyUI for testing without a GPU |
 | `tests/` | Unit tests + end-to-end tests against the mock |
@@ -126,10 +126,52 @@ job = farm.wait(job["id"])                  # call from a thread inside a DCC
 farm.output_pattern(job)                    # /rdo/shows/.../<shot>_alpha_v001.%04d.png
 ```
 
-**Nuke:** put `client/comfyfarm_client.py` and `client/nuke/comfyfarm_nuke.py` on
-`NUKE_PATH`, set `COMFYFARM_URL`, and add the lines from `client/nuke/menu.py`. Then
-*ComfyFarm → Alpha from selected Read* submits every selected Read with its frame
-range. When a job finishes, a Read node for the result appears next to its source.
+**Nuke:** see [Nuke panel](#nuke-panel) below.
+
+### Nuke panel
+
+The ComfyFarm panel is the dashboard inside Nuke. The form is built from the farm's
+workflow list, so it has the same fields as the web page and picks up manifest changes
+without a client update. It shows the same live destination line, and it has a job list.
+Nuke stays usable while jobs run, and a Read node for each finished job is created next to
+its source.
+
+**Install once (pipeline):**
+
+1. Put the repo's `client/` folder (`comfyfarm_client.py` plus `nuke/`) somewhere every
+   workstation can read, e.g. a pipeline tools share. A git checkout works too.
+2. Add `<that>/client/nuke` to `NUKE_PATH`. Its `init.py` makes `../comfyfarm_client.py`
+   importable, and its `menu.py` adds the *ComfyFarm* menu and the panel.
+3. Set `COMFYFARM_URL=http://<farm-machine>:8000` in the studio environment. Without it,
+   each artist types the address once into the panel's *Farm* field, and Nuke remembers it.
+
+The panel works in Nuke 13 to 15 (PySide2) and Nuke 16+ (PySide6), and needs nothing
+installed: the client is standard library only. `NUKE_PATH` is read when Nuke starts, so
+artists restart Nuke after step 2.
+
+**Artist workflow:**
+
+1. Prerender the plate to a PNG sequence with a Write node (`…/name.%04d.png`), with the
+   colour baked in the way the workflow expects. The farm reads the PNGs exactly as they are.
+2. Select the Read (or the Write that rendered it) and run *ComfyFarm → Submit selected
+   Read…*. You can also open the panel (*ComfyFarm → Open panel*, or *Windows → Custom →
+   ComfyFarm*) and click *From selected*. Either way the input field gets `path first-last`
+   from the node. *Browse…* or pasting a path works too.
+3. Check the line under the form. It shows the frame count, the exact output folder, and
+   the first and last file names, or the problem (missing frames, no shot found in the
+   path, and so on) before anything is queued.
+4. Click *Submit*. *Submit selected nodes* queues one job per selected Read/Write, with the
+   same settings.
+5. Follow the job in the list (*Only mine* / *Only active*). When it finishes, a Read
+   appears next to the source node (turn this off with the checkbox). Right-click a job to
+   create its Read, copy the output path, reuse its input, cancel it, run it again, or see
+   the error. Double-click a finished job to create its Read.
+
+Movies: a Read of a `movhistory` `.mov` sends the whole movie. The farm numbers its frames
+from the timecode and drops the slate, as it does from the dashboard.
+
+Outside Nuke, `python client/nuke/comfyfarm_panel.py` opens the same panel as a window,
+if PySide6 or PySide2 is installed.
 
 ### Parameters for `ltx25_alpha_gen`
 
@@ -288,7 +330,8 @@ outputs:                       # nodes the gateway points at each job's versione
   them would be overwritten on every job, which is why the output folder is its own type
   rather than a param pointed at `OUTPUT_PATH`.
 - Removing a param from the manifest changes the API: clients still sending it get
-  "Unknown parameter". Update `client/nuke/comfyfarm_nuke.py` to match.
+  "Unknown parameter". The Nuke panel and dashboard read the parameters from the farm,
+  so they follow on their own; only scripts that send the old name need changing.
 
 ## Operations notes
 
@@ -323,3 +366,7 @@ The end-to-end suite runs the real gateway against the mock. It covers submit to
 (frame renaming, preview, versioning), cancelling in each state, failures with
 tracebacks, bad input, a gateway restart mid-job, a ComfyUI crash mid-job, and a
 missing node pack.
+
+`tests/test_nuke.py` covers the Nuke panel's logic and its Nuke helpers (with a stand-in
+`nuke` module), and the end-to-end suite drives the panel's logic against the gateway. The
+Qt widgets need a real Nuke (or PySide) to try.
