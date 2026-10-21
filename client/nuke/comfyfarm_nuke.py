@@ -1,101 +1,177 @@
-"""Nuke integration for the ComfyUI farm.
+"""Nuke side of the ComfyUI farm: the panel's helpers and the menu commands.
 
-Install: put this file and ../comfyfarm_client.py on NUKE_PATH (or in ~/.nuke), set
-COMFYFARM_URL in the environment, and add the lines from menu.py to your menu.py.
+Install (once, for everyone): put this folder and ../comfyfarm_client.py on NUKE_PATH
+and set COMFYFARM_URL (e.g. http://comfyfarm01:8000). menu.py adds a ComfyFarm menu
+and the ComfyFarm panel (also under Windows > Custom, and it can be saved in a
+workspace layout like any other panel).
 
-Select one or more Read nodes, run "ComfyFarm > Alpha from selected Read", fill in
-the prompt/seed, and a Read node for each result appears next to its source when the
-job finishes. Nuke stays usable while the jobs run.
+Artist workflow: prerender the plate to a PNG sequence, select its Read (or the
+Write that rendered it), open the panel, "From selected", check where the frames
+will go, Submit. A Read node for the result appears next to the source when the
+job is done. Nuke stays usable while jobs run.
 """
 
 from __future__ import annotations
 
-import threading
+import os
+import re
 
-import nuke  # noqa: E402  (only importable inside Nuke)
+import nuke
 
 import comfyfarm_client as farm
 
 WORKFLOW = "ltx25_alpha_gen"
+PANEL_ID = "com.rodeofx.comfyfarm"
+PANEL_WIDGET = "comfyfarm_panel.ComfyFarmPanel"
+MOVIE_EXTENSIONS = (".mov", ".mp4", ".m4v", ".mxf")
+SOURCE_CLASSES = ("Read", "Write", "WriteGeo", "DeepRead")
+
+_panel = None
 
 
-def _reads():
-    return [n for n in nuke.selectedNodes() if n.Class() in ("Read", "DeepRead")]
-
-
-def _ask(defaults: dict) -> dict | None:
-    # Only send params the workflow's manifest exposes; the gateway rejects unknown ones.
-    p = nuke.Panel("ComfyFarm: alpha generation")
-    p.addSingleLineInput("Seed", str(defaults.get("seed", 42)))
-    p.addFilenameSearch("Output folder (empty = show default)", defaults.get("output_path", ""))
-    if not p.show():
+# ---------------------------------------------------------------- selection -> input
+def node_sequence(node) -> str | None:
+    """The farm input for a Read/Write node: 'path first-last' (whole file for movies)."""
+    if node.Class() not in SOURCE_CLASSES or "file" not in node.knobs():
         return None
-    try:
-        seed = int(p.value("Seed"))
-    except ValueError:
-        nuke.message("Seed must be a whole number.")
+    path = nuke.filename(node)
+    if not path:
         return None
-    params = {"seed": seed}
-    out = (p.value("Output folder (empty = show default)") or "").strip()
-    if out:
-        params["output_path"] = out
-    return params
+    path = path.replace("\\", "/")
+    if os.path.splitext(path)[1].lower() in MOVIE_EXTENSIONS:
+        # Movies are numbered by their timecode on the farm (slate dropped in movhistory),
+        # which isn't what a Read shows by default, so send the whole movie.
+        return path
+    if node.Class().startswith("Write"):
+        if "use_limit" in node.knobs() and node["use_limit"].value():
+            first, last = int(node["first"].value()), int(node["last"].value())
+        else:
+            first, last = nuke.root().firstFrame(), nuke.root().lastFrame()
+    else:
+        first, last = int(node["first"].value()), int(node["last"].value())
+    if not re.search(r"%0?\d*d|#+", path):   # a single still
+        return path
+    return f"{path} {int(first)}-{int(last)}"
 
 
-def _make_read(job: dict, source_name: str) -> None:
-    src = nuke.toNode(source_name)
-    out = job["outputs"]
-    r = nuke.nodes.Read(file=farm.output_pattern(job), first=out["first"], last=out["last"],
-                        origfirst=out["first"], origlast=out["last"])
-    r["label"].setValue(f"comfyfarm {job['short_id']}\n{job['workflow']}")
+def selected_sequences() -> list[tuple[str, str]]:
+    """(node name, farm input) for each selected Read/Write node, top to bottom in the DAG."""
+    nodes = sorted(nuke.selectedNodes(), key=lambda n: (n.ypos(), n.xpos()))
+    out = []
+    for n in nodes:
+        value = node_sequence(n)
+        if value:
+            out.append((n.name(), value))
+    return out
+
+
+def browse_sequence() -> str | None:
+    """Nuke's file browser (shows sequences as 'name.####.png 1001-1100')."""
+    value = nuke.getClipname("ComfyFarm input (PNG sequence or movhistory .mov)", multiple=False)
+    return value.replace("\\", "/") if value else None
+
+
+def browse_folder() -> str | None:
+    value = nuke.getFilename("ComfyFarm output folder", "*/")
+    return value.replace("\\", "/").rstrip("/") if value else None
+
+
+# ---------------------------------------------------------------- results -> Read
+def _key(path: str | None) -> str:
+    """Compare paths regardless of slashes and frame padding style."""
+    path = (path or "").replace("\\", "/").split(" ")[0]
+    return re.sub(r"%0?\d*d|#+|@+", "#", path).lower()
+
+
+def _source_node(job: dict, near: str | None):
+    if near and nuke.toNode(near) is not None:
+        return nuke.toNode(near)
+    info = job.get("info") or {}
+    wanted = {_key((info.get("input") or {}).get("raw")), _key(info.get("input_posix"))} - {""}
+    for n in nuke.allNodes(recurseGroups=False):
+        if n.Class() in SOURCE_CLASSES and "file" in n.knobs() and _key(nuke.filename(n)) in wanted:
+            return n
+    return None
+
+
+def create_read(job: dict, near: str | None = None):
+    """A Read node for a finished job, next to the node its input came from.
+    Selects the existing one instead if the frames are already read in."""
+    pattern = farm.output_pattern(job)
+    out = job.get("outputs") or {}
+    if job.get("status") != "done" or not pattern:
+        nuke.message(f"ComfyFarm: job {job.get('short_id')} has no finished frames ({job.get('status')}).")
+        return None
+    pattern = pattern.replace("\\", "/")
+    for n in nuke.allNodes("Read", recurseGroups=False):
+        if _key(n["file"].value()) == _key(pattern):
+            _select_only(n)
+            return n
+    first, last = int(out.get("first") or 1), int(out.get("last") or out.get("first") or 1)
+    read = nuke.nodes.Read(file=pattern, first=first, last=last, origfirst=first, origlast=last)
+    read["label"].setValue(f"comfyfarm {job['short_id']}\n{job.get('workflow', '')}")
+    src = _source_node(job, near)
     if src is not None:
-        r.setXYpos(src.xpos() + 120, src.ypos())
+        taken = {(n.xpos(), n.ypos()) for n in nuke.allNodes(recurseGroups=False) if n is not read}
+        x = src.xpos() + 120
+        while (x, src.ypos()) in taken:   # earlier results of the same source sit there
+            x += 120
+        read.setXYpos(x, src.ypos())
+    _select_only(read)
+    return read
 
 
-def _watch(job: dict, source_name: str) -> None:
-    def update(j):
-        nuke.executeInMainThread(nuke.tprint, args=(f"[comfyfarm] {farm.describe(j).splitlines()[0]}",))
-    try:
-        final = farm.wait(job["id"], poll=5, on_update=update)
-    except farm.FarmError as e:
-        nuke.executeInMainThread(nuke.message, args=(f"ComfyFarm: lost track of {job['short_id']}: {e}",))
-        return
-    if final["status"] == "done":
-        nuke.executeInMainThread(_make_read, args=(final, source_name))
-    elif final["status"] == "failed":
-        nuke.executeInMainThread(nuke.message, args=(f"ComfyFarm job {final['short_id']} failed:\n{final['error']}",))
+def _select_only(node) -> None:
+    for n in nuke.selectedNodes():
+        n.setSelected(False)
+    node.setSelected(True)
 
 
-_last: dict = {}
+# ---------------------------------------------------------------- panel
+def register_panel() -> None:
+    """Windows > Custom > ComfyFarm, and restoring the panel from saved workspaces."""
+    from nukescripts import panels
+    panels.registerWidgetAsPanel(PANEL_WIDGET, "ComfyFarm", PANEL_ID)
+
+
+def show_panel():
+    """Open the ComfyFarm panel (or bring it to the front) next to the Properties bin."""
+    global _panel
+    from nukescripts import panels
+    if _panel is None:
+        _panel = panels.registerWidgetAsPanel(PANEL_WIDGET, "ComfyFarm", PANEL_ID, True)
+    pane = nuke.getPaneFor("Properties.1") or nuke.getPaneFor("DAG.1")
+    _panel.addToPane(pane)
+    return _panel
+
+
+def _panel_widget():
+    import comfyfarm_panel
+    alive = []
+    for w in comfyfarm_panel.ComfyFarmPanel.instances:
+        try:
+            w.isVisible()   # raises once Qt has deleted the widget
+            alive.append(w)
+        except RuntimeError:
+            pass
+    comfyfarm_panel.ComfyFarmPanel.instances[:] = alive
+    return alive[-1] if alive else None
 
 
 def submit_selected(workflow: str = WORKFLOW) -> None:
-    reads = _reads()
-    if not reads:
-        nuke.message("Select one or more Read nodes first.")
-        return
-    params = _ask(_last)
-    if params is None:
-        return
-    _last.clear()
-    _last.update(params)
-    lines = []
-    for r in reads:
-        path = nuke.filename(r)
-        first, last = int(r["first"].value()), int(r["last"].value())
-        try:
-            job = farm.submit(workflow, dict(params, input=f"{path} {first}-{last}"), name=r.name())
-        except farm.FarmError as e:
-            lines.append(f"{r.name()}: NOT submitted - {e}")
-            continue
-        info = job["info"]
-        lines.append(f"{r.name()}: {job['short_id']} queued (#{job.get('queue_position')}) -> "
-                     f"{info.get('output_dir_posix') or info.get('output_dir')}")
-        threading.Thread(target=_watch, args=(job, r.name()), daemon=True).start()
-    nuke.message("ComfyFarm\n\n" + "\n".join(lines))
+    """Menu command: open the panel with the selected node's sequence filled in."""
+    found = selected_sequences()
+    if not found:
+        nuke.message("Select a Read node (or the Write that rendered the PNGs) first.")
+        return   # before the panel opens and takes focus
+    show_panel()
+    widget = _panel_widget()
+    if widget is not None:
+        widget.prefill(workflow, found)
 
 
 def load_job() -> None:
+    """Menu command: Read node for a finished job, by its id."""
     job_id = nuke.getInput("ComfyFarm job id")
     if not job_id:
         return
@@ -107,4 +183,4 @@ def load_job() -> None:
     if job["status"] != "done":
         nuke.message(farm.describe(job))
         return
-    _make_read(job, "")
+    create_read(job)
