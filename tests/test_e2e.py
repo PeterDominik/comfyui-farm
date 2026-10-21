@@ -106,6 +106,12 @@ convert:
                         "-timecode", "00:00:41:17", "-c:v", "prores_ks", str(shot / "edit/abc_0010_ref.mov")], check=True)
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=25", "-frames:v", "4",
                         "-c:v", "prores_ks", str(cls.tmp / "shows/ply/work/notc.mov")], check=True)
+        # A shot work area: /shows/<show>/<seq>/<shot number>/movhistory/
+        movhistory = cls.tmp / "shows/xyz/abc/0010/movhistory"
+        movhistory.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "6",
+                        "-timecode", "00:00:41:17", "-c:v", "prores_ks",
+                        str(movhistory / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov")], check=True)
 
     def oiiotool_calls(self):
         try:
@@ -329,6 +335,17 @@ convert:
         self.assertIn("no timecode", " ".join(nt["warnings"]))
         done = self.wait_for(nt["id"], ("done", "failed"))
         self.assertEqual((done["status"], done["outputs"]["first"], done["outputs"]["last"]), ("done", 1001, 1004))
+
+    def test_0485_movie_from_shot_movhistory(self):
+        mov = "/rdo/shows/xyz/abc/0010/movhistory/abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov"
+        job = farm.submit("ltx25_alpha_gen", {"input": mov})
+        self.assertEqual((job["info"]["show"], job["info"]["seq"], job["info"]["shot"]), ("xyz", "abc", "abc_0010"))
+        self.assertTrue(job["info"]["output_dir_posix"].endswith("/xyz/_project_ref/_cg/comfyui/renders/abc_0010"))
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual((done["outputs"]["first"], done["outputs"]["last"]), (1001, 1006))
+        out = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/renders/abc_0010"
+        self.assertTrue((out / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.alpha_v001.1001.png").is_file())
 
     def test_049_conversion_cancel_and_failure(self):
         base = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010"

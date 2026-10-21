@@ -24,10 +24,14 @@ paths:
 
   # Where show / seq / shot sit in an input path. {name} = one folder, so any shot
   # naming works (bpash_1545, 15454_656551, ...). Tried in order; later patterns
-  # only fill in what earlier ones didn't find.
+  # only fill in what earlier ones didn't find. Shot work areas name the shot folder by
+  # its short number, so they capture {shot_short} and the full name is built with
+  # shot_name: /rdo/shows/raa/bpash/1545/movhistory/... -> shot bpash_1545.
   context_patterns:
     - '/shows/{show}/.published/{seq}/{shot}/'
+    - '/shows/{show}/{seq}/{shot_short}/movhistory/'
     - '/shows/{show}/'
+  shot_name: '{seq}_{shot_short}'
 
   # Where frames go: output_dir inside output_root. The artist's "Output folder"
   # replaces output_root. Each job takes the first {version} not already used in that

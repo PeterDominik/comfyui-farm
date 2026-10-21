@@ -28,9 +28,13 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
   the output folder is the show's renders folder. The form shows the exact
   destination before you submit. Nothing is ever written into `.published`.
 - **Any shot naming.** Show, sequence and shot are read from their position in the
-  publish path (`/shows/<show>/.published/<seq>/<shot>/`), so `bpash_1545` and
-  `15454_656551` both work. If a path doesn't follow it, the gateway asks for an
-  output folder instead of guessing.
+  path, so `bpash_1545` and `15454_656551` both work. The gateway knows two layouts:
+  - publishes, `/shows/<show>/.published/<seq>/<shot>/`;
+  - shot movhistory folders, `/shows/<show>/<seq>/<shot number>/movhistory/`. There
+    `/rdo/shows/raa/bpash/1545/movhistory/` gives shot `bpash_1545`.
+
+  More layouts can be added in `config.yaml` (`paths.context_patterns`). If a path
+  matches none of them, the gateway asks for an output folder instead of guessing.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.

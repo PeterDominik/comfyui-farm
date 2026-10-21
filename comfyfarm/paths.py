@@ -121,9 +121,13 @@ def _compile_context(pattern: str) -> re.Pattern:
     return re.compile("".join(out), re.IGNORECASE)
 
 
-def context_from_path(path: str, patterns: list[str]) -> dict:
+def context_from_path(path: str, patterns: list[str], shot_name: str = "{seq}_{shot_short}") -> dict:
     """show / seq / shot from where they sit in the path, not from what they're called,
-    so any shot naming works. Earlier patterns win; later ones only fill gaps."""
+    so any shot naming works. Earlier patterns win; later ones only fill gaps.
+
+    Work areas name the shot folder by its short number (/shows/raa/bpash/1545/...);
+    publishes use the full name (.published/bpash/bpash_1545/). A pattern can capture
+    {shot_short} instead of {shot}, and the full shot name is built with `shot_name`."""
     ctx: dict = {}
     path = normalize(path)
     for pat in patterns:
@@ -131,6 +135,8 @@ def context_from_path(path: str, patterns: list[str]) -> dict:
         if m:
             for k, v in m.groupdict().items():
                 ctx.setdefault(k, v)
+    if "shot" not in ctx and ctx.get("shot_short") and ctx.get("seq"):
+        ctx["shot"] = shot_name.format(seq=ctx["seq"], shot_short=ctx["shot_short"])
     return ctx
 
 
@@ -227,7 +233,7 @@ def resolve_sequence(
             f".mov/.mp4 movie."
         )
 
-    ctx = context_from_path(farm_path, cfg.context_patterns)
+    ctx = context_from_path(farm_path, cfg.context_patterns, cfg.shot_name)
     show = show or ctx.get("show")
     shot = shot or ctx.get("shot")   # None when the path isn't a publish path; never guessed
 
@@ -367,8 +373,9 @@ def render(template: str, what: str, **tokens) -> str:
     missing = sorted(k for k in template_fields(template) if tokens.get(k) in (None, "") and k != "frame")
     if missing:
         raise SequenceError(
-            f"Can't build the {what}: no {', '.join(missing)} from the input path (expected "
-            f".../shows/<show>/.published/<seq>/<shot>/...). Give an Output folder instead.")
+            f"Can't build the {what}: no {', '.join(missing)} from the input path (expected a "
+            f"publish, .../shows/<show>/.published/<seq>/<shot>/..., or a shot folder such as "
+            f".../shows/<show>/<seq>/<shot>/movhistory/...). Give an Output folder instead.")
     return template.format(**tokens)
 
 
