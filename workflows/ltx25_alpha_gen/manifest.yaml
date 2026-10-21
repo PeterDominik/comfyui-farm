@@ -36,42 +36,6 @@ params:
       <source>.alpha_vNNN.<frame>.png. Each run takes the next free version. Its parent
       folder must exist. Leave empty for the show's renders folder. Never inside .published.
 
-  seed:
-    type: int
-    label: Seed
-    default: 42
-    min: 0
-    max: 18446744073709551615
-    targets:
-      - {node: "5516:4832", input: noise_seed, class: RandomNoise}
-
-  enhance_prompt:
-    type: bool
-    label: Enhance prompt (Gemma text enhancer)
-    default: false
-    targets:
-      - {node: "5014:5556", input: switch, class: ComfySwitchNode}
-
-  shorter_side:
-    type: int
-    label: Working resolution (shorter side, px)
-    default: 1088
-    min: 256
-    max: 2176
-    multiple_of: 32
-    help: Plates are resized so their shorter side matches this before generation.
-    targets:
-      - {node: "5548:5026", input: resize_type.shorter_size, class: ResizeImageMaskNode}
-
-  fps:
-    type: int
-    label: Frame rate
-    default: 24
-    min: 1
-    max: 120
-    targets:
-      - {node: "9107", input: fps, class: CreateVideo}
-
 # How the 'sequence' parameter is wired in.
 sequence:
   path_node: {node: "9094", input: value, class: PrimitiveString}   # informational
