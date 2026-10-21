@@ -2,6 +2,8 @@
 was asked to do (arguments and the OCIO context variables) as JSON lines.
 
 Input file name containing 'broken' -> fails; containing 'slow' -> takes 1.5 s.
+FAKE_OIIOTOOL_LEVELS='{"<from>|<view>": grey, ...}' -> writes an 8x8 grey PNG at that
+level, to simulate how each colour setting comes out.
 """
 
 import json
@@ -12,12 +14,13 @@ import time
 import zlib
 
 
-def tiny_png() -> bytes:
+def tiny_png(grey: int = 128, size: int = 1) -> bytes:
     def chunk(tag, data):
         c = struct.pack(">I", len(data)) + tag + data
         return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"\x00\x80")) + chunk(b"IEND", b""))
+    rows = b"".join(b"\x00" + bytes([grey]) * size for _ in range(size))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 args = sys.argv[1:]
@@ -35,5 +38,8 @@ if "broken" in os.path.basename(src):
     sys.exit(1)
 if "slow" in os.path.basename(src):
     time.sleep(1.5)
+levels = json.loads(os.environ.get("FAKE_OIIOTOOL_LEVELS") or "{}")
+disp = next(i for i, a in enumerate(args) if a.startswith("--ociodisplay"))
+key = f"{args[disp].split('from=', 1)[1]}|{args[disp + 2]}"
 with open(out, "wb") as fh:
-    fh.write(tiny_png())
+    fh.write(tiny_png(levels.get(key, 200), 8) if levels else tiny_png())

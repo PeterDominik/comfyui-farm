@@ -191,6 +191,26 @@ in `config.yaml`.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
   - Output is 8-bit sRGB PNG at plate resolution. The workflow then works at its own
     resolution, as for PNG inputs.
+- **If EXR colours look wrong** (lifted, shifted), compare against a frame you trust
+  rather than by eye. On the farm machine:
+
+  ```
+  .venv\Scripts\python -m comfyfarm color-debug /rdo/shows/raa/.../bpash_1545.plate.v1.%04d.exr --frame 1001 \
+      --reference /rdo/shows/raa/.../bpash_1545.preprocess.mp01_png.v1.1001.png
+  ```
+
+  It converts that frame exactly as a job does, plus alternative input colour spaces,
+  views and `SHOT` conventions. Then it reports:
+  - each variant's black / median / white level against the reference;
+  - the best match, with the `config.yaml` lines to use it;
+  - what OCIO actually resolved: which colour space `scene_linear` is, and which
+    `client_lut` / `client_shot_grade` / `white_balance.cc` files were found;
+  - whether the EXR looks scene-linear at all;
+  - any PNG colour tags that viewers might apply.
+
+  Side-by-side images (ours | reference | difference ×4) and `report.txt` go to
+  `data\color_debug\<time>\`. Compare images with the viewer LUT off: both are
+  display-referred already.
 - **Movies (.mov/.mp4/.m4v/.mxf):** extracted with `ffmpeg` (the one pip installs; a
   system ffmpeg/ffprobe is used instead if you set `convert.tools`), numbered from the movie's
   timecode (`00:00:41:17` at 24 fps = frame 1001; drop-frame handled). A range on the
