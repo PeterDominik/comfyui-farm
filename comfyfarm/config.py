@@ -79,9 +79,18 @@ class ExrConvertConfig(BaseModel):
     extra_args: list[str] = Field(default_factory=lambda: ["--ch", "R,G,B", "--croptofull"])
 
 
+class SlateConfig(BaseModel):
+    # Movies whose first frame is a slate, not plate: that frame is dropped. Applies to
+    # files with one of these extensions inside a folder with one of these names.
+    folders: list[str] = Field(default_factory=lambda: ["movhistory"])
+    extensions: list[str] = Field(default_factory=lambda: [".mov"])
+
+
 class MovieConvertConfig(BaseModel):
-    # Frame numbers come from the movie's timecode; this is used when it has none.
+    # Frame numbers come from the movie's timecode. Without one, the first frame that's
+    # used (after a slate, if any) gets this number.
     default_start: int = 1001
+    slate: SlateConfig = Field(default_factory=SlateConfig)
 
 
 class ConvertConfig(BaseModel):

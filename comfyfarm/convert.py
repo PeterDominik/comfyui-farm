@@ -213,28 +213,44 @@ def resolve_movie(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
     directory, _, filename = farm_path.rpartition("/")
     ctx = context_from_path(farm_path, pc.context_patterns, pc.shot_name)
     info = read_movie_info(farm_path, cc)
+    slate = has_slate(farm_path, cc)
+    if slate and info["frames"] < 2:
+        raise SequenceError("The movie only has its slate frame.")
     notes = []
     if info["timecode"]:
         try:
-            start = timecode_to_frame(info["timecode"], info["fps"])
+            tc_start = timecode_to_frame(info["timecode"], info["fps"])   # the movie's first frame
         except ValueError as e:
             raise SequenceError(f"The movie's timecode can't be used: {e}.")
     else:
-        start = cc.movie.default_start
-        notes.append(f"The movie has no timecode, so frames are numbered from {start}.")
-    end = start + info["frames"] - 1
+        tc_start = cc.movie.default_start - (1 if slate else 0)
+        notes.append(f"The movie has no timecode, so frames are numbered from {cc.movie.default_start}.")
+    # A slate keeps its timecode number but isn't used: the plate starts one frame later.
+    start = tc_start + (1 if slate else 0)
+    end = tc_start + info["frames"] - 1
     if first is None:
         first, last = start, end
     elif first < start or last > end:
-        raise SequenceError(f"Frames {first}-{last} are outside the movie, which runs {start}-{end} "
-                            f"(from its timecode {info['timecode'] or 'none'}).")
+        what = f"the movie's plate runs {start}-{end} (frame {tc_start} is the slate)" if slate \
+            else f"the movie runs {start}-{end}"
+        raise SequenceError(f"Frames {first}-{last} are outside the movie: {what}, from its timecode "
+                            f"{info['timecode'] or 'none'}.")
     seq = Sequence(raw=raw.strip(), farm_path=farm_path, directory=directory + "/", filename=filename,
                    first=first, last=last, frame_count=last - first + 1, skip=0, cap=0,
                    show=show or ctx.get("show"), shot=shot or ctx.get("shot"), seq_name=ctx.get("seq"),
                    source=source_stem(filename, ""), kind="movie")
     seq.convert = {"kind": "movie", "src": farm_path, "start": start, "end": end,
-                   "index_first": first - start, "index_last": last - start, "notes": notes, **info}
+                   "slate_frame": tc_start if slate else None,
+                   "index_first": first - tc_start, "index_last": last - tc_start, "notes": notes, **info}
     return seq
+
+
+def has_slate(path: str, cc: ConvertConfig) -> bool:
+    """First frame is a slate: a .mov inside a movhistory folder (see convert.movie.slate)."""
+    sl = cc.movie.slate
+    parts = [p.lower() for p in normalize(path).split("/")[:-1]]
+    ext = os.path.splitext(path)[1].lower()
+    return ext in {e.lower() for e in sl.extensions} and any(f.lower() in parts for f in sl.folders)
 
 
 # ============================================================== OCIO
@@ -333,7 +349,8 @@ def summary(seq: Sequence | None, pc: PathsConfig) -> dict | None:
                 "config": to_posix(c["config"], pc.mappings) or c["config"],
                 "bundle": (to_posix(c["bundle"], pc.mappings) or c["bundle"]) if c.get("bundle") else None}
     return {"kind": "movie", "timecode": c.get("timecode"), "fps": c["fps"], "start": c["start"],
-            "end": c["end"], "codec": c.get("codec"), "width": c.get("width"), "height": c.get("height")}
+            "end": c["end"], "slate_frame": c.get("slate_frame"), "codec": c.get("codec"),
+            "width": c.get("width"), "height": c.get("height")}
 
 
 # ============================================================== run

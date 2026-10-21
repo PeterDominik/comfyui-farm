@@ -222,6 +222,9 @@ in `config.yaml`.
   `convert.movie.default_start` (1001) and the job carries a warning. Movies are assumed
   to be display-referred with the look already baked in, like the PNG preprocess, so
   they get no colour transform. Untagged movies are decoded as BT.709.
+  - **Slates:** in `.mov` files inside a `movhistory` folder, the first frame is a slate,
+    so it's dropped. The plate keeps its timecode frame numbers: a slate at 1000 means
+    the plate is 1001 onwards. Set by `convert.movie.slate` in `config.yaml`.
 
 ## Adding or updating a workflow
 
