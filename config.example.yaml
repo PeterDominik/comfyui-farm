@@ -77,7 +77,12 @@ convert:
     view: Client-look
     extra_args: ['--ch', 'R,G,B', '--croptofull']
   movie:
-    default_start: 1001    # when a movie has no timecode
+    default_start: 1001    # when a movie has no timecode (first frame used after any slate)
+    # The first frame of these movies is a slate, not plate, and is dropped. The rest keep
+    # their timecode numbers (slate at 1000 -> plate from 1001).
+    slate:
+      folders: [movhistory]
+      extensions: [.mov]
 
 auth:
   # Leave empty to run without keys (artists' user names are taken on trust).

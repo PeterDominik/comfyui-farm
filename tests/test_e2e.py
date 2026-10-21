@@ -110,7 +110,7 @@ convert:
         movhistory = cls.tmp / "shows/xyz/abc/0010/movhistory"
         movhistory.mkdir(parents=True)
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "6",
-                        "-timecode", "00:00:41:17", "-c:v", "prores_ks",
+                        "-timecode", "00:00:41:16", "-c:v", "prores_ks",     # slate at 1000, plate 1001-1005
                         str(movhistory / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov")], check=True)
 
     def oiiotool_calls(self):
@@ -327,7 +327,7 @@ convert:
         self.assertEqual((done["outputs"]["frames"], done["outputs"]["first"], done["outputs"]["last"]), (4, 1004, 1007))
         out = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/renders/abc_0010"
         self.assertTrue((out / "abc_0010_ref.alpha_v001.1004.png").is_file())
-        with self.assertRaisesRegex(farm.FarmError, "outside the movie, which runs 1001-1012"):
+        with self.assertRaisesRegex(farm.FarmError, "outside the movie: the movie runs 1001-1012"):
             farm.submit("ltx25_alpha_gen", {"input": f"{mov} 990-1005"})
         # No timecode: numbered from the default, and the job says so.
         nt = farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/ply/work/notc.mov",
@@ -338,12 +338,14 @@ convert:
 
     def test_0485_movie_from_shot_movhistory(self):
         mov = "/rdo/shows/xyz/abc/0010/movhistory/abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov"
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "ltx25_alpha_gen", "params": {"input": mov}})
+        self.assertEqual((plan["convert"]["slate_frame"], plan["convert"]["start"], plan["frames"]), (1000, 1001, 5))
         job = farm.submit("ltx25_alpha_gen", {"input": mov})
         self.assertEqual((job["info"]["show"], job["info"]["seq"], job["info"]["shot"]), ("xyz", "abc", "abc_0010"))
         self.assertTrue(job["info"]["output_dir_posix"].endswith("/xyz/_project_ref/_cg/comfyui/renders/abc_0010"))
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
-        self.assertEqual((done["outputs"]["first"], done["outputs"]["last"]), (1001, 1006))
+        self.assertEqual((done["outputs"]["frames"], done["outputs"]["first"], done["outputs"]["last"]), (5, 1001, 1005))
         out = self.tmp / "shows/xyz/_project_ref/_cg/comfyui/renders/abc_0010"
         self.assertTrue((out / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.alpha_v001.1001.png").is_file())
 

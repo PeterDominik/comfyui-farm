@@ -220,7 +220,8 @@ function convertLine(c) {
       + (c.bundle ? `shot LUTs from <code>${esc(c.bundle)}</code>` : "show default LUTs");
   if (c.kind === "movie")
     return `<br>Movie: ${esc(c.codec || "")} ${c.width || "?"}×${c.height || "?"} at ${+c.fps.toFixed(3)} fps, `
-      + (c.timecode ? `timecode <code>${esc(c.timecode)}</code> → frames ${c.start}-${c.end}` : `frames ${c.start}-${c.end}`);
+      + (c.timecode ? `timecode <code>${esc(c.timecode)}</code> → frames ${c.start}-${c.end}` : `frames ${c.start}-${c.end}`)
+      + (c.slate_frame != null ? `, first frame (${c.slate_frame}) is a slate and is skipped` : "");
   return "";
 }
 // Shows exactly where the frames will land and what they'll be called, before submitting.

@@ -198,6 +198,58 @@ class MovieTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
+    def make(self, path, tc=None, frames=10):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x36:rate=24", "-frames:v", str(frames)]
+        codec = "mpeg4" if path.endswith(".mp4") else "prores_ks"   # mp4 can't hold ProRes
+        cmd += (["-timecode", tc] if tc else []) + ["-c:v", codec, path]
+        subprocess.run(cmd, check=True)
+
+    def test_movhistory_slate_skipped(self):
+        root = f"{self.root}/shows/raa/bpash/1545/movhistory"
+        self.make(f"{root}/bpash_1545.ingest.compPlate.v2.mov", "00:00:41:16")   # slate = 1000
+        posix = "/rdo/shows/raa/bpash/1545/movhistory/bpash_1545.ingest.compPlate.v2.mov"
+        seq = resolve_input(posix, self.pc, ConvertConfig())
+        c = seq.convert
+        self.assertEqual((seq.first, seq.last, seq.frame_count, seq.shot), (1001, 1009, 9, "bpash_1545"))
+        self.assertEqual((c["slate_frame"], c["start"], c["end"], c["index_first"], c["index_last"]), (1000, 1001, 1009, 1, 9))
+        seq = resolve_input(posix + " 1003-1004", self.pc, ConvertConfig())
+        self.assertEqual((seq.convert["index_first"], seq.convert["index_last"]), (3, 4))
+        with self.assertRaisesRegex(SequenceError, "plate runs 1001-1009 \\(frame 1000 is the slate\\)"):
+            resolve_input(posix + " 1000-1004", self.pc, ConvertConfig())
+
+    def test_slate_only_for_mov_in_movhistory(self):
+        self.make(f"{self.root}/shows/raa/bpash/1545/movhistory/clip.mp4", "00:00:41:16")
+        seq = resolve_input("/rdo/shows/raa/bpash/1545/movhistory/clip.mp4", self.pc, ConvertConfig())
+        self.assertEqual((seq.first, seq.convert["slate_frame"]), (1000, None))     # .mp4: no slate
+        seq = resolve_input("/rdo/shows/raa/.published/bpash/bpash_1545/edit/ref.mov", self.pc, ConvertConfig())
+        self.assertEqual((seq.first, seq.convert["slate_frame"]), (1001, None))     # not movhistory
+
+    def test_movhistory_without_timecode(self):
+        self.make(f"{self.root}/shows/raa/bpash/1545/movhistory/notc.mov", None, 5)
+        seq = resolve_input("/rdo/shows/raa/bpash/1545/movhistory/notc.mov", self.pc, ConvertConfig())
+        self.assertEqual((seq.first, seq.last, seq.convert["slate_frame"]), (1001, 1004, 1000))
+
+    def test_slate_frame_not_converted(self):
+        import asyncio
+        root = f"{self.root}/shows/raa/bpash/1545/movhistory"
+        self.make(f"{root}/plate.mov", "00:00:41:16", 6)
+        seq = resolve_input("/rdo/shows/raa/bpash/1545/movhistory/plate.mov", self.pc, ConvertConfig())
+        point_loader_at_scratch(seq, f"{self.root}/scratch", "job")
+        os.makedirs(seq.convert["dst_dir"])
+        asyncio.run(convert.convert_movie(seq.convert, ConvertConfig(), seq.first, seq.frame_count, lambda *a: None))
+        self.assertEqual(sorted(os.listdir(seq.convert["dst_dir"])), [f"plate.{f}.png" for f in range(1001, 1006)])
+        # Frame 1001 is the movie's second frame (the first after the slate).
+        full = f"{self.root}/full"
+        os.makedirs(full)
+        subprocess.run(["ffmpeg", "-v", "error", "-i", f"{root}/plate.mov", "-vf", "scale=in_color_matrix=bt709",
+                        "-fps_mode", "passthrough", "-start_number", "1000", "-pix_fmt", "rgb24", f"{full}/f.%04d.png"],
+                       check=True)
+        with open(f"{full}/f.1001.png", "rb") as a, open(seq.convert["dst_dir"] + "plate.1001.png", "rb") as b:
+            self.assertEqual(a.read(), b.read())
+        with open(f"{full}/f.1000.png", "rb") as a, open(seq.convert["dst_dir"] + "plate.1001.png", "rb") as b:
+            self.assertNotEqual(a.read(), b.read())
+
     def test_resolve(self):
         seq = resolve_input("/rdo/shows/raa/.published/bpash/bpash_1545/edit/ref.mov 1003-1005", self.pc, ConvertConfig())
         self.assertEqual((seq.kind, seq.first, seq.last, seq.frame_count, seq.shot, seq.source),
