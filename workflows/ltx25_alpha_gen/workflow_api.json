@@ -52,7 +52,7 @@
   },
   "9093": {
     "inputs": {
-      "value": "//rodeofx.com/smb/shows/raa/_project_ref/_cg/comfyui/renders"
+      "value": "//rodeofx.com/smb/shows/raa/_project_ref/_cg/comfyui/renders/testPad"
     },
     "class_type": "PrimitiveString",
     "_meta": {
@@ -80,78 +80,6 @@
     "class_type": "StringReplace",
     "_meta": {
       "title": "Replace Text"
-    }
-  },
-  "9099": {
-    "inputs": {
-      "string": [
-        "9092",
-        0
-      ],
-      "regex_pattern": "v[0-9]",
-      "mode": "First Match",
-      "case_insensitive": true,
-      "multiline": false,
-      "dotall": false,
-      "group_index": 1
-    },
-    "class_type": "RegexExtract",
-    "_meta": {
-      "title": "Version"
-    }
-  },
-  "9100": {
-    "inputs": {
-      "string": [
-        "9092",
-        0
-      ],
-      "regex_pattern": "[a-zA-Z]+_\\d+",
-      "mode": "First Match",
-      "case_insensitive": false,
-      "multiline": false,
-      "dotall": false,
-      "group_index": 1
-    },
-    "class_type": "RegexExtract",
-    "_meta": {
-      "title": "Extract Text"
-    }
-  },
-  "9101": {
-    "inputs": {
-      "string": [
-        "9092",
-        0
-      ],
-      "regex_pattern": "([^/]+\\.jpeg)",
-      "mode": "First Match",
-      "case_insensitive": true,
-      "multiline": false,
-      "dotall": false,
-      "group_index": 1
-    },
-    "class_type": "RegexExtract",
-    "_meta": {
-      "title": "Extract Text"
-    }
-  },
-  "9102": {
-    "inputs": {
-      "delimiter": "/",
-      "clean_whitespace": "true",
-      "text_a": [
-        "9093",
-        0
-      ],
-      "text_b": [
-        "9100",
-        0
-      ]
-    },
-    "class_type": "Text Concatenate",
-    "_meta": {
-      "title": "Text Concatenate"
     }
   },
   "9103": {
@@ -204,7 +132,7 @@
       "fps": 24,
       "bit_depth": 8,
       "images": [
-        "9104",
+        "9111",
         0
       ]
     },
@@ -246,7 +174,7 @@
       "embed_workflow": "true",
       "show_previews": "true",
       "images": [
-        "5518:5538",
+        "9112",
         0
       ]
     },
@@ -267,6 +195,38 @@
     "class_type": "StringReplace",
     "_meta": {
       "title": "Replace Text"
+    }
+  },
+  "9111": {
+    "inputs": {
+      "frame_pad_mode": "repeat_last",
+      "pad_spatial": false,
+      "spatial_multiple": 32,
+      "max_frames": 0,
+      "images": [
+        "9104",
+        0
+      ]
+    },
+    "class_type": "LTXPadFrames",
+    "_meta": {
+      "title": "LTX Pad Frames (8n+1)"
+    }
+  },
+  "9112": {
+    "inputs": {
+      "images": [
+        "5518:5538",
+        0
+      ],
+      "pad_info": [
+        "9111",
+        4
+      ]
+    },
+    "class_type": "LTXUnpadFrames",
+    "_meta": {
+      "title": "LTX Unpad Frames"
     }
   },
   "5004:5600": {
