@@ -5,8 +5,13 @@ import tempfile
 import unittest
 
 from comfyfarm.config import ConvertConfig, PathMapping, PathsConfig
-from comfyfarm.convert import (_shot_short, ocio_setup, parse_probe, point_loader_at_scratch, resolve_input,
-                               timecode_to_frame)
+import sys
+import types
+from unittest import mock
+
+from comfyfarm import convert
+from comfyfarm.convert import (_shot_short, find_tool, parse_ffmpeg_info, parse_probe, point_loader_at_scratch,
+                               probe_movie, probe_movie_ffmpeg, read_movie_info, resolve_input, timecode_to_frame)
 from comfyfarm.paths import SequenceError
 
 RODEO_SEARCH_PATH = ('search_path: "../../_color_bundle/${SEQ}_${SHOT}:../../_color_bundle/${SEQ}:'
@@ -48,6 +53,70 @@ class ProbeTests(unittest.TestCase):
     def test_no_video(self):
         with self.assertRaisesRegex(SequenceError, "no video stream"):
             parse_probe({"streams": [{"codec_type": "audio"}]})
+
+
+FFMPEG_INFO = """Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'df.mov':
+  Metadata:
+    major_brand     : qt
+  Duration: 00:00:01.33, start: 0.000000, bitrate: 6108 kb/s
+  Stream #0:0[0x1]: Video: prores (4444) (ap4h / 0x68347061), yuv444p12le(bt709, progressive), 4096x2160, 6098 kb/s, SAR 1:1 DAR 16:9, 29.97 fps, 29.97 tbr, 30k tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      timecode        : 00:01:00;02
+  Stream #0:1[0x2](eng): Data: none (tmcd / 0x64636D74), 0 kb/s
+At least one output file must be specified
+"""
+
+
+class FfmpegOnlyProbeTests(unittest.TestCase):
+    """pip's ffmpeg (imageio-ffmpeg) has no ffprobe; movie info is read with ffmpeg."""
+
+    def test_parse_info(self):
+        p = parse_ffmpeg_info(FFMPEG_INFO, 40)
+        self.assertEqual((p["fps_str"], p["frames"], p["timecode"], p["width"], p["height"], p["codec"],
+                          p["color_space"]), ("30000/1001", 40, "00:01:00;02", 4096, 2160, "prores", "bt709"))
+
+    def test_frames_from_duration_and_plain_rates(self):
+        text = FFMPEG_INFO.replace("29.97 fps, 29.97 tbr", "25 fps, 25 tbr").replace("yuv444p12le(bt709, progressive)", "yuv422p10le")
+        p = parse_ffmpeg_info(text, None)
+        self.assertEqual((p["fps_str"], p["frames"], p["color_space"]), ("25/1", 33, None))
+
+    def test_no_video(self):
+        with self.assertRaisesRegex(SequenceError, "no video stream"):
+            parse_ffmpeg_info("Input #0 ...\n  Stream #0:0: Audio: aac\n", 10)
+
+    def test_ffmpeg_used_when_no_ffprobe(self):
+        with mock.patch.object(convert, "find_tool", side_effect=lambda n, c=None: None if n == "ffprobe" else ["ffmpeg"]), \
+                mock.patch.object(convert, "probe_movie_ffmpeg", return_value={"via": "ffmpeg"}) as m:
+            self.assertEqual(read_movie_info("x.mov", ConvertConfig()), {"via": "ffmpeg"})
+            m.assert_called_once_with("x.mov", ["ffmpeg"])
+
+    def test_find_tool_uses_pip_ffmpeg(self):
+        exe = tempfile.NamedTemporaryFile(delete=False)
+        exe.close()
+        fake = types.SimpleNamespace(get_ffmpeg_exe=lambda: exe.name)
+        try:
+            with mock.patch.dict(sys.modules, {"imageio_ffmpeg": fake}), \
+                    mock.patch.object(convert.sys, "executable", os.path.join(tempfile.gettempdir(), "venv", "python")):
+                self.assertEqual(find_tool("ffmpeg"), [exe.name])
+                self.assertEqual(find_tool("ffmpeg", "C:/tools/ffmpeg.exe"), ["C:/tools/ffmpeg.exe"])   # config wins
+        finally:
+            os.remove(exe.name)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
+    def test_matches_ffprobe_on_real_files(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            for name, rate, tc, extra in (("a.mov", "24", "00:00:41:17", []),
+                                          ("b.mov", "30000/1001", "00:01:00;02", ["-colorspace", "bt709"])):
+                path = os.path.join(tmp, name)
+                subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"testsrc=size=64x36:rate={rate}",
+                                "-frames:v", "17", "-timecode", tc, "-c:v", "prores_ks", *extra, path], check=True)
+                a, b = probe_movie_ffmpeg(path, ["ffmpeg"]), probe_movie(path, ["ffprobe"])
+                for key in ("fps_str", "frames", "timecode", "width", "height", "codec", "color_space"):
+                    self.assertEqual(a[key], b[key], f"{name} {key}")
+        finally:
+            shutil.rmtree(tmp)
 
 
 class OcioTests(unittest.TestCase):

@@ -34,15 +34,29 @@ class ConvertError(RuntimeError):
 
 
 # ============================================================== tools
+def _pip_ffmpeg() -> str | None:
+    """The ffmpeg binary that ships inside the imageio-ffmpeg wheel (no ffprobe)."""
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        return exe if exe and os.path.isfile(exe) else None
+    except Exception:  # noqa: BLE001 - not installed, or no binary for this platform
+        return None
+
+
 def find_tool(name: str, configured: str | list[str] | None = None) -> list[str] | None:
     """Configured command, else the venv next to this Python (pip-installed OpenImageIO
-    puts oiiotool there), else PATH."""
+    puts oiiotool there), else ffmpeg from the imageio-ffmpeg package, else PATH."""
     if configured:
         return list(configured) if isinstance(configured, list) else [configured]
     here = Path(sys.executable).parent
     for cand in (here / f"{name}.exe", here / name):
         if cand.is_file():
             return [str(cand)]
+    if name == "ffmpeg":
+        exe = _pip_ffmpeg()
+        if exe:
+            return [exe]
     found = shutil.which(name)
     return [found] if found else None
 
@@ -51,8 +65,8 @@ def require_tool(cc: ConvertConfig, name: str) -> list[str]:
     cmd = find_tool(name, cc.tools.get(name))
     if not cmd:
         hint = {"oiiotool": "run scripts\\setup.ps1 (installs OpenImageIO into the gateway's venv)",
-                "ffmpeg": "install ffmpeg (winget install Gyan.FFmpeg) or set convert.tools.ffmpeg",
-                "ffprobe": "install ffmpeg (winget install Gyan.FFmpeg) or set convert.tools.ffprobe"}[name]
+                "ffmpeg": "run scripts\\setup.ps1 (installs imageio-ffmpeg into the gateway's venv)",
+                "ffprobe": "it is optional; set convert.tools.ffprobe to use one"}[name]
         raise SequenceError(f"{name} isn't available on the farm machine: {hint}.")
     return cmd
 
@@ -122,6 +136,73 @@ def probe_movie(path: str, ffprobe: list[str]) -> dict:
     return parse_probe(json.loads(out.stdout or "{}"))
 
 
+# ffmpeg prints NTSC rates rounded; map them back to the exact fractions.
+_NTSC = {"23.98": Fraction(24000, 1001), "29.97": Fraction(30000, 1001), "47.95": Fraction(48000, 1001),
+         "59.94": Fraction(60000, 1001), "119.88": Fraction(120000, 1001)}
+_COLOR_SPACES = {"bt709", "bt470bg", "smpte170m", "bt2020nc", "bt2020c", "smpte240m", "fcc", "ycgco"}
+
+
+def parse_ffmpeg_info(text: str, packets: int | None) -> dict:
+    """`ffmpeg -i file` stderr (+ a packet count) -> the same dict as parse_probe."""
+    video = None
+    for m in re.finditer(r"^\s*Stream #\d+:\d+.*?: Video: (.+)$", text, re.MULTILINE):
+        if "attached pic" not in m.group(1):
+            video = m.group(1)
+            break
+    if video is None:
+        raise SequenceError("The movie has no video stream.")
+    rate = re.search(r", ([\d.]+) fps", video) or re.search(r", ([\d.]+) tbr", video)
+    if not rate:
+        raise SequenceError("Couldn't read the movie's frame rate.")
+    fps = _NTSC.get(rate.group(1)) or Fraction(rate.group(1)).limit_denominator(1001)
+    size = re.search(r", (\d{2,5})x(\d{2,5})\b", video)
+    color = None
+    pix = re.search(r"^\w+[^,]*?, \w+\(([^)]*)\)", video)
+    if pix:
+        for token in re.split(r"[,/\s]+", pix.group(1)):
+            if token in _COLOR_SPACES:
+                color = token
+                break
+    tc = re.search(r"^\s*timecode\s*:\s*(\d{1,2}:\d{2}:\d{2}[:;.,]\d{2,3})\s*$", text, re.MULTILINE)
+    frames = packets
+    if not frames:
+        dur = re.search(r"Duration: (\d+):(\d+):([\d.]+)", text)
+        if dur:
+            frames = round((int(dur[1]) * 3600 + int(dur[2]) * 60 + float(dur[3])) * fps)
+    if not frames:
+        raise SequenceError("Couldn't work out how many frames the movie has.")
+    return {"fps": float(fps), "fps_str": f"{fps.numerator}/{fps.denominator}", "frames": frames,
+            "timecode": tc.group(1) if tc else None, "width": int(size[1]) if size else None,
+            "height": int(size[2]) if size else None, "codec": video.split()[0].strip(","),
+            "color_space": color}
+
+
+def probe_movie_ffmpeg(path: str, ffmpeg: list[str]) -> dict:
+    """Movie info without ffprobe (pip's ffmpeg doesn't include it): stream details from
+    `ffmpeg -i`, and the exact frame count from a packet listing (no decoding)."""
+    try:
+        info = subprocess.run([*ffmpeg, "-hide_banner", "-nostdin", "-i", path],
+                              capture_output=True, text=True, timeout=60)
+        count = subprocess.run([*ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-i", path,
+                                "-map", "0:v:0", "-c", "copy", "-f", "framecrc", "-"],
+                               capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SequenceError(f"Couldn't read the movie with ffmpeg: {e}")
+    if "Stream #" not in info.stderr:
+        raise SequenceError(f"ffmpeg can't read {path}: {info.stderr.strip()[-300:]}")
+    packets = sum(1 for line in count.stdout.splitlines() if line and not line.startswith("#")) \
+        if count.returncode == 0 else None
+    return parse_ffmpeg_info(info.stderr, packets)
+
+
+def read_movie_info(path: str, cc: ConvertConfig) -> dict:
+    """ffprobe when it's installed, else ffmpeg alone."""
+    ffprobe = find_tool("ffprobe", cc.tools.get("ffprobe"))
+    if ffprobe:
+        return probe_movie(path, ffprobe)
+    return probe_movie_ffmpeg(path, require_tool(cc, "ffmpeg"))
+
+
 def resolve_movie(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
                   shot: str | None = None) -> Sequence:
     path, first, last = parse_input(raw)
@@ -131,7 +212,7 @@ def resolve_movie(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
                             f"machine can't see it.")
     directory, _, filename = farm_path.rpartition("/")
     ctx = context_from_path(farm_path, pc.context_patterns)
-    info = probe_movie(farm_path, require_tool(cc, "ffprobe"))
+    info = read_movie_info(farm_path, cc)
     notes = []
     if info["timecode"]:
         try:
@@ -348,4 +429,5 @@ async def convert(seq_info: dict, cc: ConvertConfig, progress) -> None:
 
 
 __all__ = ["MOVIE_EXTENSIONS", "ConvertError", "find_tool", "timecode_to_frame", "parse_probe",
+           "parse_ffmpeg_info", "probe_movie_ffmpeg", "read_movie_info",
            "resolve_input", "point_loader_at_scratch", "summary", "convert"]

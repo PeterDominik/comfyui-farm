@@ -55,8 +55,11 @@ async def run_check(cfg: Config) -> int:
     for tool, args, use in (("oiiotool", ["--buildinfo"], "EXR inputs"), ("ffmpeg", ["-version"], "movie inputs"),
                             ("ffprobe", ["-version"], "movie inputs")):
         cmd = C.find_tool(tool, cfg.convert.tools.get(tool))
+        if not cmd and tool == "ffprobe":
+            print("  [ ok ] ffprobe: not installed; movie info is read with ffmpeg instead")
+            continue
         if not cmd:
-            print(f"  [WARN] {tool} not found: {use} will be refused (see README, 'Input formats')")
+            print(f"  [WARN] {tool} not found: {use} will be refused (run scripts\\setup.ps1)")
             continue
         try:
             out = subprocess.run([*cmd, *args], capture_output=True, text=True, timeout=30)

@@ -50,10 +50,10 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 ## Install on the Windows farm machine
 
 Needs **Git for Windows**, **Python 3.10+** (python.org, tick *Add to PATH*), and for the
-services, **[NSSM](https://nssm.cc)**. Movie inputs need **ffmpeg/ffprobe** on PATH
-(`winget install Gyan.FFmpeg`); EXR inputs use `oiiotool`, which `setup.ps1` installs with
-the OpenImageIO Python package. ComfyUI must have the custom node packs this workflow
-uses: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo.
+services, **[NSSM](https://nssm.cc)**. The tools for EXR and movie inputs come with the
+Python requirements, so `setup.ps1` installs them into `.venv`: `oiiotool` (OpenImageIO,
+with OpenColorIO) and `ffmpeg` (imageio-ffmpeg). ComfyUI must have the custom node packs
+this workflow uses: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo.
 
 ```powershell
 git clone https://github.com/<org>/comfyui-farm.git C:\comfyfarm
@@ -191,7 +191,8 @@ in `config.yaml`.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
   - Output is 8-bit sRGB PNG at plate resolution. The workflow then works at its own
     resolution, as for PNG inputs.
-- **Movies (.mov/.mp4/.m4v/.mxf):** extracted with `ffmpeg`, numbered from the movie's
+- **Movies (.mov/.mp4/.m4v/.mxf):** extracted with `ffmpeg` (the one pip installs; a
+  system ffmpeg/ffprobe is used instead if you set `convert.tools`), numbered from the movie's
   timecode (`00:00:41:17` at 24 fps = frame 1001; drop-frame handled). A range on the
   input picks frames by those numbers. With no timecode, numbering starts at
   `convert.movie.default_start` (1001) and the job carries a warning. Movies are assumed

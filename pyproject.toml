@@ -10,6 +10,7 @@ dependencies = [
     "websockets>=13",
     "pyyaml>=6",
     "OpenImageIO>=3.0",
+    "imageio-ffmpeg>=0.5",
 ]
 
 [tool.pytest.ini_options]

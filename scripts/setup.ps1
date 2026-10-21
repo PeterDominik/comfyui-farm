@@ -51,11 +51,8 @@ if (-not (Test-Path "config.yaml")) {
 }
 New-Item -ItemType Directory -Force -Path data, logs | Out-Null
 
-# Movie inputs need ffmpeg + ffprobe (EXR inputs use oiiotool, installed above with OpenImageIO).
-if (-not (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
-    Write-Host "ffmpeg/ffprobe not found on PATH - movie inputs (.mov/.mp4) will be refused." -ForegroundColor Yellow
-    Write-Host "  Install:  winget install Gyan.FFmpeg   (then open a new terminal / restart the service)" -ForegroundColor Yellow
-}
+# EXR inputs use oiiotool (OpenImageIO) and movie inputs use ffmpeg (imageio-ffmpeg);
+# both were installed into .venv above with the requirements. The check below lists them.
 
 Write-Host "`nPreflight check (ComfyUI must be running for the worker checks):" -ForegroundColor Cyan
 & $venvPy -m comfyfarm check
