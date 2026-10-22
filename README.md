@@ -142,8 +142,10 @@ its source.
    workstation can read, e.g. a pipeline tools share. A git checkout works too.
 2. Add `<that>/client/nuke` to `NUKE_PATH`. Its `init.py` makes `../comfyfarm_client.py`
    importable, and its `menu.py` adds the *ComfyFarm* menu and the panel.
-3. Set `COMFYFARM_URL=http://<farm-machine>:8000` in the studio environment. Without it,
-   each artist types the address once into the panel's *Farm* field, and Nuke remembers it.
+3. The farm address comes from `client/nuke/init.py` (`http://wrk59467w:8000`), so
+   artists don't need to set anything. If the farm moves, change it there. A
+   `COMFYFARM_URL` already set in someone's environment wins. An address typed into the
+   panel's *Farm* field applies until Nuke closes.
 
 The panel works in Nuke 13 to 15 (PySide2) and Nuke 16+ (PySide6), and needs nothing
 installed: the client is standard library only. `NUKE_PATH` is read when Nuke starts, so
