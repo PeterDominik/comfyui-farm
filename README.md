@@ -164,7 +164,8 @@ artists restart Nuke after step 2.
    path, and so on) before anything is queued.
 4. Click *Submit*. *Submit selected nodes* queues one job per selected Read/Write, with the
    same settings.
-5. Follow the job in the list (*Only mine* / *Only active*). When it finishes, a Read
+5. Follow the job in the list. It shows everyone's jobs, like the dashboard; tick *Only mine*
+   or *Only active* to narrow it. When a job finishes, a Read
    appears next to the source node (turn this off with the checkbox). Right-click a job to
    create its Read, copy the output path, reuse its input, cancel it, run it again, or see
    the error. Double-click a finished job to create its Read.
