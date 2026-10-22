@@ -285,9 +285,17 @@ if QtWidgets is not None:
             outer = QtWidgets.QVBoxLayout(self)
             outer.setContentsMargins(6, 6, 6, 6)
 
-            head = QtWidgets.QHBoxLayout()
+            # Three panes with draggable handles: farm status | workflow form | job list.
+            split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+            outer.addWidget(split, 1)
+
+            header = QtWidgets.QWidget()
+            head = QtWidgets.QHBoxLayout(header)
+            head.setContentsMargins(0, 0, 0, 0)
+            head.setAlignment(QtCore.Qt.AlignTop)
             self.status_label = QtWidgets.QLabel("Connecting…")
             self.status_label.setTextFormat(QtCore.Qt.RichText)
+            self.status_label.setWordWrap(True)   # wraps into the pane's height when narrow
             self.url_edit = QtWidgets.QLineEdit(farm.base_url() or "")
             self.url_edit.setPlaceholderText("http://comfyfarm01:8000")
             self.url_edit.setToolTip("Farm address (normally from $COMFYFARM_URL)")
@@ -299,10 +307,7 @@ if QtWidgets is not None:
             head.addWidget(QtWidgets.QLabel("Farm:"))
             head.addWidget(self.url_edit)
             head.addWidget(dash)
-            outer.addLayout(head)
-
-            split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-            outer.addWidget(split, 1)
+            split.addWidget(header)
 
             top = QtWidgets.QWidget()
             tl = QtWidgets.QVBoxLayout(top)
@@ -377,8 +382,9 @@ if QtWidgets is not None:
             self.table.itemDoubleClicked.connect(lambda item, _c: self._read_for(item))
             bl.addWidget(self.table, 1)
             split.addWidget(bottom)
-            split.setStretchFactor(0, 0)
-            split.setStretchFactor(1, 1)
+            split.setStretchFactor(0, 0)   # header and form keep their size;
+            split.setStretchFactor(1, 0)
+            split.setStretchFactor(2, 1)   # the job list takes the extra height
 
         # -------------------------------------------------------- farm / workflows
         def _connect(self):
