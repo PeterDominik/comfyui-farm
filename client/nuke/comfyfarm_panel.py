@@ -353,7 +353,7 @@ if QtWidgets is not None:
             filt = QtWidgets.QHBoxLayout()
             filt.addWidget(QtWidgets.QLabel("Jobs:"))
             self.mine_check = QtWidgets.QCheckBox("Only mine")
-            self.mine_check.setChecked(True)
+            self.mine_check.setChecked(False)   # show everyone's jobs, like the dashboard
             self.active_check = QtWidgets.QCheckBox("Only active")
             self.active_check.setChecked(False)
             refresh = QtWidgets.QPushButton("Refresh")
