@@ -5,11 +5,14 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import textures as T
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +53,9 @@ class Param:
     multiple_of: int | None = None
     choices: list | None = None
     targets: list[Target] = field(default_factory=list)
+    pattern: str | None = None    # text params: must match this regex (empty is always allowed)
+    invalid: str = ""             # shown when the pattern doesn't match
+    naming: bool = False          # only used in output file names (texture workflows): no targets
 
     def schema(self) -> dict:
         d = {"name": self.name, "type": self.type, "label": self.label or self.name,
@@ -57,6 +63,8 @@ class Param:
         for k in ("min", "max", "multiple_of", "choices"):
             if getattr(self, k) is not None:
                 d[k] = getattr(self, k)
+        if self.naming:
+            d["naming"] = True   # goes into the output file names: forms refresh the preview
         return d
 
     def coerce(self, value: Any) -> Any:
@@ -66,7 +74,9 @@ class Param:
                 raise ParamError(f"{n} must be text.")
             if len(value) > 20000:
                 raise ParamError(f"{n} is too long.")
-            return value
+            if self.pattern and value.strip() and not re.fullmatch(self.pattern, value.strip()):
+                raise ParamError(f"{n} '{value.strip()}' won't do: {self.invalid or 'expected ' + self.pattern}")
+            return value.strip() if self.pattern else value
         if self.type == "bool":
             if isinstance(value, bool):
                 return value
@@ -138,9 +148,14 @@ class Workflow:
                 help=(p.get("help") or "").strip(), min=p.get("min"), max=p.get("max"),
                 multiple_of=p.get("multiple_of"), choices=p.get("choices"),
                 targets=[_target(t) for t in p.get("targets", [])],
+                pattern=p.get("pattern"), invalid=(p.get("invalid") or "").strip(),
+                naming=bool(p.get("naming", False)),
             )
         self.sequence: dict = m.get("sequence") or {}
         self.outputs: dict = m.get("outputs") or {}
+        # Texture workflows: several map save nodes, written as EXRs named by the TEX
+        # convention (see textures.py) instead of one renamed frame sequence.
+        self.textures: T.TextureSpec | None = T.TextureSpec.from_manifest(m["textures"]) if m.get("textures") else None
         self.problems: list[str] = self.static_check()
 
     # ------------------------------------------------------------------ checks
@@ -174,20 +189,35 @@ class Workflow:
     def static_check(self) -> list[str]:
         problems = []
         for p in self.params.values():
-            if p.type in GATEWAY_TYPES:
+            if p.type in GATEWAY_TYPES or p.naming:
                 if p.targets:
-                    problems.append(f"param {p.name}: type {p.type} is wired in by the gateway; "
-                                    f"remove its targets")
+                    problems.append(f"param {p.name}: " + (f"type {p.type} is wired in by the gateway"
+                                    if p.type in GATEWAY_TYPES else "naming params only go into file names")
+                                    + "; remove its targets")
             elif not p.targets:
                 problems.append(f"param {p.name}: no targets")
+            if p.pattern:
+                try:
+                    re.compile(p.pattern)
+                except re.error as e:
+                    problems.append(f"param {p.name}: bad pattern ({e})")
             for t in p.targets:
                 problems += self._check_target(f"param {p.name}", t.node, t.cls, t.input)
         for t in GATEWAY_TYPES:
             names = [n for n, p in self.params.items() if p.type == t]
             if len(names) > 1:
                 problems.append(f"only one param may have type {t} (found {', '.join(names)})")
-        if self.output_folder_param and not self.outputs.get("frames"):
-            problems.append(f"param {self.output_folder_param}: type output_folder needs outputs.frames")
+        if self.output_folder_param and not (self.outputs.get("frames") or self.textures):
+            problems.append(f"param {self.output_folder_param}: type output_folder needs outputs.frames "
+                            f"or textures")
+        if self.textures:
+            if self.outputs.get("frames"):
+                problems.append("textures and outputs.frames can't be used together")
+            naming = {n for n, p in self.params.items() if p.naming}
+            problems += self.textures.check(naming)
+            for mp in self.textures.maps:
+                for key in (self.textures.path_input, self.textures.prefix_input):
+                    problems += self._check_target(f"textures map {mp.channel}", mp.node, mp.cls, key)
         if self.sequence_param:
             pn = self.sequence.get("path_node")
             if pn:
@@ -275,10 +305,11 @@ class Workflow:
         return out
 
     def build(self, values: dict, seq=None, out_dir: str | None = None,
-              frames_prefix: str | None = None, preview_prefix: str | None = None) -> dict:
+              frames_prefix: str | None = None, preview_prefix: str | None = None,
+              textures: dict | None = None) -> dict:
         prompt = copy.deepcopy(self.template)
         for name, p in self.params.items():
-            if p.type == "sequence" or name not in values:
+            if p.type == "sequence" or p.naming or name not in values:
                 continue
             for t in p.targets:
                 prompt[t.node]["inputs"][t.input] = values[name]
@@ -304,6 +335,13 @@ class Workflow:
         if preview_prefix and o.get("preview"):
             pv = o["preview"]
             prompt[str(pv["node"])]["inputs"][pv["prefix_input"]] = preview_prefix
+        if textures and self.textures:
+            # Each map's save node writes PNGs into the job's scratch folder; the gateway
+            # turns them into the named EXRs afterwards (textures.write_maps).
+            for mp in textures["maps"]:
+                inputs = prompt[mp["node"]]["inputs"]
+                inputs[self.textures.path_input] = textures["raw_dir"]
+                inputs[self.textures.prefix_input] = mp["prefix"]
         return prompt
 
     def schema(self) -> dict:
@@ -311,6 +349,7 @@ class Workflow:
             "name": self.name, "label": self.label, "description": self.description,
             "tag": self.tag, "enabled": self.enabled, "problems": self.problems,
             "params": [p.schema() for p in self.params.values()],
+            "maps": [mp.channel for mp in self.textures.maps] if self.textures else None,
         }
 
 

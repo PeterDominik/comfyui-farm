@@ -32,6 +32,54 @@ def setup_logging(cfg: Config, verbose: bool = False) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def check_texture_colour(cfg: Config) -> int:
+    """Texture workflows write their maps with oiiotool through config.yaml `textures`:
+    run those exact commands on a test image, so a wrong colour space name shows up here
+    rather than in a finished job."""
+    import tempfile
+
+    from . import convert as C
+    from . import textures as T
+    tc = cfg.textures
+    if "{show}" in tc.ocio_config:
+        print(f"  [ ok ] textures: OCIO config is per show ({tc.ocio_config}); its colour spaces are "
+              f"only tried by jobs")
+        return 0
+    cmd = C.find_tool("oiiotool", cfg.convert.tools.get("oiiotool"))
+    if not cmd:
+        print("  [FAIL] textures: oiiotool not found; texture workflows need it for their EXR maps "
+              "(run scripts\\setup.ps1)")
+        return 1
+    try:
+        config = C.texture_ocio_config(tc, cfg.paths, None)
+    except Exception as e:  # noqa: BLE001 - SequenceError: config file missing
+        print(f"  [FAIL] textures: {e}")
+        return 1
+    with tempfile.TemporaryDirectory() as d:
+        png, exr = f"{d}/check.png", f"{d}/check.exr"
+        steps = [
+            ("make a test image", [*cmd, "--create", "4x4", "3", "-d", "uint8", "-o", png]),
+            (f"colour map {tc.srgb_texture} -> {tc.linear}",
+             T.map_command(cmd, tc, {"color": True, "bits": "half"}, png, exr, config)),
+            (f"data map tagged {tc.data}",
+             T.map_command(cmd, tc, {"color": False, "bits": "float"}, png, f"{d}/data.exr", config)),
+            (f"EXR input {tc.linear} -> {tc.srgb_texture}",
+             C.exr_command(cmd, C.texture_exr_setup(tc, config), exr, f"{d}/back.png")),
+        ]
+        for label, step in steps:
+            try:
+                out = subprocess.run(step, capture_output=True, text=True, timeout=60)
+                ok, text = out.returncode == 0, (out.stderr or out.stdout).strip()
+            except (OSError, subprocess.TimeoutExpired) as e:
+                ok, text = False, str(e)
+            if not ok:
+                print(f"  [FAIL] textures: {label} with {tc.ocio_config}: {text[-300:] or 'failed'}")
+                print("         check textures.ocio_config / srgb_texture / linear / data in config.yaml")
+                return 1
+    print(f"  [ ok ] textures: oiiotool converts {tc.srgb_texture} <-> {tc.linear} with {tc.ocio_config}")
+    return 0
+
+
 async def run_check(cfg: Config) -> int:
     """Preflight: workflows load, workers reachable, node packs/models present, storage visible."""
     bad = 0
@@ -73,6 +121,9 @@ async def run_check(cfg: Config) -> int:
         except Exception as e:  # noqa: BLE001
             bad += 1
             print(f"  [FAIL] {tool} ({' '.join(cmd)}): {e}")
+
+    if any(wf.textures for wf in reg.workflows.values()):
+        bad += check_texture_colour(cfg)
 
     for m in cfg.paths.mappings:
         ok = os.path.isdir(m.windows)

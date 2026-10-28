@@ -112,7 +112,10 @@ def create_app(cfg: Config) -> FastAPI:
             s = wf.schema()
             for p in s["params"]:
                 if p["type"] == "output_folder":   # shown greyed-out in the empty field
-                    p["placeholder"] = "Empty = " + default_output_dir_display(cfg.paths, wf.tag)
+                    # Texture workflows version a folder per run; show the asset one (the usual case).
+                    tpl = next((d for d in wf.textures.dirs if "{asset}" in d), wf.textures.dirs[0]) \
+                        if wf.textures else None
+                    p["placeholder"] = "Empty = " + default_output_dir_display(cfg.paths, wf.tag, tpl)
             s["worker_problems"] = {w.name: w.problems[wf.name] for w in farm.workers.values()
                                     if wf.name in w.problems}
             out.append(s)

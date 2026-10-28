@@ -59,6 +59,7 @@ class E2E(unittest.TestCase):
         for f in range(1001, 1013):
             (plates / f"abc_0010.pre.v1.{f}.png").write_bytes(b"x")
         cls.make_conversion_fixtures()
+        cls.make_texture_fixtures()
         cls.comfy_port, cls.gw_port = free_port(), free_port()
         root = cls.tmp.as_posix()
         (cls.tmp / "config.yaml").write_text(f"""
@@ -112,6 +113,17 @@ convert:
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "6",
                         "-timecode", "00:00:41:16", "-c:v", "prores_ks",     # slate at 1000, plate 1001-1005
                         str(movhistory / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov")], check=True)
+
+    @classmethod
+    def make_texture_fixtures(cls):
+        tex = cls.tmp / "shows/xyz/_asset/rockA/cg/textures"
+        for sub, names in (("src", ["rockA_diffuse.1001.png", "rockA_diffuse.1002.png", "rockA_diffuse.1011.png"]),
+                           ("photo", ["cliff.jpg"]),
+                           ("exr", ["rockA_color.1001.exr", "rockA_color.1002.exr"]),
+                           ("mixed", ["rockA_diffuse.1001.png", "rockA_normal.1001.png"])):
+            (tex / sub).mkdir(parents=True)
+            for n in names:
+                (tex / sub / n).write_bytes(b"x")
 
     def oiiotool_calls(self):
         try:
@@ -402,6 +414,75 @@ convert:
         self.assertIn("bad EXR header", failed["error"])
         with self.assertRaisesRegex(farm.FarmError, "Missing frames"):
             farm.submit("ltx25_alpha_gen", {"input": f"{base}.plate.v1.%04d.exr 1001-1009"})
+
+    def test_0495_chord_texture_maps(self):
+        """CHORD: a folder of UDIM tiles in, five maps out as TEX-named EXRs in a versioned folder."""
+        tex = "/rdo/shows/xyz/_asset/rockA/cg/textures"
+        channels = ["color01", "nrm02", "bmp02", "spcr01", "metal01"]
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "chord_pbr", "params": {"input": f"{tex}/src"}})
+        self.assertEqual((plan["what"], plan["maps"], plan["asset"]),
+                         ("15 EXRs (5 maps × 3 UDIM tiles)", channels, "rockA"))
+        self.assertEqual((plan["first_file"], plan["last_file"]), ("acescg_map1_noTile_defState_color01.1001.0000.exr",
+                                                                   "acescg_map1_noTile_defState_color01.1011.0000.exr"))
+        self.assertTrue(plan["output_dir_posix"].endswith("/xyz/_project_ref/_cg/comfyui/renders/rockA/"
+                                                          "rockA_diffuse.chord_v001"), plan["output_dir_posix"])
+        job = farm.submit("chord_pbr", {"input": f"{tex}/src", "state": "damaged"})
+        nxt = farm.submit("chord_pbr", {"input": f"{tex}/src/rockA_diffuse.%04d.png 1002-1011", "description": "moss"})
+        self.assertEqual((job["info"]["version"], nxt["info"]["version"]), (1, 2))   # v001 is promised to job
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        out = Path(done["info"]["output_dir"])
+        self.assertEqual(sorted(os.listdir(out)), sorted(f"acescg_map1_noTile_damaged_{c}.{u}.0000.exr"
+                                                         for c in channels for u in (1001, 1002, 1011)))
+        o = done["outputs"]
+        self.assertEqual((o["files"], o["frames"], o["first"], o["last"]), (15, 3, 1001, 1011))
+        self.assertTrue(o["frame_pattern_posix"].endswith("/acescg_map1_noTile_damaged_color01.%04d.0000.exr"))
+        self.assertEqual(list(o["maps"]), channels)
+        self.assertFalse((self.tmp / "scratch" / job["id"]).exists(), "raw map images should be cleaned up")
+        prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
+        self.assertTrue(prompt["28"]["inputs"]["output_path"].endswith(f"/scratch/{job['id']}/maps"))
+        self.assertEqual(prompt["28"]["inputs"]["filename_prefix"], f"_cf{job['short_id']}_bmp02")
+        # Height is a bump map: 32-bit float; base colour goes sRGB -> ACEScg; data maps keep their values.
+        calls = [c["args"] for c in self.oiiotool_calls() if f"_cf{job['short_id']}_" in " ".join(c["args"])]
+        self.assertEqual(len(calls), 15)
+        bump = next(a for a in calls if "_bmp02_" in " ".join(a))
+        self.assertEqual((bump[bump.index("-d") + 1], "--colorconvert" in bump), ("float", False))
+        color = next(a for a in calls if "_color01_" in " ".join(a))
+        i = color.index("--colorconvert")
+        self.assertEqual((color[i + 1:i + 3], color[color.index("-d") + 1]), (["srgb_tx", "ACEScg"], "half"))
+
+        nd = self.wait_for(nxt["id"], ("done", "failed"))
+        self.assertEqual(nd["status"], "done", nd.get("error"))
+        self.assertEqual(sorted(os.listdir(nd["info"]["output_dir"]))[:2],
+                         ["acescg_map1_noTile_defState_bmp02-moss.1002.0000.exr",
+                          "acescg_map1_noTile_defState_bmp02-moss.1011.0000.exr"])
+        self.assertTrue(nd["info"]["output_dir"].endswith("rockA_diffuse.chord_v002"))
+
+        # One tileable photo: 'tile', UDIM 1001.
+        photo = farm.submit("chord_pbr", {"input": f"{tex}/photo/cliff.jpg"})
+        pd = self.wait_for(photo["id"], ("done", "failed"))
+        self.assertEqual(pd["status"], "done", pd.get("error"))
+        self.assertIn("acescg_map1_tile_defState_metal01.1001.0000.exr", os.listdir(pd["info"]["output_dir"]))
+        self.assertTrue(pd["info"]["output_dir_posix"].endswith("/rockA/cliff.chord_v001"))
+
+        # EXR tiles (ACEScg) are converted to sRGB texture PNGs for CHORD first.
+        exr = farm.submit("chord_pbr", {"input": f"{tex}/exr"})
+        self.assertEqual(exr["status"], "preparing")
+        ed = self.wait_for(exr["id"], ("done", "failed"))
+        self.assertEqual(ed["status"], "done", ed.get("error"))
+        self.assertEqual(len(os.listdir(ed["info"]["output_dir"])), 10)
+        conv = [c["args"] for c in self.oiiotool_calls() if "rockA_color.1002.exr" in " ".join(c["args"])][0]
+        i = conv.index("--colorconvert")
+        self.assertEqual(conv[i + 1:i + 3], ["ACEScg", "srgb_tx"])
+
+        with self.assertRaisesRegex(farm.FarmError, "one 1001 tile"):
+            farm.submit("chord_pbr", {"input": f"{tex}/src", "tile": "tile"})
+        with self.assertRaisesRegex(farm.FarmError, "2 different textures"):
+            farm.submit("chord_pbr", {"input": f"{tex}/mixed"})
+        with self.assertRaisesRegex(farm.FarmError, "not movies"):
+            farm.submit("chord_pbr", {"input": "/rdo/shows/xyz/.published/abc/abc_0010/edit/abc_0010_ref.mov"})
+        with self.assertRaisesRegex(farm.FarmError, "UV set 'uv1' won't do"):
+            farm.submit("chord_pbr", {"input": f"{tex}/src", "uvset": "uv1"})
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):

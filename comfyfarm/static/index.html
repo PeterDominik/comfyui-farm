@@ -186,7 +186,8 @@ function renderForm() {
     + wf.params.map(p => field(p) + (p.name === destAfter ? '<div class="dest" id="dest" aria-live="polite"></div>' : "")).join("")
     + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>
        <div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
-  for (const p of [seqP, outP]) if (p) $("#p_" + p.name).addEventListener("input", () => scheduleDest(wf, seqP, outP));
+  for (const p of [seqP, outP, ...wf.params.filter(p => p.naming)])
+    if (p) $("#p_" + p.name).addEventListener(p.type === "choice" ? "change" : "input", () => scheduleDest(wf, seqP, outP));
   f.onsubmit = async e => {
     e.preventDefault();
     const params = {};
@@ -215,6 +216,8 @@ function renderForm() {
 // ------------------------------------------------------------- destination preview
 function convertLine(c) {
   if (!c) return "";
+  if (c.kind === "exr" && c.mode === "colorconvert")
+    return `<br>EXR textures converted first: <code>${esc(c.from)}</code> → <code>${esc(c.to)}</code>`;
   if (c.kind === "exr")
     return `<br>EXR converted first: <code>${esc(c.input_colorspace)}</code> → <code>${esc(c.display)} / ${esc(c.view)}</code>, `
       + (c.bundle ? `shot LUTs from <code>${esc(c.bundle)}</code>` : "show default LUTs");
@@ -236,6 +239,10 @@ async function updateDest(wf, seqP, outP) {
   const params = {};
   if (seqP) params[seqP.name] = $("#p_" + seqP.name).value.trim();
   if (outP && $("#p_" + outP.name).value.trim()) params[outP.name] = $("#p_" + outP.name).value.trim();
+  for (const p of wf.params.filter(p => p.naming)) {   // these are in the file names
+    const v = $("#p_" + p.name).value.trim();
+    if (v) params[p.name] = v;
+  }
   if (seqP && !params[seqP.name]) { el.className = "dest"; el.innerHTML = ""; return; }
   const n = ++destSeq;
   try {
@@ -245,11 +252,14 @@ async function updateDest(wf, seqP, outP) {
     const files = r.last_file && r.last_file !== r.first_file
       ? `<code>${esc(r.first_file)}</code> … <code>${esc(r.last_file)}</code>` : `<code>${esc(r.first_file)}</code>`;
     el.className = "dest";
-    el.innerHTML = `<b>Will write</b> ${r.frames ? r.frames + " frames" : "frames"} to <code>${esc(dir)}/</code><br>as ${files}`
-      + (r.version > 1 ? `<br><span class="warn">Earlier versions of these frames already exist in that folder (or are queued), so this run is v${String(r.version).padStart(3, "0")}.</span>` : "")
+    const what = r.what || (r.frames ? r.frames + " frames" : "frames");
+    el.innerHTML = `<b>Will write</b> ${esc(what)} to <code>${esc(dir)}/</code><br>as ${files}`
+      + (r.maps ? `<br>Maps: ${r.maps.map(m => `<code>${esc(m)}</code>`).join(" ")}` : "")
+      + (r.version > 1 ? `<br><span class="warn">Earlier versions already exist there (or are queued), so this run is v${String(r.version).padStart(3, "0")}.</span>` : "")
       + convertLine(r.convert)
       + (r.notes || []).map(n => `<br><span class="warn">${esc(n)}</span>`).join("")
-      + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "");
+      + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "")
+      + (!r.picked && !r.shot && r.asset ? `<br>Asset <code>${esc(r.asset)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "");
   } catch (err) {
     if (n !== destSeq) return;
     el.className = "dest err"; el.textContent = err.message;
@@ -276,12 +286,15 @@ function detail(j) {
   const i = j.info || {}, o = j.outputs || {}, inp = i.input || {};
   const keyq = $("#key").value.trim() ? "?key=" + encodeURIComponent($("#key").value.trim()) : "";
   return `<tr class="detail"><td colspan="9"><div class="kv">
-    <div>Workflow</div><div>${esc(j.workflow)} · seed ${esc(j.params?.seed ?? "")} · ${esc(j.worker || "not dispatched")}${j.attempts > 1 ? ` · attempt ${j.attempts}` : ""}</div>
+    <div>Workflow</div><div>${esc(j.workflow)}${j.params?.seed != null ? ` · seed ${esc(j.params.seed)}` : ""} · ${esc(j.worker || "not dispatched")}${j.attempts > 1 ? ` · attempt ${j.attempts}` : ""}</div>
     ${pathRow("Input", i.input_posix ? i.input_posix + (inp.first != null ? ` ${inp.first}-${inp.last}` : "") : inp.farm_path)}
     <div>Frames in</div><div>${inp.frame_count ?? "?"}${inp.skip || inp.cap ? ` <span class="muted">(loader skip ${inp.skip}, cap ${inp.cap})</span>` : ""}</div>
-    ${pathRow("Output", o.frame_pattern_posix || i.output_dir_posix || i.output_dir)}
-    ${o.frames ? `<div>Frames out</div><div>${o.frames} (${o.first}-${o.last})</div>` : ""}
-    ${pathRow("Output (Windows)", o.frame_pattern || i.output_dir)}
+    ${o.maps ? pathRow("Output", i.output_dir_posix || i.output_dir)
+             : pathRow("Output", o.frame_pattern_posix || i.output_dir_posix || i.output_dir)}
+    ${o.maps ? `<div>Maps out</div><div>${o.files} EXRs: ${Object.keys(o.maps).map(m => `<code>${esc(m)}</code>`).join(" ")}</div>`
+             : o.frames ? `<div>Frames out</div><div>${o.frames} (${o.first}-${o.last})</div>` : ""}
+    ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
+    ${pathRow("Output (Windows)", o.maps ? i.output_dir : (o.frame_pattern || i.output_dir))}
     ${j.params?.positive_prompt ? `<div>Prompt</div><div>${esc(j.params.positive_prompt)}</div>` : ""}
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
     ${j.error ? `<div>Error</div><div class="err">${esc(j.error)}</div>` : ""}

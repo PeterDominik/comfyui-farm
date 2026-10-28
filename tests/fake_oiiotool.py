@@ -13,6 +13,8 @@ import sys
 import time
 import zlib
 
+IMAGE_EXTENSIONS = {".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
+
 
 def tiny_png(grey: int = 128, size: int = 1) -> bytes:
     def chunk(tag, data):
@@ -27,8 +29,10 @@ args = sys.argv[1:]
 if args[:1] == ["--buildinfo"]:
     print("OpenImageIO 3.0.0 (fake)\nDependencies: OpenColorIO 2.4.1 (fake)")
     sys.exit(0)
-src = next(a for a in args if a.endswith(".exr"))
 out = args[args.index("-o") + 1]
+values = {i + 1 for i, a in enumerate(args) if a == "--colorconfig"}   # the config path isn't an input
+src = next((a for i, a in enumerate(args) if i not in values and a != out and not a.startswith("-")
+            and os.path.splitext(a)[1].lower() in IMAGE_EXTENSIONS), "")
 log = os.environ.get("FAKE_OIIOTOOL_LOG")
 if log:
     with open(log, "a", encoding="utf-8") as fh:
@@ -39,7 +43,7 @@ if "broken" in os.path.basename(src):
 if "slow" in os.path.basename(src):
     time.sleep(1.5)
 levels = json.loads(os.environ.get("FAKE_OIIOTOOL_LEVELS") or "{}")
-disp = next(i for i, a in enumerate(args) if a.startswith("--ociodisplay"))
-key = f"{args[disp].split('from=', 1)[1]}|{args[disp + 2]}"
+disp = next((i for i, a in enumerate(args) if a.startswith("--ociodisplay")), None)
+key = f"{args[disp].split('from=', 1)[1]}|{args[disp + 2]}" if disp is not None else ""
 with open(out, "wb") as fh:
     fh.write(tiny_png(levels.get(key, 200), 8) if levels else tiny_png())

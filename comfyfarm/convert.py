@@ -22,9 +22,9 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 
-from .config import ConvertConfig, PathsConfig
+from .config import ConvertConfig, PathsConfig, TexturesConfig
 from .paths import (Sequence, SequenceError, _pattern_regex, context_from_path, normalize, parse_input,
-                    render, resolve_sequence, source_stem, to_farm, to_posix)
+                    render, resolve_sequence, source_stem, texture_input, to_farm, to_posix)
 
 MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf"}
 
@@ -311,20 +311,54 @@ def ocio_setup(seq: Sequence, pc: PathsConfig, cc: ConvertConfig) -> dict:
 
 
 # ============================================================== resolve
+def texture_ocio_config(tc: TexturesConfig, pc: PathsConfig, show: str | None) -> str:
+    """textures.ocio_config for one job: a built-in config (ocio://...) as it is; a file
+    may be given in its Linux form and use {show}, like convert.exr.ocio_config."""
+    config = tc.ocio_config
+    if config.startswith("ocio://"):
+        return config
+    if "{show}" in config and not show:
+        raise SequenceError("textures.ocio_config is per show, but there's no show in the input path.")
+    config = to_farm(config.format(show=show or ""), pc.mappings)
+    if pc.validate_inputs:
+        if os.path.isdir(config):
+            config = config.rstrip("/") + "/config.ocio"
+        if not os.path.isfile(config):
+            raise SequenceError(f"No OCIO config at {to_posix(config, pc.mappings) or config} (textures.ocio_config).")
+    return config
+
+
+def texture_exr_setup(tc: TexturesConfig, config: str | None = None) -> dict:
+    """EXR textures (linear, e.g. ACEScg from Mari) -> the 8-bit sRGB-encoded images a
+    texture model reads. A plain colour conversion: no display, look or shot LUT."""
+    return {"mode": "colorconvert", "config": config or tc.ocio_config, "from": tc.linear, "to": tc.srgb_texture,
+            "context": {}, "extra_args": ["--ch", "R,G,B"], "notes": []}
+
+
 def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
-                  shot: str | None = None) -> Sequence:
-    """Any supported input -> a Sequence. Converted kinds carry `convert` details."""
+                  shot: str | None = None, texture: TexturesConfig | None = None) -> Sequence:
+    """Any supported input -> a Sequence. Converted kinds carry `convert` details.
+
+    With `texture` (texture workflows such as CHORD): a folder means the texture in it,
+    UDIM tiles may skip numbers, EXRs are converted from linear rather than through the
+    shot's display look, and movies are refused."""
     if not raw or not raw.strip():
         raise SequenceError("No input sequence given.")
     path, _, _ = parse_input(raw)
     if os.path.splitext(path)[1].lower() in MOVIE_EXTENSIONS:
+        if texture is not None:
+            raise SequenceError("This workflow takes texture images (png, jpg, tif or exr), not movies.")
         return resolve_movie(raw, pc, cc, show, shot)
-    seq = resolve_sequence(raw, pc, show=show, shot=shot)
+    if texture is not None and pc.validate_inputs:
+        raw = texture_input(raw, pc)
+    seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture is not None)
     if seq.kind == "exr":
         if pc.validate_inputs:
             require_tool(cc, "oiiotool")
+        setup = texture_exr_setup(texture, texture_ocio_config(texture, pc, seq.show)) \
+            if texture is not None else ocio_setup(seq, pc, cc)
         seq.convert = {"kind": "exr", "src_dir": seq.directory, "src_pattern": seq.filename,
-                       "first": seq.first, "last": seq.last, **ocio_setup(seq, pc, cc)}
+                       "first": seq.first, "last": seq.last, "frames": seq.frames, **setup}
     return seq
 
 
@@ -343,6 +377,9 @@ def summary(seq: Sequence | None, pc: PathsConfig) -> dict | None:
     if not seq or not seq.convert:
         return None
     c = seq.convert
+    if c["kind"] == "exr" and c.get("mode") == "colorconvert":
+        return {"kind": "exr", "mode": "colorconvert", "from": c["from"], "to": c["to"],
+                "config": to_posix(c["config"], pc.mappings) or c["config"]}
     if c["kind"] == "exr":
         return {"kind": "exr", "display": c["display"], "view": c["view"],
                 "input_colorspace": c["input_colorspace"], "context": c["context"],
@@ -369,6 +406,9 @@ async def _run(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
 def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, input_colorspace: str | None = None,
                 view: str | None = None) -> list[str]:
     """The oiiotool call for one EXR frame (also used by `comfyfarm color-debug`)."""
+    if c.get("mode") == "colorconvert":   # texture workflows: linear -> sRGB texture
+        return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
+                "--colorconvert", input_colorspace or c["from"], c["to"], "-d", "uint8", "-o", dst]
     return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
             f"--ociodisplay:from={input_colorspace or c['input_colorspace']}", c["display"], view or c["view"],
             "-d", "uint8", "-o", dst]
@@ -383,7 +423,7 @@ async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
     rx = _pattern_regex(c["src_pattern"])
     by_frame = {int(m.group(1)): n for n, m in ((n, rx.match(n)) for n in names) if m} if rx \
         else {c["first"]: c["src_pattern"]}
-    frames = list(range(c["first"], c["last"] + 1))
+    frames = list(c.get("frames") or range(c["first"], c["last"] + 1))   # "frames": UDIM tiles, gaps allowed
     missing = [f for f in frames if f not in by_frame]
     if missing:
         raise ConvertError(f"Frames disappeared since submitting: {missing[:10]}")

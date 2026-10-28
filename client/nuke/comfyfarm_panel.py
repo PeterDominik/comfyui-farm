@@ -158,11 +158,16 @@ class PanelModel:
         files = f"<code>{e(plan['first_file'])}</code>"
         if plan.get("last_file") and plan["last_file"] != plan["first_file"]:
             files += f" … <code>{e(plan['last_file'])}</code>"
-        frames = f"{plan['frames']} frames" if plan.get("frames") else "frames"
-        out = (f"<b style='color:#93d6a6'>Will write</b> {frames} to "
+        frames = plan.get("what") or (f"{plan['frames']} frames" if plan.get("frames") else "frames")
+        out = (f"<b style='color:#93d6a6'>Will write</b> {e(frames)} to "
                f"<code>{e(plan.get('output_dir_posix') or plan.get('output_dir') or '')}/</code><br>as {files}")
+        if plan.get("maps"):
+            out += "<br>Maps: " + " ".join(f"<code>{e(m)}</code>" for m in plan["maps"])
         c = plan.get("convert") or {}
-        if c.get("kind") == "movie":
+        if c.get("kind") == "exr" and c.get("mode") == "colorconvert":
+            out += (f"<br>EXR textures converted first: <code>{e(c.get('from', ''))}</code> → "
+                    f"<code>{e(c.get('to', ''))}</code>")
+        elif c.get("kind") == "movie":
             out += (f"<br>Movie: {e(str(c.get('codec') or ''))} {c.get('width') or '?'}×{c.get('height') or '?'} "
                     f"at {round(c.get('fps') or 0, 3):g} fps, ")
             out += (f"timecode <code>{e(c['timecode'])}</code> → frames {c['start']}-{c['end']}" if c.get("timecode")
@@ -180,6 +185,8 @@ class PanelModel:
             out += f"<br><span style='color:#e0a24a'>{e(note)}</span>"
         if not plan.get("picked") and plan.get("shot"):
             out += f"<br>Shot <code>{e(plan['shot'])}</code>, show <code>{e(plan.get('show') or '')}</code>."
+        elif not plan.get("picked") and plan.get("asset"):
+            out += f"<br>Asset <code>{e(plan['asset'])}</code>, show <code>{e(plan.get('show') or '')}</code>."
         return out
 
     @staticmethod
@@ -483,6 +490,8 @@ if QtWidgets is not None:
                 if current is not None and w.findText(str(current)) >= 0:
                     w.setCurrentIndex(w.findText(str(current)))
                 w.currentTextChanged.connect(lambda v, k=key: self.settings.setValue(k, v))
+                if p.get("naming"):   # in the output file names: refresh the preview
+                    w.currentTextChanged.connect(self._schedule_plan)
                 return w, w
             if t == "text":
                 w = QtWidgets.QPlainTextEdit(str(saved if saved is not None else p.get("default") or ""))
@@ -510,6 +519,8 @@ if QtWidgets is not None:
                 return w, row
             w.setText(str(saved if saved is not None else ("" if p.get("default") is None else p["default"])))
             w.textChanged.connect(lambda v, k=key: self.settings.setValue(k, v))
+            if p.get("naming"):
+                w.textChanged.connect(self._schedule_plan)
             return w, w
 
         def _browse(self, widget, kind):
@@ -700,7 +711,9 @@ if QtWidgets is not None:
 
         def _job_finished(self, job):
             if job["status"] == "done":
-                self._message(f"{job['short_id']} finished: {job['outputs'].get('frame_pattern_posix')}")
+                out = job.get("outputs") or {}
+                where = (job.get("info") or {}).get("output_dir_posix") if out.get("maps") else out.get("frame_pattern_posix")
+                self._message(f"{job['short_id']} finished: {where}")
                 if self.autoread_check.isChecked() and nk is not None:
                     nk.create_read(job, near=self.model.sources.get(job["id"]))
             elif job["status"] == "failed":
@@ -725,7 +738,9 @@ if QtWidgets is not None:
             read.setEnabled(job["status"] == "done" and nk is not None)
             read.triggered.connect(lambda *_: nk.create_read(job, near=self.model.sources.get(job["id"])))
             copy = menu.addAction("Copy output path")
-            path = farm.output_pattern(job) or (job.get("info") or {}).get("output_dir_posix") or ""
+            info = job.get("info") or {}
+            path = (info.get("output_dir_posix") if (job.get("outputs") or {}).get("maps") else None) \
+                or farm.output_pattern(job) or info.get("output_dir_posix") or ""
             copy.setEnabled(bool(path))
             copy.triggered.connect(lambda *_: QtWidgets.QApplication.clipboard().setText(path))
             reuse = menu.addAction("Use this job's input")

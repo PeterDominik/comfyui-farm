@@ -35,6 +35,9 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 
   More layouts can be added in `config.yaml` (`paths.context_patterns`). If a path
   matches none of them, the gateway asks for an output folder instead of guessing.
+- **Texture workflows.** `chord_pbr` turns a diffuse texture (or its UDIM tiles) into
+  PBR maps with Ubisoft's CHORD, written as linear EXRs named by the TEX naming
+  convention: `acescg_map1_noTile_defState_color01.1001.0000.exr`. See *Texture workflows*.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -44,7 +47,7 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 | Path | What |
 |---|---|
 | `comfyfarm/` | The gateway: API, dispatcher/monitor, job DB, workflow builder, dashboard |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed) |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `scripts/` | Windows setup, services (NSSM), firewall, update |
@@ -57,7 +60,10 @@ Needs **Git for Windows**, **Python 3.10+** (python.org, tick *Add to PATH*), an
 services, **[NSSM](https://nssm.cc)**. The tools for EXR and movie inputs come with the
 Python requirements, so `setup.ps1` installs them into `.venv`: `oiiotool` (OpenImageIO,
 with OpenColorIO) and `ffmpeg` (imageio-ffmpeg). ComfyUI must have the custom node packs
-this workflow uses: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo.
+the workflows use: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo, plus
+[ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord) with `chord_v1.safetensors` in
+`ComfyUI/models/checkpoints` for `chord_pbr`. CHORD's weights are under Ubisoft's
+research-only licence.
 
 ```powershell
 git clone https://github.com/<org>/comfyui-farm.git C:\comfyfarm
@@ -190,6 +196,23 @@ if PySide6 or PySide2 is installed.
 Optional job fields: `name`, `priority` (−10…10; above 0 is admin only when keys are on),
 and `show` / `shot` overrides for inputs outside the publish layout.
 
+### Parameters for `chord_pbr`
+
+| Param | Default | Notes |
+|---|---|---|
+| `input` | required | A texture file, its UDIM tiles (`.../rock_diffuse.%04d.png`, gaps fine, optional range), or a folder holding one texture. png/jpg/tif/webp, or exr (converted from ACEScg first) |
+| `output_path` | show default | Root folder: maps go to `<this>/<shot or asset>/<source>.chord_vNNN/`. Same rules as above |
+| `uvset` | `map1` | `map` + 1–2 digits, optionally `-oneWord` (`map10-preview`) |
+| `tile` | `auto` | `tile` / `noTile`. auto: UDIM tiles are `noTile`, a single texture is `tile` (UDIM 1001) |
+| `state` | `defState` | One camelCase word (`damaged`) |
+| `description` | empty | One word after the channel: `color01-sand` |
+| `numbering` | `udim` | What the number in the input names is; `frame` for an animated texture |
+
+```bash
+python comfyfarm_client.py submit chord_pbr \
+    "input=/rdo/shows/<show>/_asset/rockA/cg/textures/src/" state=damaged --wait
+```
+
 **Naming and layout** live in `config.yaml` under `paths`: `context_patterns` (where
 show/seq/shot sit in a path), `output_root` (default root) + `output_dir` (`{root}/{shot}`),
 `frame_name` / `preview_name` (file names; tokens `{source} {folder} {show} {seq} {shot}
@@ -218,8 +241,58 @@ Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `
 when `auth.api_keys` is set in `config.yaml`.
 
 Job statuses: `preparing` (EXR/movie inputs being converted) → `queued` → `dispatched`
-(waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, copying preview) →
-`done`, or `failed` / `cancelled`.
+(waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, copying preview,
+writing texture maps as EXR) → `done`, or `failed` / `cancelled`.
+
+A finished texture job's `outputs.maps` has one entry per channel: its `pattern` (a
+`%04d` over the UDIMs, or the file itself for one tile), `pattern_posix`, `first`/`last`
+and `files`. `outputs.frame_pattern` is the base colour's.
+
+## Texture workflows
+
+`chord_pbr` runs [ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord): CHORD estimates
+base colour, normal, roughness and metalness from a diffuse texture, and the workflow
+turns the normal into height. The gateway writes the maps the way the TEX department's
+naming convention and the TexturePublisher expect:
+
+```
+<colorspace>_<uvset>_<tile>_<state>_<channel>[-<description>].<UDIM>.<frame>.exr
+acescg_map1_noTile_defState_color01.1001.0000.exr
+```
+
+| CHORD output | Channel | EXR |
+|---|---|---|
+| base colour | `color01` | half, converted from sRGB to ACEScg |
+| normal | `nrm02` | half, values kept |
+| height | `bmp02` | 32-bit float, values kept |
+| roughness | `spcr01` | half, values kept |
+| metalness | `metal01` | half, values kept |
+
+- **`nrm02` / `bmp02`, not `01`:** bmp01, nrm01, dsp01 and cav01 belong to maps
+  published by modeling. The manifest check refuses them.
+- **Input:** one texture per job: a file, its UDIM tiles, or a folder holding exactly
+  one texture. A folder with several textures (`rock_diffuse`, `rock_normal`, …) is
+  refused with their names; submit each one. UDIMs come from the file names
+  (`rock_diffuse.1011.png`, or `….1011.0000.exr` in convention names), and gaps are fine.
+  All tiles of a job should be the same size.
+- **EXR inputs** (linear ACEScg, e.g. from Mari) are converted to 8-bit sRGB texture
+  PNGs for CHORD: a plain colour conversion, no display or shot look.
+- **Output folder:** the file names have no version, so each run gets a new folder:
+  `renders/<asset>/<source>.chord_v001/`. The asset comes from `/shows/<show>/_asset/<asset>/`
+  in the input path (`paths.context_patterns`; add that line to an existing
+  `config.yaml`). Nothing is written into `_toBePublished`; copy a version there when
+  you're happy with it.
+- **Colour:** `textures:` in `config.yaml`. The defaults use OCIO's built-in ACES config
+  (`ocio://default`, `srgb_tx` → `ACEScg`), so they don't depend on a show config's colour
+  space names. A show's own config works too (`ocio_config` may use `{show}`; set the
+  colour space names it uses). `python -m comfyfarm check` runs the exact conversions on
+  a test image.
+- **8-bit in between.** WAS *Image Save* writes 8-bit PNGs, so the maps carry 8 bits of
+  precision even in the EXRs. Height can show steps when used for displacement. A save
+  node that writes 16-bit or EXR would fix it: point the manifest's maps at it and set
+  `ext` in its `textures` section.
+- **Nuke:** *Create Read node* on a texture job makes one Read per map, in a row. UDIM
+  tiles read as frames (1001, 1002, 1011, …), missing tiles show black.
 
 ### Input formats
 
@@ -332,6 +405,16 @@ outputs:                       # nodes the gateway points at each job's versione
 - **Nodes in `sequence` and `outputs` belong to the gateway.** A plain param targeting
   them would be overwritten on every job, which is why the output folder is its own type
   rather than a param pointed at `OUTPUT_PATH`.
+- **Text checks:** `pattern` (a regex the value must match; empty is always allowed) and
+  `invalid` (the message when it doesn't).
+- **Texture workflows** have a `textures` section instead of `outputs.frames`: the file
+  name template, and per map its save node (`node`, `class`), TEX `channel`,
+  `colorspace` token (default `acescg`), `color: true` for sRGB colour, and `bits`
+  (`half`/`float`). Optional `dir`: output folder templates, the first whose tokens the
+  input gives wins (default `{root}/{shot}/…`, then `{root}/{asset}/…`, then
+  `{root}/{source}.{tag}_v{version:03d}`). Params with `naming: true` (`uvset`, `tile`,
+  `state`, `description`, `numbering`) go into the file names and take no `targets`.
+  See `workflows/chord_pbr/manifest.yaml`.
 - Removing a param from the manifest changes the API: clients still sending it get
   "Unknown parameter". The Nuke panel and dashboard read the parameters from the farm,
   so they follow on their own; only scripts that send the old name need changing.
