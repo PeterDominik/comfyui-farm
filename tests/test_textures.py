@@ -4,7 +4,9 @@
 """
 
 import asyncio
+import contextlib
 import copy
+import io
 import json
 import os
 import sys
@@ -13,8 +15,9 @@ import unittest
 from pathlib import Path
 
 from comfyfarm import textures as T
+from comfyfarm.__main__ import ocio_roles
 from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig, TexturesConfig
-from comfyfarm.convert import exr_command, resolve_input, summary
+from comfyfarm.convert import REPO, exr_command, resolve_input, summary
 from comfyfarm.paths import SequenceError, loaded_names, resolve_sequence, texture_input, texture_numbers
 from comfyfarm.paths import Sequence
 from comfyfarm.workflows import ParamError, Workflow
@@ -33,8 +36,11 @@ def touch(d, *names):
 MAPS = [{"name": "basecolor", "channel": "color01", "colorspace": "acescg", "color": True, "bits": "half"},
         {"name": "height", "channel": "bmp02", "colorspace": "acescg", "color": False, "bits": "float"}]
 TOKENS = {"uvset": "map1", "tile": "noTile", "state": "defState", "description": ""}
-OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  scene_linear: ACES - ACEScg\n  color_picking: Output - sRGB\n"
-               "colorspaces:\n  - !<ColorSpace>\n    name: ACES - ACEScg\n  - !<ColorSpace>\n    name: Output - sRGB\n")
+OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  default: ACES - ACEScg\n  scene_linear: ACES - ACEScg\n"
+               "  color_picking: Output - sRGB\n  data: Raw\n"
+               "displays:\n  sRGB:\n    - !<View> {name: Raw, colorspace: Raw}\n"
+               "colorspaces:\n  - !<ColorSpace>\n    name: ACES - ACEScg\n  - !<ColorSpace>\n    name: Output - sRGB\n"
+               "  - !<ColorSpace>\n    name: Raw\n    isdata: true\n")
 # A job's frozen OCIO settings (convert.ocio_setup) with the default names.
 JOB_OCIO = {"config": "/farm/ocio/config.ocio", "linear": "scene_linear", "image": "color_picking", "data": "data",
             "context": {}}
@@ -272,6 +278,23 @@ class PreflightTests(unittest.TestCase):
             broken = Config(ocio=oc, convert=ConvertConfig(tools={"oiiotool": [sys.executable, "-c", "import sys; sys.exit(3)"]}))
             self.assertEqual(check_ocio(broken), 1)
             self.assertEqual(check_ocio(Config(ocio=OcioConfig(config=f"{tmp}/nope.ocio"))), 1)
+            self.assertEqual(check_ocio(Config(ocio=OcioConfig(config=f"{tmp}/config.ocio", data="nope"),
+                                               convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))),
+                             1 if ocio_roles(f"{tmp}/config.ocio", ["data"]) else 0)
+
+    @unittest.skipUnless(os.path.isfile(REPO / "ocio" / "config.ocio"), "ocio/config.ocio not in this checkout")
+    def test_ocio_check_with_the_repo_config(self):
+        from comfyfarm.__main__ import check_ocio
+        from comfyfarm.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["FAKE_OIIOTOOL_LOG"] = f"{tmp}/oiio.log"
+            self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(check_ocio(Config(convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))), 0)
+            self.assertIn("ocio/config.ocio", out.getvalue())
+            if ocio_roles(str(REPO / "ocio" / "config.ocio"), ["scene_linear"]):   # PyOpenColorIO installed
+                self.assertIn("scene_linear = rdo, color_picking = ACES-look, data = Utility - Raw", out.getvalue())
 
 
 if __name__ == "__main__":

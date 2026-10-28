@@ -87,10 +87,12 @@ ocio:
   # Data maps (normal, bump, ...) keep their values and are only tagged `data`.
   # `python -m comfyfarm check` shows what these resolve to and runs the conversions.
   config: ocio/config.ocio     # relative = inside the repo
-  linear: scene_linear
-  image: color_picking
-  data: data
-  context: {}                  # OCIO context variables, if the config uses any, e.g. {SHOT: '{shot_short}'}
+  linear: scene_linear         # rdo (ACEScg) in the repo config
+  image: color_picking         # ACES-look (ACES sRGB output transform)
+  data: data                   # Utility - Raw
+  # OCIO context variables, e.g. {SHOT: '{shot_short}'}. The repo config needs none: its
+  # ${SEQ}/${SHOT} search paths only pick a shot's white balance, which cancels out here.
+  context: {}
 
 textures:
   workers: 6               # oiiotool processes per job when writing the maps

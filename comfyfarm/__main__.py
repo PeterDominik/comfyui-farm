@@ -65,7 +65,7 @@ def check_ocio(cfg: Config) -> int:
     except SequenceError as e:
         print(f"  [FAIL] OCIO: {e}")
         return 1
-    roles = ocio_roles(ocio["config"], [oc.linear, oc.image])
+    roles = ocio_roles(ocio["config"], [oc.linear, oc.image, oc.data])
     if roles.get("__error__"):
         print(f"  [FAIL] OCIO config {ocio['config']}: {roles['__error__']}")
         return 1

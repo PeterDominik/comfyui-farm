@@ -204,7 +204,7 @@ and `show` / `shot` overrides for inputs outside the publish layout.
 | `input` | required | A texture file, its UDIM tiles (`.../rock_diffuse.%04d.png`, gaps fine, optional range), or a folder holding one texture. png/jpg/tif/webp, or exr (converted to color_picking first) |
 | `output_path` | show default | Root folder: maps go to `<this>/<shot or asset>/<source>.chord_vNNN/`. Same rules as above |
 | `uvset` | `map1` | `map` + 1–2 digits, optionally `-oneWord` (`map10-preview`) |
-| `tile` | `auto` | `tile` / `noTile`. auto: UDIM tiles are `noTile`, a single texture is `tile` (UDIM 1001) |
+| `tile` | `noTile` | `tile` / `noTile` / `auto`. auto: UDIM tiles are `noTile`, a single texture is `tile` (UDIM 1001) |
 | `state` | `defState` | One camelCase word (`damaged`) |
 | `description` | empty | One word after the channel: `color01-sand` |
 | `numbering` | `udim` | What the number in the input names is; `frame` for an animated texture |
@@ -296,16 +296,40 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
 
 ### OCIO
 
-The farm has one OCIO config, in this repo's `ocio/` folder, so `git pull` (or
-`scripts\update.ps1`) updates it on the farm machine. Show configs and per-shot colour
-bundles aren't used. Every conversion is a plain colour space conversion, the one a
-Nuke Write or Read does with its transform set to `default (color_picking)`:
+The farm has one OCIO config, in this repo's `ocio/` folder: Rodeo's default show config
+(ACES 1.2 plus Rodeo's colour spaces, see `ocio/README.md`). `git pull` (or
+`scripts\update.ps1`) updates it on the farm machine. Show configs aren't used. Every
+conversion is a plain colour space conversion, the one a Nuke Write or Read does with its
+transform set to `default (color_picking)`:
 
 | What | From | To |
 |---|---|---|
-| EXR inputs (plates, textures) → PNG for ComfyUI | `scene_linear` | `color_picking` |
-| Texture colour maps from ComfyUI → EXR | `color_picking` | `scene_linear` |
-| Texture data maps (normal, bump, ...) | values kept, tagged `data` | |
+| EXR inputs (plates, textures) → PNG for ComfyUI | `scene_linear` (`rdo`, ACEScg) | `color_picking` (`ACES-look`) |
+| Texture colour maps from ComfyUI → EXR | `color_picking` (`ACES-look`) | `scene_linear` (`rdo`, ACEScg) |
+| Texture data maps (normal, bump, ...) | values kept, tagged `data` (`Utility - Raw`) | |
+
+- **`ACES-look` is a tone curve.** It is the ACES 1.x sRGB output transform (RRT + sRGB),
+  not a plain sRGB curve, so the PNGs look like the `ACES-look` view in Nuke. Linear 0.18
+  lands at PNG 91 of 255 (a plain sRGB curve gives 118), 1.0 at 207, and highlights roll
+  off to 255 at about 16.
+- **Bright colour maps come back above 1.0.** The way back undoes that roll-off: PNG 220
+  comes back as 1.39, 240 as 3.2, 255 as 16.3. So a ComfyUI colour map brighter than 207
+  gives an EXR above 1.0, which for a base colour is more than 100% reflectance. Check
+  bright materials with `oiiotool --stats`.
+- **Shot white balances don't reach the farm.** The config's search path starts with the
+  show's `_color_bundle` folders (`../../_color_bundle/${SEQ}_${SHOT}`, ...), two folders
+  above the config. Next to the repo's copy there are none, so OCIO uses
+  `ocio/project_luts`, whose `white_balance.cc` changes nothing. No `ocio.context` is
+  needed.
+  - EXR → PNG gives the same pixels as Nuke in any shot: `rdo` and `ACES-look` apply
+    the shot's white balance in opposite directions, so it cancels.
+  - PNG → EXR matches Nuke only where the shot's white balance changes nothing. The
+    config's `ACES-look` applies `white_balance.cc` forward in both directions, so a
+    Nuke Read applies any other white balance twice.
+- **Only four LUT files are used.** These conversions read `project_luts/white_balance.cc`
+  and three ACES files, `Log2_48_nits_Shaper.RRT.sRGB.spi3d`,
+  `InvRRT.sRGB.Log2_48_nits_Shaper.spi3d` and `Log2_48_nits_Shaper_to_linear.spi1d`.
+  `tests/test_ocio_repo.py` checks the roles and that these files are in the repo.
 
 Settings are under `ocio:` in `config.yaml` (`config`, `linear`, `image`, `data`, and
 `context` for a config that uses context variables). Each job is frozen with the

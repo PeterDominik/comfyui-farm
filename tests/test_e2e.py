@@ -433,7 +433,8 @@ convert:
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertTrue(prompt["28"]["inputs"]["output_path"].endswith(f"/scratch/{job['id']}/maps"))
         self.assertEqual(prompt["28"]["inputs"]["filename_prefix"], f"_cf{job['short_id']}_bmp02")
-        # Height is a bump map: 32-bit float; base colour goes sRGB -> ACEScg; data maps keep their values.
+        # Height is a bump map: 32-bit float; base colour goes color_picking -> scene_linear;
+        # data maps keep their values.
         calls = [c["args"] for c in self.oiiotool_calls() if f"_cf{job['short_id']}_" in " ".join(c["args"])]
         self.assertEqual(len(calls), 15)
         bump = next(a for a in calls if "_bmp02_" in " ".join(a))
@@ -449,12 +450,18 @@ convert:
                           "acescg_map1_noTile_defState_bmp02-moss.1011.0000.exr"])
         self.assertTrue(nd["info"]["output_dir"].endswith("rockA_diffuse.chord_v002"))
 
-        # One tileable photo: 'tile', UDIM 1001.
+        # One photo: UDIM 1001, noTile by default (the manifest's default); tile: auto makes
+        # a single texture 'tile'.
         photo = farm.submit("chord_pbr", {"input": f"{tex}/photo/cliff.jpg"})
         pd = self.wait_for(photo["id"], ("done", "failed"))
         self.assertEqual(pd["status"], "done", pd.get("error"))
-        self.assertIn("acescg_map1_tile_defState_metal01.1001.0000.exr", os.listdir(pd["info"]["output_dir"]))
+        self.assertIn("acescg_map1_noTile_defState_metal01.1001.0000.exr", os.listdir(pd["info"]["output_dir"]))
         self.assertTrue(pd["info"]["output_dir_posix"].endswith("/rockA/cliff.chord_v001"))
+        auto = farm.submit("chord_pbr", {"input": f"{tex}/photo/cliff.jpg", "tile": "auto"})
+        ad = self.wait_for(auto["id"], ("done", "failed"))
+        self.assertEqual(ad["status"], "done", ad.get("error"))
+        self.assertIn("acescg_map1_tile_defState_metal01.1001.0000.exr", os.listdir(ad["info"]["output_dir"]))
+        self.assertTrue(ad["info"]["output_dir_posix"].endswith("/rockA/cliff.chord_v002"))
 
         # EXR tiles are converted like any EXR input: linear -> color_picking PNGs.
         exr = farm.submit("chord_pbr", {"input": f"{tex}/exr"})
