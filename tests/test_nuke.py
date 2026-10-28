@@ -266,8 +266,10 @@ class PanelLogic(unittest.TestCase):
             "frames": 3, "what": "15 EXRs (5 maps × 3 UDIM tiles)", "maps": ["color01", "nrm02"],
             "output_dir_posix": "/rdo/x/rockA_diffuse.chord_v001", "first_file": "acescg_map1_noTile_defState_color01.1001.0000.exr",
             "version": 1, "picked": False, "asset": "rockA", "show": "xyz",
-            "convert": {"kind": "exr", "mode": "colorconvert", "from": "ACEScg", "to": "srgb_tx"}})
-        for part in ("15 EXRs (5 maps × 3 UDIM tiles)", "<code>nrm02</code>", "<code>ACEScg</code> → <code>srgb_tx</code>",
+            "convert": {"kind": "exr", "mode": "colorconvert", "from": "scene_linear", "to": "color_picking",
+                        "config": "ocio/config.ocio"}})
+        for part in ("15 EXRs (5 maps × 3 UDIM tiles)", "<code>nrm02</code>",
+                     "<code>scene_linear</code> → <code>color_picking</code> with <code>ocio/config.ocio</code>",
                      "Asset <code>rockA</code>"):
             self.assertIn(part, html)
 

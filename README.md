@@ -19,8 +19,9 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
   gateway maps it to the farm path. It checks for missing frames and works out exactly
   which files the loader will read. Bad input is refused at submit, not 10 minutes in.
 - **PNG/JPG/TIF, EXR and movies, one workflow.** EXR sequences are converted with the
-  show's OCIO config and the shot's client LUT; `.mov`/`.mp4` are numbered from their
-  timecode. See *Input formats* below.
+  farm's OCIO config (`ocio/` in this repo), exactly like a Nuke Write set to
+  `default (color_picking)`; `.mov`/`.mp4` are numbered from their timecode. See
+  *Input formats* below.
 - **Outputs that never overwrite.** Frames go to `<output folder>/<shot>/`, named after
   their source and numbered like the plate:
   `.../comfy/test/bpash_1545/bpash_1545.preprocess.mp01_png.v1.alpha_v001.1001.png`.
@@ -200,7 +201,7 @@ and `show` / `shot` overrides for inputs outside the publish layout.
 
 | Param | Default | Notes |
 |---|---|---|
-| `input` | required | A texture file, its UDIM tiles (`.../rock_diffuse.%04d.png`, gaps fine, optional range), or a folder holding one texture. png/jpg/tif/webp, or exr (converted from ACEScg first) |
+| `input` | required | A texture file, its UDIM tiles (`.../rock_diffuse.%04d.png`, gaps fine, optional range), or a folder holding one texture. png/jpg/tif/webp, or exr (converted to color_picking first) |
 | `output_path` | show default | Root folder: maps go to `<this>/<shot or asset>/<source>.chord_vNNN/`. Same rules as above |
 | `uvset` | `map1` | `map` + 1–2 digits, optionally `-oneWord` (`map10-preview`) |
 | `tile` | `auto` | `tile` / `noTile`. auto: UDIM tiles are `noTile`, a single texture is `tile` (UDIM 1001) |
@@ -262,7 +263,7 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
 
 | CHORD output | Channel | EXR |
 |---|---|---|
-| base colour | `color01` | half, converted from sRGB to ACEScg |
+| base colour | `color01` | half, converted from color_picking to scene_linear (ACEScg) |
 | normal | `nrm02` | half, values kept |
 | height | `bmp02` | 32-bit float, values kept |
 | roughness | `spcr01` | half, values kept |
@@ -275,24 +276,45 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
   refused with their names; submit each one. UDIMs come from the file names
   (`rock_diffuse.1011.png`, or `….1011.0000.exr` in convention names), and gaps are fine.
   All tiles of a job should be the same size.
-- **EXR inputs** (linear ACEScg, e.g. from Mari) are converted to 8-bit sRGB texture
-  PNGs for CHORD: a plain colour conversion, no display or shot look.
+- **Colour round trip:** EXR inputs (e.g. ACEScg from Mari) go to 8-bit color_picking
+  PNGs for CHORD, like any EXR input. CHORD's base colour comes back as a color_picking
+  PNG and is converted to scene_linear, like a Nuke Read set to `default (color_picking)`.
+  So a Write and a Read with that transform in Nuke reproduce exactly what the farm does.
 - **Output folder:** the file names have no version, so each run gets a new folder:
   `renders/<asset>/<source>.chord_v001/`. The asset comes from `/shows/<show>/_asset/<asset>/`
   in the input path (`paths.context_patterns`; add that line to an existing
   `config.yaml`). Nothing is written into `_toBePublished`; copy a version there when
   you're happy with it.
-- **Colour:** `textures:` in `config.yaml`. The defaults use OCIO's built-in ACES config
-  (`ocio://default`, `srgb_tx` → `ACEScg`), so they don't depend on a show config's colour
-  space names. A show's own config works too (`ocio_config` may use `{show}`; set the
-  colour space names it uses). `python -m comfyfarm check` runs the exact conversions on
-  a test image.
+- **Colour:** `ocio:` in `config.yaml` (see *OCIO* below). The `acescg` in the file
+  names assumes `scene_linear` is ACEScg; `python -m comfyfarm check` shows what it is.
 - **8-bit in between.** WAS *Image Save* writes 8-bit PNGs, so the maps carry 8 bits of
   precision even in the EXRs. Height can show steps when used for displacement. A save
   node that writes 16-bit or EXR would fix it: point the manifest's maps at it and set
   `ext` in its `textures` section.
 - **Nuke:** *Create Read node* on a texture job makes one Read per map, in a row. UDIM
   tiles read as frames (1001, 1002, 1011, …), missing tiles show black.
+
+### OCIO
+
+The farm has one OCIO config, in this repo's `ocio/` folder, so `git pull` (or
+`scripts\update.ps1`) updates it on the farm machine. Show configs and per-shot colour
+bundles aren't used. Every conversion is a plain colour space conversion, the one a
+Nuke Write or Read does with its transform set to `default (color_picking)`:
+
+| What | From | To |
+|---|---|---|
+| EXR inputs (plates, textures) → PNG for ComfyUI | `scene_linear` | `color_picking` |
+| Texture colour maps from ComfyUI → EXR | `color_picking` | `scene_linear` |
+| Texture data maps (normal, bump, ...) | values kept, tagged `data` | |
+
+Settings are under `ocio:` in `config.yaml` (`config`, `linear`, `image`, `data`, and
+`context` for a config that uses context variables). Each job is frozen with the
+settings it was submitted with. `python -m comfyfarm check` shows what the names resolve
+to in the config and runs both conversions on a test image.
+
+To check by eye, in Nuke, use the same config: a Write with `default (color_picking)`
+gives the farm's PNG, and a Read with `default (color_picking)` brings a ComfyUI PNG
+back to linear.
 
 ### Input formats
 
@@ -302,16 +324,11 @@ jobs, and the frames are deleted when the job finishes. Settings live under `con
 in `config.yaml`.
 
 - **PNG / JPG / TIF / WebP:** read directly, as before.
-- **EXR sequences:** converted with `oiiotool` using the show's OCIO config
-  (`convert.exr.ocio_config`, default `/rdo/shows/{show}/_project_ref/_lut/_ocio/current`)
-  through the `sRGB-monitor` display and `Client-look` view, from `scene_linear`.
-  - The config finds the shot's client LUT itself through its `search_path`
-    (`../../_color_bundle/${SEQ}_${SHOT}`, then `${SEQ}`, `${SHOT}`, then the show LUTs).
-    The gateway sets `SEQ`/`SHOT` per job from the publish path: `bpash_1545` in seq
-    `bpash` gives `SEQ=bpash`, `SHOT=1545`. A shot without a colour bundle gets the show
-    default LUTs, and the preview says which one applies.
+- **EXR sequences:** converted with `oiiotool` and the farm's OCIO config, from
+  `scene_linear` to `color_picking`: the same conversion as a Nuke Write with its output
+  transform set to `default (color_picking)`, as the PNG preprocess is written.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
-  - Output is 8-bit sRGB PNG at plate resolution. The workflow then works at its own
+  - Output is 8-bit PNG at plate resolution. The workflow then works at its own
     resolution, as for PNG inputs.
 - **If EXR colours look wrong** (lifted, shifted), compare against a frame you trust
   rather than by eye. On the farm machine:
@@ -321,18 +338,19 @@ in `config.yaml`.
       --reference /rdo/shows/raa/.../bpash_1545.preprocess.mp01_png.v1.1001.png
   ```
 
-  It converts that frame exactly as a job does, plus alternative input colour spaces,
-  views and `SHOT` conventions. Then it reports:
+  It converts that frame exactly as a job does, plus other input colour spaces (ACEScg,
+  ACES2065-1, ... when the config has them) and other outputs (sRGB texture, ...); pick
+  your own with `--from` / `--to`. Then it reports:
   - each variant's black / median / white level against the reference;
   - the best match, with the `config.yaml` lines to use it;
-  - what OCIO actually resolved: which colour space `scene_linear` is, and which
-    `client_lut` / `client_shot_grade` / `white_balance.cc` files were found;
+  - what OCIO actually resolved: which colour spaces `scene_linear` and `color_picking`
+    are, and the LUT files the conversion uses;
   - whether the EXR looks scene-linear at all;
   - any PNG colour tags that viewers might apply.
 
   Side-by-side images (ours | reference | difference ×4) and `report.txt` go to
   `data\color_debug\<time>\`. Compare images with the viewer LUT off: both are
-  display-referred already.
+  already in color_picking.
 - **Movies (.mov/.mp4/.m4v/.mxf):** extracted with `ffmpeg` (the one pip installs; a
   system ffmpeg/ffprobe is used instead if you set `convert.tools`), numbered from the movie's
   timecode (`00:00:41:17` at 24 fps = frame 1001; drop-frame handled). A range on the

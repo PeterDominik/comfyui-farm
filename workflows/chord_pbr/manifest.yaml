@@ -21,8 +21,8 @@ params:
     required: true
     help: >
       A texture file, its UDIM tiles (/rdo/shows/<show>/.../rock_diffuse.%04d.png, gaps are
-      fine), or a folder holding one texture. png, jpg, tif, or exr (converted from ACEScg
-      first). One texture per job.
+      fine), or a folder holding one texture. png, jpg, tif, or exr (converted to
+      color_picking first, like any EXR). One texture per job.
 
   output_path:
     type: output_folder
@@ -82,8 +82,10 @@ outputs:
   root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational
 
 # The maps. Each save node writes PNGs into the job's scratch folder; the gateway converts
-# them to EXR with oiiotool and names them. ChordMaterialEstimation outputs basecolor,
-# normal, roughness, metalness; ChordNormalToHeight turns the normal into height.
+# them to EXR with oiiotool and names them. color: true maps go color_picking ->
+# scene_linear (ocio: in config.yaml); the others keep their values.
+# ChordMaterialEstimation outputs basecolor, normal, roughness, metalness;
+# ChordNormalToHeight turns the normal into height.
 # bmp01/nrm01 are reserved for modeling's published maps, hence bmp02/nrm02.
 textures:
   name: '{colorspace}_{uvset}_{tile}_{state}_{channel}{description}.{udim:04d}.{frame:04d}.exr'

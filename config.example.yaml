@@ -70,14 +70,7 @@ convert:
   # then PATH. ffprobe is optional: without it, movie info is read with ffmpeg.
   tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}
   exr:
-    ocio_config: '/rdo/shows/{show}/_project_ref/_lut/_ocio/current/config.ocio'
-    # The config's search_path (../../_color_bundle/${SEQ}_${SHOT}:...) finds the shot's
-    # client LUT. {shot_short} = shot folder without "<seq>_": bpash_1545 -> 1545.
-    context: {SEQ: '{seq}', SHOT: '{shot_short}'}
-    input_colorspace: scene_linear
-    display: sRGB-monitor
-    view: Client-look
-    extra_args: ['--ch', 'R,G,B', '--croptofull']
+    extra_args: ['--ch', 'R,G,B', '--croptofull']   # before the colour conversion (see ocio:)
   movie:
     default_start: 1001    # when a movie has no timecode (first frame used after any slate)
     # The first frame of these movies is a slate, not plate, and is dropped. The rest keep
@@ -86,18 +79,20 @@ convert:
       folders: [movhistory]
       extensions: [.mov]
 
+ocio:
+  # The farm's one OCIO config, kept in the repo (ocio/), so git pull updates it. Every
+  # conversion is the one a Nuke Write or Read does with "default (color_picking)":
+  #   EXR inputs (plates, textures) -> 8-bit PNG for ComfyUI:  linear -> image
+  #   texture colour maps from ComfyUI -> EXR:                image -> linear
+  # Data maps (normal, bump, ...) keep their values and are only tagged `data`.
+  # `python -m comfyfarm check` shows what these resolve to and runs the conversions.
+  config: ocio/config.ocio     # relative = inside the repo
+  linear: scene_linear
+  image: color_picking
+  data: data
+  context: {}                  # OCIO context variables, if the config uses any, e.g. {SHOT: '{shot_short}'}
+
 textures:
-  # Texture workflows (chord_pbr) write linear EXRs with oiiotool. Colour maps go from
-  # srgb_texture (what ComfyUI images are) to linear (the "acescg" in TEX file names);
-  # EXR inputs go the other way. Data maps keep their values and are tagged `data`.
-  # The built-in ACES config keeps this independent of show configs. To use each show's
-  # config instead, give its path (may use {show}) and that config's colour space names:
-  #   ocio_config: '/rdo/shows/{show}/_project_ref/_lut/_ocio/current/config.ocio'
-  # `python -m comfyfarm check` runs these conversions on a test image.
-  ocio_config: 'ocio://default'
-  srgb_texture: srgb_tx
-  linear: ACEScg
-  data: Raw
   workers: 6               # oiiotool processes per job when writing the maps
 
 auth:

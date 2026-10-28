@@ -32,51 +32,77 @@ def setup_logging(cfg: Config, verbose: bool = False) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def check_texture_colour(cfg: Config) -> int:
-    """Texture workflows write their maps with oiiotool through config.yaml `textures`:
-    run those exact commands on a test image, so a wrong colour space name shows up here
-    rather than in a finished job."""
+def ocio_roles(config: str, names: list[str]) -> dict[str, str | None]:
+    """What each name (role or colour space) resolves to in the config, or None if it
+    isn't there. Empty if PyOpenColorIO isn't installed."""
+    try:
+        import PyOpenColorIO as OCIO
+    except ImportError:
+        return {}
+    try:
+        cfg = OCIO.Config.CreateFromFile(config)
+    except Exception as e:  # noqa: BLE001
+        return {"__error__": str(e).splitlines()[0][:200]}
+    out = {}
+    for n in names:
+        cs = cfg.getColorSpace(n)
+        out[n] = cs.getName() if cs else None
+    return out
+
+
+def check_ocio(cfg: Config) -> int:
+    """The repo's OCIO config, and the exact oiiotool commands jobs run with it: EXR
+    inputs (linear -> image) and texture colour maps (image -> linear) on a test image,
+    so a missing config or a wrong colour space name shows up here, not in a job."""
     import tempfile
 
     from . import convert as C
     from . import textures as T
-    tc = cfg.textures
-    if "{show}" in tc.ocio_config:
-        print(f"  [ ok ] textures: OCIO config is per show ({tc.ocio_config}); its colour spaces are "
-              f"only tried by jobs")
-        return 0
+    from .paths import SequenceError
+    oc = cfg.ocio
+    try:
+        ocio = C.ocio_setup(oc, cfg.paths)
+    except SequenceError as e:
+        print(f"  [FAIL] OCIO: {e}")
+        return 1
+    roles = ocio_roles(ocio["config"], [oc.linear, oc.image])
+    if roles.get("__error__"):
+        print(f"  [FAIL] OCIO config {ocio['config']}: {roles['__error__']}")
+        return 1
+    missing = [n for n, v in roles.items() if v is None]
+    if missing:
+        print(f"  [FAIL] OCIO config {ocio['config']} has no {', '.join(missing)} (ocio: in config.yaml)")
+        return 1
+    shown = ", ".join(f"{n} = {v}" for n, v in roles.items()) if roles else f"{oc.linear} -> {oc.image}"
     cmd = C.find_tool("oiiotool", cfg.convert.tools.get("oiiotool"))
     if not cmd:
-        print("  [FAIL] textures: oiiotool not found; texture workflows need it for their EXR maps "
-              "(run scripts\\setup.ps1)")
-        return 1
-    try:
-        config = C.texture_ocio_config(tc, cfg.paths, None)
-    except Exception as e:  # noqa: BLE001 - SequenceError: config file missing
-        print(f"  [FAIL] textures: {e}")
-        return 1
+        print(f"  [WARN] OCIO config {ocio['config']} ({shown}): oiiotool not found, so EXR inputs and texture "
+              f"maps can't be converted (run scripts\\setup.ps1)")
+        return 0
+    conv = dict(ocio, extra_args=list(cfg.convert.exr.extra_args))
+    env = dict(os.environ, **ocio["context"])
     with tempfile.TemporaryDirectory() as d:
         png, exr = f"{d}/check.png", f"{d}/check.exr"
         steps = [
             ("make a test image", [*cmd, "--create", "4x4", "3", "-d", "uint8", "-o", png]),
-            (f"colour map {tc.srgb_texture} -> {tc.linear}",
-             T.map_command(cmd, tc, {"color": True, "bits": "half"}, png, exr, config)),
-            (f"data map tagged {tc.data}",
-             T.map_command(cmd, tc, {"color": False, "bits": "float"}, png, f"{d}/data.exr", config)),
-            (f"EXR input {tc.linear} -> {tc.srgb_texture}",
-             C.exr_command(cmd, C.texture_exr_setup(tc, config), exr, f"{d}/back.png")),
+            (f"texture colour map {oc.image} -> {oc.linear}",
+             T.map_command(cmd, ocio, {"color": True, "bits": "half"}, png, exr)),
+            (f"texture data map tagged {oc.data}",
+             T.map_command(cmd, ocio, {"color": False, "bits": "float"}, png, f"{d}/data.exr")),
+            (f"EXR input {oc.linear} -> {oc.image}", C.exr_command(cmd, conv, exr, f"{d}/back.png")),
         ]
         for label, step in steps:
             try:
-                out = subprocess.run(step, capture_output=True, text=True, timeout=60)
+                out = subprocess.run(step, capture_output=True, text=True, timeout=60, env=env)
                 ok, text = out.returncode == 0, (out.stderr or out.stdout).strip()
             except (OSError, subprocess.TimeoutExpired) as e:
                 ok, text = False, str(e)
             if not ok:
-                print(f"  [FAIL] textures: {label} with {tc.ocio_config}: {text[-300:] or 'failed'}")
-                print("         check textures.ocio_config / srgb_texture / linear / data in config.yaml")
+                print(f"  [FAIL] OCIO: {label} with {ocio['config']}: {text[-300:] or 'failed'}")
+                print("         check ocio: in config.yaml (config, linear, image, data)")
                 return 1
-    print(f"  [ ok ] textures: oiiotool converts {tc.srgb_texture} <-> {tc.linear} with {tc.ocio_config}")
+    print(f"  [ ok ] OCIO config {C._config_display(ocio['config'], cfg.paths)} ({shown}): "
+          f"oiiotool converts {oc.linear} <-> {oc.image}")
     return 0
 
 
@@ -122,8 +148,7 @@ async def run_check(cfg: Config) -> int:
             bad += 1
             print(f"  [FAIL] {tool} ({' '.join(cmd)}): {e}")
 
-    if any(wf.textures for wf in reg.workflows.values()):
-        bad += check_texture_colour(cfg)
+    bad += check_ocio(cfg)
 
     for m in cfg.paths.mappings:
         ok = os.path.isdir(m.windows)
@@ -170,8 +195,10 @@ def main(argv: list[str] | None = None) -> int:
     cd.add_argument("--frame", type=int, help="frame number when giving a pattern")
     cd.add_argument("--reference", help="a frame you trust, e.g. the same frame of the shot's PNG preprocess")
     cd.add_argument("--out", help="folder for the results (default data/color_debug/<time>)")
-    cd.add_argument("--input", action="append", help="input colour space to try (repeatable)")
-    cd.add_argument("--view", action="append", help="view to try (repeatable)")
+    cd.add_argument("--from", dest="from_cs", action="append",
+                    help="input colour space to try instead of the usual alternatives (repeatable)")
+    cd.add_argument("--to", dest="to_cs", action="append",
+                    help="output colour space to try instead of the usual alternatives (repeatable)")
     args = ap.parse_args(argv)
 
     # Node titles contain emoji (VHS nodes); a service's redirected stdout on Windows
@@ -189,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import colordebug
         from .paths import SequenceError
         try:
-            return colordebug.run(cfg, args.exr, args.frame, args.reference, args.out, args.input, args.view)
+            return colordebug.run(cfg, args.exr, args.frame, args.reference, args.out, args.from_cs, args.to_cs)
         except SequenceError as e:
             print(f"error: {e}")
             return 2

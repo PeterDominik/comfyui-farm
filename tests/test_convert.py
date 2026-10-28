@@ -4,20 +4,21 @@ import subprocess
 import tempfile
 import unittest
 
-from comfyfarm.config import ConvertConfig, PathMapping, PathsConfig
 import sys
 import types
+from pathlib import Path
 from unittest import mock
 
 from comfyfarm import convert
-from comfyfarm.convert import (_shot_short, find_tool, parse_ffmpeg_info, parse_probe, point_loader_at_scratch,
-                               probe_movie, probe_movie_ffmpeg, read_movie_info, resolve_input, timecode_to_frame)
+from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig
+from comfyfarm.convert import (_shot_short, exr_command, find_tool, ocio_config_path, ocio_setup, parse_ffmpeg_info,
+                               parse_probe, point_loader_at_scratch, probe_movie, probe_movie_ffmpeg,
+                               read_movie_info, resolve_input, summary, timecode_to_frame)
 from comfyfarm.paths import SequenceError
 
-RODEO_SEARCH_PATH = ('search_path: "../../_color_bundle/${SEQ}_${SHOT}:../../_color_bundle/${SEQ}:'
-                     '../../_color_bundle/${SHOT}:project_luts:rodeo_luts:ACES_luts"\n')
-CONFIG = ("ocio_profile_version: 1\n" + RODEO_SEARCH_PATH +
-          "displays:\n  sRGB-monitor:\n    - !<View> {name: Client-look, colorspace: Client-look}\n")
+REPO = Path(__file__).resolve().parent.parent
+CONFIG = ("ocio_profile_version: 2\nroles:\n  scene_linear: ACES - ACEScg\n  color_picking: Output - sRGB\n"
+          "colorspaces:\n  - !<ColorSpace>\n    name: ACES - ACEScg\n  - !<ColorSpace>\n    name: Output - sRGB\n")
 
 
 class TimecodeTests(unittest.TestCase):
@@ -120,13 +121,16 @@ class FfmpegOnlyProbeTests(unittest.TestCase):
 
 
 class OcioTests(unittest.TestCase):
+    """EXRs are converted with the repo's OCIO config: linear -> color_picking, as a Nuke
+    Write set to "default (color_picking)" does."""
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.root = self.tmp.replace("\\", "/")
-        self.lut = f"{self.root}/shows/raa/_project_ref/_lut"
-        os.makedirs(f"{self.lut}/_ocio/current")
-        with open(f"{self.lut}/_ocio/current/config.ocio", "w") as fh:
+        os.makedirs(f"{self.root}/ocio")
+        with open(f"{self.root}/ocio/config.ocio", "w") as fh:
             fh.write(CONFIG)
+        self.oc = OcioConfig(config=f"{self.root}/ocio/config.ocio")
         self.pc = PathsConfig(mappings=[PathMapping(posix="/rdo/shows", windows=f"{self.root}/shows")])
         self.cc = ConvertConfig(tools={"oiiotool": "oiiotool-not-needed", "ffmpeg": "", "ffprobe": ""})
         self.plates = f"{self.root}/shows/raa/.published/bpash/bpash_1545/plate/v1"
@@ -139,7 +143,7 @@ class OcioTests(unittest.TestCase):
 
     def exr(self, rng="1001-1002"):
         return resolve_input(f"/rdo/shows/raa/.published/bpash/bpash_1545/plate/v1/bpash_1545.plate.v1.%04d.exr {rng}",
-                             self.pc, self.cc)
+                             self.pc, self.cc, ocio=self.oc)
 
     def test_shot_short(self):
         self.assertEqual(_shot_short("bpash", "bpash_1545"), "1545")
@@ -147,35 +151,33 @@ class OcioTests(unittest.TestCase):
         self.assertEqual(_shot_short("abc", "xyz_0010"), "xyz_0010")
         self.assertEqual(_shot_short(None, "bpash_1545"), "bpash_1545")
 
-    def test_shot_bundle_found_through_search_path(self):
-        os.makedirs(f"{self.lut}/_color_bundle/bpash_1545")
-        os.makedirs(f"{self.lut}/_color_bundle/bpash")          # seq bundle: shot one wins
+    def test_color_picking_like_a_nuke_write(self):
         c = self.exr().convert
-        self.assertEqual(c["context"], {"SEQ": "bpash", "SHOT": "1545"})
-        self.assertEqual(c["bundle"], f"{self.lut}/_color_bundle/bpash_1545")
-        self.assertEqual(c["config"], f"{self.lut}/_ocio/current/config.ocio")
-        self.assertEqual((c["display"], c["view"], c["input_colorspace"]), ("sRGB-monitor", "Client-look", "scene_linear"))
-        self.assertEqual(c["notes"], [])
+        self.assertEqual((c["config"], c["from"], c["to"], c["context"]),
+                         (f"{self.root}/ocio/config.ocio", "scene_linear", "color_picking", {}))
+        self.assertEqual(exr_command(["oiiotool"], c, "in.exr", "out.png"),
+                         ["oiiotool", "--colorconfig", f"{self.root}/ocio/config.ocio", "in.exr", "--ch", "R,G,B",
+                          "--croptofull", "--colorconvert", "scene_linear", "color_picking", "-d", "uint8",
+                          "-o", "out.png"])
+        self.assertEqual(summary(self.exr(), self.pc)["to"], "color_picking")
 
-    def test_seq_bundle_then_show_default(self):
-        os.makedirs(f"{self.lut}/_color_bundle/bpash")
-        self.assertEqual(self.exr().convert["bundle"], f"{self.lut}/_color_bundle/bpash")
-        shutil.rmtree(f"{self.lut}/_color_bundle")
-        c = self.exr().convert
-        self.assertIsNone(c["bundle"])
-        self.assertIn("show's default LUTs", c["notes"][0])
-
-    def test_config_folder_and_missing_view(self):
-        self.cc.exr.ocio_config = "/rdo/shows/{show}/_project_ref/_lut/_ocio/current"   # a folder
-        self.assertTrue(self.exr().convert["config"].endswith("/current/config.ocio"))
-        self.cc.exr.view = "Nope-look"
-        with self.assertRaisesRegex(SequenceError, "view 'Nope-look' isn't in"):
-            self.exr()
+    def test_repo_relative_config_and_context(self):
+        self.assertEqual(ocio_config_path(OcioConfig()), (REPO / "ocio/config.ocio").as_posix())
+        oc = OcioConfig(config=self.oc.config, context={"SHOT": "{shot_short}", "SEQ": "{seq}"})
+        self.assertEqual(ocio_setup(oc, self.pc, "raa", "bpash", "bpash_1545")["context"],
+                         {"SHOT": "1545", "SEQ": "bpash"})
+        with self.assertRaisesRegex(SequenceError, "ocio.context SHOT"):
+            ocio_setup(oc, self.pc, "raa", None, None)
 
     def test_missing_config(self):
-        os.remove(f"{self.lut}/_ocio/current/config.ocio")
-        with self.assertRaisesRegex(SequenceError, "No OCIO config at /rdo/shows/raa/"):
+        os.remove(f"{self.root}/ocio/config.ocio")
+        with self.assertRaisesRegex(SequenceError, "No OCIO config at .*git pull"):
             self.exr()
+
+    def test_jobs_queued_before_the_switch_keep_their_settings(self):
+        old = {"config": "/x/config.ocio", "extra_args": ["--ch", "R,G,B"], "input_colorspace": "scene_linear",
+               "display": "sRGB-monitor", "view": "Client-look"}
+        self.assertIn("--ociodisplay:from=scene_linear", exr_command(["oiiotool"], old, "a.exr", "a.png"))
 
     def test_scratch_loader(self):
         seq = self.exr()

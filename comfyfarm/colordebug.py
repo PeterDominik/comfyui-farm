@@ -1,10 +1,11 @@
 """`python -m comfyfarm color-debug`: find out why converted EXRs don't look right.
 
-Converts one EXR frame exactly the way a job does, plus a small set of alternative
-settings (input colour space, view, SHOT convention), and measures each result against
-a reference frame you trust, typically the same frame of the shot's PNG preprocess
-from the publish. It also reports what OCIO actually resolved (config, context, the
-LUT files it found) and any colour tags in the PNGs, which some viewers apply.
+Converts one EXR frame exactly the way a job does (the repo's OCIO config, linear ->
+color_picking, like a Nuke Write set to "default (color_picking)"), plus alternative
+input and output colour spaces, and measures each result against a reference frame you
+trust, typically the same frame of the shot's PNG preprocess from the publish. It also
+reports what the names resolve to in the config, the LUT files the transform uses, and
+any colour tags in the PNGs, which some viewers apply.
 
 Run it on the farm machine:
     python -m comfyfarm color-debug /rdo/shows/raa/.../bpash_1545.plate.v1.%04d.exr --frame 1001 \\
@@ -25,8 +26,11 @@ from . import convert as C
 from . import paths as P
 from .config import Config
 
-ALT_INPUTS = ["ACES - ACES2065-1", "ACES - ACEScg", "rdo-nwb", "Input - ARRI - V3 LogC (EI800) - Wide Gamut"]
-ALT_VIEWS = ["Rodeo-look", "Client-look"]
+# Tried as well, when the config has them: what else the EXR could be in, and what else
+# the PNG could be meant to be in.
+ALT_FROM = ["ACES - ACEScg", "ACEScg", "ACES - ACES2065-1", "ACES2065-1", "lin_rec709", "Utility - Linear - sRGB",
+            "rdo-nwb"]
+ALT_TO = ["Utility - sRGB - Texture", "srgb_tx", "sRGB - Texture", "Output - sRGB", "Utility - Raw", "Raw"]
 
 
 # ------------------------------------------------------------------ images
@@ -124,29 +128,23 @@ def png_color_tags(path: str) -> list[str]:
 
 
 # ------------------------------------------------------------------ OCIO introspection
-def ocio_report(c: dict, input_colorspace: str, view: str) -> list[str]:
-    """What OCIO resolves with this context: the colour space behind the input name and
-    the LUT files actually used. Needs the `opencolorio` package."""
+def ocio_report(c: dict, from_cs: str, to_cs: str) -> list[str]:
+    """What the names resolve to in the config, and the LUT files the conversion uses.
+    Needs the `opencolorio` package."""
     try:
         import PyOpenColorIO as OCIO
     except ImportError:
-        return ["(install the 'opencolorio' package to see which LUT files OCIO resolves)"]
+        return ["(install the 'opencolorio' package to see what the names resolve to)"]
     saved = {k: os.environ.get(k) for k in c["context"]}
     os.environ.update(c["context"])   # same as a job: context comes from the environment
     try:
         cfg = OCIO.Config.CreateFromFile(c["config"])
         ctx = cfg.getCurrentContext()
-        lines = [f"search path: {ctx.getSearchPath()}"]
-        cs = cfg.getColorSpace(input_colorspace)
-        lines.append(f"'{input_colorspace}' resolves to colour space: {cs.getName() if cs else 'NOT FOUND'}")
-        lines.append(f"view '{view}' uses colour space: {cfg.getDisplayViewColorSpaceName(c['display'], view) or '?'}")
-        for name in ("client_lut", "client_shot_grade", "white_balance.cc", "alt_grade.cc"):
-            try:
-                lines.append(f"  {name:<18} -> {ctx.resolveFileLocation(name)}")
-            except Exception as e:  # noqa: BLE001
-                lines.append(f"  {name:<18} -> not found ({str(e).splitlines()[0][:120]})")
-        t = OCIO.DisplayViewTransform(src=input_colorspace, display=c["display"], view=view)
-        proc = cfg.getProcessor(ctx, t, OCIO.TRANSFORM_DIR_FORWARD)
+        lines = [f"search path: {ctx.getSearchPath() or '(none)'}"]
+        for name in (from_cs, to_cs):
+            cs = cfg.getColorSpace(name)
+            lines.append(f"'{name}' resolves to colour space: {cs.getName() if cs else 'NOT FOUND'}")
+        proc = cfg.getProcessor(ctx, from_cs, to_cs)
         files = list(proc.getProcessorMetadata().getFiles())
         lines.append("files in the transform: " + (", ".join(files) if files else "(none)"))
         return lines
@@ -173,11 +171,11 @@ def config_names(config_path: str) -> tuple[set[str], set[str]]:
 
 # ------------------------------------------------------------------ main
 def run(cfg: Config, exr: str, frame: int | None, reference: str | None, out_dir: str | None,
-        inputs: list[str] | None, views: list[str] | None) -> int:
+        from_list: list[str] | None = None, to_list: list[str] | None = None) -> int:
     import numpy as np  # noqa: F401  (fail early with a clear error if missing)
     pc, cc = cfg.paths, cfg.convert
     raw = exr if frame is None else f"{exr} {frame}-{frame}"
-    seq = C.resolve_input(raw, pc, cc)
+    seq = C.resolve_input(raw, pc, cc, ocio=cfg.ocio)
     if seq.kind != "exr":
         print("color-debug is for EXR inputs.")
         return 2
@@ -198,14 +196,11 @@ def run(cfg: Config, exr: str, frame: int | None, reference: str | None, out_dir
         report.append(line)
 
     say(f"EXR frame:   {P.to_posix(src, pc.mappings) or src}")
-    say(f"OCIO config: {P.to_posix(c['config'], pc.mappings) or c['config']}")
-    bundle = (P.to_posix(c["bundle"], pc.mappings) or c["bundle"]) if c["bundle"] else "none found (show defaults)"
-    say(f"context:     {c['context']}   colour bundle: {bundle}")
-    say(f"job uses:    from={c['input_colorspace']}  display={c['display']}  view={c['view']}  "
-        f"extra={' '.join(c['extra_args'])}")
+    say(f"OCIO config: {c['config']}" + (f"   context: {c['context']}" if c["context"] else ""))
+    say(f"job uses:    from={c['from']}  to={c['to']}  extra={' '.join(c['extra_args'])}")
     say()
     say("What OCIO resolves for the job's settings:")
-    for line in ocio_report(c, c["input_colorspace"], c["view"]):
+    for line in ocio_report(c, c["from"], c["to"]):
         say("  " + line)
 
     # The EXR itself: is it really scene-linear?
@@ -222,12 +217,9 @@ def run(cfg: Config, exr: str, frame: int | None, reference: str | None, out_dir
     except ImportError:
         pass
 
-    spaces, all_views = config_names(c["config"])
-    in_list = inputs or [c["input_colorspace"]] + [s for s in ALT_INPUTS if s in spaces and s != c["input_colorspace"]]
-    view_list = views or [c["view"]] + [v for v in ALT_VIEWS if v in all_views and v != c["view"]]
-    contexts = [dict(c["context"])]
-    if seq.shot and c["context"].get("SHOT") and c["context"]["SHOT"] != seq.shot:
-        contexts.append(dict(c["context"], SHOT=seq.shot))   # the other SHOT convention
+    spaces, _views = config_names(c["config"])
+    in_list = from_list or [c["from"]] + [s for s in ALT_FROM if s in spaces and s != c["from"]]
+    out_list = to_list or [c["to"]] + [s for s in ALT_TO if s in spaces and s != c["to"]]
 
     ref = None
     if reference:
@@ -242,19 +234,19 @@ def run(cfg: Config, exr: str, frame: int | None, reference: str | None, out_dir
     say()
     say("Variants (levels in 0-255; shifts are vs the reference, + = brighter):")
     rows = []
-    for i, (cs, view, ctx) in enumerate(itertools.product(in_list, view_list, contexts)):
+    env = dict(os.environ, **c["context"])
+    for i, (src_cs, dst_cs) in enumerate(itertools.product(in_list, out_list)):
         tag = f"{i:02d}"
         dst = str(out / f"{tag}.png")
-        cmd = C.exr_command(oiiotool, c, src, dst, input_colorspace=cs, view=view)
-        res = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, **ctx), timeout=300)
-        label = f"from={cs} | view={view} | SHOT={ctx.get('SHOT')}"
+        cmd = C.exr_command(oiiotool, c, src, dst, from_cs=src_cs, to_cs=dst_cs)
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
+        label = f"from={src_cs} | to={dst_cs}"
         if res.returncode != 0 or not os.path.isfile(dst):
             say(f"  {tag}  FAILED  {label}: {(res.stderr or res.stdout).strip()[-200:]}")
             continue
         img = read_rgb(dst)
         lv = levels(img)
-        row = {"tag": tag, "label": label, "cs": cs, "view": view, "ctx": ctx, "levels": lv,
-               "tags": png_color_tags(dst)}
+        row = {"tag": tag, "label": label, "from": src_cs, "to": dst_cs, "levels": lv, "tags": png_color_tags(dst)}
         line = f"  {tag}  black={lv['black'] * 255:5.1f}  median={lv['median'] * 255:5.1f}  white={lv['white'] * 255:5.1f}"
         if ref is not None:
             cmp = compare(img, ref)
@@ -281,22 +273,19 @@ def run(cfg: Config, exr: str, frame: int | None, reference: str | None, out_dir
             say(f"Best match is the job's own settings (diff {best['cmp']['mae']:.1f}/255).")
             if best["cmp"]["mae"] > 4:
                 say("It's still far off, so the difference is probably not in these settings: check that the "
-                    "reference was made from this EXR, or what else the publish template does (grade, gamma, "
-                    "a different config).")
+                    "reference was made from this EXR, and what the Write that made it does (its transform, a "
+                    "grade or look, a different config).")
         else:
             say(f"Best match: {best['tag']}  {best['label']}  (diff {best['cmp']['mae']:.1f}/255, "
                 f"job settings {rows[0]['cmp']['mae']:.1f}/255)")
             say("To use it, set in config.yaml:")
-            say("  convert:")
-            say("    exr:")
-            if best["cs"] != c["input_colorspace"]:
-                say(f"      input_colorspace: '{best['cs']}'")
-            if best["view"] != c["view"]:
-                say(f"      view: '{best['view']}'")
-            if best["ctx"] != c["context"]:
-                say("      context: {SEQ: '{seq}', SHOT: '{shot}'}")
+            say("  ocio:")
+            if best["from"] != c["from"]:
+                say(f"    linear: '{best['from']}'")
+            if best["to"] != c["to"]:
+                say(f"    image: '{best['to']}'")
             say("What OCIO resolves for that variant:")
-            for line in ocio_report(c | {"context": best["ctx"]}, best["cs"], best["view"]):
+            for line in ocio_report(c, best["from"], best["to"]):
                 say("  " + line)
     say()
     say(f"Images and this report: {out}")

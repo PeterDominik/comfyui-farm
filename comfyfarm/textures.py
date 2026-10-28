@@ -7,9 +7,10 @@ named by the texture department's [TEX] naming convention:
 What the convention asks for, and how the gateway does it:
 
 - EXR, linear, 16-bit half; 32-bit float for bump and displacement maps (`bits`).
-- Colour maps (color01, ...) come out of ComfyUI sRGB-encoded, so they're converted to
-  linear ACEScg (config.yaml `textures`). Data maps (normal, bump, roughness, metalness)
-  keep their values.
+- Colour maps (color01, ...) come out of ComfyUI as color_picking PNGs, so they're
+  converted to linear, like a Nuke Read set to "default (color_picking)" (config.yaml
+  `ocio:`, the repo's OCIO config). Data maps (normal, bump, roughness, metalness) keep
+  their values.
 - bmp01, nrm01, dsp01 and cav01 belong to maps published by modeling, so generated maps
   start at 02 (nrm02, bmp02). The manifest check refuses the reserved names.
 - A tileable texture is one 1001 tile ("tile"); a UDIM set is "noTile".
@@ -56,7 +57,7 @@ class MapSpec:
     channel: str               # TEX channel: color01, nrm02, bmp02, spcr01, metal01, ...
     cls: str | None = None     # class guard, like every manifest target
     colorspace: str = "acescg"  # the colorspace token in the file name
-    color: bool = False        # sRGB-encoded colour: converted to textures.linear
+    color: bool = False        # colour: converted from ocio.image (color_picking) to ocio.linear
     bits: str = "half"         # half | float
 
 
@@ -196,11 +197,12 @@ def describe(n_maps: int, items: list, has_udim: bool, numbering: str) -> str:
 
 
 # ============================================================== EXR writing
-def map_command(oiiotool: list[str], tc: TexturesConfig, m: dict, src: str, dst: str,
-                config: str | None = None) -> list[str]:
-    """oiiotool for one map image -> its final EXR (also run by `comfyfarm check`)."""
-    cmd = [*oiiotool, "--colorconfig", config or tc.ocio_config, src, "--ch", "R,G,B"]
-    cmd += ["--colorconvert", tc.srgb_texture, tc.linear] if m["color"] else ["--iscolorspace", tc.data]
+def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str) -> list[str]:
+    """oiiotool for one map image -> its final EXR (also run by `comfyfarm check`).
+    `ocio` is the job's frozen convert.ocio_setup(): colour maps go image -> linear (a Nuke
+    Read set to "default (color_picking)"); data maps are only tagged."""
+    cmd = [*oiiotool, "--colorconfig", ocio["config"], src, "--ch", "R,G,B"]
+    cmd += ["--colorconvert", ocio["image"], ocio["linear"]] if m["color"] else ["--iscolorspace", ocio["data"]]
     return cmd + ["-d", m["bits"], "--compression", "zip", "-o", dst]
 
 
@@ -233,6 +235,7 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
             work.append((m, f"{raw}/{f}", f"{out_dir}/{file_name(t['name'], m, t['tokens'], udim, frame)}"))
 
     sem = asyncio.Semaphore(max(1, tc.workers))
+    env = dict(os.environ, **t["ocio"].get("context", {}))
     done = 0
 
     async def one(m: dict, src: str, dst: str) -> None:
@@ -240,7 +243,7 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
         # oiiotool picks the format from the extension, so the temporary name ends in .exr too.
         tmp = f"{dst[:-4]}.{uuid.uuid4().hex[:8]}.part.exr"
         async with sem:
-            code, out = await C._run(map_command(oiiotool, tc, m, src, tmp, t.get("ocio_config")))
+            code, out = await C._run(map_command(oiiotool, t["ocio"], m, src, tmp), env)
         if code != 0 or not os.path.isfile(tmp):
             try:
                 os.remove(tmp)
