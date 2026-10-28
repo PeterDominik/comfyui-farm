@@ -141,6 +141,29 @@ class NukeHelpers(unittest.TestCase):
         v3 = done_job(short_id="ffff0000", outputs=dict(done_job()["outputs"], frame_pattern_posix="/rdo/v3.%04d.png"))
         self.assertEqual(nk.create_read(v3).xpos(), 340)        # next to the earlier result, not on it
 
+    def test_texture_job_gets_a_read_per_map(self):
+        tex = "/rdo/shows/xyz/_asset/rockA/cg/textures/src/rockA_diffuse.%04d.png"
+        src = Node("Read", "Diffuse", x=0, y=50, file=tex.replace("%04d", "####"), first=1001, last=1011)
+        nodes = [src]
+        nk, _ = self.load(nodes)
+        base = "/rdo/shows/xyz/out/rockA_diffuse.chord_v001/acescg_map1_noTile_defState_"
+        maps = {c: {"pattern": "//srv" + base[4:] + f"{c}.%04d.0000.exr", "pattern_posix": f"{base}{c}.%04d.0000.exr",
+                    "first": 1001, "last": 1011, "files": 3} for c in ("color01", "nrm02", "bmp02")}
+        maps["nrm02"].update(first=1001, last=1003, files=3)   # no gaps: no black frames needed
+        job = done_job(info={"input": {"raw": tex}, "input_posix": tex},
+                       outputs={"maps": maps, "frame_pattern_posix": maps["color01"]["pattern_posix"], "files": 9})
+        first = nk.create_read(job)
+        reads = [n for n in nodes if n is not src]
+        self.assertEqual([r["file"].value() for r in reads], [m["pattern_posix"] for m in maps.values()])
+        self.assertIs(first, reads[0])
+        self.assertEqual([r.xpos() for r in reads], [120, 240, 360])     # in a row next to the diffuse Read
+        self.assertEqual(reads[0]["on_error"].value(), "black")           # tiles 1003-1010 don't exist
+        self.assertNotIn("on_error", reads[1].knobs())
+        self.assertIn("bmp02", reads[2]["label"].value())
+        self.assertTrue(all(r.selected for r in reads))
+        nk.create_read(job)
+        self.assertEqual(len(nodes), 4)                                   # already read in: no duplicates
+
     def test_panel_expression_needs_no_imports(self):
         # Nuke builds the panel by evaluating this text in __main__, which hasn't imported
         # anything of ours (a bare "comfyfarm_panel.ComfyFarmPanel" gave a NameError there).
@@ -238,6 +261,14 @@ class PanelLogic(unittest.TestCase):
                         "timecode": "00:00:41:16", "start": 1001, "end": 1012, "slate_frame": 1000}})
         for part in ("12 frames", "/rdo/shows/x/out/&lt;shot&gt;/", "a.1001.png</code> … <code>a.1012.png",
                      "so this run is v002", "No shot &amp; no seq", "23.976 fps", "first frame (1000) is a slate"):
+            self.assertIn(part, html)
+        html = self.panel.PanelModel.destination_html({
+            "frames": 3, "what": "15 EXRs (5 maps × 3 UDIM tiles)", "maps": ["color01", "nrm02"],
+            "output_dir_posix": "/rdo/x/rockA_diffuse.chord_v001", "first_file": "acescg_map1_noTile_defState_color01.1001.0000.exr",
+            "version": 1, "picked": False, "asset": "rockA", "show": "xyz",
+            "convert": {"kind": "exr", "mode": "colorconvert", "from": "ACEScg", "to": "srgb_tx"}})
+        for part in ("15 EXRs (5 maps × 3 UDIM tiles)", "<code>nrm02</code>", "<code>ACEScg</code> → <code>srgb_tx</code>",
+                     "Asset <code>rockA</code>"):
             self.assertIn(part, html)
 
 

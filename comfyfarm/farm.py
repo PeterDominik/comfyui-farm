@@ -18,6 +18,7 @@ import websockets
 
 from . import convert as C
 from . import paths as P
+from . import textures as T
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
 from .config import Config, WorkerConfig
 from .db import ACTIVE, ON_WORKER, JobStore, now
@@ -200,7 +201,8 @@ class Farm:
         wf = self.registry.get(workflow)
         values = wf.validate(params or {})
         pc = self.cfg.paths
-        seq = C.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot) \
+        seq = C.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
+                              texture=self.cfg.textures if wf.textures else None) \
             if wf.sequence_param else None
         if seq is not None and seq.convert:
             C.point_loader_at_scratch(seq, self.scratch_root, job_id)
@@ -213,6 +215,8 @@ class Farm:
                 "source": source, "out_dir": None, "version": None, "picked": None,
                 "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
                 "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
+        if wf.textures:
+            return self._plan_textures(plan, job_id)
         if not wf.outputs.get("frames"):
             return plan
 
@@ -249,6 +253,58 @@ class Farm:
         plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
         return plan
 
+    def _plan_textures(self, plan: dict, job_id: str) -> dict:
+        """Texture workflows: which UDIM/frame each input texture is, the TEX file names of
+        every map, and a versioned folder for this run (the names carry no version)."""
+        pc, wf, values, seq = self.cfg.paths, plan["wf"], plan["values"], plan["seq"]
+        spec = wf.textures
+        if seq is None:
+            raise FarmError("This workflow needs an input texture.")
+        numbering = values.get("numbering") or T.DEFAULTS["numbering"]
+        if pc.validate_inputs:
+            names = P.loaded_names(seq)
+        else:   # can't list the input: go by the frame numbers alone
+            nums = seq.frames or (range(seq.first, seq.last + 1) if seq.first is not None else [None])
+            names = [f"x.{n:04d}.png" if n is not None else "x.png" for n in nums]
+        items, has_udim = T.items_for(names, numbering)
+        tokens = T.name_tokens(values, T.resolve_tile(values.get("tile") or "auto", items, has_udim))
+
+        picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
+        root = P.resolve_output_folder(picked, pc) if picked else \
+            P.output_root(pc, plan["show"], plan["seq_name"], plan["shot"])
+        asset = P.context_from_path(seq.farm_path, pc.context_patterns, pc.shot_name).get("asset")
+        base = {"root": root, "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"],
+                "asset": asset, "source": plan["source"], "tag": wf.tag}
+
+        def taken(d: str) -> bool:   # files there already, or promised to a queued job
+            if self.store.output_reserved(d + "/"):
+                return True
+            try:
+                return pc.validate_inputs and bool(os.listdir(d))
+            except OSError:
+                return False
+
+        for v in range(1, 1000):
+            out_dir = T.output_dir(spec.dirs, version=v, **base)
+            if not taken(out_dir):
+                break
+        else:
+            raise FarmError(f"No free version for {out_dir} (999 tried).")
+        P.check_writable(out_dir, pc)
+        maps = [{"name": m.name, "node": m.node, "channel": m.channel, "colorspace": m.colorspace,
+                 "color": m.color, "bits": m.bits, "prefix": f"_cf{job_id[:8]}_{m.channel}"} for m in spec.maps]
+        textures = {"raw_dir": f"{self.scratch_root}/{job_id}/maps", "name": spec.name, "ext": spec.ext,
+                    "tokens": tokens, "items": [list(i) for i in items], "maps": maps, "has_udim": has_udim,
+                    "numbering": numbering,
+                    "ocio_config": C.texture_ocio_config(self.cfg.textures, pc, plan["show"])}
+        shown = next((m for m in maps if m["color"]), maps[0])
+        plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=out_dir + "/", textures=textures,
+                    first_frame=seq.first,
+                    first_file=T.file_name(spec.name, shown, tokens, *items[0]),
+                    last_file=T.file_name(spec.name, shown, tokens, *items[-1]) if len(items) > 1 else None,
+                    what=T.describe(len(maps), items, has_udim, numbering), asset=asset)
+        return plan
+
     def plan_summary(self, plan: dict) -> dict:
         """The JSON-safe part of a plan, as the dashboard shows it."""
         pc = self.cfg.paths
@@ -262,6 +318,8 @@ class Farm:
             "picked": plan["picked"], "version": plan["version"], "notes": plan["notes"],
             "input_kind": seq.kind if seq else None, "convert": C.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
+            "what": plan.get("what"), "asset": plan.get("asset"),
+            "maps": [m["channel"] for m in plan["textures"]["maps"]] if plan.get("textures") else None,
         }
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
@@ -272,7 +330,8 @@ class Farm:
         with self._submit_lock:   # output folders are reserved by inserting the job
             plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id)
             wf, values, seq, out_dir = plan["wf"], plan["values"], plan["seq"], plan["out_dir"]
-            prompt = wf.build(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"])
+            prompt = wf.build(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
+                              textures=plan.get("textures"))
             info = {
                 "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"], "source": plan["source"],
                 "tag": wf.tag, "version": plan["version"],
@@ -288,6 +347,8 @@ class Farm:
                 # Frozen per job, so a config edit can't rename frames of jobs already queued.
                 "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
                 "preview_name": pc.preview_name,
+                # Texture workflows: every map's file names, also frozen per job.
+                "textures": plan.get("textures"), "what": plan.get("what"),
             }
             job = self.store.insert({
                 "id": job_id, "workflow": wf.name, "user": user,
@@ -385,8 +446,14 @@ class Farm:
 
     # ================================================================ input conversion
     def _scratch_dir(self, job: dict) -> str | None:
-        conv = ((job.get("info") or {}).get("input") or {}).get("convert")
-        return conv.get("dst_dir") if conv else None
+        """<scratch>/<job id>/: converted input frames, and the raw images of texture maps
+        (in its maps/ subfolder)."""
+        info = job.get("info") or {}
+        conv = (info.get("input") or {}).get("convert")
+        if conv:
+            return conv.get("dst_dir")
+        tex = info.get("textures")
+        return P.normalize(tex["raw_dir"]).rstrip("/").rpartition("/")[0] + "/" if tex else None
 
     def _cleanup_scratch(self, job: dict) -> None:
         d = self._scratch_dir(job)
@@ -526,6 +593,15 @@ class Farm:
                 await asyncio.to_thread(os.makedirs, out_dir, exist_ok=True)
             except OSError as e:
                 self._fail(job["id"], f"Can't create the output folder {out_dir}: {e.strerror or e}", ("queued",))
+                return False
+        tex = info.get("textures")
+        if tex:
+            # Empty, so a second attempt can't mix its map images with the first one's.
+            try:
+                await asyncio.to_thread(shutil.rmtree, tex["raw_dir"], True)
+                await asyncio.to_thread(os.makedirs, tex["raw_dir"], exist_ok=True)
+            except OSError as e:
+                self._fail(job["id"], f"Can't create the scratch folder {tex['raw_dir']}: {e.strerror or e}", ("queued",))
                 return False
         pid = job["id"] if job["attempts"] == 0 else str(uuid.uuid4())
         extra = {"comfyfarm_job": job["id"], "comfyfarm_user": job["user"]}
@@ -854,6 +930,18 @@ class Farm:
         tokens = dict(info.get("name_tokens") or {})
         if wf is None:
             return outputs, ["Workflow no longer loaded; outputs left as ComfyUI wrote them."]
+
+        tex = info.get("textures")
+        if tex and out_dir:
+            last = [0.0]
+
+            def progress(done: int, total: int) -> None:
+                if now() - last[0] < 0.5 and done < total:
+                    return
+                last[0] = now()
+                self._emit(self.store.transition(job["id"], ("postprocessing",), stage=f"writing EXR maps {done}/{total}"))
+
+            outputs.update(await T.write_maps(tex, out_dir, self.cfg.textures, self.cfg.convert, pc.mappings, progress))
 
         fr = wf.outputs.get("frames")
         if fr and out_dir:

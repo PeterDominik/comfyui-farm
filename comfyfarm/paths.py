@@ -82,6 +82,7 @@ class Sequence:
     kind: str = "frames"          # frames (read directly) | exr | movie (converted first)
     load_dir: str | None = None   # where the loader reads from, when not `directory`
     convert: dict | None = None   # how to make the frames the loader reads (exr/movie)
+    frames: list[int] | None = None   # the numbers read, when gaps are allowed (UDIM tiles)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -168,7 +169,25 @@ def _format_frames(frames: list[int], limit: int = 12) -> str:
 CONVERTED_SEQUENCE_EXTENSIONS = {".exr"}
 
 
-def _resolve_converted_sequence(seq: Sequence, regex, cfg: PathsConfig, listdir) -> Sequence:
+def _wanted_frames(frames, first: int | None, last: int | None, filename: str,
+                   allow_gaps: bool) -> list[int]:
+    """The frame numbers to read. Without gaps allowed, every frame of the range must be
+    there; with them (UDIM tiles: 1001, 1002, 1011, ...), whichever are in the range."""
+    if first is None:
+        first, last = min(frames), max(frames)
+    if allow_gaps:
+        wanted = sorted(f for f in frames if first <= f <= last)
+        if not wanted:
+            raise SequenceError(f"No files of {filename} between {first} and {last}.")
+        return wanted
+    missing = [f for f in range(first, last + 1) if f not in frames]
+    if missing:
+        raise SequenceError(f"Missing frames in {filename}: {_format_frames(missing)}.")
+    return list(range(first, last + 1))
+
+
+def _resolve_converted_sequence(seq: Sequence, regex, cfg: PathsConfig, listdir,
+                                allow_gaps: bool = False) -> Sequence:
     """EXR etc: every wanted frame must exist; the converter writes exactly those frames,
     so the loader needs no skip/cap."""
     first, last = seq.first, seq.last
@@ -188,13 +207,27 @@ def _resolve_converted_sequence(seq: Sequence, regex, cfg: PathsConfig, listdir)
     frames = {int(m.group(1)) for m in map(regex.match, names) if m}
     if not frames:
         raise SequenceError(f"No frames matching {seq.filename} in {seq.directory}.")
-    if first is None:
-        first, last = min(frames), max(frames)
-    missing = [f for f in range(first, last + 1) if f not in frames]
-    if missing:
-        raise SequenceError(f"Missing frames in {seq.filename}: {_format_frames(missing)}.")
-    seq.first, seq.last, seq.frame_count = first, last, last - first + 1
+    wanted = _wanted_frames(frames, first, last, seq.filename, allow_gaps)
+    seq.first, seq.last, seq.frame_count = wanted[0], wanted[-1], len(wanted)
+    if allow_gaps:
+        seq.frames = wanted
     return seq
+
+
+def split_input_path(farm_path: str) -> tuple[str, str]:
+    """(directory with trailing '/', file name or pattern); the name is '' for a folder."""
+    if farm_path.endswith("/"):
+        return farm_path, ""
+    directory, _, filename = farm_path.rpartition("/")
+    if "." not in filename and not _TOKEN_RE.search(filename):
+        return farm_path + "/", ""   # a folder without trailing slash
+    return directory + "/", filename
+
+
+def _loader_listing(directory: str, listdir, isfile) -> list[str]:
+    """What VHS "Load Images (Path)" lists: sorted names, files only, loader extensions only."""
+    return [n for n in sorted(listdir(directory)) if os.path.splitext(n)[1].lower() in LOADER_EXTENSIONS
+            and isfile(directory + n)]
 
 
 def resolve_sequence(
@@ -204,6 +237,7 @@ def resolve_sequence(
     shot: str | None = None,
     listdir=os.listdir,
     isfile=os.path.isfile,
+    allow_gaps: bool = False,
 ) -> Sequence:
     """Turn what an artist typed into exactly what the loader node will read.
 
@@ -211,19 +245,13 @@ def resolve_sequence(
     applies skip_first_images / image_load_cap. So for a frame range we list the
     folder the same way and work out skip/cap, refusing anything that would quietly
     load the wrong frames (gaps, foreign images interleaved, unreadable formats).
+    `allow_gaps` is for UDIM tiles, which skip numbers (1001, 1002, 1011, ...).
     """
     if not raw or not raw.strip():
         raise SequenceError("No input sequence given.")
     path, first, last = parse_input(raw)
     farm_path = to_farm(path, cfg.mappings)
-
-    if farm_path.endswith("/"):
-        directory, filename = farm_path, ""
-    else:
-        directory, _, filename = farm_path.rpartition("/")
-        directory += "/"
-        if "." not in filename and not _TOKEN_RE.search(filename):
-            directory, filename = farm_path + "/", ""   # a folder without trailing slash
+    directory, filename = split_input_path(farm_path)
 
     regex = _pattern_regex(filename) if filename else None
     ext = os.path.splitext(filename)[1].lower() if filename else ""
@@ -242,19 +270,17 @@ def resolve_sequence(
                    seq_name=ctx.get("seq"), source=source_stem(filename, directory))
     if ext in CONVERTED_SEQUENCE_EXTENSIONS:
         seq.kind = "exr"
-        return _resolve_converted_sequence(seq, regex, cfg, listdir)
+        return _resolve_converted_sequence(seq, regex, cfg, listdir, allow_gaps)
     if not cfg.validate_inputs:
         if first is not None:
             seq.frame_count = last - first + 1
         return seq
 
     try:
-        names = sorted(listdir(directory))
+        # Same listing VHS uses: sorted names, files only, loader extensions only.
+        loadable = _loader_listing(directory, listdir, isfile)
     except OSError as e:
         raise SequenceError(f"The farm machine can't open the input folder {directory} ({e.strerror or e}).")
-    # Same listing VHS uses: sorted names, files only, loader extensions only.
-    loadable = [n for n in names if os.path.splitext(n)[1].lower() in LOADER_EXTENSIONS
-                and isfile(directory + n)]
     if not loadable:
         raise SequenceError(f"No loadable images in {directory}.")
 
@@ -276,13 +302,8 @@ def resolve_sequence(
     if not frames:
         raise SequenceError(f"No frames matching {filename} in {directory}.")
 
-    if first is None:
-        first, last = min(frames), max(frames)
-    wanted = range(first, last + 1)
-    missing = [f for f in wanted if f not in frames]
-    if missing:
-        raise SequenceError(f"Missing frames in {filename}: {_format_frames(missing)}.")
-
+    wanted = _wanted_frames(frames, first, last, filename, allow_gaps)
+    first, last = wanted[0], wanted[-1]
     idxs = [frames[f] for f in wanted]
     if idxs != list(range(idxs[0], idxs[0] + len(idxs))):
         raise SequenceError(
@@ -291,9 +312,103 @@ def resolve_sequence(
         )
     seq.first, seq.last = first, last
     seq.skip, seq.cap, seq.frame_count = idxs[0], len(idxs), len(idxs)
+    if allow_gaps:
+        seq.frames = wanted
     if seq.skip == 0 and seq.cap == len(loadable):
         seq.cap = 0
     return seq
+
+
+def loaded_names(seq: Sequence, listdir=os.listdir, isfile=os.path.isfile) -> list[str]:
+    """The source file behind each image the workflow gets, in the order it gets them.
+    For EXRs that's the original EXR of each converted frame."""
+    if seq.kind == "exr":
+        regex = _pattern_regex(seq.filename)
+        if regex is None:
+            return [seq.filename]
+        by_frame = {int(m.group(1)): n for n, m in ((n, regex.match(n)) for n in listdir(seq.directory)) if m}
+        frames = seq.frames or range(seq.first, seq.last + 1)
+        return [by_frame[f] for f in frames if f in by_frame]
+    if seq.kind != "frames":
+        return []
+    loadable = _loader_listing(seq.directory, listdir, isfile)
+    return loadable[seq.skip: seq.skip + seq.cap] if seq.cap else loadable[seq.skip:]
+
+
+# ============================================================== texture file names
+# <name><sep><number>[<sep><number>].<ext>: rock_diffuse.1001.png, or as the TEX
+# convention writes them, acescg_map1_noTile_defState_color01.1001.0000.exr (UDIM, frame).
+_TEXTURE_NAME = re.compile(r"^(?P<stem>.*?)(?:(?P<sa>[._])(?P<a>\d+))?(?:(?P<sb>[._])(?P<b>\d+))?"
+                           r"\.(?P<ext>[A-Za-z0-9]+)$")
+TEXTURE_EXTENSIONS = LOADER_EXTENSIONS | CONVERTED_SEQUENCE_EXTENSIONS
+
+
+def _is_udim(number: str | None) -> bool:
+    return bool(number) and len(number) == 4 and int(number) >= 1001
+
+
+def texture_numbers(name: str, numbering: str = "udim") -> tuple[int, int, bool]:
+    """(UDIM, frame, whether the name carried a UDIM) for one texture file.
+
+    Two numbers are <UDIM>.<frame>, as in the convention. One number is a UDIM tile
+    (4 digits, 1001 and up) or, with numbering='frame', an animation frame. No number
+    (or one that isn't a UDIM) is a single 1001 tile, frame 0."""
+    m = _TEXTURE_NAME.match(name)
+    a, b = (m.group("a"), m.group("b")) if m else (None, None)
+    if b is not None and _is_udim(a):
+        return int(a), int(b), True
+    single = b if b is not None else a
+    if single is not None:
+        if numbering == "frame":
+            return 1001, int(single), False
+        if _is_udim(single):
+            return int(single), 0, True
+    return 1001, 0, False
+
+
+def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path.isfile) -> str:
+    """For texture workflows: a folder means the one texture inside it. Returns the input
+    with the folder replaced by that texture's file or pattern (rock_diffuse.%04d.png),
+    so its UDIM tiles are read and checked like any sequence. Anything else is returned
+    unchanged."""
+    path, first, last = parse_input(raw)
+    directory, filename = split_input_path(to_farm(path, cfg.mappings))
+    if filename:
+        return raw
+    try:
+        names = sorted(n for n in listdir(directory)
+                       if os.path.splitext(n)[1].lower() in TEXTURE_EXTENSIONS and isfile(directory + n))
+    except OSError as e:
+        raise SequenceError(f"The farm machine can't open the input folder {directory} ({e.strerror or e}).")
+    if not names:
+        raise SequenceError(f"No texture images (png, jpg, tif, exr…) in {directory}.")
+    groups: dict[tuple, list] = {}
+    for n in names:
+        m = _TEXTURE_NAME.match(n)
+        key = (m["stem"], m["sa"], len(m["a"] or ""), m["sb"], len(m["b"] or ""), m["ext"].lower())
+        groups.setdefault(key, []).append(m)
+    if len(groups) > 1:
+        shown = sorted({ms[0].group(0) if len(ms) == 1 else f"{ms[0]['stem']} ({len(ms)} files)"
+                        for ms in groups.values()})
+        raise SequenceError(
+            f"{directory} holds {len(groups)} different textures ({', '.join(shown[:6])}"
+            f"{', …' if len(shown) > 6 else ''}). Give the diffuse texture's file or sequence instead of "
+            f"the folder, one job per texture.")
+    (stem, sa, la, sb, lb, _), ms = next(iter(groups.items()))
+    ext = ms[0]["ext"]
+    if len(ms) == 1:
+        name = ms[0].group(0)
+    else:
+        a_vary, b_vary = len({m["a"] for m in ms}) > 1, len({m["b"] for m in ms}) > 1
+        if a_vary and b_vary:
+            raise SequenceError(f"{directory} holds UDIM tiles of several frames ({stem}.<UDIM>.<frame>). "
+                                f"Give one frame's tiles, e.g. {stem}{sa}%0{la}d{sb}{ms[0]['b']}.{ext}.")
+        if b_vary:
+            name = f"{stem}{sa}{ms[0]['a']}{sb}%0{lb}d.{ext}"
+        else:
+            name = f"{stem}{sa}%0{la}d" + (f"{sb}{ms[0]['b']}" if sb else "") + f".{ext}"
+    rng = f" {first}-{last}" if first is not None else ""
+    return f"{path.rstrip('/')}/{name}{rng}"
 
 
 def check_writable(path: str, cfg: PathsConfig) -> None:
@@ -319,9 +434,9 @@ def default_output_root_display(cfg: PathsConfig) -> str:
     return to_posix(root, cfg.mappings) or root
 
 
-def default_output_dir_display(cfg: PathsConfig, tag: str) -> str:
+def default_output_dir_display(cfg: PathsConfig, tag: str, template: str | None = None) -> str:
     """e.g. /rdo/shows/{show}/.../renders/{shot}/{shot}_alpha_v###"""
-    d = cfg.output_dir.replace("{root}", default_output_root_display(cfg)).replace("{tag}", tag)
+    d = (template or cfg.output_dir).replace("{root}", default_output_root_display(cfg)).replace("{tag}", tag)
     return re.sub(r"\{version[^}]*\}", "###", d)
 
 

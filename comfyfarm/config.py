@@ -38,6 +38,7 @@ class PathsConfig(BaseModel):
     context_patterns: list[str] = Field(default_factory=lambda: [
         "/shows/{show}/.published/{seq}/{shot}/",
         "/shows/{show}/{seq}/{shot_short}/movhistory/",
+        "/shows/{show}/_asset/{asset}/",
         "/shows/{show}/",
     ])
     # Full shot name when a pattern only has the short one (shot work areas are
@@ -107,6 +108,23 @@ class ConvertConfig(BaseModel):
     movie: MovieConvertConfig = Field(default_factory=MovieConvertConfig)
 
 
+class TexturesConfig(BaseModel):
+    """Colour handling for texture workflows (e.g. CHORD): their maps are written as
+    linear EXRs, and EXR textures given as input are turned into what the model reads.
+
+    The defaults use OCIO's built-in ACES config, so they don't depend on how a show's
+    config names its colour spaces. `python -m comfyfarm check` tries these names."""
+    ocio_config: str = "ocio://default"
+    # What ComfyUI images are: 8-bit, sRGB-encoded (CHORD reads and writes base colour this way).
+    srgb_texture: str = "srgb_tx"
+    # Scene-linear texture colour space: colour maps are converted to it (the "acescg" in
+    # the TEX file names), and EXR inputs are converted from it.
+    linear: str = "ACEScg"
+    # Tagged on data maps (normal, bump, roughness, ...). Their values are never converted.
+    data: str = "Raw"
+    workers: int = 6     # oiiotool processes per job when writing the EXR maps
+
+
 class AuthConfig(BaseModel):
     # api key -> user name. Empty = no keys required; users identify themselves.
     api_keys: dict[str, str] = Field(default_factory=dict)
@@ -134,6 +152,7 @@ class Config(BaseModel):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     convert: ConvertConfig = Field(default_factory=ConvertConfig)
+    textures: TexturesConfig = Field(default_factory=TexturesConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)

@@ -1,0 +1,340 @@
+{
+  "3": {
+    "inputs": {
+      "ckpt_name": "chord_v1.safetensors"
+    },
+    "class_type": "ChordLoadModel",
+    "_meta": {
+      "title": "Chord - Load Model"
+    }
+  },
+  "4": {
+    "inputs": {
+      "chord_model": [
+        "3",
+        0
+      ],
+      "image": [
+        "17",
+        0
+      ]
+    },
+    "class_type": "ChordMaterialEstimation",
+    "_meta": {
+      "title": "Chord - Material Estimation"
+    }
+  },
+  "13": {
+    "inputs": {
+      "string": [
+        "14",
+        0
+      ],
+      "find": "/rdo/shows",
+      "replace": "//rodeofx.com/smb/shows"
+    },
+    "class_type": "StringReplace",
+    "_meta": {
+      "title": "Replace Text"
+    }
+  },
+  "14": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveString",
+    "_meta": {
+      "title": "INPUT_PATH"
+    }
+  },
+  "15": {
+    "inputs": {
+      "value": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "PrimitiveString",
+    "_meta": {
+      "title": "INPIUT_PATH_WIN"
+    }
+  },
+  "16": {
+    "inputs": {
+      "string": [
+        "15",
+        0
+      ],
+      "regex_pattern": "[^/\\\\]+$",
+      "replace": "",
+      "case_insensitive": true,
+      "multiline": false,
+      "dotall": false,
+      "count": 0
+    },
+    "class_type": "RegexReplace",
+    "_meta": {
+      "title": "Replace Text (Regex)"
+    }
+  },
+  "17": {
+    "inputs": {
+      "directory": [
+        "16",
+        0
+      ],
+      "image_load_cap": 0,
+      "skip_first_images": 0,
+      "select_every_nth": 1
+    },
+    "class_type": "VHS_LoadImagesPath",
+    "_meta": {
+      "title": "Load Images (Path) 🎥🅥🅗🅢"
+    }
+  },
+  "19": {
+    "inputs": {
+      "output_path": [
+        "22",
+        0
+      ],
+      "filename_prefix": "color01",
+      "filename_delimiter": "_",
+      "filename_number_padding": 4,
+      "filename_number_start": "false",
+      "extension": "png",
+      "dpi": 300,
+      "quality": 100,
+      "optimize_image": "false",
+      "lossless_webp": "false",
+      "overwrite_mode": "false",
+      "show_history": "false",
+      "show_history_by_prefix": "true",
+      "embed_workflow": "false",
+      "show_previews": "true",
+      "images": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "Image Save",
+    "_meta": {
+      "title": "Image Save"
+    }
+  },
+  "20": {
+    "inputs": {
+      "anything": [
+        "19",
+        0
+      ]
+    },
+    "class_type": "easy clearCacheAll",
+    "_meta": {
+      "title": "Clear Cache All"
+    }
+  },
+  "22": {
+    "inputs": {
+      "string": [
+        "23",
+        0
+      ],
+      "find": "/rdo/shows",
+      "replace": "//rodeofx.com/smb/shows"
+    },
+    "class_type": "StringReplace",
+    "_meta": {
+      "title": "Replace Text"
+    }
+  },
+  "23": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveString",
+    "_meta": {
+      "title": "OUTPUT_PATH"
+    }
+  },
+  "24": {
+    "inputs": {
+      "output_path": [
+        "22",
+        0
+      ],
+      "filename_prefix": "nrm01",
+      "filename_delimiter": "_",
+      "filename_number_padding": 4,
+      "filename_number_start": "false",
+      "extension": "png",
+      "dpi": 300,
+      "quality": 100,
+      "optimize_image": "false",
+      "lossless_webp": "false",
+      "overwrite_mode": "false",
+      "show_history": "false",
+      "show_history_by_prefix": "true",
+      "embed_workflow": "false",
+      "show_previews": "true",
+      "images": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "Image Save",
+    "_meta": {
+      "title": "Image Save"
+    }
+  },
+  "25": {
+    "inputs": {
+      "anything": [
+        "24",
+        0
+      ]
+    },
+    "class_type": "easy clearCacheAll",
+    "_meta": {
+      "title": "Clear Cache All"
+    }
+  },
+  "26": {
+    "inputs": {
+      "normal": [
+        "4",
+        1
+      ]
+    },
+    "class_type": "ChordNormalToHeight",
+    "_meta": {
+      "title": "Chord - Normal to Height"
+    }
+  },
+  "28": {
+    "inputs": {
+      "output_path": [
+        "22",
+        0
+      ],
+      "filename_prefix": "bmp01",
+      "filename_delimiter": "_",
+      "filename_number_padding": 4,
+      "filename_number_start": "false",
+      "extension": "png",
+      "dpi": 300,
+      "quality": 100,
+      "optimize_image": "false",
+      "lossless_webp": "false",
+      "overwrite_mode": "false",
+      "show_history": "false",
+      "show_history_by_prefix": "true",
+      "embed_workflow": "false",
+      "show_previews": "true",
+      "images": [
+        "26",
+        0
+      ]
+    },
+    "class_type": "Image Save",
+    "_meta": {
+      "title": "Image Save"
+    }
+  },
+  "29": {
+    "inputs": {
+      "anything": [
+        "28",
+        0
+      ]
+    },
+    "class_type": "easy clearCacheAll",
+    "_meta": {
+      "title": "Clear Cache All"
+    }
+  },
+  "30": {
+    "inputs": {
+      "anything": [
+        "31",
+        0
+      ]
+    },
+    "class_type": "easy clearCacheAll",
+    "_meta": {
+      "title": "Clear Cache All"
+    }
+  },
+  "31": {
+    "inputs": {
+      "output_path": [
+        "22",
+        0
+      ],
+      "filename_prefix": "spcr01",
+      "filename_delimiter": "_",
+      "filename_number_padding": 4,
+      "filename_number_start": "false",
+      "extension": "png",
+      "dpi": 300,
+      "quality": 100,
+      "optimize_image": "false",
+      "lossless_webp": "false",
+      "overwrite_mode": "false",
+      "show_history": "false",
+      "show_history_by_prefix": "true",
+      "embed_workflow": "false",
+      "show_previews": "true",
+      "images": [
+        "4",
+        2
+      ]
+    },
+    "class_type": "Image Save",
+    "_meta": {
+      "title": "Image Save"
+    }
+  },
+  "32": {
+    "inputs": {
+      "output_path": [
+        "22",
+        0
+      ],
+      "filename_prefix": "metal01",
+      "filename_delimiter": "_",
+      "filename_number_padding": 4,
+      "filename_number_start": "false",
+      "extension": "png",
+      "dpi": 300,
+      "quality": 100,
+      "optimize_image": "false",
+      "lossless_webp": "false",
+      "overwrite_mode": "false",
+      "show_history": "false",
+      "show_history_by_prefix": "true",
+      "embed_workflow": "false",
+      "show_previews": "true",
+      "images": [
+        "4",
+        3
+      ]
+    },
+    "class_type": "Image Save",
+    "_meta": {
+      "title": "Image Save"
+    }
+  },
+  "33": {
+    "inputs": {
+      "anything": [
+        "32",
+        0
+      ]
+    },
+    "class_type": "easy clearCacheAll",
+    "_meta": {
+      "title": "Clear Cache All"
+    }
+  }
+}

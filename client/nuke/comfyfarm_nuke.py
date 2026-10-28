@@ -96,11 +96,52 @@ def _source_node(job: dict, near: str | None):
     return None
 
 
+def _place_right_of(src, node) -> None:
+    taken = {(n.xpos(), n.ypos()) for n in nuke.allNodes(recurseGroups=False) if n is not node}
+    x = src.xpos() + 120
+    while (x, src.ypos()) in taken:   # earlier results of the same source sit there
+        x += 120
+    node.setXYpos(x, src.ypos())
+
+
+def create_map_reads(job: dict, near: str | None = None) -> list:
+    """Texture jobs (CHORD): one Read per map. UDIM tiles are read as frames
+    (1001, 1002, 1011, ...), so scrubbing steps through the tiles; missing tiles are black."""
+    out = job.get("outputs") or {}
+    reads, new, posix = [], [], os.name != "nt"
+    for channel, m in out["maps"].items():
+        path = ((m.get("pattern_posix") if posix else None) or m["pattern"]).replace("\\", "/")
+        existing = next((n for n in nuke.allNodes("Read", recurseGroups=False)
+                         if _key(n["file"].value()) == _key(path)), None)
+        if existing is not None:
+            reads.append(existing)
+            continue
+        first, last = int(m.get("first") or 1), int(m.get("last") or m.get("first") or 1)
+        kw = {"on_error": "black"} if last - first + 1 > int(m.get("files") or 1) else {}
+        read = nuke.nodes.Read(file=path, first=first, last=last, origfirst=first, origlast=last, **kw)
+        read["label"].setValue(f"comfyfarm {job['short_id']}\n{channel}")
+        reads.append(read)
+        new.append(read)
+    src = _source_node(job, near)
+    if src is not None:
+        for read in new:   # left to right, in map order
+            _place_right_of(src, read)
+    for n in nuke.selectedNodes():
+        n.setSelected(False)
+    for read in reads:
+        read.setSelected(True)
+    return reads
+
+
 def create_read(job: dict, near: str | None = None):
     """A Read node for a finished job, next to the node its input came from.
-    Selects the existing one instead if the frames are already read in."""
+    Selects the existing one instead if the frames are already read in.
+    Texture jobs get one Read per map (create_map_reads)."""
     pattern = farm.output_pattern(job)
     out = job.get("outputs") or {}
+    if job.get("status") == "done" and out.get("maps"):
+        reads = create_map_reads(job, near)
+        return reads[0] if reads else None
     if job.get("status") != "done" or not pattern:
         nuke.message(f"ComfyFarm: job {job.get('short_id')} has no finished frames ({job.get('status')}).")
         return None
@@ -114,11 +155,7 @@ def create_read(job: dict, near: str | None = None):
     read["label"].setValue(f"comfyfarm {job['short_id']}\n{job.get('workflow', '')}")
     src = _source_node(job, near)
     if src is not None:
-        taken = {(n.xpos(), n.ypos()) for n in nuke.allNodes(recurseGroups=False) if n is not read}
-        x = src.xpos() + 120
-        while (x, src.ypos()) in taken:   # earlier results of the same source sit there
-            x += 120
-        read.setXYpos(x, src.ypos())
+        _place_right_of(src, read)
     _select_only(read)
     return read
 

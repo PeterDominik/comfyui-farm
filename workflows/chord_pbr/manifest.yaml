@@ -1,0 +1,98 @@
+# What the gateway exposes for this workflow, and which nodes each parameter drives.
+# Full reference: "Workflow manifests" and "Texture workflows" in README.md.
+#
+# Every node is named with its class_type too, so a re-export that renumbers nodes fails
+# `python -m comfyfarm check` instead of writing into the wrong node.
+
+name: chord_pbr
+label: CHORD PBR maps from a diffuse texture
+description: >
+  Ubisoft's CHORD estimates base colour, normal, height, roughness and metalness from a
+  diffuse texture or its UDIM tiles. The maps are written as linear EXRs named by the TEX
+  naming convention, e.g. acescg_map1_noTile_defState_color01.1001.0000.exr, into a new
+  versioned folder for each run.
+tag: chord                      # in the output folder name: <source>.chord_v001
+template: workflow_api.json
+
+params:
+  input:
+    type: sequence
+    label: Diffuse texture
+    required: true
+    help: >
+      A texture file, its UDIM tiles (/rdo/shows/<show>/.../rock_diffuse.%04d.png, gaps are
+      fine), or a folder holding one texture. png, jpg, tif, or exr (converted from ACEScg
+      first). One texture per job.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      Maps go into <asset or shot>/<source>.chord_vNNN/ inside this folder; each run takes the
+      next free version. Its parent folder must exist. Leave empty for the show's renders folder.
+      Never inside .published.
+
+  # Naming params: they only go into the file names, so they have no targets.
+  uvset:
+    type: string
+    label: UV set
+    default: map1
+    naming: true
+    pattern: '^map\d{1,2}(-[A-Za-z][A-Za-z0-9]*)?$'
+    invalid: map plus 1 or 2 digits (map1, map10), optionally -oneWord (map10-preview).
+
+  tile:
+    type: choice
+    label: Tile
+    choices: [auto, tile, noTile]
+    default: auto
+    naming: true
+    help: auto = noTile for UDIM tiles, tile for a single tileable texture (always UDIM 1001).
+
+  state:
+    type: string
+    label: State
+    default: defState
+    naming: true
+    pattern: '^[A-Za-z][A-Za-z0-9]*$'
+    invalid: one word, camelCase allowed (defState, damaged, burnedFace).
+
+  description:
+    type: string
+    label: Channel description (optional)
+    default: ''
+    naming: true
+    pattern: '^[A-Za-z][A-Za-z0-9]*$'
+    invalid: one word, camelCase allowed. It goes after the channel (color01-sand) and is not techchecked.
+
+  numbering:
+    type: choice
+    label: Numbering
+    choices: [udim, frame]
+    default: udim
+    naming: true
+    help: What the number in the input file names is. frame = an animated texture (UDIM 1001, frame from the name).
+
+# How the 'sequence' parameter is wired in.
+sequence:
+  path_node: {node: "14", input: value, class: PrimitiveString}    # INPUT_PATH, informational
+  loader: {node: "17", class: VHS_LoadImagesPath}                  # directory/skip/cap set directly
+
+outputs:
+  root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational
+
+# The maps. Each save node writes PNGs into the job's scratch folder; the gateway converts
+# them to EXR with oiiotool and names them. ChordMaterialEstimation outputs basecolor,
+# normal, roughness, metalness; ChordNormalToHeight turns the normal into height.
+# bmp01/nrm01 are reserved for modeling's published maps, hence bmp02/nrm02.
+textures:
+  name: '{colorspace}_{uvset}_{tile}_{state}_{channel}{description}.{udim:04d}.{frame:04d}.exr'
+  path_input: output_path
+  prefix_input: filename_prefix
+  ext: png
+  maps:
+    - {name: basecolor, node: "19", class: "Image Save", channel: color01, color: true, bits: half}
+    - {name: normal,    node: "24", class: "Image Save", channel: nrm02,   bits: half}
+    - {name: height,    node: "28", class: "Image Save", channel: bmp02,   bits: float}
+    - {name: roughness, node: "31", class: "Image Save", channel: spcr01,  bits: half}
+    - {name: metalness, node: "32", class: "Image Save", channel: metal01, bits: half}
