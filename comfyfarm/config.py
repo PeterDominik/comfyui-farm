@@ -66,16 +66,24 @@ class PathsConfig(BaseModel):
     validate_inputs: bool = True
 
 
+class OcioConfig(BaseModel):
+    """The farm's one OCIO setup, kept in the repo (ocio/). Every conversion is a plain
+    colour space conversion, the one a Nuke Write or Read does with its transform set to
+    "default (color_picking)":
+
+      EXR inputs (plates and textures) -> 8-bit PNG for ComfyUI:  linear -> image
+      texture colour maps from ComfyUI -> EXR:                  image -> linear
+    """
+    config: str = "ocio/config.ocio"   # relative paths are inside the repo
+    linear: str = "scene_linear"       # what EXRs are in: Nuke's working space
+    image: str = "color_picking"       # what ComfyUI's PNGs are in: Write/Read "default (color_picking)"
+    data: str = "data"                 # tagged on data maps (normal, bump, ...); their values are never converted
+    # OCIO context variables, for a config whose transforms use them (none by default).
+    # Tokens: {show} {seq} {shot} {shot_short}.
+    context: dict[str, str] = Field(default_factory=dict)
+
+
 class ExrConvertConfig(BaseModel):
-    # The show's OCIO config. It finds the per-shot client LUTs itself through its
-    # search_path (../../_color_bundle/${SEQ}_${SHOT}:...), so SEQ/SHOT are set per job.
-    ocio_config: str = "/rdo/shows/{show}/_project_ref/_lut/_ocio/current/config.ocio"
-    # OCIO context variables. {shot_short} = shot folder without its "<seq>_" prefix
-    # (bpash_1545 in seq bpash -> 1545), so ${SEQ}_${SHOT} names the shot's bundle.
-    context: dict[str, str] = Field(default_factory=lambda: {"SEQ": "{seq}", "SHOT": "{shot_short}"})
-    input_colorspace: str = "scene_linear"   # role or colorspace of the EXR plates
-    display: str = "sRGB-monitor"
-    view: str = "Client-look"
     # Plain RGB, cropped to the display window (drops overscan), before the transform.
     extra_args: list[str] = Field(default_factory=lambda: ["--ch", "R,G,B", "--croptofull"])
 
@@ -109,19 +117,8 @@ class ConvertConfig(BaseModel):
 
 
 class TexturesConfig(BaseModel):
-    """Colour handling for texture workflows (e.g. CHORD): their maps are written as
-    linear EXRs, and EXR textures given as input are turned into what the model reads.
-
-    The defaults use OCIO's built-in ACES config, so they don't depend on how a show's
-    config names its colour spaces. `python -m comfyfarm check` tries these names."""
-    ocio_config: str = "ocio://default"
-    # What ComfyUI images are: 8-bit, sRGB-encoded (CHORD reads and writes base colour this way).
-    srgb_texture: str = "srgb_tx"
-    # Scene-linear texture colour space: colour maps are converted to it (the "acescg" in
-    # the TEX file names), and EXR inputs are converted from it.
-    linear: str = "ACEScg"
-    # Tagged on data maps (normal, bump, roughness, ...). Their values are never converted.
-    data: str = "Raw"
+    """Texture workflows (e.g. CHORD) write their maps as EXRs, with the colour handling
+    of `ocio:`."""
     workers: int = 6     # oiiotool processes per job when writing the EXR maps
 
 
@@ -151,6 +148,7 @@ class Config(BaseModel):
     workers: list[WorkerConfig] = Field(default_factory=lambda: [WorkerConfig(name="local")])
     paths: PathsConfig = Field(default_factory=PathsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    ocio: OcioConfig = Field(default_factory=OcioConfig)
     convert: ConvertConfig = Field(default_factory=ConvertConfig)
     textures: TexturesConfig = Field(default_factory=TexturesConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
@@ -194,6 +192,17 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     for key, (old, new) in old_defaults.items():
         if paths.get(key) == old:
             cfg.obsolete_keys.append(f"paths.{key} is the old default; delete the line to {new}")
+    # Show configs, display/view and the texture colour names gave way to the repo's
+    # ocio/ config (`ocio:`); an old config.yaml still carrying them would look as if it
+    # still steered the conversion.
+    old_exr = sorted(set((data.get("convert") or {}).get("exr") or {}) - {"extra_args"})
+    if old_exr:
+        cfg.obsolete_keys.append(f"convert.exr: {', '.join(old_exr)} no longer used; EXRs are converted with the "
+                                 f"repo's OCIO config (ocio: in config.yaml). Delete those lines")
+    old_tex = sorted(set(data.get("textures") or {}) - {"workers"})
+    if old_tex:
+        cfg.obsolete_keys.append(f"textures: {', '.join(old_tex)} no longer used; colour comes from ocio: in "
+                                 f"config.yaml. Delete those lines")
     patterns = paths.get("context_patterns")
     if patterns and not any("movhistory" in p for p in patterns):
         cfg.obsolete_keys.append("paths.context_patterns has no shot movhistory pattern; add "

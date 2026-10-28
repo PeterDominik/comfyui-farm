@@ -2,7 +2,7 @@
 was asked to do (arguments and the OCIO context variables) as JSON lines.
 
 Input file name containing 'broken' -> fails; containing 'slow' -> takes 1.5 s.
-FAKE_OIIOTOOL_LEVELS='{"<from>|<view>": grey, ...}' -> writes an 8x8 grey PNG at that
+FAKE_OIIOTOOL_LEVELS='{"<from>|<to>": grey, ...}' -> writes an 8x8 grey PNG at that
 level, to simulate how each colour setting comes out.
 """
 
@@ -43,7 +43,7 @@ if "broken" in os.path.basename(src):
 if "slow" in os.path.basename(src):
     time.sleep(1.5)
 levels = json.loads(os.environ.get("FAKE_OIIOTOOL_LEVELS") or "{}")
-disp = next((i for i, a in enumerate(args) if a.startswith("--ociodisplay")), None)
-key = f"{args[disp].split('from=', 1)[1]}|{args[disp + 2]}" if disp is not None else ""
+conv = args.index("--colorconvert") if "--colorconvert" in args else None
+key = f"{args[conv + 1]}|{args[conv + 2]}" if conv is not None else ""
 with open(out, "wb") as fh:
     fh.write(tiny_png(levels.get(key, 200), 8) if levels else tiny_png())

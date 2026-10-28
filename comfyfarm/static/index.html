@@ -216,11 +216,8 @@ function renderForm() {
 // ------------------------------------------------------------- destination preview
 function convertLine(c) {
   if (!c) return "";
-  if (c.kind === "exr" && c.mode === "colorconvert")
-    return `<br>EXR textures converted first: <code>${esc(c.from)}</code> → <code>${esc(c.to)}</code>`;
   if (c.kind === "exr")
-    return `<br>EXR converted first: <code>${esc(c.input_colorspace)}</code> → <code>${esc(c.display)} / ${esc(c.view)}</code>, `
-      + (c.bundle ? `shot LUTs from <code>${esc(c.bundle)}</code>` : "show default LUTs");
+    return `<br>EXR converted first: <code>${esc(c.from)}</code> → <code>${esc(c.to)}</code> with <code>${esc(c.config)}</code>`;
   if (c.kind === "movie")
     return `<br>Movie: ${esc(c.codec || "")} ${c.width || "?"}×${c.height || "?"} at ${+c.fps.toFixed(3)} fps, `
       + (c.timecode ? `timecode <code>${esc(c.timecode)}</code> → frames ${c.start}-${c.end}` : `frames ${c.start}-${c.end}`)

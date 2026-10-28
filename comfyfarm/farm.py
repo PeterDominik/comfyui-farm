@@ -202,7 +202,7 @@ class Farm:
         values = wf.validate(params or {})
         pc = self.cfg.paths
         seq = C.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
-                              texture=self.cfg.textures if wf.textures else None) \
+                              texture=bool(wf.textures), ocio=self.cfg.ocio) \
             if wf.sequence_param else None
         if seq is not None and seq.convert:
             C.point_loader_at_scratch(seq, self.scratch_root, job_id)
@@ -296,7 +296,8 @@ class Farm:
         textures = {"raw_dir": f"{self.scratch_root}/{job_id}/maps", "name": spec.name, "ext": spec.ext,
                     "tokens": tokens, "items": [list(i) for i in items], "maps": maps, "has_udim": has_udim,
                     "numbering": numbering,
-                    "ocio_config": C.texture_ocio_config(self.cfg.textures, pc, plan["show"])}
+                    # Frozen per job, like the input conversion: the repo's OCIO config.
+                    "ocio": C.ocio_setup(self.cfg.ocio, pc, plan["show"], plan["seq_name"], plan["shot"])}
         shown = next((m for m in maps if m["color"]), maps[0])
         plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=out_dir + "/", textures=textures,
                     first_frame=seq.first,
@@ -503,7 +504,8 @@ class Farm:
             return
         seq_info = (job["info"] or {}).get("input") or {}
         kind = seq_info.get("convert", {}).get("kind", "?")
-        label = {"exr": "converting EXR with the shot's OCIO look", "movie": "extracting movie frames"}.get(kind, kind)
+        to = seq_info.get("convert", {}).get("to") or "PNG"
+        label = {"exr": f"converting EXR to {to}", "movie": "extracting movie frames"}.get(kind, kind)
         t0 = now()
         last = [0.0]
 

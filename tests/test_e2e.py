@@ -72,6 +72,7 @@ paths:
   mappings: [{{posix: /rdo/shows, windows: "{root}/shows"}}]
   output_root: "{root}/shows/{{show}}/_project_ref/_cg/comfyui/renders"
 farm: {{reconcile_seconds: 1.5, health_seconds: 0.5, lost_after_seconds: 60}}
+ocio: {{config: "{root}/ocio/config.ocio"}}
 convert:
   scratch_dir: {root}/scratch
   frame_workers: 3
@@ -85,17 +86,10 @@ convert:
 
     @classmethod
     def make_conversion_fixtures(cls):
-        # Show OCIO config with Rodeo's search path; the shot's colour bundle exists.
-        lut = cls.tmp / "shows/xyz/_project_ref/_lut"
-        (lut / "_ocio/current").mkdir(parents=True)
-        (lut / "_color_bundle/abc_0010").mkdir(parents=True)
-        (lut / "_ocio/current/config.ocio").write_text(
-            "ocio_profile_version: 1\n"
-            'search_path: "../../_color_bundle/${SEQ}_${SHOT}:../../_color_bundle/${SEQ}:'
-            '../../_color_bundle/${SHOT}:project_luts:rodeo_luts:ACES_luts"\n'
-            "displays:\n  sRGB-monitor:\n"
-            "    - !<View> {name: Rodeo-look, colorspace: Rodeo-look}\n"
-            "    - !<View> {name: Client-look, colorspace: Client-look}\n")
+        # Stand-in for the repo's OCIO config (ocio/config.ocio).
+        (cls.tmp / "ocio").mkdir()
+        (cls.tmp / "ocio/config.ocio").write_text(
+            "ocio_profile_version: 2\nroles:\n  scene_linear: ACES - ACEScg\n  color_picking: Output - sRGB\n")
         shot = cls.tmp / "shows/xyz/.published/abc/abc_0010"
         exr = shot / "plate/v1"
         exr.mkdir(parents=True)
@@ -300,14 +294,12 @@ convert:
         self.assertEqual(self.wait_for(ok["id"], ("done", "failed"))["status"], "done")
         self.assertTrue((self.tmp / "shows/ply/work/plates_alpha/plate.alpha_v001.1001.png").is_file())
 
-    def test_047_exr_input_converted_with_shot_ocio(self):
+    def test_047_exr_input_converted_with_repo_ocio(self):
         src = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010.plate.v1.%04d.exr"
         plan = farm._request("POST", "/api/v1/plan", {"workflow": "ltx25_alpha_gen", "params": {"input": f"{src} 1002-1005"}})
         c = plan["convert"]
-        self.assertEqual((plan["input_kind"], c["view"], c["display"], c["context"]),
-                         ("exr", "Client-look", "sRGB-monitor", {"SEQ": "abc", "SHOT": "0010"}))
-        self.assertEqual(c["bundle"], "/rdo/shows/xyz/_project_ref/_lut/_color_bundle/abc_0010")
-        self.assertEqual(c["config"], "/rdo/shows/xyz/_project_ref/_lut/_ocio/current/config.ocio")
+        self.assertEqual((plan["input_kind"], c["from"], c["to"]), ("exr", "scene_linear", "color_picking"))
+        self.assertTrue(c["config"].endswith("/ocio/config.ocio"))
         job = farm.submit("ltx25_alpha_gen", {"input": f"{src} 1002-1005"})
         self.assertEqual(job["status"], "preparing")
         done = self.wait_for(job["id"], ("done", "failed"))
@@ -317,13 +309,12 @@ convert:
         self.assertTrue((out / "abc_0010.plate.v1.alpha_v001.1002.png").is_file())
         calls = [c for c in self.oiiotool_calls() if "plate" in " ".join(c["args"])]
         self.assertEqual(len(calls), 4)
-        a = calls[0]
-        self.assertEqual((a["SEQ"], a["SHOT"]), ("abc", "0010"))
-        self.assertIn("--ociodisplay:from=scene_linear", a["args"])
-        i = a["args"].index("--ociodisplay:from=scene_linear")
-        self.assertEqual(a["args"][i + 1:i + 3], ["sRGB-monitor", "Client-look"])
-        self.assertTrue(a["args"][a["args"].index("--colorconfig") + 1].endswith("/_lut/_ocio/current/config.ocio"))
-        self.assertEqual(a["args"][a["args"].index("-d") + 1], "uint8")
+        a = calls[0]["args"]   # a Nuke Write set to "default (color_picking)"
+        i = a.index("--colorconvert")
+        self.assertEqual(a[i + 1:i + 3], ["scene_linear", "color_picking"])
+        self.assertEqual(a[a.index("--colorconfig") + 1], (self.tmp / "ocio/config.ocio").as_posix())
+        self.assertIn("--croptofull", a)
+        self.assertEqual(a[a.index("-d") + 1], "uint8")
         self.assertFalse((self.tmp / "scratch" / job["id"]).exists(), "scratch frames should be cleaned up")
 
     def test_048_movie_numbered_from_timecode(self):
@@ -442,14 +433,15 @@ convert:
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertTrue(prompt["28"]["inputs"]["output_path"].endswith(f"/scratch/{job['id']}/maps"))
         self.assertEqual(prompt["28"]["inputs"]["filename_prefix"], f"_cf{job['short_id']}_bmp02")
-        # Height is a bump map: 32-bit float; base colour goes sRGB -> ACEScg; data maps keep their values.
+        # Height is a bump map: 32-bit float; base colour goes color_picking -> scene_linear;
+        # data maps keep their values.
         calls = [c["args"] for c in self.oiiotool_calls() if f"_cf{job['short_id']}_" in " ".join(c["args"])]
         self.assertEqual(len(calls), 15)
         bump = next(a for a in calls if "_bmp02_" in " ".join(a))
         self.assertEqual((bump[bump.index("-d") + 1], "--colorconvert" in bump), ("float", False))
         color = next(a for a in calls if "_color01_" in " ".join(a))
-        i = color.index("--colorconvert")
-        self.assertEqual((color[i + 1:i + 3], color[color.index("-d") + 1]), (["srgb_tx", "ACEScg"], "half"))
+        i = color.index("--colorconvert")   # a Nuke Read set to "default (color_picking)"
+        self.assertEqual((color[i + 1:i + 3], color[color.index("-d") + 1]), (["color_picking", "scene_linear"], "half"))
 
         nd = self.wait_for(nxt["id"], ("done", "failed"))
         self.assertEqual(nd["status"], "done", nd.get("error"))
@@ -458,14 +450,20 @@ convert:
                           "acescg_map1_noTile_defState_bmp02-moss.1011.0000.exr"])
         self.assertTrue(nd["info"]["output_dir"].endswith("rockA_diffuse.chord_v002"))
 
-        # One tileable photo: 'tile', UDIM 1001.
+        # One photo: UDIM 1001, noTile by default (the manifest's default); tile: auto makes
+        # a single texture 'tile'.
         photo = farm.submit("chord_pbr", {"input": f"{tex}/photo/cliff.jpg"})
         pd = self.wait_for(photo["id"], ("done", "failed"))
         self.assertEqual(pd["status"], "done", pd.get("error"))
-        self.assertIn("acescg_map1_tile_defState_metal01.1001.0000.exr", os.listdir(pd["info"]["output_dir"]))
+        self.assertIn("acescg_map1_noTile_defState_metal01.1001.0000.exr", os.listdir(pd["info"]["output_dir"]))
         self.assertTrue(pd["info"]["output_dir_posix"].endswith("/rockA/cliff.chord_v001"))
+        auto = farm.submit("chord_pbr", {"input": f"{tex}/photo/cliff.jpg", "tile": "auto"})
+        ad = self.wait_for(auto["id"], ("done", "failed"))
+        self.assertEqual(ad["status"], "done", ad.get("error"))
+        self.assertIn("acescg_map1_tile_defState_metal01.1001.0000.exr", os.listdir(ad["info"]["output_dir"]))
+        self.assertTrue(ad["info"]["output_dir_posix"].endswith("/rockA/cliff.chord_v002"))
 
-        # EXR tiles (ACEScg) are converted to sRGB texture PNGs for CHORD first.
+        # EXR tiles are converted like any EXR input: linear -> color_picking PNGs.
         exr = farm.submit("chord_pbr", {"input": f"{tex}/exr"})
         self.assertEqual(exr["status"], "preparing")
         ed = self.wait_for(exr["id"], ("done", "failed"))
@@ -473,7 +471,7 @@ convert:
         self.assertEqual(len(os.listdir(ed["info"]["output_dir"])), 10)
         conv = [c["args"] for c in self.oiiotool_calls() if "rockA_color.1002.exr" in " ".join(c["args"])][0]
         i = conv.index("--colorconvert")
-        self.assertEqual(conv[i + 1:i + 3], ["ACEScg", "srgb_tx"])
+        self.assertEqual(conv[i + 1:i + 3], ["scene_linear", "color_picking"])
 
         with self.assertRaisesRegex(farm.FarmError, "one 1001 tile"):
             farm.submit("chord_pbr", {"input": f"{tex}/src", "tile": "tile"})

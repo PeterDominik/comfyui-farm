@@ -164,9 +164,9 @@ class PanelModel:
         if plan.get("maps"):
             out += "<br>Maps: " + " ".join(f"<code>{e(m)}</code>" for m in plan["maps"])
         c = plan.get("convert") or {}
-        if c.get("kind") == "exr" and c.get("mode") == "colorconvert":
-            out += (f"<br>EXR textures converted first: <code>{e(c.get('from', ''))}</code> → "
-                    f"<code>{e(c.get('to', ''))}</code>")
+        if c.get("kind") == "exr":
+            out += (f"<br>EXR converted first: <code>{e(c.get('from', ''))}</code> → "
+                    f"<code>{e(c.get('to', ''))}</code> with <code>{e(c.get('config', ''))}</code>")
         elif c.get("kind") == "movie":
             out += (f"<br>Movie: {e(str(c.get('codec') or ''))} {c.get('width') or '?'}×{c.get('height') or '?'} "
                     f"at {round(c.get('fps') or 0, 3):g} fps, ")
@@ -174,10 +174,6 @@ class PanelModel:
                     else f"frames {c['start']}-{c['end']}")
             if c.get("slate_frame") is not None:
                 out += f", first frame ({c['slate_frame']}) is a slate and is skipped"
-        elif c.get("kind") == "exr":
-            out += (f"<br>EXR converted first: <code>{e(c.get('input_colorspace', ''))}</code> → "
-                    f"<code>{e(c.get('display', ''))} / {e(c.get('view', ''))}</code>, "
-                    + (f"shot LUTs from <code>{e(c['bundle'])}</code>" if c.get("bundle") else "show default LUTs"))
         if (plan.get("version") or 1) > 1:
             out += (f"<br><span style='color:#e0a24a'>Earlier versions already exist there (or are queued), "
                     f"so this run is v{plan['version']:03d}.</span>")

@@ -4,7 +4,9 @@
 """
 
 import asyncio
+import contextlib
 import copy
+import io
 import json
 import os
 import sys
@@ -13,8 +15,9 @@ import unittest
 from pathlib import Path
 
 from comfyfarm import textures as T
-from comfyfarm.config import ConvertConfig, PathMapping, PathsConfig, TexturesConfig
-from comfyfarm.convert import exr_command, resolve_input, summary
+from comfyfarm.__main__ import ocio_roles
+from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig, TexturesConfig
+from comfyfarm.convert import REPO, exr_command, resolve_input, summary
 from comfyfarm.paths import SequenceError, loaded_names, resolve_sequence, texture_input, texture_numbers
 from comfyfarm.paths import Sequence
 from comfyfarm.workflows import ParamError, Workflow
@@ -33,6 +36,14 @@ def touch(d, *names):
 MAPS = [{"name": "basecolor", "channel": "color01", "colorspace": "acescg", "color": True, "bits": "half"},
         {"name": "height", "channel": "bmp02", "colorspace": "acescg", "color": False, "bits": "float"}]
 TOKENS = {"uvset": "map1", "tile": "noTile", "state": "defState", "description": ""}
+OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  default: ACES - ACEScg\n  scene_linear: ACES - ACEScg\n"
+               "  color_picking: Output - sRGB\n  data: Raw\n"
+               "displays:\n  sRGB:\n    - !<View> {name: Raw, colorspace: Raw}\n"
+               "colorspaces:\n  - !<ColorSpace>\n    name: ACES - ACEScg\n  - !<ColorSpace>\n    name: Output - sRGB\n"
+               "  - !<ColorSpace>\n    name: Raw\n    isdata: true\n")
+# A job's frozen OCIO settings (convert.ocio_setup) with the default names.
+JOB_OCIO = {"config": "/farm/ocio/config.ocio", "linear": "scene_linear", "image": "color_picking", "data": "data",
+            "context": {}}
 
 
 class NamingTests(unittest.TestCase):
@@ -145,6 +156,9 @@ class InputTests(unittest.TestCase):
         self.dir = f"{self.root}/shows/xyz/_asset/rockA/cg/textures/src"
         self.cfg = PathsConfig(mappings=[PathMapping(posix="/rdo/shows", windows=f"{self.root}/shows")])
         self.posix = "/rdo/shows/xyz/_asset/rockA/cg/textures/src"
+        touch(f"{self.root}/ocio")
+        Path(f"{self.root}/ocio/config.ocio").write_text(OCIO_CONFIG)
+        self.oc = OcioConfig(config=f"{self.root}/ocio/config.ocio")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -162,7 +176,7 @@ class InputTests(unittest.TestCase):
     def test_folder_means_the_texture_in_it(self):
         touch(self.dir, "rock_diffuse.1001.png", "rock_diffuse.1002.png", "notes.txt")
         self.assertEqual(texture_input(self.posix, self.cfg), f"{self.posix}/rock_diffuse.%04d.png")
-        seq = resolve_input(self.posix + "/", self.cfg, ConvertConfig(), texture=TexturesConfig())
+        seq = resolve_input(self.posix + "/", self.cfg, ConvertConfig(), texture=True, ocio=self.oc)
         self.assertEqual((seq.source, seq.frames, seq.show), ("rock_diffuse", [1001, 1002], "xyz"))
         # Convention-named tiles: the UDIM varies, the frame stays.
         other = f"{self.root}/shows/xyz/tex2"
@@ -182,34 +196,22 @@ class InputTests(unittest.TestCase):
         with self.assertRaisesRegex(SequenceError, "No texture images"):
             texture_input("/rdo/shows/xyz/empty", self.cfg)
 
-    def test_exr_textures_converted_from_linear(self):
+    def test_exr_textures_converted_like_plates(self):
+        """Same conversion as every EXR: the repo config, linear -> color_picking."""
         touch(self.dir, "rock.1001.exr", "rock.1003.exr")
-        tc = TexturesConfig()
-        seq = resolve_input(f"{self.posix}/rock.%04d.exr", self.cfg, ConvertConfig(tools={"oiiotool": "x"}), texture=tc)
+        seq = resolve_input(f"{self.posix}/rock.%04d.exr", self.cfg, ConvertConfig(tools={"oiiotool": "x"}),
+                            texture=True, ocio=self.oc)
         c = seq.convert
-        self.assertEqual((c["mode"], c["from"], c["to"], c["frames"]), ("colorconvert", "ACEScg", "srgb_tx", [1001, 1003]))
+        self.assertEqual((c["from"], c["to"], c["frames"]), ("scene_linear", "color_picking", [1001, 1003]))
         self.assertEqual(loaded_names(seq), ["rock.1001.exr", "rock.1003.exr"])
         cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
-        self.assertEqual(cmd, ["oiiotool", "--colorconfig", "ocio://default", "in.exr", "--ch", "R,G,B",
-                               "--colorconvert", "ACEScg", "srgb_tx", "-d", "uint8", "-o", "out.png"])
-        self.assertEqual(summary(seq, self.cfg)["mode"], "colorconvert")
-
-    def test_show_ocio_config_for_textures(self):
-        from comfyfarm.convert import texture_ocio_config
-        self.assertEqual(texture_ocio_config(TexturesConfig(), self.cfg, None), "ocio://default")
-        tc = TexturesConfig(ocio_config="/rdo/shows/{show}/_project_ref/_lut/_ocio/current")
-        os.makedirs(f"{self.root}/shows/xyz/_project_ref/_lut/_ocio/current")
-        touch(f"{self.root}/shows/xyz/_project_ref/_lut/_ocio/current", "config.ocio")
-        self.assertEqual(texture_ocio_config(tc, self.cfg, "xyz"),
-                         f"{self.root}/shows/xyz/_project_ref/_lut/_ocio/current/config.ocio")
-        with self.assertRaisesRegex(SequenceError, "No OCIO config at /rdo/shows/abc/"):
-            texture_ocio_config(tc, self.cfg, "abc")
-        with self.assertRaisesRegex(SequenceError, "no show in the input path"):
-            texture_ocio_config(tc, self.cfg, None)
+        self.assertEqual(cmd, ["oiiotool", "--colorconfig", self.oc.config, "in.exr", "--ch", "R,G,B", "--croptofull",
+                               "--colorconvert", "scene_linear", "color_picking", "-d", "uint8", "-o", "out.png"])
+        self.assertEqual(summary(seq, self.cfg)["to"], "color_picking")
 
     def test_movies_refused(self):
         with self.assertRaisesRegex(SequenceError, "not movies"):
-            resolve_input("/rdo/shows/xyz/a.mov", self.cfg, ConvertConfig(), texture=TexturesConfig())
+            resolve_input("/rdo/shows/xyz/a.mov", self.cfg, ConvertConfig(), texture=True, ocio=self.oc)
 
 
 class WriteMapsTests(unittest.TestCase):
@@ -220,7 +222,7 @@ class WriteMapsTests(unittest.TestCase):
             touch(raw, *[f"_cfj1_{c}_{i:04d}.png" for c in ("color01", "bmp02") for i in (1, 2, 3)], "other.png")
             t = {"raw_dir": raw, "name": T.DEFAULT_NAME, "ext": "png", "tokens": TOKENS,
                  "items": [[1001, 0], [1002, 0], [1011, 0]],
-                 "maps": [dict(m, prefix=f"_cfj1_{m['channel']}") for m in MAPS]}
+                 "maps": [dict(m, prefix=f"_cfj1_{m['channel']}") for m in MAPS], "ocio": JOB_OCIO}
             log = f"{tmp}/oiio.log"
             os.environ["FAKE_OIIOTOOL_LOG"] = log
             self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
@@ -235,11 +237,14 @@ class WriteMapsTests(unittest.TestCase):
             self.assertEqual((res["files"], res["frames"], res["first"], res["last"]), (6, 3, 1001, 1011))
             calls = [json.loads(line)["args"] for line in Path(log).read_text().splitlines()]
             color = next(a for a in calls if "_cfj1_color01_0002.png" in " ".join(a))
-            self.assertEqual(color[color.index("--colorconvert") + 1:color.index("--colorconvert") + 3], ["srgb_tx", "ACEScg"])
+            # A Nuke Read set to "default (color_picking)": color_picking -> scene_linear.
+            self.assertEqual(color[color.index("--colorconvert") + 1:color.index("--colorconvert") + 3],
+                             ["color_picking", "scene_linear"])
+            self.assertEqual(color[color.index("--colorconfig") + 1], "/farm/ocio/config.ocio")
             self.assertEqual(color[color.index("-d") + 1], "half")
             bump = next(a for a in calls if "_cfj1_bmp02_0001.png" in " ".join(a))
             self.assertNotIn("--colorconvert", bump)
-            self.assertEqual((bump[bump.index("-d") + 1], bump[bump.index("--iscolorspace") + 1]), ("float", "Raw"))
+            self.assertEqual((bump[bump.index("-d") + 1], bump[bump.index("--iscolorspace") + 1]), ("float", "data"))
             self.assertTrue(bump[bump.index("-o") + 1].endswith(".part.exr"))   # renamed once complete
 
     def test_missing_images_fail_loudly(self):
@@ -247,28 +252,49 @@ class WriteMapsTests(unittest.TestCase):
             raw = f"{tmp}/maps"
             touch(raw, "_cfj1_color01_0001.png")
             t = {"raw_dir": raw, "name": T.DEFAULT_NAME, "ext": "png", "tokens": TOKENS, "items": [[1001, 0], [1002, 0]],
-                 "maps": [dict(MAPS[0], prefix="_cfj1_color01")]}
+                 "maps": [dict(MAPS[0], prefix="_cfj1_color01")], "ocio": JOB_OCIO}
             with self.assertRaisesRegex(Exception, r"basecolor map \(color01\) came back as 1 image\(s\) for 2"):
                 asyncio.run(T.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
                                          [], lambda d, n: None))
 
 
 class PreflightTests(unittest.TestCase):
-    def test_colour_check_runs_the_job_commands(self):
-        from comfyfarm.__main__ import check_texture_colour
+    def test_ocio_check_runs_the_job_commands(self):
+        from comfyfarm.__main__ import check_ocio
         from comfyfarm.config import Config
         with tempfile.TemporaryDirectory() as tmp:
+            Path(f"{tmp}/config.ocio").write_text(OCIO_CONFIG)
             log = f"{tmp}/oiio.log"
             os.environ["FAKE_OIIOTOOL_LOG"] = log
             self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
-            cfg = Config(convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))
-            self.assertEqual(check_texture_colour(cfg), 0)
+            oc = OcioConfig(config=f"{tmp}/config.ocio")
+            cfg = Config(ocio=oc, convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))
+            self.assertEqual(check_ocio(cfg), 0)
             calls = [json.loads(line)["args"] for line in Path(log).read_text().splitlines()]
             self.assertEqual(len(calls), 4)
+            self.assertEqual(calls[1][calls[1].index("--colorconvert") + 1:][:2], ["color_picking", "scene_linear"])
             self.assertIn("--iscolorspace", calls[2])
-            self.assertEqual(calls[3][calls[3].index("--colorconvert") + 1:][:2], ["ACEScg", "srgb_tx"])
-            broken = Config(convert=ConvertConfig(tools={"oiiotool": [sys.executable, "-c", "import sys; sys.exit(3)"]}))
-            self.assertEqual(check_texture_colour(broken), 1)
+            self.assertEqual(calls[3][calls[3].index("--colorconvert") + 1:][:2], ["scene_linear", "color_picking"])
+            broken = Config(ocio=oc, convert=ConvertConfig(tools={"oiiotool": [sys.executable, "-c", "import sys; sys.exit(3)"]}))
+            self.assertEqual(check_ocio(broken), 1)
+            self.assertEqual(check_ocio(Config(ocio=OcioConfig(config=f"{tmp}/nope.ocio"))), 1)
+            self.assertEqual(check_ocio(Config(ocio=OcioConfig(config=f"{tmp}/config.ocio", data="nope"),
+                                               convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))),
+                             1 if ocio_roles(f"{tmp}/config.ocio", ["data"]) else 0)
+
+    @unittest.skipUnless(os.path.isfile(REPO / "ocio" / "config.ocio"), "ocio/config.ocio not in this checkout")
+    def test_ocio_check_with_the_repo_config(self):
+        from comfyfarm.__main__ import check_ocio
+        from comfyfarm.config import Config
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["FAKE_OIIOTOOL_LOG"] = f"{tmp}/oiio.log"
+            self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(check_ocio(Config(convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))), 0)
+            self.assertIn("ocio/config.ocio", out.getvalue())
+            if ocio_roles(str(REPO / "ocio" / "config.ocio"), ["scene_linear"]):   # PyOpenColorIO installed
+                self.assertIn("scene_linear = rdo, color_picking = ACES-look, data = Utility - Raw", out.getvalue())
 
 
 if __name__ == "__main__":

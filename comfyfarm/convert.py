@@ -4,8 +4,8 @@ One ComfyUI graph handles every input format: before a job is dispatched, the ga
 converts non-PNG inputs into a scratch folder on the farm machine, and the loader node
 reads from there.
 
-- EXR: oiiotool with the show's OCIO config and the shot's context (SEQ/SHOT), so the
-  per-shot client LUT from _color_bundle is applied exactly as in the PNG preprocess.
+- EXR: oiiotool with the repo's OCIO config (ocio/), linear -> color_picking: the same
+  conversion as a Nuke Write set to "default (color_picking)", as in the PNG preprocess.
 - Movies (.mov/.mp4/...): ffmpeg, numbered from the movie's timecode. Treated as
   display-referred already (look baked in), so no colour transform.
 """
@@ -22,7 +22,7 @@ import sys
 from fractions import Fraction
 from pathlib import Path
 
-from .config import ConvertConfig, PathsConfig, TexturesConfig
+from .config import ConvertConfig, OcioConfig, PathsConfig
 from .paths import (Sequence, SequenceError, _pattern_regex, context_from_path, normalize, parse_input,
                     render, resolve_sequence, source_stem, texture_input, to_farm, to_posix)
 
@@ -254,111 +254,70 @@ def has_slate(path: str, cc: ConvertConfig) -> bool:
 
 
 # ============================================================== OCIO
+# The farm's one OCIO config lives in the repo (ocio/config.ocio by default; config.yaml
+# `ocio:`). Every conversion is a plain colour space conversion, the same one Nuke does
+# with a Write or Read set to "default (color_picking)".
+REPO = Path(__file__).resolve().parent.parent
+
+
 def _shot_short(seq_name: str | None, shot: str | None) -> str | None:
     if shot and seq_name and shot.lower().startswith(seq_name.lower() + "_") and len(shot) > len(seq_name) + 1:
         return shot[len(seq_name) + 1:]
     return shot
 
 
-def _search_path(config_text: str) -> list[str]:
-    m = re.search(r'^search_path:\s*"?([^"\n]*)"?\s*$', config_text, re.MULTILINE)
-    return [p for p in (m.group(1).split(":") if m else []) if p]
+def ocio_config_path(oc: OcioConfig) -> str:
+    """ocio.config as a full path: relative paths are inside the repo. Built-in configs
+    (ocio://...) are passed through."""
+    if oc.config.startswith("ocio://"):
+        return oc.config
+    path = Path(oc.config)
+    return normalize(str(path if path.is_absolute() else REPO / path))
 
 
-def ocio_setup(seq: Sequence, pc: PathsConfig, cc: ConvertConfig) -> dict:
-    """Which config, context and look an EXR job uses, checked before it's queued."""
-    ex = cc.exr
-    tokens = {"show": seq.show, "seq": seq.seq_name, "shot": seq.shot,
-              "shot_short": _shot_short(seq.seq_name, seq.shot)}
-    if not seq.show:
-        raise SequenceError("Couldn't work out the show from the input path, so there's no OCIO config "
-                            "for the EXR conversion.")
-    config = to_farm(render(ex.ocio_config, "OCIO config path", **tokens), pc.mappings)
-    if pc.validate_inputs and os.path.isdir(config):
-        config = config.rstrip("/") + "/config.ocio"
-    context, notes = {}, []
-    for key, template in ex.context.items():
+def ocio_setup(oc: OcioConfig, pc: PathsConfig, show: str | None = None, seq_name: str | None = None,
+               shot: str | None = None) -> dict:
+    """The conversion settings a job is frozen with: config file, colour spaces, context."""
+    config = ocio_config_path(oc)
+    if pc.validate_inputs and not config.startswith("ocio://") and not os.path.isfile(config):
+        raise SequenceError(f"No OCIO config at {config} (ocio.config in config.yaml). It comes with the repo: "
+                            f"git pull on the farm machine.")
+    tokens = {"show": show, "seq": seq_name, "shot": shot, "shot_short": _shot_short(seq_name, shot)}
+    context = {}
+    for key, template in oc.context.items():
         try:
             context[key] = render(template, "OCIO context", **tokens)
         except SequenceError:
-            pass   # not in a publish path: OCIO falls back to the show-level LUTs
-    if len(context) < len(ex.context):
-        notes.append("No seq/shot in the input path, so the EXRs get the show's default LUTs.")
-    bundle = None
-    if pc.validate_inputs:
-        try:
-            text = Path(config).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            raise SequenceError(f"No OCIO config at {to_posix(config, pc.mappings) or config}.")
-        if not re.search(r"\{\s*name:\s*" + re.escape(ex.view) + r"\s*,", text):
-            raise SequenceError(f"The view '{ex.view}' isn't in {to_posix(config, pc.mappings) or config}.")
-        # Report which context-dependent search path (the shot/seq colour bundle) is used.
-        base = config.rpartition("/")[0]
-        for entry in _search_path(text):
-            if "${" not in entry:
-                continue
-            expanded = re.sub(r"\$\{(\w+)\}", lambda m: context.get(m[1], "\0"), entry)
-            if "\0" in expanded:
-                continue
-            path = normalize(os.path.normpath(os.path.join(base, expanded)))
-            if os.path.isdir(path):
-                bundle = path
-                break
-        if bundle is None and context:
-            notes.append("This shot has no colour bundle, so the EXRs get the show's default LUTs.")
-    return {"config": config, "context": context, "bundle": bundle, "input_colorspace": ex.input_colorspace,
-            "display": ex.display, "view": ex.view, "extra_args": list(ex.extra_args), "notes": notes}
+            raise SequenceError(f"ocio.context {key}: '{template}' needs a show/seq/shot the input path doesn't give.")
+    return {"mode": "colorconvert", "config": config, "from": oc.linear, "to": oc.image, "linear": oc.linear,
+            "image": oc.image, "data": oc.data, "context": context, "notes": []}
 
 
 # ============================================================== resolve
-def texture_ocio_config(tc: TexturesConfig, pc: PathsConfig, show: str | None) -> str:
-    """textures.ocio_config for one job: a built-in config (ocio://...) as it is; a file
-    may be given in its Linux form and use {show}, like convert.exr.ocio_config."""
-    config = tc.ocio_config
-    if config.startswith("ocio://"):
-        return config
-    if "{show}" in config and not show:
-        raise SequenceError("textures.ocio_config is per show, but there's no show in the input path.")
-    config = to_farm(config.format(show=show or ""), pc.mappings)
-    if pc.validate_inputs:
-        if os.path.isdir(config):
-            config = config.rstrip("/") + "/config.ocio"
-        if not os.path.isfile(config):
-            raise SequenceError(f"No OCIO config at {to_posix(config, pc.mappings) or config} (textures.ocio_config).")
-    return config
-
-
-def texture_exr_setup(tc: TexturesConfig, config: str | None = None) -> dict:
-    """EXR textures (linear, e.g. ACEScg from Mari) -> the 8-bit sRGB-encoded images a
-    texture model reads. A plain colour conversion: no display, look or shot LUT."""
-    return {"mode": "colorconvert", "config": config or tc.ocio_config, "from": tc.linear, "to": tc.srgb_texture,
-            "context": {}, "extra_args": ["--ch", "R,G,B"], "notes": []}
-
-
 def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
-                  shot: str | None = None, texture: TexturesConfig | None = None) -> Sequence:
+                  shot: str | None = None, texture: bool = False, ocio: OcioConfig | None = None) -> Sequence:
     """Any supported input -> a Sequence. Converted kinds carry `convert` details.
 
     With `texture` (texture workflows such as CHORD): a folder means the texture in it,
-    UDIM tiles may skip numbers, EXRs are converted from linear rather than through the
-    shot's display look, and movies are refused."""
+    UDIM tiles may skip numbers, and movies are refused. EXRs are converted the same way
+    for every workflow (`ocio`)."""
     if not raw or not raw.strip():
         raise SequenceError("No input sequence given.")
     path, _, _ = parse_input(raw)
     if os.path.splitext(path)[1].lower() in MOVIE_EXTENSIONS:
-        if texture is not None:
+        if texture:
             raise SequenceError("This workflow takes texture images (png, jpg, tif or exr), not movies.")
         return resolve_movie(raw, pc, cc, show, shot)
-    if texture is not None and pc.validate_inputs:
+    if texture and pc.validate_inputs:
         raw = texture_input(raw, pc)
-    seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture is not None)
+    seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture)
     if seq.kind == "exr":
         if pc.validate_inputs:
             require_tool(cc, "oiiotool")
-        setup = texture_exr_setup(texture, texture_ocio_config(texture, pc, seq.show)) \
-            if texture is not None else ocio_setup(seq, pc, cc)
         seq.convert = {"kind": "exr", "src_dir": seq.directory, "src_pattern": seq.filename,
-                       "first": seq.first, "last": seq.last, "frames": seq.frames, **setup}
+                       "first": seq.first, "last": seq.last, "frames": seq.frames,
+                       "extra_args": list(cc.exr.extra_args),
+                       **ocio_setup(ocio or OcioConfig(), pc, seq.show, seq.seq_name, seq.shot)}
     return seq
 
 
@@ -372,19 +331,24 @@ def point_loader_at_scratch(seq: Sequence, scratch_root: str, job_id: str) -> No
     seq.convert.update(dst_dir=d, dst_pattern=f"{seq.source}.%0{width}d.png")
 
 
+def _config_display(config: str, pc: PathsConfig) -> str:
+    """ocio/config.ocio for the repo's own config, else the path as artists see it."""
+    if config.startswith("ocio://"):
+        return config
+    try:
+        return Path(config).resolve().relative_to(REPO).as_posix()
+    except ValueError:
+        return to_posix(config, pc.mappings) or config
+
+
 def summary(seq: Sequence | None, pc: PathsConfig) -> dict | None:
     """What the dashboard shows about a conversion."""
     if not seq or not seq.convert:
         return None
     c = seq.convert
-    if c["kind"] == "exr" and c.get("mode") == "colorconvert":
-        return {"kind": "exr", "mode": "colorconvert", "from": c["from"], "to": c["to"],
-                "config": to_posix(c["config"], pc.mappings) or c["config"]}
     if c["kind"] == "exr":
-        return {"kind": "exr", "display": c["display"], "view": c["view"],
-                "input_colorspace": c["input_colorspace"], "context": c["context"],
-                "config": to_posix(c["config"], pc.mappings) or c["config"],
-                "bundle": (to_posix(c["bundle"], pc.mappings) or c["bundle"]) if c.get("bundle") else None}
+        return {"kind": "exr", "mode": "colorconvert", "from": c["from"], "to": c["to"],
+                "config": _config_display(c["config"], pc)}
     return {"kind": "movie", "timecode": c.get("timecode"), "fps": c["fps"], "start": c["start"],
             "end": c["end"], "slate_frame": c.get("slate_frame"), "codec": c.get("codec"),
             "width": c.get("width"), "height": c.get("height")}
@@ -403,15 +367,15 @@ async def _run(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
     return proc.returncode, (err or b"").decode(errors="replace") + (out or b"").decode(errors="replace")
 
 
-def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, input_colorspace: str | None = None,
-                view: str | None = None) -> list[str]:
-    """The oiiotool call for one EXR frame (also used by `comfyfarm color-debug`)."""
-    if c.get("mode") == "colorconvert":   # texture workflows: linear -> sRGB texture
+def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, from_cs: str | None = None,
+                to_cs: str | None = None) -> list[str]:
+    """The oiiotool call for one EXR frame: a Nuke Write set to "default (color_picking)"
+    (also run by `comfyfarm check` and `comfyfarm color-debug`, which try other spaces)."""
+    if "display" in c:   # a job queued before the switch to the repo config, frozen with its own settings
         return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
-                "--colorconvert", input_colorspace or c["from"], c["to"], "-d", "uint8", "-o", dst]
+                f"--ociodisplay:from={c['input_colorspace']}", c["display"], c["view"], "-d", "uint8", "-o", dst]
     return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
-            f"--ociodisplay:from={input_colorspace or c['input_colorspace']}", c["display"], view or c["view"],
-            "-d", "uint8", "-o", dst]
+            "--colorconvert", from_cs or c["from"], to_cs or c["to"], "-d", "uint8", "-o", dst]
 
 
 async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
