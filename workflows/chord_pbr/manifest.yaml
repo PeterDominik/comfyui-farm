@@ -45,7 +45,7 @@ params:
     type: choice
     label: Tile
     choices: [auto, tile, noTile]
-    default: auto
+    default: noTile
     naming: true
     help: auto = noTile for UDIM tiles, tile for a single tileable texture (always UDIM 1001).
 
