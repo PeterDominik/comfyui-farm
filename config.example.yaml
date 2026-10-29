@@ -71,6 +71,7 @@ convert:
   tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}
   exr:
     extra_args: ['--ch', 'R,G,B', '--croptofull']   # before the colour conversion (see ocio:)
+    png_compression: none  # none | pngfast | default; scratch frames, so speed over size
   movie:
     default_start: 1001    # when a movie has no timecode (first frame used after any slate)
     # The first frame of these movies is a slate, not plate, and is dropped. The rest keep

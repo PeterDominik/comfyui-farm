@@ -348,6 +348,11 @@ in `config.yaml`.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
   - Output is 8-bit PNG at plate resolution. The workflow then works at its own
     resolution, as for PNG inputs.
+  - The PNGs are written uncompressed (`convert.exr.png_compression: none`). They're
+    scratch files ComfyUI reads once. Compressing a 4K frame took oiiotool about 6 s on one
+    core, out of 8 s in all, on the farm machine; uncompressed, the whole conversion took
+    1.5–1.9 s. A frame takes about 3 bytes per pixel, so a 4K frame is 50 MB. If scratch
+    space runs short on long plates, `pngfast` is the middle ground.
 - **If EXR colours look wrong** (lifted, shifted), compare numbers rather than by eye.
   On the farm machine:
 

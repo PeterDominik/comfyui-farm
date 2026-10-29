@@ -152,8 +152,21 @@ class OcioTests(unittest.TestCase):
         self.assertEqual(exr_command(["oiiotool"], c, "in.exr", "out.png"),
                          ["oiiotool", "--colorconfig", f"{self.root}/ocio/config.ocio", "in.exr", "--ch", "R,G,B",
                           "--croptofull", "--colorconvert", "scene_linear", "color_picking", "-d", "uint8",
-                          "-o", "out.png"])
+                          "--compression", "none", "-o", "out.png"])
         self.assertEqual(summary(self.exr(), self.pc)["to"], "color_picking")
+
+    def test_png_compression(self):
+        # Scratch PNGs are written uncompressed by default: compressing a 4K frame cost
+        # oiiotool ~6 s of the ~8 s on the farm machine.
+        self.assertEqual(self.exr().convert["png_compression"], "none")
+        cc = ConvertConfig(tools=self.cc.tools, exr={"png_compression": "pngfast"})
+        c = resolve_input("/rdo/shows/raa/.published/bpash/bpash_1545/plate/v1/bpash_1545.plate.v1.%04d.exr",
+                          self.pc, cc, ocio=self.oc).convert
+        cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
+        self.assertEqual(cmd[cmd.index("--compression") + 1], "pngfast")
+        old = dict(c)
+        del old["png_compression"]          # a job queued before the setting existed
+        self.assertIn("none", exr_command(["oiiotool"], old, "in.exr", "out.png"))
 
     def test_repo_relative_config(self):
         self.assertEqual(ocio_config_path(OcioConfig()), (REPO / "ocio/config.ocio").as_posix())

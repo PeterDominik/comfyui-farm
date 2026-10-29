@@ -81,6 +81,10 @@ class OcioConfig(BaseModel):
 class ExrConvertConfig(BaseModel):
     # Plain RGB, cropped to the display window (drops overscan), before the transform.
     extra_args: list[str] = Field(default_factory=lambda: ["--ch", "R,G,B", "--croptofull"])
+    # PNG compression of the converted frames: none | pngfast | default. They're scratch
+    # files ComfyUI reads once, and compressing a 4K frame takes oiiotool about 6 s on one
+    # core (none: 1.5 s in all on the farm machine), so none unless scratch space is short.
+    png_compression: str = "none"
 
 
 class SlateConfig(BaseModel):
@@ -190,7 +194,7 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     # Show configs, display/view and the texture colour names gave way to the repo's
     # ocio/ config (`ocio:`); an old config.yaml still carrying them would look as if it
     # still steered the conversion.
-    old_exr = sorted(set((data.get("convert") or {}).get("exr") or {}) - {"extra_args"})
+    old_exr = sorted(set((data.get("convert") or {}).get("exr") or {}) - {"extra_args", "png_compression"})
     if old_exr:
         cfg.obsolete_keys.append(f"convert.exr: {', '.join(old_exr)} no longer used; EXRs are converted with the "
                                  f"repo's OCIO config (ocio: in config.yaml). Delete those lines")
