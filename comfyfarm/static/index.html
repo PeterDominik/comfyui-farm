@@ -216,8 +216,11 @@ function renderForm() {
 // ------------------------------------------------------------- destination preview
 function convertLine(c) {
   if (!c) return "";
+  const scaled = c.scaled ? ` and scaled ${esc(c.scaled)} (work_resolution ${c.work_resolution})` : "";
   if (c.kind === "exr")
-    return `<br>EXR converted first: <code>${esc(c.from)}</code> → <code>${esc(c.to)}</code> with <code>${esc(c.config)}</code>`;
+    return `<br>EXR converted first: <code>${esc(c.from)}</code> → <code>${esc(c.to)}</code> with <code>${esc(c.config)}</code>${scaled}`;
+  if (c.kind === "image")
+    return `<br>Scaled first: ${esc(c.scaled)} (work_resolution ${c.work_resolution}), no colour change`;
   if (c.kind === "movie")
     return `<br>Movie: ${esc(c.codec || "")} ${c.width || "?"}×${c.height || "?"} at ${+c.fps.toFixed(3)} fps, `
       + (c.timecode ? `timecode <code>${esc(c.timecode)}</code> → frames ${c.start}-${c.end}` : `frames ${c.start}-${c.end}`)

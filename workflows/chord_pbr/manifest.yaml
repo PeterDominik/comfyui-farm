@@ -13,6 +13,11 @@ description: >
   versioned folder for each run.
 tag: chord                      # in the output folder name: <source>.chord_v001
 template: workflow_api.json
+# CHORD runs its model at 1024×1024 anyway, so larger textures are scaled down (longer
+# side, aspect kept) before the workflow: less to convert, load and resize, and the maps
+# come out at 1024. Textures of 1024 or less are used as they are. Leave out to keep
+# the input's size (the maps then come back at it, with 1024 worth of detail).
+work_resolution: 1024
 
 params:
   input:
@@ -22,7 +27,8 @@ params:
     help: >
       A texture file, its UDIM tiles (/rdo/shows/<show>/.../rock_diffuse.%04d.png, gaps are
       fine), or a folder holding one texture. png, jpg, tif, or exr (converted to
-      color_picking first, like any EXR). One texture per job.
+      color_picking first, like any EXR). Larger than 1024 px: scaled to 1024 first, as
+      CHORD works at 1024. One texture per job.
 
   output_path:
     type: output_folder

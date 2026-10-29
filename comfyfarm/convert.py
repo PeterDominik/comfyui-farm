@@ -8,6 +8,9 @@ reads from there.
   ACES Rec.709 output transform): a Nuke Write set to "default (color_picking)".
 - Movies (.mov/.mp4/...): ffmpeg, numbered from the movie's timecode. Treated as
   display-referred already (look baked in), so no colour transform.
+- work_resolution (a workflow's manifest, e.g. CHORD's 1024): EXRs are scaled down to
+  it as they're converted, and png/jpg/tif inputs larger than it are scaled into the
+  scratch folder too (kind "image"; no colour change). Inputs that fit are untouched.
 """
 
 from __future__ import annotations
@@ -23,8 +26,8 @@ from fractions import Fraction
 from pathlib import Path
 
 from .config import ConvertConfig, OcioConfig, PathsConfig
-from .paths import (Sequence, SequenceError, _pattern_regex, context_from_path, normalize, parse_input,
-                    resolve_sequence, source_stem, texture_input, to_farm, to_posix)
+from .paths import (Sequence, SequenceError, _pattern_regex, context_from_path, loaded_names, normalize,
+                    parse_input, resolve_sequence, source_stem, texture_input, to_farm, to_posix)
 
 MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf"}
 
@@ -300,35 +303,69 @@ def _png_channels(head: bytes) -> list[str] | None:
     return _PNG_CHANNELS.get(head[25])
 
 
-def _exr_channels(fh) -> list[str] | None:
-    """Channel names from an OpenEXR file's (first) header."""
+def _exr_attributes(fh, wanted: set[bytes]) -> dict[bytes, bytes]:
+    """Raw values of the wanted attributes in an OpenEXR file's (first) header. Reads
+    64 KB (headers are a few KB), and up to 1 MB if the header is longer than that."""
     import struct
-    head = fh.read(1 << 20)
+    head = fh.read(1 << 16)
+    out: dict[bytes, bytes] = {}
     if head[:4] != b"\x76\x2f\x31\x01":
-        return None
+        return out
     pos = 8
-    while pos < len(head):
+    while len(out) < len(wanted):
         end = head.find(b"\0", pos)
-        if end < 0:
-            return None
-        name = head[pos:end]
-        if not name:                       # end of the header without a channels attribute
-            return None
-        tend = head.find(b"\0", end + 1)
-        if tend < 0 or tend + 5 > len(head):
-            return None
+        tend = head.find(b"\0", end + 1) if end > pos else -1
+        if end < 0 or (end > pos and (tend < 0 or tend + 5 > len(head))):
+            if len(head) >= 1 << 20:
+                break
+            more = fh.read((1 << 20) - len(head))   # ran off the end of what was read
+            if not more:
+                break
+            head += more
+            continue
+        if end == pos:                     # end of the header
+            break
         size = struct.unpack_from("<i", head, tend + 1)[0]
         value = tend + 5
-        if name == b"channels":
-            names, p, stop = [], value, min(value + size, len(head))
-            while p < stop and head[p] != 0:
-                e = head.find(b"\0", p, stop)
-                if e < 0:
-                    return None
-                names.append(head[p:e].decode("utf-8", "replace"))
-                p = e + 1 + 16             # pixel type, pLinear + 3 reserved, x/y sampling
-            return names or None
+        if value + size > len(head) and len(head) < 1 << 20:
+            more = fh.read((1 << 20) - len(head))
+            if more:
+                head += more
+                continue
+        if head[pos:end] in wanted:
+            out[head[pos:end]] = head[value:value + size]
         pos = value + size
+    return out
+
+
+def _exr_channels(fh) -> list[str] | None:
+    """Channel names from an OpenEXR file's (first) header."""
+    raw = _exr_attributes(fh, {b"channels"}).get(b"channels")
+    if not raw:
+        return None
+    names, p = [], 0
+    while p < len(raw) and raw[p] != 0:
+        e = raw.find(b"\0", p)
+        if e < 0:
+            return None
+        names.append(raw[p:e].decode("utf-8", "replace"))
+        p = e + 1 + 16                     # pixel type, pLinear + 3 reserved, x/y sampling
+    return names or None
+
+
+def _oiio_spec(path: str):
+    """OpenImageIO's ImageSpec for formats not parsed here by hand (jpg, tif, ...), or None.
+    OpenImageIO's Python module is installed with oiiotool in the farm's venv."""
+    try:
+        import OpenImageIO as oiio
+        inp = oiio.ImageInput.open(path)
+        if inp:
+            try:
+                return inp.spec()
+            finally:
+                inp.close()
+    except Exception:  # noqa: BLE001
+        pass
     return None
 
 
@@ -345,17 +382,48 @@ def image_channels(path: str) -> list[str] | None:
                 return names
     except OSError:
         return None
-    try:   # other formats: ask OpenImageIO itself (installed with oiiotool in the farm's venv)
-        import OpenImageIO as oiio
-        inp = oiio.ImageInput.open(path)
-        if inp:
-            try:
-                return list(inp.spec().channelnames)
-            finally:
-                inp.close()
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+    spec = _oiio_spec(path)
+    return list(spec.channelnames) if spec is not None else None
+
+
+def image_size(path: str) -> tuple[int, int] | None:
+    """(width, height) of an image's display window, or None when it can't be read."""
+    import struct
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                return struct.unpack(">II", head[16:24]) if head[12:16] == b"IHDR" and len(head) >= 24 else None
+            if head[:4] == b"\x76\x2f\x31\x01":
+                fh.seek(0)
+                box = _exr_attributes(fh, {b"displayWindow"}).get(b"displayWindow")
+                if box and len(box) >= 16:
+                    x0, y0, x1, y1 = struct.unpack("<iiii", box[:16])
+                    return x1 - x0 + 1, y1 - y0 + 1
+                return None
+    except OSError:
+        return None
+    spec = _oiio_spec(path)
+    if spec is None:
+        return None
+    return (spec.full_width or spec.width, spec.full_height or spec.height)
+
+
+def fit_size(size: tuple[int, int], limit: int) -> tuple[int, int]:
+    """size scaled so its longer side is `limit` (aspect kept), or as it is if it fits."""
+    w, h = size
+    if max(w, h) <= limit:
+        return w, h
+    return (limit, max(1, round(h * limit / w))) if w >= h else (max(1, round(w * limit / h)), limit)
+
+
+def resize_args(size: tuple[int, int] | None, limit: int | None) -> list[str]:
+    """oiiotool options that scale an image down to fit `limit` (the workflow's
+    work_resolution), keeping its aspect: nothing if it already fits or its size is unknown."""
+    if not limit or not size or max(size) <= limit:
+        return []
+    w, h = size
+    return ["--resize", f"{limit}x0" if w >= h else f"0x{limit}"]
 
 
 def rgb_channels(names: list[str] | None) -> str | None:
@@ -381,13 +449,38 @@ def channel_args(src: str) -> str:
 
 
 # ============================================================== resolve
+def _sizes(seq: Sequence, names: list[str], every: bool) -> list[tuple[int, int] | None]:
+    """Image sizes of the input's files: all of them, or the first only (a sequence's
+    frames share their size; UDIM tiles may not)."""
+    return [image_size(seq.directory + n) for n in (names if every else names[:1])]
+
+
+def scaled_text(sizes: list[tuple[int, int] | None], limit: int | None) -> str | None:
+    """'4096×4096 → 1024×1024' when work_resolution scales the input down, else None.
+    With several sizes, the first that's scaled, and how many are."""
+    if not limit:
+        return None
+    big = [s for s in sizes if s and max(s) > limit]
+    if not big:
+        return None
+    (w, h), (fw, fh) = big[0], fit_size(big[0], limit)
+    text = f"{w}×{h} → {fw}×{fh}"
+    return text + (f" ({len(big)} of {len(sizes)} images)" if len(sizes) > 1 and len(big) < len(sizes) else "")
+
+
 def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
-                  shot: str | None = None, texture: bool = False, ocio: OcioConfig | None = None) -> Sequence:
+                  shot: str | None = None, texture: bool = False, ocio: OcioConfig | None = None,
+                  work_resolution: int | None = None) -> Sequence:
     """Any supported input -> a Sequence. Converted kinds carry `convert` details.
 
     With `texture` (texture workflows such as CHORD): a folder means the texture in it,
     UDIM tiles may skip numbers, and movies are refused. EXRs are converted the same way
-    for every workflow (`ocio`)."""
+    for every workflow (`ocio`).
+
+    `work_resolution` (the workflow's manifest): images larger than this many pixels on
+    their longer side are scaled down to it before the workflow, keeping their aspect.
+    EXRs are scaled as they're converted; png/jpg/tif inputs that are too large are
+    converted for it too (kind "image"), and read as they are when they fit."""
     if not raw or not raw.strip():
         raise SequenceError("No input sequence given.")
     path, _, _ = parse_input(raw)
@@ -398,13 +491,33 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
     if texture and pc.validate_inputs:
         raw = texture_input(raw, pc)
     seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture)
+    limit = work_resolution or None
     if seq.kind == "exr":
+        scaled = None
         if pc.validate_inputs:
             require_tool(cc, "oiiotool")
+            if limit:
+                scaled = scaled_text(_sizes(seq, loaded_names(seq), texture), limit)
         seq.convert = {"kind": "exr", "src_dir": seq.directory, "src_pattern": seq.filename,
                        "first": seq.first, "last": seq.last, "frames": seq.frames,
                        "extra_args": list(cc.exr.extra_args), "png_compression": cc.exr.png_compression,
+                       "work_resolution": limit, "scaled": scaled,
                        **ocio_setup(ocio or OcioConfig(), pc)}
+    elif seq.kind == "frames" and limit and pc.validate_inputs:
+        names = loaded_names(seq)
+        scaled = scaled_text(_sizes(seq, names, texture), limit)
+        if scaled:   # too large: scaled into the scratch folder, like a converted EXR
+            require_tool(cc, "oiiotool")
+            if seq.frames:
+                numbers = list(seq.frames)
+            elif seq.first is not None and len(names) == seq.last - seq.first + 1:
+                numbers = list(range(seq.first, seq.last + 1))
+            else:            # a still, or a folder of images: numbered in the loader's order
+                numbers = list(range(1, len(names) + 1))
+            seq.kind = "image"
+            seq.convert = {"kind": "image", "src_dir": seq.directory, "names": names, "frames": numbers,
+                           "png_compression": cc.exr.png_compression, "work_resolution": limit,
+                           "scaled": scaled, "notes": []}
     return seq
 
 
@@ -412,7 +525,8 @@ def point_loader_at_scratch(seq: Sequence, scratch_root: str, job_id: str) -> No
     """Converted frames go to <scratch>/<job id>/<source>.<frame>.png; the loader reads
     exactly those, so no skip/cap. Padding keeps name order = frame order."""
     d = normalize(f"{scratch_root}/{job_id}") + "/"
-    width = max(4, len(str(seq.last if seq.last is not None else 1)))
+    numbers = seq.convert.get("frames") if seq.kind != "movie" else None   # a movie's is its frame count
+    width = max(4, len(str(max(numbers) if numbers else seq.last if seq.last is not None else 1)))
     seq.load_dir = d
     seq.skip = seq.cap = 0
     seq.convert.update(dst_dir=d, dst_pattern=f"{seq.source}.%0{width}d.png")
@@ -435,7 +549,10 @@ def summary(seq: Sequence | None, pc: PathsConfig) -> dict | None:
     c = seq.convert
     if c["kind"] == "exr":
         return {"kind": "exr", "mode": "colorconvert", "from": c["from"], "to": c["to"],
-                "config": _config_display(c["config"], pc)}
+                "config": _config_display(c["config"], pc),
+                "work_resolution": c.get("work_resolution"), "scaled": c.get("scaled")}
+    if c["kind"] == "image":
+        return {"kind": "image", "work_resolution": c["work_resolution"], "scaled": c["scaled"]}
     return {"kind": "movie", "timecode": c.get("timecode"), "fps": c["fps"], "start": c["start"],
             "end": c["end"], "slate_frame": c.get("slate_frame"), "codec": c.get("codec"),
             "width": c.get("width"), "height": c.get("height")}
@@ -464,13 +581,17 @@ def png_compression_args(level) -> list[str]:
     return ["--compression", "default", "--attrib:type=int", "png:compressionLevel", str(level)]
 
 
-def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, ch: str | None = None) -> list[str]:
+def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, ch: str | None = None,
+                resize: list[str] | None = None) -> list[str]:
     """The oiiotool call for one EXR frame: a Nuke Write set to "default (color_picking)"
     (also run by `comfyfarm check` and tools/ocio_compare.py). `ch` replaces the `--ch`
-    list in convert.exr.extra_args, e.g. R=Y,G=Y,B=Y for a greyscale EXR."""
+    list in convert.exr.extra_args, e.g. R=Y,G=Y,B=Y for a greyscale EXR. `resize`
+    (resize_args(), for work_resolution) scales it in scene_linear, before the colour
+    conversion, so that runs on the smaller image."""
     extra = list(c["extra_args"])
     if ch and "--ch" in extra[:-1]:
         extra[extra.index("--ch") + 1] = ch
+    extra += resize or []
     out = ["-d", "uint8", *png_compression_args(c.get("png_compression", 0)), "-o", dst]
     if "display" in c:   # a job queued before the switch to the repo config, frozen with its own settings
         return [*oiiotool, "--colorconfig", c["config"], src, *extra,
@@ -479,31 +600,31 @@ def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, ch: str | None
             "--colorconvert", c["from"], c["to"], *out]
 
 
-async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
-    oiiotool = require_tool(cc, "oiiotool")
-    try:
-        names = os.listdir(c["src_dir"])
-    except OSError as e:
-        raise ConvertError(f"Can't open {c['src_dir']}: {e}")
-    rx = _pattern_regex(c["src_pattern"])
-    by_frame = {int(m.group(1)): n for n, m in ((n, rx.match(n)) for n in names) if m} if rx \
-        else {c["first"]: c["src_pattern"]}
-    frames = list(c.get("frames") or range(c["first"], c["last"] + 1))   # "frames": UDIM tiles, gaps allowed
-    missing = [f for f in frames if f not in by_frame]
-    if missing:
-        raise ConvertError(f"Frames disappeared since submitting: {missing[:10]}")
-    env = dict(os.environ, **c.get("context", {}))   # jobs frozen before ocio.context went
-    ch = channel_args(c["src_dir"] + by_frame[frames[0]])   # a sequence's frames share their channels
+def image_command(oiiotool: list[str], c: dict, src: str, dst: str, resize: list[str]) -> list[str]:
+    """The oiiotool call that scales one png/jpg/tif input down to work_resolution. No
+    colour conversion: the pixels stay as the loader would have read them. Alpha isn't
+    premultiplied on the way through (colour under transparent pixels is kept), the
+    orientation a jpg's EXIF asks for is applied (the loader does that too), and the
+    result is 8-bit, which is what the loader would have made of it."""
+    return [*oiiotool, "--iconfig", "oiio:UnassociatedAlpha", "1", src, "--reorient", *resize,
+            "-d", "uint8", *png_compression_args(c.get("png_compression", 0)), "-o", dst]
+
+
+async def _convert_frames(c: dict, cc: ConvertConfig, progress, by_frame: dict[int, str],
+                          frames: list[int], command, env: dict | None = None) -> None:
+    """Run oiiotool on every frame, frame_workers at a time. `command(src, dst, resize)`
+    builds the call; `resize` is the frame's resize_args() for work_resolution."""
     sem = asyncio.Semaphore(max(1, cc.frame_workers))
+    limit = c.get("work_resolution")
     done = 0
 
     async def one(frame: int) -> None:
         nonlocal done
         src = c["src_dir"] + by_frame[frame]
         dst = c["dst_dir"] + (c["dst_pattern"] % frame)
-        cmd = exr_command(oiiotool, c, src, dst, ch)
         async with sem:
-            code, out = await _run(cmd, env)
+            resize = resize_args(await asyncio.to_thread(image_size, src), limit) if limit else []
+            code, out = await _run(command(src, dst, resize), env)
         if code != 0 or not os.path.isfile(dst):
             raise ConvertError(f"oiiotool failed on {by_frame[frame]}: {out.strip()[-600:] or f'exit {code}'}")
         if UNKNOWN_CHANNEL in out:
@@ -519,6 +640,41 @@ async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _listdir(d: str) -> list[str]:
+    try:
+        return os.listdir(d)
+    except OSError as e:
+        raise ConvertError(f"Can't open {d}: {e}")
+
+
+async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
+    oiiotool = require_tool(cc, "oiiotool")
+    names = _listdir(c["src_dir"])
+    rx = _pattern_regex(c["src_pattern"])
+    by_frame = {int(m.group(1)): n for n, m in ((n, rx.match(n)) for n in names) if m} if rx \
+        else {c["first"]: c["src_pattern"]}
+    frames = list(c.get("frames") or range(c["first"], c["last"] + 1))   # "frames": UDIM tiles, gaps allowed
+    missing = [f for f in frames if f not in by_frame]
+    if missing:
+        raise ConvertError(f"Frames disappeared since submitting: {missing[:10]}")
+    env = dict(os.environ, **c.get("context", {}))   # jobs frozen before ocio.context went
+    ch = channel_args(c["src_dir"] + by_frame[frames[0]])   # a sequence's frames share their channels
+    await _convert_frames(c, cc, progress, by_frame, frames,
+                          lambda src, dst, resize: exr_command(oiiotool, c, src, dst, ch, resize), env)
+
+
+async def convert_image(c: dict, cc: ConvertConfig, progress) -> None:
+    """png/jpg/tif inputs larger than the workflow's work_resolution, scaled down."""
+    oiiotool = require_tool(cc, "oiiotool")
+    there = set(_listdir(c["src_dir"]))
+    gone = [n for n in c["names"] if n not in there]
+    if gone:
+        raise ConvertError(f"Files disappeared since submitting: {', '.join(gone[:10])}")
+    by_frame = dict(zip(c["frames"], c["names"]))
+    await _convert_frames(c, cc, progress, by_frame, list(c["frames"]),
+                          lambda src, dst, resize: image_command(oiiotool, c, src, dst, resize))
 
 
 async def convert_movie(c: dict, cc: ConvertConfig, first: int, count: int, progress) -> None:
@@ -554,6 +710,8 @@ async def convert(seq_info: dict, cc: ConvertConfig, progress) -> None:
     os.makedirs(c["dst_dir"], exist_ok=True)
     if c["kind"] == "exr":
         await convert_exr(c, cc, progress)
+    elif c["kind"] == "image":
+        await convert_image(c, cc, progress)
     elif c["kind"] == "movie":
         await convert_movie(c, cc, seq_info["first"], seq_info["frame_count"], progress)
     else:
