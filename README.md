@@ -64,17 +64,22 @@ with OpenColorIO) and `ffmpeg` (imageio-ffmpeg). ComfyUI must have the custom no
 the workflows use: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo, plus
 [ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord) with `chord_v1.safetensors` in
 `ComfyUI/models/checkpoints` for `chord_pbr`. CHORD's weights are under Ubisoft's
-research-only licence.
+research-only licence. The farm's own nodes (`comfyui_nodes/`, e.g. *ComfyFarm Save
+Image*) come with this repo; `setup.ps1 -ComfyUIDir` links them into ComfyUI.
 
 ```powershell
 git clone https://github.com/<org>/comfyui-farm.git C:\comfyfarm
 cd C:\comfyfarm
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
 ```
 
-`setup.ps1` creates `.venv`, installs the requirements, copies `config.example.yaml` to
-`config.yaml` (git-ignored, so `git pull` never overwrites it), and runs the preflight
-check. Review `config.yaml`: path mappings, output layout, workers, optional API keys.
+`setup.ps1` does the following:
+- creates `.venv` and installs the requirements;
+- copies `config.example.yaml` to `config.yaml` (git-ignored, so `git pull` never
+  overwrites it);
+- links `comfyui_nodes\comfyfarm_nodes` into ComfyUI's `custom_nodes` as a junction, so
+  `git pull` updates the nodes too (restart ComfyUI after a change);
+- runs the preflight check. Review `config.yaml`: path mappings, output layout, workers, optional API keys.
 
 Try it in a console first:
 
@@ -291,10 +296,20 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
   PNGs, so the farm copies that grey into R, G and B of the EXR. The same goes for
   greyscale EXR inputs. Asked for `R,G,B` it doesn't have, oiiotool writes 0 and only
   warns. That warning now fails the job, so a map can't silently come out black.
-- **8-bit in between.** WAS *Image Save* writes 8-bit PNGs, so the maps carry 8 bits of
-  precision even in the EXRs. Height can show steps when used for displacement. A save
-  node that writes 16-bit or EXR would fix it: point the manifest's maps at it and set
-  `ext` in its `textures` section.
+- **Saving the maps.** The workflow saves its maps with *ComfyFarm Save Image*, from
+  `comfyui_nodes/` in this repo.
+  - It's a drop-in for WAS *Image Save*: the same `output_path` and `filename_prefix`
+    inputs and the same file names.
+  - It skips WAS's history: each WAS save re-checked every file it had ever saved (on the
+    show share, one network request each) and rewrote its `was_history.json`. That took
+    about 0.4 s per map. ComfyFarm Save Image also writes uncompressed (`compress_level` 0).
+  - Rounding to 8-bit is done on the GPU.
+- **8-bit in between.** The maps are 8-bit PNGs between ComfyUI and the farm, so they
+  carry 8 bits of precision even in the EXRs. Height can show steps when used for
+  displacement. A save node writing 16-bit or float would fix it.
+- **CHORD works at 1024×1024.** ComfyUI-Chord resizes the texture to 1024² for the model
+  and for Normal to Height, then resizes the maps back. A 4096² texture gives 4096² maps
+  with 1024² worth of detail.
 - **Nuke:** *Create Read node* on a texture job makes one Read per map, in a row. UDIM
   tiles read as frames (1001, 1002, 1011, …), missing tiles show black.
 
@@ -462,8 +477,8 @@ outputs:                       # nodes the gateway points at each job's versione
   - Gateway restarts mid-job: on reconnect it reads ComfyUI's history and finishes the job.
   - ComfyUI crashes mid-job: the job is requeued once (`farm.max_attempts`), with a warning on the job.
   - Jobs on a machine that stays unreachable for 5 minutes are requeued.
-- **Pin WAS Node Suite.** This workflow saves frames with WAS *Image Save* using its
-  `output_path` input. The current WAS release replaced that input with a sandboxed
+- **Pin WAS Node Suite.** `ltx25_alpha_gen` saves frames with WAS *Image Save* using its
+  `output_path` input (`chord_pbr` uses *ComfyFarm Save Image* instead). The current WAS release replaced that input with a sandboxed
   `root` setting. Don't update WAS on the farm machine without re-testing; the preflight
   check flags it if it happens.
 - **This workflow's outputs are at the working resolution** (`shorter_side`, 1088 by

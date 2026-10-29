@@ -29,7 +29,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 REPO = Path(__file__).resolve().parent.parent
-OUTPUT_CLASSES = {"PreviewAny", "VHS_VideoCombine", "Image Save", "easy clearCacheAll", "SaveImage"}
+OUTPUT_CLASSES = {"PreviewAny", "VHS_VideoCombine", "Image Save", "ComfyFarmSaveImage", "easy clearCacheAll",
+                  "SaveImage"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".ppm", ".bmp", ".pgm", ".tif", ".tiff", ".webp"}
 
 
@@ -155,7 +156,7 @@ class Mock:
                     if not names:
                         raise FileNotFoundError(f"No images could be loaded from directory '{d}'.")
                     values["frames"] = len(names)
-                elif ct == "Image Save":
+                elif ct in ("Image Save", "ComfyFarmSaveImage"):
                     out = inp["output_path"] if isinstance(inp["output_path"], str) else str(self.output)
                     os.makedirs(out, exist_ok=True)
                     for i in range(values.get("frames", 1)):

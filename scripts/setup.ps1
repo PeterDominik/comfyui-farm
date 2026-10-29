@@ -4,12 +4,14 @@
 
 .DESCRIPTION
   Creates .venv, installs requirements, creates config.yaml from the example if
-  missing, and runs the preflight check. Run from anywhere:
+  missing, links the farm's own ComfyUI nodes (comfyui_nodes\) into ComfyUI, and runs
+  the preflight check. Run from anywhere:
 
-    powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+    powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
 #>
 param(
-    [string]$Python = ""   # optional: full path to python.exe (3.10+)
+    [string]$Python = "",      # optional: full path to python.exe (3.10+)
+    [string]$ComfyUIDir = ""   # ComfyUI's folder (portable install, or the one holding custom_nodes)
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -50,6 +52,28 @@ if (-not (Test-Path "config.yaml")) {
     Write-Host "Created config.yaml from config.example.yaml - review it before going live." -ForegroundColor Yellow
 }
 New-Item -ItemType Directory -Force -Path data, logs | Out-Null
+
+# The farm's own ComfyUI nodes (ComfyFarm Save Image, ...) live in this repo. A junction
+# in ComfyUI's custom_nodes points at them, so git pull updates them too (restart ComfyUI
+# to load a change). Junctions need no admin rights.
+$nodes = Join-Path $Root "comfyui_nodes\comfyfarm_nodes"
+if ($ComfyUIDir) {
+    $custom = @((Join-Path $ComfyUIDir "custom_nodes"), (Join-Path $ComfyUIDir "ComfyUI\custom_nodes")) |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $custom) { throw "No custom_nodes folder in $ComfyUIDir or $ComfyUIDir\ComfyUI" }
+    $link = Join-Path $custom "comfyfarm_nodes"
+    $item = Get-Item $link -ErrorAction SilentlyContinue
+    if ($item -and $item.LinkType -eq "Junction" -and ($item.Target -replace '\\$', '') -eq $nodes) {
+        Write-Host "ComfyUI nodes already linked: $link"
+    } else {
+        if ($item -and $item.LinkType -eq "Junction") { $item.Delete() }
+        elseif ($item) { throw "$link exists and isn't a link to this repo; move it away and re-run" }
+        New-Item -ItemType Junction -Path $link -Target $nodes | Out-Null
+        Write-Host "Linked the farm's ComfyUI nodes: $link -> $nodes (restart ComfyUI to load them)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Pass -ComfyUIDir <ComfyUI folder> to link the farm's ComfyUI nodes (needed by chord_pbr)." -ForegroundColor Yellow
+}
 
 # EXR inputs use oiiotool (OpenImageIO) and movie inputs use ffmpeg (imageio-ffmpeg);
 # both were installed into .venv above with the requirements. The check below lists them.
