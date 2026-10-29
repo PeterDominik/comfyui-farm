@@ -2,6 +2,8 @@
 was asked to do (arguments and the OCIO context variables) as JSON lines.
 
 Input file name containing 'broken' -> fails; containing 'slow' -> takes 1.5 s.
+--ch behaves like the real one for PNG inputs: a channel the PNG doesn't have (greyscale
+PNGs only have Y) gets the real warning, "filling with 0", and the call still succeeds.
 FAKE_OIIOTOOL_LEVELS='{"<from>|<to>": grey, ...}' -> writes an 8x8 grey PNG at that
 level, to simulate how each colour setting comes out.
 """
@@ -33,10 +35,39 @@ out = args[args.index("-o") + 1]
 values = {i + 1 for i, a in enumerate(args) if a == "--colorconfig"}   # the config path isn't an input
 src = next((a for i, a in enumerate(args) if i not in values and a != out and not a.startswith("-")
             and os.path.splitext(a)[1].lower() in IMAGE_EXTENSIONS), "")
+
+
+def png_channels(path):
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(26)
+    except OSError:
+        return None
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or len(head) < 26:
+        return None
+    return {0: ["Y"], 2: ["R", "G", "B"], 3: ["R", "G", "B"], 4: ["Y", "A"], 6: ["R", "G", "B", "A"]}.get(head[25])
+
+
+warnings = []
+have = png_channels(src) if src.lower().endswith(".png") else None
+if have and "--ch" in args:
+    for item in args[args.index("--ch") + 1].split(","):
+        old = item.split("=", 1)[1] if "=" in item else item
+        try:
+            float(old)
+            continue                     # a constant, or a channel index
+        except ValueError:
+            pass
+        if old and old.upper() not in {h.upper() for h in have}:
+            warnings.append(f'oiiotool WARNING: --ch: Unknown channel name "{old}", filling with 0 '
+                            f'(actual channels: "{",".join(have)}")')
+for w in warnings:
+    print(w, file=sys.stderr)
 log = os.environ.get("FAKE_OIIOTOOL_LOG")
 if log:
     with open(log, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"args": args, "SEQ": os.environ.get("SEQ"), "SHOT": os.environ.get("SHOT")}) + "\n")
+        fh.write(json.dumps({"args": args, "SEQ": os.environ.get("SEQ"), "SHOT": os.environ.get("SHOT"),
+                             "warnings": warnings}) + "\n")
 if "broken" in os.path.basename(src):
     print(f"oiiotool ERROR: Could not open \"{src}\": bad EXR header", file=sys.stderr)
     sys.exit(1)

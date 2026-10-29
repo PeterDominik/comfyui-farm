@@ -285,6 +285,101 @@ def ocio_setup(oc: OcioConfig, pc: PathsConfig) -> dict:
             "image": IMAGE, "data": DATA, "notes": []}
 
 
+# ============================================================== channels
+# oiiotool's `--ch R,G,B` fills channels the image doesn't have with 0 and only warns. A
+# greyscale image has one channel, which OpenImageIO calls Y (CHORD's height, roughness and
+# metalness PNGs, a greyscale EXR), so it would come out black. Each image's channels are
+# read first, and grey is copied into R, G and B.
+_PNG_CHANNELS = {0: ["Y"], 2: ["R", "G", "B"], 3: ["R", "G", "B"], 4: ["Y", "A"], 6: ["R", "G", "B", "A"]}
+UNKNOWN_CHANNEL = "Unknown channel name"   # oiiotool's warning when --ch asks for a missing channel
+
+
+def _png_channels(head: bytes) -> list[str] | None:
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR" or len(head) < 26:
+        return None
+    return _PNG_CHANNELS.get(head[25])
+
+
+def _exr_channels(fh) -> list[str] | None:
+    """Channel names from an OpenEXR file's (first) header."""
+    import struct
+    head = fh.read(1 << 20)
+    if head[:4] != b"\x76\x2f\x31\x01":
+        return None
+    pos = 8
+    while pos < len(head):
+        end = head.find(b"\0", pos)
+        if end < 0:
+            return None
+        name = head[pos:end]
+        if not name:                       # end of the header without a channels attribute
+            return None
+        tend = head.find(b"\0", end + 1)
+        if tend < 0 or tend + 5 > len(head):
+            return None
+        size = struct.unpack_from("<i", head, tend + 1)[0]
+        value = tend + 5
+        if name == b"channels":
+            names, p, stop = [], value, min(value + size, len(head))
+            while p < stop and head[p] != 0:
+                e = head.find(b"\0", p, stop)
+                if e < 0:
+                    return None
+                names.append(head[p:e].decode("utf-8", "replace"))
+                p = e + 1 + 16             # pixel type, pLinear + 3 reserved, x/y sampling
+            return names or None
+        pos = value + size
+    return None
+
+
+def image_channels(path: str) -> list[str] | None:
+    """The image's channel names as oiiotool sees them, or None when they can't be read."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(32)
+            if head[:4] == b"\x76\x2f\x31\x01":
+                fh.seek(0)
+                return _exr_channels(fh)
+            names = _png_channels(head)
+            if names or head[:8] == b"\x89PNG\r\n\x1a\n":
+                return names
+    except OSError:
+        return None
+    try:   # other formats: ask OpenImageIO itself (installed with oiiotool in the farm's venv)
+        import OpenImageIO as oiio
+        inp = oiio.ImageInput.open(path)
+        if inp:
+            try:
+                return list(inp.spec().channelnames)
+            finally:
+                inp.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def rgb_channels(names: list[str] | None) -> str | None:
+    """The `--ch` list that gives R, G, B from an image with these channels: as they are,
+    or one grey channel copied into all three. None if the image has neither."""
+    if names is None:
+        return "R,G,B"                     # unknown: oiiotool's own warning is caught instead
+    upper = {n.upper() for n in names}
+    if {"R", "G", "B"} <= upper or {"RY", "BY"} <= upper:   # RGB, or luminance/chroma (read as RGB)
+        return "R,G,B"
+    grey = next((n for n in names if n.upper() == "Y"), names[0] if len(names) == 1 else None)
+    return f"R={grey},G={grey},B={grey}" if grey else None
+
+
+def channel_args(src: str) -> str:
+    """rgb_channels() for one file, or a ConvertError naming what's in it."""
+    names = image_channels(src)
+    ch = rgb_channels(names)
+    if ch is None:
+        raise ConvertError(f"{os.path.basename(src)} has no R, G, B or single grey channel "
+                           f"(it has {', '.join(names[:8])}).")
+    return ch
+
+
 # ============================================================== resolve
 def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
                   shot: str | None = None, texture: bool = False, ocio: OcioConfig | None = None) -> Sequence:
@@ -359,13 +454,17 @@ async def _run(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
     return proc.returncode, (err or b"").decode(errors="replace") + (out or b"").decode(errors="replace")
 
 
-def exr_command(oiiotool: list[str], c: dict, src: str, dst: str) -> list[str]:
+def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, ch: str | None = None) -> list[str]:
     """The oiiotool call for one EXR frame: a Nuke Write set to "default (color_picking)"
-    (also run by `comfyfarm check` and tools/ocio_compare.py)."""
+    (also run by `comfyfarm check` and tools/ocio_compare.py). `ch` replaces the `--ch`
+    list in convert.exr.extra_args, e.g. R=Y,G=Y,B=Y for a greyscale EXR."""
+    extra = list(c["extra_args"])
+    if ch and "--ch" in extra[:-1]:
+        extra[extra.index("--ch") + 1] = ch
     if "display" in c:   # a job queued before the switch to the repo config, frozen with its own settings
-        return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
+        return [*oiiotool, "--colorconfig", c["config"], src, *extra,
                 f"--ociodisplay:from={c['input_colorspace']}", c["display"], c["view"], "-d", "uint8", "-o", dst]
-    return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
+    return [*oiiotool, "--colorconfig", c["config"], src, *extra,
             "--colorconvert", c["from"], c["to"], "-d", "uint8", "-o", dst]
 
 
@@ -383,6 +482,7 @@ async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
     if missing:
         raise ConvertError(f"Frames disappeared since submitting: {missing[:10]}")
     env = dict(os.environ, **c.get("context", {}))   # jobs frozen before ocio.context went
+    ch = channel_args(c["src_dir"] + by_frame[frames[0]])   # a sequence's frames share their channels
     sem = asyncio.Semaphore(max(1, cc.frame_workers))
     done = 0
 
@@ -390,11 +490,14 @@ async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
         nonlocal done
         src = c["src_dir"] + by_frame[frame]
         dst = c["dst_dir"] + (c["dst_pattern"] % frame)
-        cmd = exr_command(oiiotool, c, src, dst)
+        cmd = exr_command(oiiotool, c, src, dst, ch)
         async with sem:
             code, out = await _run(cmd, env)
         if code != 0 or not os.path.isfile(dst):
             raise ConvertError(f"oiiotool failed on {by_frame[frame]}: {out.strip()[-600:] or f'exit {code}'}")
+        if UNKNOWN_CHANNEL in out:
+            raise ConvertError(f"{by_frame[frame]} is missing channels, so it would convert black: "
+                               f"{out.strip()[-300:]}")
         done += 1
         progress(done, len(frames))
 

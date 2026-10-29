@@ -439,6 +439,11 @@ convert:
         self.assertEqual(len(calls), 15)
         bump = next(a for a in calls if "_bmp02_" in " ".join(a))
         self.assertEqual((bump[bump.index("-d") + 1], "--colorconvert" in bump), ("float", False))
+        # The mock's map images are greyscale PNGs, as CHORD's height/roughness/metalness are:
+        # copied into R, G, B, not asked for channels they don't have (oiiotool would write 0).
+        self.assertEqual(bump[bump.index("--ch") + 1], "R=Y,G=Y,B=Y")
+        self.assertFalse([c["warnings"] for c in self.oiiotool_calls()
+                          if f"_cf{job['short_id']}_" in " ".join(c["args"]) and c.get("warnings")])
         color = next(a for a in calls if "_color01_" in " ".join(a))
         i = color.index("--colorconvert")   # a Nuke Read set to "default (color_picking)"
         self.assertEqual((color[i + 1:i + 3], color[color.index("-d") + 1]), (["color_picking", "scene_linear"], "half"))
