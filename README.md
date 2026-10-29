@@ -287,6 +287,10 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
   you're happy with it.
 - **Colour:** see *OCIO* below. The `acescg` in the file names is the config's
   `scene_linear`.
+- **Greyscale maps.** CHORD saves height, roughness and metalness as one-channel
+  PNGs, so the farm copies that grey into R, G and B of the EXR. The same goes for
+  greyscale EXR inputs. Asked for `R,G,B` it doesn't have, oiiotool writes 0 and only
+  warns. That warning now fails the job, so a map can't silently come out black.
 - **8-bit in between.** WAS *Image Save* writes 8-bit PNGs, so the maps carry 8 bits of
   precision even in the EXRs. Height can show steps when used for displacement. A save
   node that writes 16-bit or EXR would fix it: point the manifest's maps at it and set

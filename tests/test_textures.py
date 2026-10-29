@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from comfyfarm import convert as C
 from comfyfarm import textures as T
 from comfyfarm.__main__ import ocio_roles
 from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig, TexturesConfig
@@ -36,6 +37,9 @@ def touch(d, *names):
 
 MAPS = [{"name": "basecolor", "channel": "color01", "colorspace": "acescg", "color": True, "bits": "half"},
         {"name": "height", "channel": "bmp02", "colorspace": "acescg", "color": False, "bits": "float"}]
+# All five, as workflows/chord_pbr/manifest.yaml has them.
+CHORD_MAPS = MAPS + [{"name": n, "channel": c, "colorspace": "acescg", "color": False, "bits": "half"}
+                     for n, c in (("normal", "nrm02"), ("roughness", "spcr01"), ("metalness", "metal01"))]
 TOKENS = {"uvset": "map1", "tile": "noTile", "state": "defState", "description": ""}
 OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  default: ACES - ACEScg\n  scene_linear: ACES - ACEScg\n"
                "  color_picking: Output - sRGB\n  data: Raw\n"
@@ -44,6 +48,29 @@ OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  default: ACES - ACEScg\n  sce
                "  - !<ColorSpace>\n    name: Raw\n    isdata: true\n")
 # A job's frozen OCIO settings (convert.ocio_setup) with the default names.
 JOB_OCIO = {"config": "/farm/ocio/config.ocio", "linear": "scene_linear", "image": "color_picking", "data": "data"}
+
+
+def png_bytes(color_type: int) -> bytes:
+    """A 1x1 8-bit PNG of the given colour type (0 grey, 2 RGB, 4 grey+alpha, 6 RGBA)."""
+    import struct
+    import zlib
+    n = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, color_type, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\x00" + b"\x80" * n)) + chunk(b"IEND", b""))
+
+
+def exr_header(channels: list[str]) -> bytes:
+    """The start of an OpenEXR file: magic, version and a header with these channels."""
+    import struct
+
+    def attr(name, kind, value):
+        return name.encode() + b"\0" + kind.encode() + b"\0" + struct.pack("<i", len(value)) + value
+    chlist = b"".join(c.encode() + b"\0" + struct.pack("<iB3xii", 1, 0, 1, 1) for c in channels) + b"\0"
+    return (b"\x76\x2f\x31\x01" + struct.pack("<I", 2) + attr("compression", "compression", b"\x03")
+            + attr("channels", "chlist", chlist) + b"\0")
 
 
 class NamingTests(unittest.TestCase):
@@ -214,6 +241,69 @@ class InputTests(unittest.TestCase):
             resolve_input("/rdo/shows/xyz/a.mov", self.cfg, ConvertConfig(), texture=True, ocio=self.oc)
 
 
+class ChannelTests(unittest.TestCase):
+    """oiiotool fills channels an image doesn't have with 0 (and only warns), so greyscale
+    images are copied into R, G, B instead of asked for channels they don't have."""
+
+    def write(self, name, data):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = f"{d}/{name}"
+        Path(path).write_bytes(data)
+        return path
+
+    def test_png_channels(self):
+        for ctype, names, ch in ((0, ["Y"], "R=Y,G=Y,B=Y"), (4, ["Y", "A"], "R=Y,G=Y,B=Y"),
+                                 (2, ["R", "G", "B"], "R,G,B"), (6, ["R", "G", "B", "A"], "R,G,B"),
+                                 (3, ["R", "G", "B"], "R,G,B")):
+            path = self.write(f"map{ctype}.png", png_bytes(ctype))
+            self.assertEqual((C.image_channels(path), C.channel_args(path)), (names, ch), ctype)
+
+    def test_exr_channels(self):
+        cases = ((["Y"], "R=Y,G=Y,B=Y"), (["B", "G", "R"], "R,G,B"), (["A", "B", "G", "R", "depth.Z"], "R,G,B"),
+                 (["BY", "RY", "Y"], "R,G,B"), (["height"], "R=height,G=height,B=height"))
+        for names, ch in cases:
+            path = self.write("t.exr", exr_header(names))
+            self.assertEqual((C.image_channels(path), C.channel_args(path)), (names, ch), names)
+        layered = self.write("t.exr", exr_header(["diffuse.B", "diffuse.G", "diffuse.R"]))
+        with self.assertRaisesRegex(C.ConvertError, "t.exr has no R, G, B or single grey channel .*diffuse.B"):
+            C.channel_args(layered)
+
+    def test_unreadable_files_keep_rgb(self):
+        self.assertEqual(C.channel_args(self.write("empty.png", b"")), "R,G,B")
+        self.assertEqual(C.channel_args(self.write("odd.tif", b"II*\0")), "R,G,B")
+        self.assertEqual(C.channel_args("/nope/missing.exr"), "R,G,B")
+
+    def test_exr_command_uses_the_channels(self):
+        c = {"config": "c.ocio", "extra_args": ["--ch", "R,G,B", "--croptofull"], "from": "a", "to": "b"}
+        cmd = exr_command(["oiiotool"], c, "in.exr", "out.png", "R=Y,G=Y,B=Y")
+        self.assertEqual(cmd[cmd.index("--ch") + 1:cmd.index("--ch") + 3], ["R=Y,G=Y,B=Y", "--croptofull"])
+        self.assertEqual(c["extra_args"][1], "R,G,B")                        # the job's settings aren't changed
+        self.assertEqual(exr_command(["oiiotool"], dict(c, extra_args=["--croptofull"]), "a", "b", "R=Y,G=Y,B=Y"),
+                         ["oiiotool", "--colorconfig", "c.ocio", "a", "--croptofull", "--colorconvert", "a", "b",
+                          "-d", "uint8", "-o", "b"])                         # no --ch configured: none added
+
+    def test_greyscale_exr_input(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        os.makedirs(f"{d}/src")
+        for f in (1001, 1002):
+            Path(f"{d}/src/grey.{f}.exr").write_bytes(exr_header(["Y"]))
+        c = {"kind": "exr", "src_dir": f"{d}/src/", "src_pattern": "grey.%04d.exr", "first": 1001, "last": 1002,
+             "frames": [1001, 1002], "dst_dir": f"{d}/out/", "dst_pattern": "grey.%04d.png", "config": "c.ocio",
+             "extra_args": ["--ch", "R,G,B", "--croptofull"], "from": "scene_linear", "to": "color_picking"}
+        os.makedirs(f"{d}/out")
+        log = f"{d}/oiio.log"
+        os.environ["FAKE_OIIOTOOL_LOG"] = log
+        self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+        asyncio.run(C.convert_exr(c, ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}), lambda d_, n: None))
+        calls = [json.loads(line)["args"] for line in Path(log).read_text().splitlines()]
+        self.assertEqual([a[a.index("--ch") + 1] for a in calls], ["R=Y,G=Y,B=Y"] * 2)
+        Path(f"{d}/src/grey.1001.exr").write_bytes(exr_header(["diffuse.R", "diffuse.G", "diffuse.B"]))
+        with self.assertRaisesRegex(C.ConvertError, "grey.1001.exr has no R, G, B"):
+            asyncio.run(C.convert_exr(c, ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}), lambda d_, n: None))
+
+
 class WriteMapsTests(unittest.TestCase):
     def test_raw_images_become_named_exrs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -246,6 +336,43 @@ class WriteMapsTests(unittest.TestCase):
             self.assertNotIn("--colorconvert", bump)
             self.assertEqual((bump[bump.index("-d") + 1], bump[bump.index("--iscolorspace") + 1]), ("float", "data"))
             self.assertTrue(bump[bump.index("-o") + 1].endswith(".part.exr"))   # renamed once complete
+
+    def chord_maps(self, tmp):
+        """CHORD's saves as they really are: RGB base colour and normal, greyscale height,
+        roughness and metalness."""
+        raw = f"{tmp}/scratch/j1/maps"
+        os.makedirs(raw)
+        for m in CHORD_MAPS:
+            grey = m["channel"] not in ("color01", "nrm02")
+            Path(f"{raw}/_cfj1_{m['channel']}_0001.png").write_bytes(png_bytes(0 if grey else 2))
+        return {"raw_dir": raw, "name": T.DEFAULT_NAME, "ext": "png", "tokens": TOKENS, "items": [[1001, 0]],
+                "maps": [dict(m, prefix=f"_cfj1_{m['channel']}") for m in CHORD_MAPS], "ocio": JOB_OCIO}
+
+    def test_greyscale_maps_are_copied_into_rgb(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t = self.chord_maps(tmp)
+            log = f"{tmp}/oiio.log"
+            os.environ["FAKE_OIIOTOOL_LOG"] = log
+            self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+            asyncio.run(T.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+                                     [], lambda d, n: None))
+            calls = [json.loads(line) for line in Path(log).read_text().splitlines()]
+            ch = {next(m["channel"] for m in CHORD_MAPS if f"_{m['channel']}_" in " ".join(c["args"])):
+                  c["args"][c["args"].index("--ch") + 1] for c in calls}
+            self.assertEqual(ch, {"color01": "R,G,B", "nrm02": "R,G,B", "bmp02": "R=Y,G=Y,B=Y",
+                                  "spcr01": "R=Y,G=Y,B=Y", "metal01": "R=Y,G=Y,B=Y"})
+            self.assertEqual([c["warnings"] for c in calls], [[]] * len(CHORD_MAPS))
+
+    def test_missing_channels_fail_instead_of_black_maps(self):
+        # If a map ever reaches oiiotool asking for channels it doesn't have, the job fails
+        # rather than writing an all-black EXR.
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            t = self.chord_maps(tmp)
+            with mock.patch.object(C, "channel_args", return_value="R,G,B"), \
+                    self.assertRaisesRegex(Exception, "_cfj1_.*_0001.png is missing channels, so the map would be black"):
+                asyncio.run(T.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+                                         [], lambda d, n: None))
 
     def test_missing_images_fail_loudly(self):
         with tempfile.TemporaryDirectory() as tmp:

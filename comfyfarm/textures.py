@@ -197,11 +197,13 @@ def describe(n_maps: int, items: list, has_udim: bool, numbering: str) -> str:
 
 
 # ============================================================== EXR writing
-def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str) -> list[str]:
+def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str, ch: str = "R,G,B") -> list[str]:
     """oiiotool for one map image -> its final EXR (also run by `comfyfarm check`).
     `ocio` is the job's frozen convert.ocio_setup(): colour maps go image -> linear (a Nuke
-    Read set to "default (color_picking)"); data maps are only tagged."""
-    cmd = [*oiiotool, "--colorconfig", ocio["config"], src, "--ch", "R,G,B"]
+    Read set to "default (color_picking)"); data maps are only tagged. `ch` comes from
+    convert.channel_args(): greyscale maps (height, roughness, metalness) are copied into
+    R, G and B (R=Y,G=Y,B=Y) rather than asked for R, G, B they don't have."""
+    cmd = [*oiiotool, "--colorconfig", ocio["config"], src, "--ch", ch]
     cmd += ["--colorconvert", ocio["image"], ocio["linear"]] if m["color"] else ["--iscolorspace", ocio["data"]]
     return cmd + ["-d", m["bits"], "--compression", "zip", "-o", dst]
 
@@ -242,8 +244,11 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
         nonlocal done
         # oiiotool picks the format from the extension, so the temporary name ends in .exr too.
         tmp = f"{dst[:-4]}.{uuid.uuid4().hex[:8]}.part.exr"
+        ch = C.channel_args(src)
         async with sem:
-            code, out = await C._run(map_command(oiiotool, t["ocio"], m, src, tmp), env)
+            code, out = await C._run(map_command(oiiotool, t["ocio"], m, src, tmp, ch), env)
+        if code == 0 and C.UNKNOWN_CHANNEL in out:
+            code, out = 1, f"{os.path.basename(src)} is missing channels, so the map would be black: {out}"
         if code != 0 or not os.path.isfile(tmp):
             try:
                 os.remove(tmp)
