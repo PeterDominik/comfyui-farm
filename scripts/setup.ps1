@@ -11,7 +11,7 @@
 #>
 param(
     [string]$Python = "",      # optional: full path to python.exe (3.10+)
-    [string]$ComfyUIDir = ""   # ComfyUI's folder (portable install, or the one holding custom_nodes)
+    [string]$ComfyUIDir = ""   # ComfyUI's folder (portable install, the one holding custom_nodes, or custom_nodes)
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -58,9 +58,14 @@ New-Item -ItemType Directory -Force -Path data, logs | Out-Null
 # to load a change). Junctions need no admin rights.
 $nodes = Join-Path $Root "comfyui_nodes\comfyfarm_nodes"
 if ($ComfyUIDir) {
+    # The ComfyUI folder, a portable install (ComfyUI\ inside it), or custom_nodes itself.
+    $ComfyUIDir = $ComfyUIDir.TrimEnd([char]'\', [char]'/')
     $custom = @((Join-Path $ComfyUIDir "custom_nodes"), (Join-Path $ComfyUIDir "ComfyUI\custom_nodes")) |
         Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $custom) { throw "No custom_nodes folder in $ComfyUIDir or $ComfyUIDir\ComfyUI" }
+    if (-not $custom -and (Split-Path $ComfyUIDir -Leaf) -eq "custom_nodes" -and (Test-Path $ComfyUIDir)) {
+        $custom = $ComfyUIDir
+    }
+    if (-not $custom) { throw "No custom_nodes folder in $ComfyUIDir or $ComfyUIDir\ComfyUI (pass ComfyUI's folder, e.g. D:\ComfyUI)" }
     $link = Join-Path $custom "comfyfarm_nodes"
     $item = Get-Item $link -ErrorAction SilentlyContinue
     if ($item -and $item.LinkType -eq "Junction" -and ($item.Target -replace '\\$', '') -eq $nodes) {
