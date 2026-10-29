@@ -297,7 +297,7 @@ class Farm:
                     "tokens": tokens, "items": [list(i) for i in items], "maps": maps, "has_udim": has_udim,
                     "numbering": numbering,
                     # Frozen per job, like the input conversion: the repo's OCIO config.
-                    "ocio": C.ocio_setup(self.cfg.ocio, pc, plan["show"], plan["seq_name"], plan["shot"])}
+                    "ocio": C.ocio_setup(self.cfg.ocio, pc)}
         shown = next((m for m in maps if m["color"]), maps[0])
         plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=out_dir + "/", textures=textures,
                     first_frame=seq.first,

@@ -11,7 +11,7 @@ from unittest import mock
 
 from comfyfarm import convert
 from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig
-from comfyfarm.convert import (_shot_short, exr_command, find_tool, ocio_config_path, ocio_setup, parse_ffmpeg_info,
+from comfyfarm.convert import (exr_command, find_tool, ocio_config_path, ocio_setup, parse_ffmpeg_info,
                                parse_probe, point_loader_at_scratch, probe_movie, probe_movie_ffmpeg,
                                read_movie_info, resolve_input, summary, timecode_to_frame)
 from comfyfarm.paths import SequenceError
@@ -145,29 +145,31 @@ class OcioTests(unittest.TestCase):
         return resolve_input(f"/rdo/shows/raa/.published/bpash/bpash_1545/plate/v1/bpash_1545.plate.v1.%04d.exr {rng}",
                              self.pc, self.cc, ocio=self.oc)
 
-    def test_shot_short(self):
-        self.assertEqual(_shot_short("bpash", "bpash_1545"), "1545")
-        self.assertEqual(_shot_short("15454", "15454_656551"), "656551")
-        self.assertEqual(_shot_short("abc", "xyz_0010"), "xyz_0010")
-        self.assertEqual(_shot_short(None, "bpash_1545"), "bpash_1545")
-
     def test_color_picking_like_a_nuke_write(self):
         c = self.exr().convert
-        self.assertEqual((c["config"], c["from"], c["to"], c["context"]),
-                         (f"{self.root}/ocio/config.ocio", "scene_linear", "color_picking", {}))
+        self.assertEqual((c["config"], c["from"], c["to"]),
+                         (f"{self.root}/ocio/config.ocio", "scene_linear", "color_picking"))
         self.assertEqual(exr_command(["oiiotool"], c, "in.exr", "out.png"),
                          ["oiiotool", "--colorconfig", f"{self.root}/ocio/config.ocio", "in.exr", "--ch", "R,G,B",
                           "--croptofull", "--colorconvert", "scene_linear", "color_picking", "-d", "uint8",
                           "-o", "out.png"])
         self.assertEqual(summary(self.exr(), self.pc)["to"], "color_picking")
 
-    def test_repo_relative_config_and_context(self):
+    def test_repo_relative_config(self):
         self.assertEqual(ocio_config_path(OcioConfig()), (REPO / "ocio/config.ocio").as_posix())
-        oc = OcioConfig(config=self.oc.config, context={"SHOT": "{shot_short}", "SEQ": "{seq}"})
-        self.assertEqual(ocio_setup(oc, self.pc, "raa", "bpash", "bpash_1545")["context"],
-                         {"SHOT": "1545", "SEQ": "bpash"})
-        with self.assertRaisesRegex(SequenceError, "ocio.context SHOT"):
-            ocio_setup(oc, self.pc, "raa", None, None)
+        setup = ocio_setup(self.oc, self.pc)
+        self.assertEqual((setup["linear"], setup["image"], setup["data"]), ("scene_linear", "color_picking", "data"))
+
+    def test_old_ocio_keys_are_reported(self):
+        from comfyfarm.config import load_config
+        path = f"{self.root}/config.yaml"
+        with open(path, "w") as fh:
+            fh.write("ocio:\n  config: ocio/config.ocio\n  linear: scene_linear\n  image: color_picking\n"
+                     "  data: data\n  context: {}\n")
+        cfg = load_config(path)
+        self.assertEqual(cfg.ocio.config, "ocio/config.ocio")
+        self.assertTrue(any(n.startswith("ocio: context, data, image, linear no longer used") for n in cfg.obsolete_keys),
+                        cfg.obsolete_keys)
 
     def test_missing_config(self):
         os.remove(f"{self.root}/ocio/config.ocio")

@@ -1,17 +1,22 @@
-"""The OCIO config that ships in the repo (ocio/) has what the farm's conversions use:
-the scene_linear, color_picking and data roles, and every LUT file on the way between
-them, inside the repo. Parsed as YAML, so it runs without OpenColorIO; the last test runs
-the real conversion when PyOpenColorIO is installed (it is in the farm's venv)."""
+"""The farm's OCIO config (ocio/config.ocio) does what Nuke does with bri3's published
+config: scene_linear <-> color_picking, the ACES Rec.709 output transform.
+
+The first tests read the YAML, so they run without OpenColorIO. The rest run the real
+conversions when PyOpenColorIO is installed (it is in the farm's venv): against the values
+measured in Nuke, and against ocio/reference/config_1_0_v1.ocio pixel for pixel."""
 import os
-import re
+import tempfile
 import unittest
 
+import numpy as np
 import yaml
 
 from comfyfarm.config import OcioConfig
-from comfyfarm.convert import REPO, ocio_config_path
+from comfyfarm.convert import DATA, IMAGE, LINEAR, NUKE_RAMP, REPO, ocio_config_path
 
 CONFIG = ocio_config_path(OcioConfig())
+OCIO_DIR = REPO / "ocio"
+REFERENCE = OCIO_DIR / "reference" / "config_1_0_v1.ocio"
 
 
 class _Loader(yaml.SafeLoader):
@@ -29,77 +34,52 @@ def _tagged(loader, tag, node):
 _Loader.add_multi_constructor("", _tagged)
 
 
-def load():
-    with open(CONFIG, encoding="utf-8") as fh:
+def load(path=CONFIG):
+    with open(path, encoding="utf-8") as fh:
         return yaml.load(fh, Loader=_Loader)
 
 
-def colorspaces(cfg):
-    return {cs["name"]: cs for cs in cfg["colorspaces"]}
+def lut_files(node):
+    """Every FileTransform src in a parsed config."""
+    if isinstance(node, dict):
+        out = {node["src"]} if node.get("_type") == "FileTransform" else set()
+        for v in node.values():
+            out |= lut_files(v)
+        return out
+    if isinstance(node, list):
+        return set().union(*(lut_files(v) for v in node)) if node else set()
+    return set()
 
 
-def files_used(cfg, name, seen=None):
-    """Every FileTransform src a colour space needs, through ColorSpaceTransforms too."""
-    seen = set() if seen is None else seen
-    if name in seen:
-        return set()
-    seen.add(name)
-    css, out = colorspaces(cfg), set()
-
-    def walk(t):
-        if isinstance(t, list):
-            for c in t:
-                walk(c)
-        elif isinstance(t, dict):
-            if t.get("_type") == "FileTransform":
-                out.add(t["src"])
-            elif t.get("_type") == "ColorSpaceTransform":
-                for k in ("src", "dst"):
-                    out.update(files_used(cfg, cfg["roles"].get(t[k], t[k]), seen))
-            walk(t.get("children", []))
-
-    for key in ("to_reference", "from_reference"):
-        walk(css[name].get(key))
-    return out
-
-
-@unittest.skipUnless(os.path.isfile(CONFIG), "ocio/config.ocio not in this checkout")
-class RepoOcioConfigTests(unittest.TestCase):
+class RepoConfigTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load()
-        self.oc = OcioConfig()
+        self.spaces = {cs["name"]: cs for cs in self.cfg["colorspaces"]}
 
     def test_default_config_is_the_repo_one(self):
-        self.assertEqual(os.path.normcase(CONFIG), os.path.normcase(str(REPO / "ocio" / "config.ocio")))
+        self.assertEqual(os.path.normcase(CONFIG), os.path.normcase((OCIO_DIR / "config.ocio").as_posix()))
 
-    def test_roles_the_farm_uses(self):
-        roles, css = self.cfg["roles"], colorspaces(self.cfg)
-        for role in (self.oc.linear, self.oc.image, self.oc.data):
-            self.assertIn(role, roles, f"no {role} role in ocio/config.ocio")
-            self.assertIn(roles[role], css, f"{role} -> {roles[role]}, which isn't a colour space")
-        # What Nuke's "default (color_picking)" and the texture names rely on.
-        self.assertEqual(css[roles[self.oc.linear]].get("equalitygroup"), "ACEScg")
-        self.assertTrue(css[roles[self.oc.data]].get("isdata"), "the data role must not change values")
-        self.assertFalse(css[roles[self.oc.image]].get("isdata"))
-
-    def test_luts_on_the_conversion_path_are_in_the_repo(self):
-        dirs = [p for p in self.cfg["search_path"].split(":") if "$" not in p and not p.startswith("..")]
-        self.assertTrue(dirs)
-        for d in dirs:
-            self.assertTrue((REPO / "ocio" / d).is_dir(), f"search_path folder ocio/{d} missing")
+    def test_roles_and_old_names(self):
         roles = self.cfg["roles"]
-        needed = files_used(self.cfg, roles[self.oc.linear]) | files_used(self.cfg, roles[self.oc.image])
-        self.assertIn("white_balance.cc", needed)
-        missing = [f for f in sorted(needed) if not any((REPO / "ocio" / d / f).is_file() for d in dirs)]
-        self.assertEqual(missing, [], "LUT files the farm's conversions need but the repo doesn't have")
+        self.assertEqual({r: roles[r] for r in (LINEAR, IMAGE, DATA, "linear")},
+                         {LINEAR: "acescg", IMAGE: "comfy_png", DATA: "raw", "linear": "acescg"})
+        self.assertTrue(self.spaces["raw"]["isdata"])
+        self.assertFalse(self.spaces["comfy_png"]["isdata"])
+        # The names Rodeo's config and Nuke scripts use still resolve.
+        aliases = {a: cs for cs, d in self.spaces.items() for a in d.get("aliases", [])}
+        self.assertEqual((aliases["rdo"], aliases["ACES-look"], aliases["Utility - Raw"]), ("acescg", "comfy_png", "raw"))
 
-    def test_show_bundles_are_outside_the_repo(self):
-        # The per-show _color_bundle folders are only found next to a show's config. The repo
-        # copy falls back to project_luts, which doesn't change the result: color_picking and
-        # scene_linear apply the same white_balance.cc in opposite directions.
-        outside = [p for p in self.cfg["search_path"].split(":") if p.startswith("..")]
-        self.assertTrue(all("_color_bundle" in p for p in outside))
-        self.assertEqual(sorted(set(re.findall(r"\$\{(\w+)\}", self.cfg["search_path"]))), ["SEQ", "SHOT"])
+    def test_luts_folder_holds_exactly_the_files_used(self):
+        self.assertEqual(self.cfg["search_path"], "luts")
+        used = lut_files(self.cfg["colorspaces"])
+        self.assertEqual(used, {"Log2_48_nits_Shaper_to_linear.spi1d", "Log2_48_nits_Shaper.RRT.Rec.709.spi3d",
+                                "InvRRT.Rec.709.Log2_48_nits_Shaper.spi3d"})
+        self.assertEqual(set(os.listdir(OCIO_DIR / "luts")), used)
+
+    def test_reference_uses_the_same_luts(self):
+        ref = {cs["name"]: cs for cs in load(REFERENCE)["colorspaces"]}
+        self.assertEqual(load(REFERENCE)["roles"][IMAGE], "ACES-look")
+        self.assertEqual(lut_files(ref["ACES-look"]) - {"white_balance.cc"}, lut_files(self.spaces["comfy_png"]))
 
 
 try:
@@ -108,42 +88,62 @@ except ImportError:
     OCIO = None
 
 
-@unittest.skipUnless(OCIO and os.path.isfile(CONFIG), "needs PyOpenColorIO and ocio/config.ocio")
-class RepoOcioProcessorTests(unittest.TestCase):
-    """The conversions themselves, as oiiotool runs them on the farm (no SEQ/SHOT set)."""
+def _apply(proc, px):
+    a = np.ascontiguousarray(px, dtype=np.float32).copy()
+    proc.applyRGB(a)
+    return a
+
+
+@unittest.skipUnless(OCIO, "needs PyOpenColorIO")
+class RepoConfigProcessorTests(unittest.TestCase):
+    """The conversions themselves, as oiiotool runs them on the farm."""
 
     def setUp(self):
-        self.env = {k: os.environ.pop(k) for k in ("SEQ", "SHOT", "OCIO") if k in os.environ}
+        self.env = {k: os.environ.pop(k) for k in ("SEQ", "SHOT", "OCIO", "RDO_CURRENT_SHOW") if k in os.environ}
+        self.addCleanup(os.environ.update, self.env)
         self.cfg = OCIO.Config.CreateFromFile(CONFIG)
-        self.oc = OcioConfig()
 
-    def tearDown(self):
-        os.environ.update(self.env)
+    def cpu(self, cfg, src, dst):
+        return cfg.getProcessor(src, dst).getDefaultCPUProcessor()
 
-    def cpu(self, src, dst):
-        return self.cfg.getProcessor(src, dst).getDefaultCPUProcessor()
+    def test_valid(self):
+        self.cfg.validate()
+
+    def test_matches_values_measured_in_nuke(self):
+        fwd = self.cpu(self.cfg, LINEAR, IMAGE)
+        self.assertEqual({v: round(fwd.applyRGB([v, v, v])[1] * 255) for v in NUKE_RAMP}, NUKE_RAMP)
 
     def test_round_trip(self):
-        fwd, inv = self.cpu(self.oc.linear, self.oc.image), self.cpu(self.oc.image, self.oc.linear)
-        for v in (0.0, 0.01, 0.18, 0.5, 1.0):
-            img = fwd.applyRGB([v, v, v])
-            self.assertTrue(all(0.0 <= c <= 1.0 for c in img), (v, img))
-            back = inv.applyRGB(img)
+        fwd, inv = self.cpu(self.cfg, LINEAR, IMAGE), self.cpu(self.cfg, IMAGE, LINEAR)
+        for v in (0.01, 0.18, 0.5, 1.0):
+            back = inv.applyRGB(fwd.applyRGB([v, v, v]))
             for b in back:
                 self.assertAlmostEqual(b, v, delta=max(0.002, 0.01 * v))
 
-    def test_mid_grey_is_toned_like_the_aces_srgb_view(self):
-        # color_picking = ACES-look (ACES 1.x RRT + sRGB), not a plain sRGB curve: 0.18 lands
-        # at 0.357 (PNG 91) rather than 0.46, and linear 1.0 at PNG 207.
-        fwd = self.cpu(self.oc.linear, self.oc.image)
-        self.assertAlmostEqual(fwd.applyRGB([0.18, 0.18, 0.18])[0], 0.357, delta=0.005)
-        self.assertAlmostEqual(fwd.applyRGB([1.0, 1.0, 1.0])[0] * 255, 207, delta=1)
-
-    def test_shot_folders_need_no_context(self):
-        # ${SEQ}/${SHOT} unset, as on the farm: the search path still resolves.
-        self.assertNotIn("SEQ", dict(self.cfg.getCurrentContext().getStringVars()))
-        self.cfg.validate()
-
     def test_data_is_untouched(self):
-        p = self.cpu(self.oc.data, self.oc.linear)
-        self.assertEqual(p.applyRGB([0.25, 0.5, 0.75]), [0.25, 0.5, 0.75])
+        self.assertEqual(self.cpu(self.cfg, DATA, LINEAR).applyRGB([0.25, 0.5, 0.75]), [0.25, 0.5, 0.75])
+
+    def test_same_as_the_published_config(self):
+        """Pixel for pixel against reference/config_1_0_v1.ocio, using the repo's LUTs plus a
+        white_balance.cc: identity, and a strong one to show it cancels for any shot."""
+        rng = np.random.default_rng(7)
+        lin = np.concatenate([rng.random((60000, 3)) ** 3 * 1.5,
+                              np.repeat(np.geomspace(1e-4, 16, 500)[:, None], 3, 1)]).astype(np.float32)
+        png = rng.integers(0, 256, (60000, 3)).astype(np.float32) / 255
+        ours_fwd = np.round(np.clip(_apply(self.cpu(self.cfg, LINEAR, IMAGE), lin), 0, 1) * 255)
+        ours_inv = _apply(self.cpu(self.cfg, IMAGE, LINEAR), png)
+        wbs = {"identity": ("1 1 1", "1"), "strong": ("1.25 0.95 0.8", "0.9")}
+        for name, (slope, sat) in wbs.items():
+            with self.subTest(white_balance=name), tempfile.TemporaryDirectory() as d:
+                with open(f"{d}/white_balance.cc", "w") as fh:
+                    fh.write(f'<ColorCorrection id="white_balance"><SOPNode><Slope>{slope}</Slope>'
+                             f'<Offset>0 0 0</Offset><Power>1 1 1</Power></SOPNode>'
+                             f'<SatNode><Saturation>{sat}</Saturation></SatNode></ColorCorrection>\n')
+                ref = OCIO.Config.CreateFromFile(str(REFERENCE))
+                ref.setSearchPath(f"{d}:{OCIO_DIR / 'luts'}")
+                ref_fwd = np.round(np.clip(_apply(self.cpu(ref, LINEAR, IMAGE), lin), 0, 1) * 255)
+                ref_inv = _apply(self.cpu(ref, IMAGE, LINEAR), png)
+                self.assertLessEqual(np.abs(ours_fwd - ref_fwd).max(), 1)
+                self.assertLess(np.mean(ours_fwd != ref_fwd), 1e-4)
+                rel = np.abs(ours_inv - ref_inv) / np.maximum(np.abs(ref_inv), 1e-3)
+                self.assertLess(rel.max(), 1e-3)

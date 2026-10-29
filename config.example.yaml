@@ -80,19 +80,13 @@ convert:
       extensions: [.mov]
 
 ocio:
-  # The farm's one OCIO config, kept in the repo (ocio/), so git pull updates it. Every
-  # conversion is the one a Nuke Write or Read does with "default (color_picking)":
-  #   EXR inputs (plates, textures) -> 8-bit PNG for ComfyUI:  linear -> image
-  #   texture colour maps from ComfyUI -> EXR:                image -> linear
-  # Data maps (normal, bump, ...) keep their values and are only tagged `data`.
-  # `python -m comfyfarm check` shows what these resolve to and runs the conversions.
+  # The farm's OCIO config, kept in the repo (ocio/), so git pull updates it. Its two
+  # conversions are a Nuke Write and Read set to "default (color_picking)" in Rodeo's
+  # published show config:
+  #   EXR inputs (plates, textures) -> 8-bit PNG for ComfyUI:  scene_linear -> color_picking
+  #   texture colour maps from ComfyUI -> EXR:                color_picking -> scene_linear
+  # `python -m comfyfarm check` checks it against values measured in Nuke (ocio/README.md).
   config: ocio/config.ocio     # relative = inside the repo
-  linear: scene_linear         # rdo (ACEScg) in the repo config
-  image: color_picking         # ACES-look (ACES sRGB output transform)
-  data: data                   # Utility - Raw
-  # OCIO context variables, e.g. {SHOT: '{shot_short}'}. The repo config needs none: its
-  # ${SEQ}/${SHOT} search paths only pick a shot's white balance, which cancels out here.
-  context: {}
 
 textures:
   workers: 6               # oiiotool processes per job when writing the maps

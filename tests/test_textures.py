@@ -9,6 +9,7 @@ import copy
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -42,8 +43,7 @@ OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  default: ACES - ACEScg\n  sce
                "colorspaces:\n  - !<ColorSpace>\n    name: ACES - ACEScg\n  - !<ColorSpace>\n    name: Output - sRGB\n"
                "  - !<ColorSpace>\n    name: Raw\n    isdata: true\n")
 # A job's frozen OCIO settings (convert.ocio_setup) with the default names.
-JOB_OCIO = {"config": "/farm/ocio/config.ocio", "linear": "scene_linear", "image": "color_picking", "data": "data",
-            "context": {}}
+JOB_OCIO = {"config": "/farm/ocio/config.ocio", "linear": "scene_linear", "image": "color_picking", "data": "data"}
 
 
 class NamingTests(unittest.TestCase):
@@ -259,42 +259,48 @@ class WriteMapsTests(unittest.TestCase):
 
 
 class PreflightTests(unittest.TestCase):
-    def test_ocio_check_runs_the_job_commands(self):
+    def check(self, oc=None, oiiotool=None):
         from comfyfarm.__main__ import check_ocio
         from comfyfarm.config import Config
-        with tempfile.TemporaryDirectory() as tmp:
-            Path(f"{tmp}/config.ocio").write_text(OCIO_CONFIG)
-            log = f"{tmp}/oiio.log"
-            os.environ["FAKE_OIIOTOOL_LOG"] = log
-            self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
-            oc = OcioConfig(config=f"{tmp}/config.ocio")
-            cfg = Config(ocio=oc, convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))
-            self.assertEqual(check_ocio(cfg), 0)
-            calls = [json.loads(line)["args"] for line in Path(log).read_text().splitlines()]
-            self.assertEqual(len(calls), 4)
-            self.assertEqual(calls[1][calls[1].index("--colorconvert") + 1:][:2], ["color_picking", "scene_linear"])
-            self.assertIn("--iscolorspace", calls[2])
-            self.assertEqual(calls[3][calls[3].index("--colorconvert") + 1:][:2], ["scene_linear", "color_picking"])
-            broken = Config(ocio=oc, convert=ConvertConfig(tools={"oiiotool": [sys.executable, "-c", "import sys; sys.exit(3)"]}))
-            self.assertEqual(check_ocio(broken), 1)
-            self.assertEqual(check_ocio(Config(ocio=OcioConfig(config=f"{tmp}/nope.ocio"))), 1)
-            self.assertEqual(check_ocio(Config(ocio=OcioConfig(config=f"{tmp}/config.ocio", data="nope"),
-                                               convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))),
-                             1 if ocio_roles(f"{tmp}/config.ocio", ["data"]) else 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = check_ocio(Config(ocio=oc or OcioConfig(),
+                                     convert=ConvertConfig(tools={"oiiotool": oiiotool or FAKE_OIIOTOOL})))
+        return code, out.getvalue()
 
-    @unittest.skipUnless(os.path.isfile(REPO / "ocio" / "config.ocio"), "ocio/config.ocio not in this checkout")
-    def test_ocio_check_with_the_repo_config(self):
-        from comfyfarm.__main__ import check_ocio
-        from comfyfarm.config import Config
-        with tempfile.TemporaryDirectory() as tmp:
-            os.environ["FAKE_OIIOTOOL_LOG"] = f"{tmp}/oiio.log"
-            self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(check_ocio(Config(convert=ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}))), 0)
-            self.assertIn("ocio/config.ocio", out.getvalue())
-            if ocio_roles(str(REPO / "ocio" / "config.ocio"), ["scene_linear"]):   # PyOpenColorIO installed
-                self.assertIn("scene_linear = rdo, color_picking = ACES-look, data = Utility - Raw", out.getvalue())
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.log = f"{self.tmp}/oiio.log"
+        os.environ["FAKE_OIIOTOOL_LOG"] = self.log
+        self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+        self.ocio_lib = bool(ocio_roles(str(REPO / "ocio" / "config.ocio"), ["scene_linear"]))   # PyOpenColorIO
+
+    def test_runs_the_job_commands_with_the_repo_config(self):
+        code, out = self.check()
+        self.assertEqual(code, 0, out)
+        self.assertIn("ocio/config.ocio", out)
+        if self.ocio_lib:
+            self.assertIn("scene_linear = acescg, color_picking = comfy_png, data = raw): matches Nuke", out)
+        calls = [json.loads(line)["args"] for line in Path(self.log).read_text().splitlines()]
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[1][calls[1].index("--colorconvert") + 1:][:2], ["color_picking", "scene_linear"])
+        self.assertIn("--iscolorspace", calls[2])
+        self.assertEqual(calls[3][calls[3].index("--colorconvert") + 1:][:2], ["scene_linear", "color_picking"])
+
+    def test_failures(self):
+        self.assertEqual(self.check(oiiotool=[sys.executable, "-c", "import sys; sys.exit(3)"])[0], 1)
+        self.assertEqual(self.check(OcioConfig(config=f"{self.tmp}/nope.ocio"))[0], 1)
+        # A config without the data role, and one whose transforms don't match Nuke's values;
+        # only PyOpenColorIO can tell.
+        Path(f"{self.tmp}/no_data.ocio").write_text(OCIO_CONFIG.replace("  data: Raw\n", ""))
+        code, out = self.check(OcioConfig(config=f"{self.tmp}/no_data.ocio"))
+        self.assertEqual(code, 1 if self.ocio_lib else 0, out)
+        Path(f"{self.tmp}/other.ocio").write_text(OCIO_CONFIG)
+        code, out = self.check(OcioConfig(config=f"{self.tmp}/other.ocio"))
+        self.assertEqual(code, 1 if self.ocio_lib else 0, out)
+        if self.ocio_lib:
+            self.assertIn("no longer matches Nuke: linear grey -> PNG code 0.02: 5 (Nuke 23)", out)
 
 
 if __name__ == "__main__":

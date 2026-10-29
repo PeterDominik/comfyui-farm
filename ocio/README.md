@@ -1,63 +1,68 @@
-# README #
+# The farm's OCIO config
 
-This OCIO config is basically the ACES v1.2 config with a few things added for Rodeo, and with the displays and views customized to mimick what artists are used to have.
+The ComfyUI farm does two colour conversions, and this folder holds just enough to do them
+exactly as Nuke does:
 
-### What is this repository for? ###
+| What | From | To |
+|---|---|---|
+| EXR inputs (plates, textures) → 8-bit PNG for ComfyUI | `scene_linear` (`acescg`) | `color_picking` (`comfy_png`) |
+| Texture colour maps from ComfyUI → EXR | `color_picking` (`comfy_png`) | `scene_linear` (`acescg`) |
+| Texture data maps (normal, bump, ...) | values kept, tagged `data` (`raw`) | |
 
-* This should be the default OCIO config to use for a new show.
+These are a Nuke Write and Read set to `default (color_picking)` in Rodeo's published show
+config.
 
-### What's different from the ACES v1.2 config? ###
+## Where it comes from
 
-#### Colorspaces ####
+`reference/config_1_0_v1.ocio` is the config Nuke loads for bri3:
+`/rdo/shows/bri3/.published/ocioConfig/config_1_0/v1/config_1_0_v1.ocio`. Nuke resolves
+its LUTs from the Rez package `rdo_ocio_config` 2.6.3. In it:
 
-* A `rdo` colorspace, which is the same as ACEScg. This is the colorspace that should be used for almost everything at Rodeo.
-* A `rdo-nwb` colorspace, which is ACEScg, but with the white balance not applied to the image. Converting from `rdo-nwb` to `rdo` effectively applies the white balance. Source plates should be considered to arrive in this colorspace after ingestion.
-* A `rdo-log` colorspace, which is the Dolby PQ 1000 nits Shaper - AP1 color space. This space gives a nice smooth looking log image, better than the ACEScc to judge the entire dynamic range of an image (IMHO).
-* A `dis` colorspace, which represents the colorspace the DI will be done in. This is usually the colorspace to apply the client LUT, and should be changed per project. By default it is the AlexaV3LocC-ArriWideGamut space, which is often what we need in professional cinema.
-* A `mps` colorspace, which is linear sRGB with an invertible highlight rolloff.
-* A `mps-sRGBcurve` which is the same as the previous one, except with an sRGB transfer curve applied to it.
-* A `gamma 2.2` colorspave, because Nuke expect this one when loading a Quicktime.
+- **`scene_linear` is `rdo`:** ACEScg with the shot's white balance applied.
+- **`color_picking` is `ACES-look`:** the ACES 1.x RRT + Rec.709 output transform, with the
+  white balance undone. The display is called `sRGB-monitor`, but it is set to Rec.709.
 
-#### LUTs ####
+The white balance is applied and removed again in both directions, so it cancels for any
+shot. `config.ocio` leaves it out. What remains:
 
-* A `Rodeo-look` view, to display the LUT sent by the client but while still keeping the white balance and with an alternate shot-grade (which is very often empty). _This must be changed per project._
-* A `Client-look` view, to display the LUT sent by the client. _This must be changed per project._
-* A `Neutral-Look` view, to display a neutral LUT that doesn't change between projects. This is using the Alexa K1S1 LUT from Arri with the blacks corrected to be at zero.
-* A `DSLR-Look` This is to allow the ingestion of reference images that are taken from the web of from jpeg images that were seemingly taken with a DSLR. This look is revertible. This one is used by default in the Maya viewport.
-* A `ACES-Look` This is to allow the ingestion of reference images that are taken from the web of from jpeg images that were seemingly taken with a fancy DSLR. This look is revertible.
+- **`acescg`:** the ACEScg → ACES2065-1 matrix.
+- **`comfy_png`:** the Rec.709 output transform. It uses three files in `luts/`:
+  - `Log2_48_nits_Shaper_to_linear.spi1d`
+  - `Log2_48_nits_Shaper.RRT.Rec.709.spi3d` (the way out)
+  - `InvRRT.Rec.709.Log2_48_nits_Shaper.spi3d` (the way back)
 
-#### Displays ####
+The old names still work: `rdo`, `ACES-look`, `ACEScg` and `Utility - Raw` are aliases, and
+`linear` is a role, as in Rodeo's config.
 
-* A single display is available for the moment: `sRGB-monitor`. Others could be added later like `P3-D65-monitor` if we get the proper LUT from the client. The word "monitor" was added to the display name to make it extra clear what this is for.
+## Checked against Nuke
 
-#### roles ####
-* color_picking: ACES-look
-* color_timing: dis
-* compositing_linear: rdo
-* compositing_log: rdo-log
-* data: Utility - Raw
-* default: rdo
-* matte_paint: mps-sRGBcurve
-* quicktime: Output - Rec.709
-* reference: Utility - Raw
-* rendering: rdo
-* scene_linear: rdo
-* stolen_from_the_web: ACES-look
-* stolen_from_the_web2: DSLR-look
-* texture_paint: rdo
-* 3d_viewport: DSLR-look
+Linear grey through `scene_linear` → `color_picking`, measured in Nuke 16 with
+`config_1_0_v1`:
 
-### Configuration inner workings ###
-This OCIO config was built from the ACES v1.2 config without changing any of the colorspaces that were already in there. This means that the reference colorspace is ACES2065-1 and not ACEScg. From a user point of view, that doesn't change anything. But from a maintainer point a view, you must make sure that all transforms go to/from ACES2065-1.
+| Linear | 0.02 | 0.05 | 0.18 | 0.5 | 1.0 |
+|---|---|---|---|---|---|
+| PNG code | 23 | 43 | 99 | 170 | 209 |
 
-Here is a schema representing various transforms used in the config.
-![Alt text](resources/OCIO.png)
+`tests/test_ocio_repo.py` checks two things:
+- this config gives those values;
+- it matches `reference/config_1_0_v1.ocio` exactly, in both directions, even with a
+  non-identity white balance.
 
-The big new thing is the fact that the white-balance is applied implicitely inside some colorspaces. The `rdo` colorspace is considered to be white-balanced, while all the colorspaces in the ACES config are not. This means that when ingesting a plate with the conversion from `AlexaV3LogC` to `rdo-nwb`, no white-balance operation is applied. Then, converting from `rdo-nwb` to `rdo` applies the white-balance. When viewing an image in `rdo` through the `Neutral-look`, the white-balance is removed and then applied back, effectively keeping the neutral values neutral. When ingesting a reference image with the `DSLR-look` to `rdo`, the values remain neutral too.
+On the farm machine:
+- **`python -m comfyfarm check`** runs the same check.
+- **`python tools\ocio_compare.py`** compares the farm's oiiotool with OpenColorIO pixel for
+  pixel. Pass `--exr X.exr --nuke-png X.png` to check against a PNG Nuke wrote.
 
-Also, the config looks for different directories to find lut files. The first one is the `_color_bundle`, then it looks for a directory called `project_luts`, which should contain the client lut, the default white-balance and default client grade. This is the only folder that should be updated by the person doing the show setup by adding the required luts for the show. Then it looks for a directory called `rodeo_luts` which contains luts proper to Rodeo like the neutral look's lut and the DSLR luts. This folder should not be modified per project. The last folder  is the `ACES_luts` which contains luts from the ACES config. This directory should not be modified per projet.
+## Things to know
 
-### Who do I talk to? ###
-
-* Francois Lord, who designed and wrote the first pass on this config.
-* Jean-Francois Bouchard, who usually sets the color pipeline up for shows at Rodeo.
+- **Bright colour maps come back above 1.0.** The output transform puts linear 1.0 at
+  PNG 209. On the way back, 220 is 1.32, 240 is 3.0 and 255 is 16.3. So a ComfyUI colour
+  map brighter than 209 gives an EXR above 1.0.
+- **If the published config changes `ACES-look`:**
+  1. Copy the new config into `reference/`.
+  2. Copy the files its `ACES-look` uses into `luts/`.
+  3. Update `comfy_png` here.
+  4. Measure the ramp in Nuke again, and update it here and in `comfyfarm/convert.py`
+     (`NUKE_RAMP`).
+- **Nuke can load `config.ocio`.** It is a regular OCIO v2 config, so you can compare by eye:
+  a Write with `default (color_picking)` gives the farm's PNG.
