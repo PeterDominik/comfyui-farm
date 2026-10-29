@@ -57,7 +57,7 @@ class MapSpec:
     channel: str               # TEX channel: color01, nrm02, bmp02, spcr01, metal01, ...
     cls: str | None = None     # class guard, like every manifest target
     colorspace: str = "acescg"  # the colorspace token in the file name
-    color: bool = False        # colour: converted from ocio.image (color_picking) to ocio.linear
+    color: bool = False        # colour: converted from color_picking to scene_linear
     bits: str = "half"         # half | float
 
 

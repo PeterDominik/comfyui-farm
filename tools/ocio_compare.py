@@ -86,11 +86,10 @@ def main():
     a = ap.parse_args()
 
     cfg = load_config(a.config)
-    oc = cfg.ocio
-    ocio = C.ocio_setup(oc, cfg.paths)
+    ocio = C.ocio_setup(cfg.ocio, cfg.paths)
     conv = dict(ocio, extra_args=list(cfg.convert.exr.extra_args))
     tool = C.require_tool(cfg.convert, "oiiotool")
-    env = dict(os.environ, **ocio["context"])
+    env = dict(os.environ)
     help_text = subprocess.run([*tool, "--help"], capture_output=True, text=True, env=env).stdout
     ver = subprocess.run([*tool, "--version"], capture_output=True, text=True, env=env).stdout.strip()
 
@@ -100,17 +99,16 @@ def main():
             print(f"                {line.strip()}")
     print(f"PyOpenColorIO   {OCIO.__version__}")
     print(f"OCIO env var    {os.environ.get('OCIO') or '(not set)'}")
-    print(f"config.yaml     ocio: config={oc.config} linear={oc.linear} image={oc.image} data={oc.data} "
-          f"context={oc.context}")
+    print(f"config.yaml     ocio: config={cfg.ocio.config}")
     print(f"exr command     extra_args={conv['extra_args']}")
     print(f"config file     {ocio['config']}")
 
     ocfg = OCIO.Config.CreateFromFile(ocio["config"])
     ctx = ocfg.getCurrentContext()
-    fwd = ocfg.getProcessor(ctx, oc.linear, oc.image).getDefaultCPUProcessor()
-    inv = ocfg.getProcessor(ctx, oc.image, oc.linear).getDefaultCPUProcessor()
-    print(f"OpenColorIO     {oc.linear} = {ocfg.getColorSpace(oc.linear).getName()}, "
-          f"{oc.image} = {ocfg.getColorSpace(oc.image).getName()}")
+    fwd = ocfg.getProcessor(ctx, C.LINEAR, C.IMAGE).getDefaultCPUProcessor()
+    inv = ocfg.getProcessor(ctx, C.IMAGE, C.LINEAR).getDefaultCPUProcessor()
+    print(f"OpenColorIO     {C.LINEAR} = {ocfg.getColorSpace(C.LINEAR).getName()}, "
+          f"{C.IMAGE} = {ocfg.getColorSpace(C.IMAGE).getName()}")
 
     tmp = Path(tempfile.mkdtemp(prefix="ocio_compare_"))
     # ------------------------------------------------------------------ test ramp
@@ -123,11 +121,16 @@ def main():
     run(C.exr_command(tool, conv, str(tmp / "ramp.exr"), str(tmp / "ramp_farm.png")), env)
     farm = read(tmp / "ramp_farm.png", oiio.UINT8)[0, ::8].astype(int)
     want = codes(apply(fwd, vals))
-    print("\n1. EXR -> PNG, test ramp: farm command vs OpenColorIO (8-bit codes R,G,B)")
-    print("   linear                     OpenColorIO        farm           diff")
+    print("\n1. EXR -> PNG, test ramp: farm command vs OpenColorIO (8-bit codes R,G,B), and Nuke where measured")
+    print("   linear                     OpenColorIO        farm             diff        Nuke")
+    nuke_off = 0
     for v, w_, f in zip(vals, want, farm):
-        print(f"   {np.array2string(v, precision=3):24s} {str(w_):16s} {str(f):16s} {str(f - w_)}")
-    print(f"   largest difference: {np.abs(farm - want).max()} levels")
+        nk = next((n for k, n in C.NUKE_RAMP.items() if v[0] == v[1] == v[2] and abs(v[0] - k) < 1e-3), None)
+        nuke_off += nk is not None and nk != f[1]
+        print(f"   {np.array2string(v, precision=3):24s} {str(w_):16s} {str(f):16s} {str(f - w_):11s} "
+              f"{'' if nk is None else nk}")
+    print(f"   largest difference: {np.abs(farm - want).max()} levels; "
+          f"{'matches Nuke' if not nuke_off else f'{nuke_off} value(s) differ from Nuke'}")
 
     write(tmp / "ramp_ref.png", np.repeat(np.repeat(want[None].astype(np.uint8), 8, 0), 8, 1), oiio.UINT8)
     run(T.map_command(tool, ocio, {"color": True, "bits": "half"}, str(tmp / "ramp_ref.png"),

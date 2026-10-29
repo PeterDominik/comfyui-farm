@@ -4,8 +4,8 @@ One ComfyUI graph handles every input format: before a job is dispatched, the ga
 converts non-PNG inputs into a scratch folder on the farm machine, and the loader node
 reads from there.
 
-- EXR: oiiotool with the repo's OCIO config (ocio/), linear -> color_picking: the same
-  conversion as a Nuke Write set to "default (color_picking)", as in the PNG preprocess.
+- EXR: oiiotool with the repo's OCIO config (ocio/), scene_linear -> color_picking (the
+  ACES Rec.709 output transform): a Nuke Write set to "default (color_picking)".
 - Movies (.mov/.mp4/...): ffmpeg, numbered from the movie's timecode. Treated as
   display-referred already (look baked in), so no colour transform.
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .config import ConvertConfig, OcioConfig, PathsConfig
 from .paths import (Sequence, SequenceError, _pattern_regex, context_from_path, normalize, parse_input,
-                    render, resolve_sequence, source_stem, texture_input, to_farm, to_posix)
+                    resolve_sequence, source_stem, texture_input, to_farm, to_posix)
 
 MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf"}
 
@@ -254,16 +254,16 @@ def has_slate(path: str, cc: ConvertConfig) -> bool:
 
 
 # ============================================================== OCIO
-# The farm's one OCIO config lives in the repo (ocio/config.ocio by default; config.yaml
-# `ocio:`). Every conversion is a plain colour space conversion, the same one Nuke does
-# with a Write or Read set to "default (color_picking)".
+# The farm's OCIO config lives in the repo (ocio/config.ocio; config.yaml `ocio.config`).
+# Its two conversions are a Nuke Write and Read set to "default (color_picking)" in Rodeo's
+# published show config; the names below are its roles.
 REPO = Path(__file__).resolve().parent.parent
-
-
-def _shot_short(seq_name: str | None, shot: str | None) -> str | None:
-    if shot and seq_name and shot.lower().startswith(seq_name.lower() + "_") and len(shot) > len(seq_name) + 1:
-        return shot[len(seq_name) + 1:]
-    return shot
+LINEAR = "scene_linear"     # what EXRs are in (ACEScg)
+IMAGE = "color_picking"     # what ComfyUI's PNGs are in (ACES Rec.709 output transform)
+DATA = "data"               # tagged on data maps; their values are never converted
+# Linear grey -> 8-bit PNG code through LINEAR -> IMAGE, measured in Nuke 16 with bri3's
+# config_1_0_v1 (ocio/README.md). `check` and the tests hold the config to these.
+NUKE_RAMP = {0.02: 23, 0.05: 43, 0.18: 99, 0.5: 170, 1.0: 209}
 
 
 def ocio_config_path(oc: OcioConfig) -> str:
@@ -275,22 +275,14 @@ def ocio_config_path(oc: OcioConfig) -> str:
     return normalize(str(path if path.is_absolute() else REPO / path))
 
 
-def ocio_setup(oc: OcioConfig, pc: PathsConfig, show: str | None = None, seq_name: str | None = None,
-               shot: str | None = None) -> dict:
-    """The conversion settings a job is frozen with: config file, colour spaces, context."""
+def ocio_setup(oc: OcioConfig, pc: PathsConfig) -> dict:
+    """The conversion settings a job is frozen with: the config file and colour spaces."""
     config = ocio_config_path(oc)
     if pc.validate_inputs and not config.startswith("ocio://") and not os.path.isfile(config):
         raise SequenceError(f"No OCIO config at {config} (ocio.config in config.yaml). It comes with the repo: "
                             f"git pull on the farm machine.")
-    tokens = {"show": show, "seq": seq_name, "shot": shot, "shot_short": _shot_short(seq_name, shot)}
-    context = {}
-    for key, template in oc.context.items():
-        try:
-            context[key] = render(template, "OCIO context", **tokens)
-        except SequenceError:
-            raise SequenceError(f"ocio.context {key}: '{template}' needs a show/seq/shot the input path doesn't give.")
-    return {"mode": "colorconvert", "config": config, "from": oc.linear, "to": oc.image, "linear": oc.linear,
-            "image": oc.image, "data": oc.data, "context": context, "notes": []}
+    return {"mode": "colorconvert", "config": config, "from": LINEAR, "to": IMAGE, "linear": LINEAR,
+            "image": IMAGE, "data": DATA, "notes": []}
 
 
 # ============================================================== resolve
@@ -317,7 +309,7 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
         seq.convert = {"kind": "exr", "src_dir": seq.directory, "src_pattern": seq.filename,
                        "first": seq.first, "last": seq.last, "frames": seq.frames,
                        "extra_args": list(cc.exr.extra_args),
-                       **ocio_setup(ocio or OcioConfig(), pc, seq.show, seq.seq_name, seq.shot)}
+                       **ocio_setup(ocio or OcioConfig(), pc)}
     return seq
 
 
@@ -367,15 +359,14 @@ async def _run(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
     return proc.returncode, (err or b"").decode(errors="replace") + (out or b"").decode(errors="replace")
 
 
-def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, from_cs: str | None = None,
-                to_cs: str | None = None) -> list[str]:
+def exr_command(oiiotool: list[str], c: dict, src: str, dst: str) -> list[str]:
     """The oiiotool call for one EXR frame: a Nuke Write set to "default (color_picking)"
-    (also run by `comfyfarm check` and `comfyfarm color-debug`, which try other spaces)."""
+    (also run by `comfyfarm check` and tools/ocio_compare.py)."""
     if "display" in c:   # a job queued before the switch to the repo config, frozen with its own settings
         return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
                 f"--ociodisplay:from={c['input_colorspace']}", c["display"], c["view"], "-d", "uint8", "-o", dst]
     return [*oiiotool, "--colorconfig", c["config"], src, *c["extra_args"],
-            "--colorconvert", from_cs or c["from"], to_cs or c["to"], "-d", "uint8", "-o", dst]
+            "--colorconvert", c["from"], c["to"], "-d", "uint8", "-o", dst]
 
 
 async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
@@ -391,7 +382,7 @@ async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
     missing = [f for f in frames if f not in by_frame]
     if missing:
         raise ConvertError(f"Frames disappeared since submitting: {missing[:10]}")
-    env = dict(os.environ, **c["context"])
+    env = dict(os.environ, **c.get("context", {}))   # jobs frozen before ocio.context went
     sem = asyncio.Semaphore(max(1, cc.frame_workers))
     done = 0
 

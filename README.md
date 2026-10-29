@@ -285,8 +285,8 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
   in the input path (`paths.context_patterns`; add that line to an existing
   `config.yaml`). Nothing is written into `_toBePublished`; copy a version there when
   you're happy with it.
-- **Colour:** `ocio:` in `config.yaml` (see *OCIO* below). The `acescg` in the file
-  names assumes `scene_linear` is ACEScg; `python -m comfyfarm check` shows what it is.
+- **Colour:** see *OCIO* below. The `acescg` in the file names is the config's
+  `scene_linear`.
 - **8-bit in between.** WAS *Image Save* writes 8-bit PNGs, so the maps carry 8 bits of
   precision even in the EXRs. Height can show steps when used for displacement. A save
   node that writes 16-bit or EXR would fix it: point the manifest's maps at it and set
@@ -296,49 +296,38 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
 
 ### OCIO
 
-The farm has one OCIO config, in this repo's `ocio/` folder: Rodeo's default show config
-(ACES 1.2 plus Rodeo's colour spaces, see `ocio/README.md`). `git pull` (or
-`scripts\update.ps1`) updates it on the farm machine. Show configs aren't used. Every
-conversion is a plain colour space conversion, the one a Nuke Write or Read does with its
-transform set to `default (color_picking)`:
+The farm does two colour conversions, with the small OCIO config in this repo's `ocio/`
+folder. `git pull` (or `scripts\update.ps1`) updates it on the farm machine. They are a
+Nuke Write and Read set to `default (color_picking)` in Rodeo's published show config
+(bri3's `config_1_0_v1`):
 
 | What | From | To |
 |---|---|---|
-| EXR inputs (plates, textures) → PNG for ComfyUI | `scene_linear` (`rdo`, ACEScg) | `color_picking` (`ACES-look`) |
-| Texture colour maps from ComfyUI → EXR | `color_picking` (`ACES-look`) | `scene_linear` (`rdo`, ACEScg) |
-| Texture data maps (normal, bump, ...) | values kept, tagged `data` (`Utility - Raw`) | |
+| EXR inputs (plates, textures) → PNG for ComfyUI | `scene_linear` (ACEScg) | `color_picking` (ACES Rec.709 output transform) |
+| Texture colour maps from ComfyUI → EXR | `color_picking` | `scene_linear` |
+| Texture data maps (normal, bump, ...) | values kept, tagged `data` | |
 
-- **`ACES-look` is a tone curve.** It is the ACES 1.x sRGB output transform (RRT + sRGB),
-  not a plain sRGB curve, so the PNGs look like the `ACES-look` view in Nuke. Linear 0.18
-  lands at PNG 91 of 255 (a plain sRGB curve gives 118), 1.0 at 207, and highlights roll
-  off to 255 at about 16.
-- **Bright colour maps come back above 1.0.** The way back undoes that roll-off: PNG 220
-  comes back as 1.39, 240 as 3.2, 255 as 16.3. So a ComfyUI colour map brighter than 207
-  gives an EXR above 1.0, which for a base colour is more than 100% reflectance. Check
-  bright materials with `oiiotool --stats`.
-- **Shot white balances don't reach the farm.** The config's search path starts with the
-  show's `_color_bundle` folders (`../../_color_bundle/${SEQ}_${SHOT}`, ...), two folders
-  above the config. Next to the repo's copy there are none, so OCIO uses
-  `ocio/project_luts`, whose `white_balance.cc` changes nothing. No `ocio.context` is
-  needed.
-  - EXR → PNG gives the same pixels as Nuke in any shot: `rdo` and `ACES-look` apply
-    the shot's white balance in opposite directions, so it cancels.
-  - PNG → EXR matches Nuke only where the shot's white balance changes nothing. The
-    config's `ACES-look` applies `white_balance.cc` forward in both directions, so a
-    Nuke Read applies any other white balance twice.
-- **Only four LUT files are used.** These conversions read `project_luts/white_balance.cc`
-  and three ACES files, `Log2_48_nits_Shaper.RRT.sRGB.spi3d`,
-  `InvRRT.sRGB.Log2_48_nits_Shaper.spi3d` and `Log2_48_nits_Shaper_to_linear.spi1d`.
-  `tests/test_ocio_repo.py` checks the roles and that these files are in the repo.
+- **It matches Nuke.** `ocio/config.ocio` keeps only what these conversions use from the
+  published config: the ACEScg matrix and the ACES Rec.709 output transform's three LUTs.
+  The shot's white balance cancels in both directions, so it's left out.
+  - In Nuke, linear grey 0.02 / 0.05 / 0.18 / 0.5 / 1.0 gives PNG codes 23 / 43 / 99 /
+    170 / 209. The farm gives the same, and `python -m comfyfarm check` and the tests
+    fail if it doesn't.
+  - The tests also compare it pixel for pixel with the published config, kept in
+    `ocio/reference/`.
+  - How to update it when the published config changes is in `ocio/README.md`.
+- **The PNGs are tone-mapped,** like the `ACES-look` view in Nuke: it's an output transform,
+  not a plain sRGB curve.
+- **Bright colour maps come back above 1.0.** Linear 1.0 lands at PNG 209, and the way back
+  undoes the highlight roll-off: 220 comes back as 1.32, 240 as 3.0, 255 as 16.3. So a
+  ComfyUI colour map brighter than 209 gives an EXR above 1.0, which for a base colour is
+  more than 100% reflectance. Check bright materials with `oiiotool --stats`.
+- **Settings:** only `ocio.config` in `config.yaml`, the config file (default
+  `ocio/config.ocio`). Each job is frozen with the config it was submitted with.
 
-Settings are under `ocio:` in `config.yaml` (`config`, `linear`, `image`, `data`, and
-`context` for a config that uses context variables). Each job is frozen with the
-settings it was submitted with. `python -m comfyfarm check` shows what the names resolve
-to in the config and runs both conversions on a test image.
-
-To check by eye, in Nuke, use the same config: a Write with `default (color_picking)`
-gives the farm's PNG, and a Read with `default (color_picking)` brings a ComfyUI PNG
-back to linear.
+To check by eye in Nuke: load `ocio/config.ocio`, or the show's published config. A Write
+with `default (color_picking)` gives the farm's PNG, and a Read with `default
+(color_picking)` brings a ComfyUI PNG back to linear.
 
 ### Input formats
 
@@ -349,32 +338,25 @@ in `config.yaml`.
 
 - **PNG / JPG / TIF / WebP:** read directly, as before.
 - **EXR sequences:** converted with `oiiotool` and the farm's OCIO config, from
-  `scene_linear` to `color_picking`: the same conversion as a Nuke Write with its output
-  transform set to `default (color_picking)`, as the PNG preprocess is written.
+  `scene_linear` to `color_picking`. That's the same conversion as a Nuke Write with its
+  output transform set to `default (color_picking)`, as WriteNukleus writes the PNG
+  preprocess.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
   - Output is 8-bit PNG at plate resolution. The workflow then works at its own
     resolution, as for PNG inputs.
-- **If EXR colours look wrong** (lifted, shifted), compare against a frame you trust
-  rather than by eye. On the farm machine:
+- **If EXR colours look wrong** (lifted, shifted), compare numbers rather than by eye.
+  On the farm machine:
 
   ```
-  .venv\Scripts\python -m comfyfarm color-debug /rdo/shows/raa/.../bpash_1545.plate.v1.%04d.exr --frame 1001 \
-      --reference /rdo/shows/raa/.../bpash_1545.preprocess.mp01_png.v1.1001.png
+  .venv\Scripts\python tools\ocio_compare.py
+  .venv\Scripts\python tools\ocio_compare.py --exr D:\test\tile.1001.exr --nuke-png D:\test\tile_nuke.1001.png
   ```
 
-  It converts that frame exactly as a job does, plus other input colour spaces (ACEScg,
-  ACES2065-1, ... when the config has them) and other outputs (sRGB texture, ...); pick
-  your own with `--from` / `--to`. Then it reports:
-  - each variant's black / median / white level against the reference;
-  - the best match, with the `config.yaml` lines to use it;
-  - what OCIO actually resolved: which colour spaces `scene_linear` and `color_picking`
-    are, and the LUT files the conversion uses;
-  - whether the EXR looks scene-linear at all;
-  - any PNG colour tags that viewers might apply.
-
-  Side-by-side images (ours | reference | difference ×4) and `report.txt` go to
-  `data\color_debug\<time>\`. Compare images with the viewer LUT off: both are
-  already in color_picking.
+  - **Without files**, it converts a test ramp with the farm's exact oiiotool commands. It
+    compares them with OpenColorIO and with the values measured in Nuke.
+  - **With `--exr` and `--nuke-png`**, it also converts your EXR and compares the result with
+    the PNG Nuke wrote from it with `default (color_picking)`.
+  - **The header** shows which oiiotool, OpenImageIO and OpenColorIO the farm uses.
 - **Movies (.mov/.mp4/.m4v/.mxf):** extracted with `ffmpeg` (the one pip installs; a
   system ffmpeg/ffprobe is used instead if you set `convert.tools`), numbered from the movie's
   timecode (`00:00:41:17` at 24 fps = frame 1001; drop-frame handled). A range on the
@@ -451,7 +433,7 @@ outputs:                       # nodes the gateway points at each job's versione
   `invalid` (the message when it doesn't).
 - **Texture workflows** have a `textures` section instead of `outputs.frames`: the file
   name template, and per map its save node (`node`, `class`), TEX `channel`,
-  `colorspace` token (default `acescg`), `color: true` for sRGB colour, and `bits`
+  `colorspace` token (default `acescg`), `color: true` for a colour map (color_picking → scene_linear), and `bits`
   (`half`/`float`). Optional `dir`: output folder templates, the first whose tokens the
   input gives wins (default `{root}/{shot}/…`, then `{root}/{asset}/…`, then
   `{root}/{source}.{tag}_v{version:03d}`). Params with `naming: true` (`uvset`, `tile`,

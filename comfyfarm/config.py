@@ -67,20 +67,15 @@ class PathsConfig(BaseModel):
 
 
 class OcioConfig(BaseModel):
-    """The farm's one OCIO setup, kept in the repo (ocio/). Every conversion is a plain
-    colour space conversion, the one a Nuke Write or Read does with its transform set to
-    "default (color_picking)":
+    """The farm's OCIO config, kept in the repo (ocio/). It does two conversions, a Nuke
+    Write and Read set to "default (color_picking)" in Rodeo's published show config:
 
-      EXR inputs (plates and textures) -> 8-bit PNG for ComfyUI:  linear -> image
-      texture colour maps from ComfyUI -> EXR:                  image -> linear
+      EXR inputs (plates and textures) -> 8-bit PNG for ComfyUI:  scene_linear -> color_picking
+      texture colour maps from ComfyUI -> EXR:                  color_picking -> scene_linear
+
+    Data maps (normal, bump, ...) are only tagged `data`. The names are the config's roles.
     """
     config: str = "ocio/config.ocio"   # relative paths are inside the repo
-    linear: str = "scene_linear"       # what EXRs are in: Nuke's working space
-    image: str = "color_picking"       # what ComfyUI's PNGs are in: Write/Read "default (color_picking)"
-    data: str = "data"                 # tagged on data maps (normal, bump, ...); their values are never converted
-    # OCIO context variables, for a config whose transforms use them (none by default).
-    # Tokens: {show} {seq} {shot} {shot_short}.
-    context: dict[str, str] = Field(default_factory=dict)
 
 
 class ExrConvertConfig(BaseModel):
@@ -203,6 +198,10 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     if old_tex:
         cfg.obsolete_keys.append(f"textures: {', '.join(old_tex)} no longer used; colour comes from ocio: in "
                                  f"config.yaml. Delete those lines")
+    old_ocio = sorted(set(data.get("ocio") or {}) - {"config"})
+    if old_ocio:
+        cfg.obsolete_keys.append(f"ocio: {', '.join(old_ocio)} no longer used; the repo's ocio/config.ocio "
+                                 f"names its colour spaces itself. Delete those lines")
     patterns = paths.get("context_patterns")
     if patterns and not any("movhistory" in p for p in patterns):
         cfg.obsolete_keys.append("paths.context_patterns has no shot movhistory pattern; add "

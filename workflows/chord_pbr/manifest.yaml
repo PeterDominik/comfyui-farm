@@ -83,7 +83,7 @@ outputs:
 
 # The maps. Each save node writes PNGs into the job's scratch folder; the gateway converts
 # them to EXR with oiiotool and names them. color: true maps go color_picking ->
-# scene_linear (ocio: in config.yaml); the others keep their values.
+# scene_linear (ocio/config.ocio); the others keep their values.
 # ChordMaterialEstimation outputs basecolor, normal, roughness, metalness;
 # ChordNormalToHeight turns the normal into height.
 # bmp01/nrm01 are reserved for modeling's published maps, hence bmp02/nrm02.
