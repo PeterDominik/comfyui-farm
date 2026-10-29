@@ -6,6 +6,8 @@ Input file name containing 'broken' -> fails; containing 'slow' -> takes 1.5 s.
 PNGs only have Y) gets the real warning, "filling with 0", and the call still succeeds.
 FAKE_OIIOTOOL_LEVELS='{"<from>|<to>": grey, ...}' -> writes an 8x8 grey PNG at that
 level, to simulate how each colour setting comes out.
+--resize WxH (0 = keep the aspect, from the input's PNG or EXR header) -> the PNG
+written is that size, so tests can check what the workflow gets.
 """
 
 import json
@@ -18,13 +20,21 @@ import zlib
 IMAGE_EXTENSIONS = {".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
 
 
-def tiny_png(grey: int = 128, size: int = 1) -> bytes:
+def tiny_png(grey: int = 128, size: int = 1, height: int | None = None) -> bytes:
     def chunk(tag, data):
         c = struct.pack(">I", len(data)) + tag + data
         return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-    rows = b"".join(b"\x00" + bytes([grey]) * size for _ in range(size))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 0, 0, 0, 0))
+    height = height or size
+    rows = b"".join(b"\x00" + bytes([grey]) * size for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, height, 8, 0, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def input_size(path):
+    """(width, height) from a PNG's or EXR's header, as the farm reads it."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    from comfyfarm.convert import image_size
+    return image_size(path)
 
 
 args = sys.argv[1:]
@@ -76,5 +86,13 @@ if "slow" in os.path.basename(src):
 levels = json.loads(os.environ.get("FAKE_OIIOTOOL_LEVELS") or "{}")
 conv = args.index("--colorconvert") if "--colorconvert" in args else None
 key = f"{args[conv + 1]}|{args[conv + 2]}" if conv is not None else ""
+size = None
+if "--resize" in args:
+    w, h = (int(v) for v in args[args.index("--resize") + 1].split("x"))
+    iw, ih = input_size(src) or (w or h, w or h)
+    size = (w or round(iw * h / ih), h or round(ih * w / iw))
 with open(out, "wb") as fh:
-    fh.write(tiny_png(levels.get(key, 200), 8) if levels else tiny_png())
+    if size:
+        fh.write(tiny_png(levels.get(key, 200) if levels else 128, *size))
+    else:
+        fh.write(tiny_png(levels.get(key, 200), 8) if levels else tiny_png())

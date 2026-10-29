@@ -202,7 +202,8 @@ class Farm:
         values = wf.validate(params or {})
         pc = self.cfg.paths
         seq = C.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
-                              texture=bool(wf.textures), ocio=self.cfg.ocio) \
+                              texture=bool(wf.textures), ocio=self.cfg.ocio,
+                              work_resolution=wf.work_resolution) \
             if wf.sequence_param else None
         if seq is not None and seq.convert:
             C.point_loader_at_scratch(seq, self.scratch_root, job_id)
@@ -503,9 +504,12 @@ class Farm:
         if not job or job["status"] != "preparing":
             return
         seq_info = (job["info"] or {}).get("input") or {}
-        kind = seq_info.get("convert", {}).get("kind", "?")
-        to = seq_info.get("convert", {}).get("to") or "PNG"
-        label = {"exr": f"converting EXR to {to}", "movie": "extracting movie frames"}.get(kind, kind)
+        conv = seq_info.get("convert", {})
+        kind = conv.get("kind", "?")
+        to = conv.get("to") or "PNG"
+        at = f" at {conv['work_resolution']} px" if conv.get("scaled") else ""
+        label = {"exr": f"converting EXR to {to}{at}", "movie": "extracting movie frames",
+                 "image": f"scaling the input to {conv.get('work_resolution')} px"}.get(kind, kind)
         t0 = now()
         last = [0.0]
 

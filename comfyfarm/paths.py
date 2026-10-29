@@ -79,9 +79,9 @@ class Sequence:
     shot: str | None
     seq_name: str | None = None   # sequence code from the path, e.g. "bpash"
     source: str = ""              # input file name without frame number/extension
-    kind: str = "frames"          # frames (read directly) | exr | movie (converted first)
+    kind: str = "frames"          # frames (read directly) | exr | movie | image (converted first)
     load_dir: str | None = None   # where the loader reads from, when not `directory`
-    convert: dict | None = None   # how to make the frames the loader reads (exr/movie)
+    convert: dict | None = None   # how to make the frames the loader reads (exr/movie/image)
     frames: list[int] | None = None   # the numbers read, when gaps are allowed (UDIM tiles)
 
     def as_dict(self) -> dict:
@@ -321,7 +321,10 @@ def resolve_sequence(
 
 def loaded_names(seq: Sequence, listdir=os.listdir, isfile=os.path.isfile) -> list[str]:
     """The source file behind each image the workflow gets, in the order it gets them.
-    For EXRs that's the original EXR of each converted frame."""
+    For EXRs that's the original EXR of each converted frame; for images scaled down to
+    the workflow's work_resolution, the original image."""
+    if seq.kind == "image":
+        return list((seq.convert or {}).get("names") or [])
     if seq.kind == "exr":
         regex = _pattern_regex(seq.filename)
         if regex is None:

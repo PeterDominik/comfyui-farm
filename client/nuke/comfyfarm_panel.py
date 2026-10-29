@@ -164,9 +164,14 @@ class PanelModel:
         if plan.get("maps"):
             out += "<br>Maps: " + " ".join(f"<code>{e(m)}</code>" for m in plan["maps"])
         c = plan.get("convert") or {}
+        scaled = (f" and scaled {e(c['scaled'])} (work_resolution {c.get('work_resolution')})"
+                  if c.get("scaled") else "")
         if c.get("kind") == "exr":
             out += (f"<br>EXR converted first: <code>{e(c.get('from', ''))}</code> → "
-                    f"<code>{e(c.get('to', ''))}</code> with <code>{e(c.get('config', ''))}</code>")
+                    f"<code>{e(c.get('to', ''))}</code> with <code>{e(c.get('config', ''))}</code>{scaled}")
+        elif c.get("kind") == "image":
+            out += (f"<br>Scaled first: {e(c.get('scaled') or '')} (work_resolution "
+                    f"{c.get('work_resolution')}), no colour change")
         elif c.get("kind") == "movie":
             out += (f"<br>Movie: {e(str(c.get('codec') or ''))} {c.get('width') or '?'}×{c.get('height') or '?'} "
                     f"at {round(c.get('fps') or 0, 3):g} fps, ")

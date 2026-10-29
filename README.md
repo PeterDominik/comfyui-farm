@@ -206,7 +206,7 @@ and `show` / `shot` overrides for inputs outside the publish layout.
 
 | Param | Default | Notes |
 |---|---|---|
-| `input` | required | A texture file, its UDIM tiles (`.../rock_diffuse.%04d.png`, gaps fine, optional range), or a folder holding one texture. png/jpg/tif/webp, or exr (converted to color_picking first) |
+| `input` | required | A texture file, its UDIM tiles (`.../rock_diffuse.%04d.png`, gaps fine, optional range), or a folder holding one texture. png/jpg/tif/webp, or exr (converted to color_picking first). Larger than 1024 px: scaled to 1024 first |
 | `output_path` | show default | Root folder: maps go to `<this>/<shot or asset>/<source>.chord_vNNN/`. Same rules as above |
 | `uvset` | `map1` | `map` + 1–2 digits, optionally `-oneWord` (`map10-preview`) |
 | `tile` | `noTile` | `tile` / `noTile` / `auto`. auto: UDIM tiles are `noTile`, a single texture is `tile` (UDIM 1001) |
@@ -307,9 +307,23 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
 - **8-bit in between.** The maps are 8-bit PNGs between ComfyUI and the farm, so they
   carry 8 bits of precision even in the EXRs. Height can show steps when used for
   displacement. A save node writing 16-bit or float would fix it.
-- **CHORD works at 1024×1024.** ComfyUI-Chord resizes the texture to 1024² for the model
-  and for Normal to Height, then resizes the maps back. A 4096² texture gives 4096² maps
-  with 1024² worth of detail.
+- **CHORD works at 1024×1024, so textures are scaled to 1024 first.** ComfyUI-Chord
+  resizes the texture to 1024² for the model and for Normal to Height anyway, then resizes
+  the maps back. So the manifest sets `work_resolution: 1024`: a larger texture is scaled
+  down before the workflow (longer side 1024, aspect kept), and the maps come out at that
+  size.
+  - **Why:** less for every step around CHORD to handle. The EXR conversion, the colour
+    conversion, the load into ComfyUI, the map saves and the EXR writing all work on 1024²
+    instead of 4096², 16 times fewer pixels. The detail is the same: CHORD only ever saw
+    1024².
+  - **EXRs** are scaled in `scene_linear` as they're converted, before the colour
+    conversion. **png/jpg/tif** inputs larger than 1024 are scaled into the scratch folder,
+    with no colour change. Textures of 1024 or less are read as they are.
+  - **UDIM tiles** are each scaled to fit, so a 2048×1024 tile becomes 1024×512.
+  - The dashboard and the Nuke panel show the scaling before you submit (*4096×4096 →
+    1024×1024*).
+  - For maps at the texture's own size, remove `work_resolution` from the manifest. They
+    then have 1024² worth of detail, scaled up.
 - **Nuke:** *Create Read node* on a texture job makes one Read per map, in a row. UDIM
   tiles read as frames (1001, 1002, 1011, …), missing tiles show black.
 
@@ -355,14 +369,16 @@ machine first, into `convert.scratch_dir`. Conversion runs while the GPU works o
 jobs, and the frames are deleted when the job finishes. Settings live under `convert:`
 in `config.yaml`.
 
-- **PNG / JPG / TIF / WebP:** read directly, as before.
+- **PNG / JPG / TIF / WebP:** read directly, as before. If the workflow has a
+  `work_resolution` (see *Workflow manifests*) and the image is larger, it's scaled down to
+  it into the scratch folder first, with `oiiotool` (no colour change, 8-bit PNG).
 - **EXR sequences:** converted with `oiiotool` and the farm's OCIO config, from
   `scene_linear` to `color_picking`. That's the same conversion as a Nuke Write with its
   output transform set to `default (color_picking)`, as WriteNukleus writes the PNG
   preprocess.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
-  - Output is 8-bit PNG at plate resolution. The workflow then works at its own
-    resolution, as for PNG inputs.
+  - Output is 8-bit PNG at plate resolution, or scaled down to the workflow's
+    `work_resolution` if it has one (in `scene_linear`, before the colour conversion).
   - The PNGs are written uncompressed by default. `convert.exr.png_compression` sets the
     zlib level: 0 is off (the default), 1 is fast, 6 is OpenImageIO's own default, 9 is
     smallest. They're scratch files ComfyUI reads once.
@@ -432,6 +448,9 @@ params:                        # becomes the form in the dashboard, in this orde
   input:  {type: sequence, label: Input sequence, required: true}
   output_path: {type: output_folder, label: Output folder}
 
+# work_resolution: 1024        # optional: inputs larger than this (px, longer side) are
+                               # scaled down to it before the workflow, aspect kept
+
 sequence:                      # nodes the `sequence` param drives
   path_node: {node: "9094", input: value, class: PrimitiveString}
   loader: {node: "9104", class: VHS_LoadImagesPath}
@@ -457,6 +476,11 @@ outputs:                       # nodes the gateway points at each job's versione
   rather than a param pointed at `OUTPUT_PATH`.
 - **Text checks:** `pattern` (a regex the value must match; empty is always allowed) and
   `invalid` (the message when it doesn't).
+- **`work_resolution`** (pixels, 64 or more): for workflows that work at a fixed size
+  anyway, like CHORD at 1024. Larger inputs are scaled down to it before the workflow
+  runs, so nothing around the workflow handles pixels it would throw away. Inputs that fit
+  are untouched. Leave it out to pass inputs at their own size. Applies to images and
+  EXRs; movies aren't scaled.
 - **Texture workflows** have a `textures` section instead of `outputs.frames`: the file
   name template, and per map its save node (`node`, `class`), TEX `channel`,
   `colorspace` token (default `acescg`), `color: true` for a colour map (color_picking → scene_linear), and `bits`

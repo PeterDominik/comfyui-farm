@@ -152,6 +152,9 @@ class Workflow:
                 naming=bool(p.get("naming", False)),
             )
         self.sequence: dict = m.get("sequence") or {}
+        # Inputs larger than this (pixels, longer side) are scaled down to it before the
+        # workflow runs, keeping their aspect (convert.resolve_input). None = as they are.
+        self.work_resolution = m.get("work_resolution") or None
         self.outputs: dict = m.get("outputs") or {}
         # Texture workflows: several map save nodes, written as EXRs named by the TEX
         # convention (see textures.py) instead of one renamed frame sequence.
@@ -218,6 +221,12 @@ class Workflow:
             for mp in self.textures.maps:
                 for key in (self.textures.path_input, self.textures.prefix_input):
                     problems += self._check_target(f"textures map {mp.channel}", mp.node, mp.cls, key)
+        wr = self.work_resolution
+        if wr is not None and (isinstance(wr, bool) or not isinstance(wr, int) or wr < 64):
+            problems.append(f"work_resolution: {wr!r} isn't a size in pixels (64 or more), "
+                            f"e.g. 1024; leave it out to use inputs as they are")
+        elif wr and not self.sequence_param:
+            problems.append("work_resolution needs a sequence param (it scales the input)")
         if self.sequence_param:
             pn = self.sequence.get("path_node")
             if pn:
@@ -352,6 +361,7 @@ class Workflow:
         return {
             "name": self.name, "label": self.label, "description": self.description,
             "tag": self.tag, "enabled": self.enabled, "problems": self.problems,
+            "work_resolution": self.work_resolution,
             "params": [p.schema() for p in self.params.values()],
             "maps": [mp.channel for mp in self.textures.maps] if self.textures else None,
         }

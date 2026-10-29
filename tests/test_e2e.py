@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -118,6 +119,10 @@ convert:
             (tex / sub).mkdir(parents=True)
             for n in names:
                 (tex / sub / n).write_bytes(b"x")
+        # Larger than CHORD's work_resolution (1024). Only the header is read (the size).
+        (tex / "big").mkdir()
+        (tex / "big" / "rockA_big.png").write_bytes(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+                                                    + struct.pack(">IIBBBBB", 4096, 2048, 8, 2, 0, 0, 0) + b"\0" * 4)
 
     def oiiotool_calls(self):
         try:
@@ -477,6 +482,22 @@ convert:
         conv = [c["args"] for c in self.oiiotool_calls() if "rockA_color.1002.exr" in " ".join(c["args"])][0]
         i = conv.index("--colorconvert")
         self.assertEqual(conv[i + 1:i + 3], ["scene_linear", "color_picking"])
+
+        # Larger than the manifest's work_resolution (1024): scaled into scratch first, and
+        # the workflow reads it from there. The maps are still named after the texture.
+        big_input = {"input": f"{tex}/big/rockA_big.png"}
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "chord_pbr", "params": big_input})
+        self.assertEqual(plan["convert"], {"kind": "image", "work_resolution": 1024, "scaled": "4096×2048 → 1024×512"})
+        big = farm.submit("chord_pbr", big_input)
+        self.assertEqual(big["status"], "preparing")
+        bd = self.wait_for(big["id"], ("done", "failed"))
+        self.assertEqual(bd["status"], "done", bd.get("error"))
+        self.assertIn("acescg_map1_noTile_defState_color01.1001.0000.exr", os.listdir(bd["info"]["output_dir"]))
+        self.assertTrue(bd["info"]["output_dir"].endswith("rockA_big.chord_v001"))
+        conv = [c["args"] for c in self.oiiotool_calls() if c["args"][-1].endswith(f"/{big['id']}/rockA_big.0001.png")]
+        self.assertEqual(conv[0][conv[0].index("--resize") + 1], "1024x0")
+        prompt = farm._request("GET", f"/api/v1/jobs/{big['id']}/prompt")
+        self.assertTrue(prompt["17"]["inputs"]["directory"].endswith(f"/scratch/{big['id']}/"))
 
         with self.assertRaisesRegex(farm.FarmError, "one 1001 tile"):
             farm.submit("chord_pbr", {"input": f"{tex}/src", "tile": "tile"})

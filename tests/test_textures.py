@@ -50,27 +50,36 @@ OCIO_CONFIG = ("ocio_profile_version: 2\nroles:\n  default: ACES - ACEScg\n  sce
 JOB_OCIO = {"config": "/farm/ocio/config.ocio", "linear": "scene_linear", "image": "color_picking", "data": "data"}
 
 
-def png_bytes(color_type: int) -> bytes:
-    """A 1x1 8-bit PNG of the given colour type (0 grey, 2 RGB, 4 grey+alpha, 6 RGBA)."""
+def png_bytes(color_type: int, size: tuple[int, int] = (1, 1)) -> bytes:
+    """A 1x1 8-bit PNG of the given colour type (0 grey, 2 RGB, 4 grey+alpha, 6 RGBA).
+    `size` only changes the header (all the farm reads of an input); the pixels stay one."""
     import struct
     import zlib
     n = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
 
     def chunk(tag, data):
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, color_type, 0, 0, 0))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", *size, 8, color_type, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(b"\x00" + b"\x80" * n)) + chunk(b"IEND", b""))
 
 
-def exr_header(channels: list[str]) -> bytes:
-    """The start of an OpenEXR file: magic, version and a header with these channels."""
+def exr_header(channels: list[str], window: tuple[int, int, int, int] | None = None, padding: int = 0) -> bytes:
+    """The start of an OpenEXR file: magic, version and a header with these channels, and
+    a displayWindow (xmin, ymin, xmax, ymax) if given. `padding` puts a string attribute
+    that long before the others, for headers longer than the first read."""
     import struct
 
     def attr(name, kind, value):
         return name.encode() + b"\0" + kind.encode() + b"\0" + struct.pack("<i", len(value)) + value
     chlist = b"".join(c.encode() + b"\0" + struct.pack("<iB3xii", 1, 0, 1, 1) for c in channels) + b"\0"
-    return (b"\x76\x2f\x31\x01" + struct.pack("<I", 2) + attr("compression", "compression", b"\x03")
-            + attr("channels", "chlist", chlist) + b"\0")
+    return (b"\x76\x2f\x31\x01" + struct.pack("<I", 2)
+            + (attr("comments", "string", b"x" * padding) if padding else b"")
+            + attr("compression", "compression", b"\x03") + attr("channels", "chlist", chlist)
+            + (attr("displayWindow", "box2i", struct.pack("<iiii", *window)) if window else b"") + b"\0")
+
+
+def exr_sized(w: int, h: int, channels=("B", "G", "R")) -> bytes:
+    return exr_header(list(channels), (0, 0, w - 1, h - 1))
 
 
 class NamingTests(unittest.TestCase):
@@ -303,6 +312,153 @@ class ChannelTests(unittest.TestCase):
         Path(f"{d}/src/grey.1001.exr").write_bytes(exr_header(["diffuse.R", "diffuse.G", "diffuse.B"]))
         with self.assertRaisesRegex(C.ConvertError, "grey.1001.exr has no R, G, B"):
             asyncio.run(C.convert_exr(c, ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}), lambda d_, n: None))
+
+
+class WorkResolutionTests(unittest.TestCase):
+    """work_resolution (CHORD: 1024): larger inputs are scaled down before the workflow,
+    keeping their aspect; inputs that fit are used as they are."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name.replace("\\", "/")
+        self.dir = f"{self.root}/shows/xyz/_asset/rockA/cg/textures/src"
+        self.posix = "/rdo/shows/xyz/_asset/rockA/cg/textures/src"
+        os.makedirs(self.dir)
+        self.cfg = PathsConfig(mappings=[PathMapping(posix="/rdo/shows", windows=f"{self.root}/shows")])
+        touch(f"{self.root}/ocio")
+        Path(f"{self.root}/ocio/config.ocio").write_text(OCIO_CONFIG)
+        self.oc = OcioConfig(config=f"{self.root}/ocio/config.ocio")
+        self.cc = ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def put(self, name, data):
+        Path(f"{self.dir}/{name}").write_bytes(data)
+
+    def resolve(self, name, limit=1024):
+        return resolve_input(f"{self.posix}/{name}", self.cfg, self.cc, texture=True, ocio=self.oc,
+                             work_resolution=limit)
+
+    def run_convert(self, seq):
+        C.point_loader_at_scratch(seq, f"{self.root}/scratch", "job1")
+        log = Path(f"{self.root}/oiio.log")
+        log.unlink(missing_ok=True)
+        os.environ["FAKE_OIIOTOOL_LOG"] = str(log)
+        self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+        asyncio.run(C.convert(seq.as_dict(), self.cc, lambda d_, n: None))
+        return [json.loads(line)["args"] for line in log.read_text().splitlines()]
+
+    def test_image_size(self):
+        self.put("a.png", png_bytes(2, (4096, 2048)))
+        self.put("a.exr", exr_sized(4096, 4096))
+        self.put("offset.exr", exr_header(["R", "G", "B"], (-10, -10, 1013, 1013)))
+        self.put("nowindow.exr", exr_header(["R", "G", "B"]))
+        self.put("long.exr", exr_header(["R", "G", "B"], (0, 0, 799, 599), padding=200_000))   # past the first 64 KB
+        self.put("empty.png", b"")
+        sizes = {n: C.image_size(f"{self.dir}/{n}") for n in os.listdir(self.dir)}
+        self.assertEqual(sizes, {"a.png": (4096, 2048), "a.exr": (4096, 4096), "offset.exr": (1024, 1024),
+                                 "nowindow.exr": None, "long.exr": (800, 600), "empty.png": None})
+        self.assertEqual(C.image_channels(f"{self.dir}/long.exr"), ["R", "G", "B"])
+        self.assertIsNone(C.image_size(f"{self.dir}/missing.png"))
+
+    def test_fit_and_resize_args(self):
+        cases = {(4096, 4096): ((1024, 1024), ["--resize", "1024x0"]),
+                 (4096, 2048): ((1024, 512), ["--resize", "1024x0"]),
+                 (2048, 4096): ((512, 1024), ["--resize", "0x1024"]),
+                 (1024, 1024): ((1024, 1024), []), (800, 600): ((800, 600), [])}
+        for size, (fit, args) in cases.items():
+            self.assertEqual((C.fit_size(size, 1024), C.resize_args(size, 1024)), (fit, args), size)
+        self.assertEqual((C.resize_args(None, 1024), C.resize_args((4096, 4096), None)), ([], []))
+        self.assertEqual(C.scaled_text([(4096, 4096)], 1024), "4096×4096 → 1024×1024")
+        self.assertEqual(C.scaled_text([(4096, 4096), (1024, 1024), (2048, 1024)], 1024),
+                         "4096×4096 → 1024×1024 (2 of 3 images)")
+        self.assertIsNone(C.scaled_text([(800, 800), None], 1024))
+
+    def test_large_png_scaled_into_scratch(self):
+        self.put("cliff.png", png_bytes(2, (4096, 4096)))
+        seq = self.resolve("cliff.png")
+        c = seq.convert
+        self.assertEqual((seq.kind, c["kind"], c["names"], c["frames"], c["scaled"]),
+                         ("image", "image", ["cliff.png"], [1], "4096×4096 → 1024×1024"))
+        self.assertEqual(loaded_names(seq), ["cliff.png"])           # the maps are still named after it
+        self.assertEqual(summary(seq, self.cfg), {"kind": "image", "work_resolution": 1024,
+                                                  "scaled": "4096×4096 → 1024×1024"})
+        calls = self.run_convert(seq)
+        self.assertEqual((seq.load_dir, seq.skip, seq.cap), (f"{self.root}/scratch/job1/", 0, 0))
+        src, dst = f"{self.dir}/cliff.png", f"{self.root}/scratch/job1/cliff.0001.png"
+        self.assertEqual(calls, [["--iconfig", "oiio:UnassociatedAlpha", "1", src, "--reorient",
+                                  "--resize", "1024x0", "-d", "uint8", "--compression", "none", "-o", dst]])
+        self.assertEqual(os.listdir(f"{self.root}/scratch/job1"), ["cliff.0001.png"])
+        self.assertEqual(C.image_size(dst), (1024, 1024))            # the fake oiiotool honours --resize
+
+    def test_small_or_unknown_inputs_read_as_they_are(self):
+        self.put("small.png", png_bytes(2, (800, 800)))
+        self.put("exact.png", png_bytes(2, (1024, 512)))
+        self.put("odd.jpg", b"\xff\xd8 not really a jpg")
+        for name in ("small.png", "exact.png", "odd.jpg"):
+            seq = self.resolve(name)
+            self.assertEqual((seq.kind, seq.convert), ("frames", None), name)
+        self.put("big.png", png_bytes(2, (4096, 4096)))
+        seq = self.resolve("big.png", limit=None)                    # a workflow without work_resolution
+        self.assertEqual((seq.kind, seq.convert), ("frames", None))
+
+    def test_udim_tiles_scaled_each_to_fit(self):
+        self.put("rock_diffuse.1001.png", png_bytes(2, (4096, 4096)))
+        self.put("rock_diffuse.1002.png", png_bytes(2, (1024, 1024)))
+        self.put("rock_diffuse.1011.png", png_bytes(2, (2048, 1024)))
+        seq = self.resolve("rock_diffuse.%04d.png")
+        c = seq.convert
+        self.assertEqual((seq.kind, c["frames"], c["scaled"]), ("image", [1001, 1002, 1011],
+                                                                "4096×4096 → 1024×1024 (2 of 3 images)"))
+        self.assertEqual(loaded_names(seq), ["rock_diffuse.1001.png", "rock_diffuse.1002.png", "rock_diffuse.1011.png"])
+        calls = self.run_convert(seq)
+        resize = {a[a.index("-o") + 1].rsplit("/", 1)[1]: a[a.index("--reorient") + 1:a.index("-d")] for a in calls}
+        self.assertEqual(resize, {"rock_diffuse.1001.png": ["--resize", "1024x0"], "rock_diffuse.1002.png": [],
+                                  "rock_diffuse.1011.png": ["--resize", "1024x0"]})
+        self.assertEqual(C.image_size(f"{self.root}/scratch/job1/rock_diffuse.1011.png"), (1024, 512))
+        # The tiles keep their UDIMs, so the maps do too.
+        items, has_udim = T.items_for(loaded_names(seq), "udim")
+        self.assertEqual(([i[0] for i in items], has_udim), ([1001, 1002, 1011], True))
+
+    def test_exr_scaled_in_linear_before_the_colour_conversion(self):
+        self.put("rock.1001.exr", exr_sized(4096, 4096))
+        self.put("rock.1002.exr", exr_sized(512, 512))
+        seq = self.resolve("rock.%04d.exr")
+        c = seq.convert
+        self.assertEqual((seq.kind, c["work_resolution"], c["scaled"]),
+                         ("exr", 1024, "4096×4096 → 1024×1024 (1 of 2 images)"))
+        s = summary(seq, self.cfg)
+        self.assertEqual((s["to"], s["work_resolution"], s["scaled"]), ("color_picking", 1024, c["scaled"]))
+        calls = self.run_convert(seq)
+        big = next(a for a in calls if a[a.index("-o") + 1].endswith("rock.1001.png"))
+        self.assertEqual(big[big.index("--ch"):big.index("-d")],
+                         ["--ch", "R,G,B", "--croptofull", "--resize", "1024x0",
+                          "--colorconvert", "scene_linear", "color_picking"])
+        small = next(a for a in calls if a[a.index("-o") + 1].endswith("rock.1002.png"))
+        self.assertNotIn("--resize", small)
+        # Without work_resolution: no sizes read, no resize, as before.
+        seq = self.resolve("rock.%04d.exr", limit=None)
+        self.assertEqual((seq.convert["work_resolution"], seq.convert["scaled"]), (None, None))
+        self.assertFalse([a for a in self.run_convert(seq) if "--resize" in a])
+        old = dict(c)
+        del old["work_resolution"]                          # a job queued before the setting existed
+        self.assertNotIn("--resize", exr_command(["oiiotool"], old, "a.exr", "a.png"))
+
+    def test_files_gone_before_converting(self):
+        self.put("cliff.png", png_bytes(2, (4096, 4096)))
+        seq = self.resolve("cliff.png")
+        os.remove(f"{self.dir}/cliff.png")
+        with self.assertRaisesRegex(C.ConvertError, "Files disappeared since submitting: cliff.png"):
+            self.run_convert(seq)
+
+    def test_manifest(self):
+        wf = Workflow(WF)
+        self.assertEqual((wf.work_resolution, wf.problems), (1024, []))
+        self.assertEqual(wf.schema()["work_resolution"], 1024)
+        for bad in ("1024", 32, True, 1.5):
+            wf.work_resolution = bad
+            self.assertTrue([p for p in wf.static_check() if p.startswith("work_resolution:")], bad)
 
 
 class WriteMapsTests(unittest.TestCase):
