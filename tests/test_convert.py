@@ -158,12 +158,20 @@ class OcioTests(unittest.TestCase):
     def test_png_compression(self):
         # Scratch PNGs are written uncompressed by default: compressing a 4K frame cost
         # oiiotool ~6 s of the ~8 s on the farm machine.
-        self.assertEqual(self.exr().convert["png_compression"], "none")
-        cc = ConvertConfig(tools=self.cc.tools, exr={"png_compression": "pngfast"})
+        from pydantic import ValidationError
+        c = self.exr().convert
+        self.assertEqual(c["png_compression"], 0)
+        cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
+        self.assertEqual(cmd[cmd.index("-d"):], ["-d", "uint8", "--compression", "none", "-o", "out.png"])
+        cc = ConvertConfig(tools=self.cc.tools, exr={"png_compression": 6})
         c = resolve_input("/rdo/shows/raa/.published/bpash/bpash_1545/plate/v1/bpash_1545.plate.v1.%04d.exr",
                           self.pc, cc, ocio=self.oc).convert
         cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
-        self.assertEqual(cmd[cmd.index("--compression") + 1], "pngfast")
+        self.assertEqual(cmd[cmd.index("-d"):], ["-d", "uint8", "--compression", "default", "--attrib:type=int",
+                                                 "png:compressionLevel", "6", "-o", "out.png"])
+        for bad in (-1, 10, "fast"):
+            with self.assertRaises(ValidationError):
+                ConvertConfig(exr={"png_compression": bad})
         old = dict(c)
         del old["png_compression"]          # a job queued before the setting existed
         self.assertIn("none", exr_command(["oiiotool"], old, "in.exr", "out.png"))

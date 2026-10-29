@@ -81,10 +81,11 @@ class OcioConfig(BaseModel):
 class ExrConvertConfig(BaseModel):
     # Plain RGB, cropped to the display window (drops overscan), before the transform.
     extra_args: list[str] = Field(default_factory=lambda: ["--ch", "R,G,B", "--croptofull"])
-    # PNG compression of the converted frames: none | pngfast | default. They're scratch
-    # files ComfyUI reads once, and compressing a 4K frame takes oiiotool about 6 s on one
-    # core (none: 1.5 s in all on the farm machine), so none unless scratch space is short.
-    png_compression: str = "none"
+    # zlib level of the converted PNG frames: 0 = off (default), 1 = fast ... 9 = smallest
+    # (6 is OpenImageIO's own default). They're scratch files ComfyUI reads once, and
+    # level 6 took a 4K frame 8.3 s against 1.9 s at 0 on the farm machine. It only changes
+    # their size on disk: ComfyUI decodes every frame to the same full-size image either way.
+    png_compression: int = Field(0, ge=0, le=9)
 
 
 class SlateConfig(BaseModel):
