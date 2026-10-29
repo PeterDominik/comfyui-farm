@@ -114,7 +114,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const store = { get: k => { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
                 set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 const state = { jobs: new Map(), workers: new Map(), workflows: [], auth: false, open: new Set(),
-                scope: "all", filter: "active" };
+                scope: "all", filter: "active",
+                batches: new Map() };   // texture set id -> Map of its batch jobs (loaded when opened)
 
 $("#user").value = store.get("comfyfarm.user");
 $("#key").value = store.get("comfyfarm.key");
@@ -267,7 +268,33 @@ async function updateDest(wf, seqP, outP) {
 }
 
 // ------------------------------------------------------------- jobs table
-function upsert(job) { const old = state.jobs.get(job.id); state.jobs.set(job.id, old ? { ...old, ...job } : job); }
+function upsert(job) {
+  if (job.parent_id) {   // a batch of a texture set: shown in the set's details
+    if (!state.batches.has(job.parent_id)) return;
+    state.batches.get(job.parent_id).set(job.id, job);
+    return;
+  }
+  const old = state.jobs.get(job.id); state.jobs.set(job.id, old ? { ...old, ...job } : job);
+}
+async function loadBatches(id) {
+  const m = new Map();
+  (await api(`/api/v1/jobs?parent=${id}&limit=5000`)).jobs.forEach(b => m.set(b.id, b));
+  state.batches.set(id, m);
+  render();
+}
+
+function setDetail(j) {
+  const bs = [...(state.batches.get(j.id) || new Map()).values()];
+  if (!bs.length) return `<div>Batches</div><div class="muted">${j.info?.set?.batches ?? "?"} batches, loading…</div>`;
+  const count = s => bs.filter(b => s.includes(b.status)).length;
+  const parts = [["done", ["done"]], ["running", ["dispatched", "running", "postprocessing"]],
+                 ["converting", ["preparing"]], ["waiting", ["queued"]], ["failed", ["failed"]], ["cancelled", ["cancelled"]]]
+    .map(([label, s]) => [label, count(s)]).filter(([, n]) => n).map(([label, n]) => `${n} ${label}`);
+  const missed = bs.filter(b => ["failed", "cancelled"].includes(b.status));
+  return `<div>Batches</div><div>${bs.length} of up to ${j.info?.set?.batch ?? "?"} tiles: ${parts.join(" · ")}</div>
+    ${missed.slice(0, 12).map(b => `<div>${esc(b.info?.batch?.label || b.short_id)}</div><div class="err">${esc(b.status === "cancelled" ? "cancelled" : (b.error || "failed"))}</div>`).join("")}
+    ${missed.length > 12 ? `<div></div><div class="muted">… and ${missed.length - 12} more</div>` : ""}`;
+}
 
 function visible() {
   const me = $("#user").value.trim();
@@ -286,7 +313,7 @@ function detail(j) {
   const i = j.info || {}, o = j.outputs || {}, inp = i.input || {};
   const keyq = $("#key").value.trim() ? "?key=" + encodeURIComponent($("#key").value.trim()) : "";
   return `<tr class="detail"><td colspan="9"><div class="kv">
-    <div>Workflow</div><div>${esc(j.workflow)}${j.params?.seed != null ? ` · seed ${esc(j.params.seed)}` : ""} · ${esc(j.worker || "not dispatched")}${j.attempts > 1 ? ` · attempt ${j.attempts}` : ""}</div>
+    <div>Workflow</div><div>${esc(j.workflow)}${j.params?.seed != null ? ` · seed ${esc(j.params.seed)}` : ""} · ${j.kind === "set" ? `a set of ${j.info?.set?.batches} batches` : esc(j.worker || "not dispatched")}${j.attempts > 1 ? ` · attempt ${j.attempts}` : ""}</div>
     ${pathRow("Input", i.input_posix ? i.input_posix + (inp.first != null ? ` ${inp.first}-${inp.last}` : "") : inp.farm_path)}
     <div>Frames in</div><div>${inp.frame_count ?? "?"}${inp.skip || inp.cap ? ` <span class="muted">(loader skip ${inp.skip}, cap ${inp.cap})</span>` : ""}</div>
     ${o.maps ? pathRow("Output", i.output_dir_posix || i.output_dir)
@@ -294,6 +321,7 @@ function detail(j) {
     ${o.maps ? `<div>Maps out</div><div>${o.files} EXRs: ${Object.keys(o.maps).map(m => `<code>${esc(m)}</code>`).join(" ")}</div>`
              : o.frames ? `<div>Frames out</div><div>${o.frames} (${o.first}-${o.last})</div>` : ""}
     ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
+    ${j.kind === "set" ? setDetail(j) : ""}
     ${pathRow("Output (Windows)", o.maps ? i.output_dir : (o.frame_pattern || i.output_dir))}
     ${j.params?.positive_prompt ? `<div>Prompt</div><div>${esc(j.params.positive_prompt)}</div>` : ""}
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
@@ -302,8 +330,10 @@ function detail(j) {
     ${o.preview ? `<div>Preview</div><div class="vslot" data-vid="${j.id}" data-src="/api/v1/jobs/${j.id}/preview${keyq}"></div>` : ""}
     <div></div><div style="display:flex;gap:8px">
       ${["preparing", "queued", "dispatched", "running"].includes(j.status) ? `<button class="small" data-cancel="${j.id}">Cancel</button>` : ""}
+      ${j.kind === "set" && [...(state.batches.get(j.id) || new Map()).values()].some(b => ["failed", "cancelled"].includes(b.status))
+        ? `<button class="small" data-retryfailed="${j.id}" title="Run the failed batches again, into the same folder">Retry failed</button>` : ""}
       ${["done", "failed", "cancelled"].includes(j.status) ? `<button class="small" data-retry="${j.id}">Run again</button>` : ""}
-      <button class="small" data-prompt="${j.id}">API JSON</button>
+      ${j.kind === "set" ? "" : `<button class="small" data-prompt="${j.id}">API JSON</button>`}
     </div></div></td></tr>`;
 }
 
@@ -317,7 +347,7 @@ function render() {
     const pct = Math.round((j.progress || 0) * 100);
     return `<tr class="row" data-id="${j.id}">
       <td class="mono">${esc(j.short_id)}</td>
-      <td>${esc(j.name)}${j.info?.version ? ` <span class="muted">v${String(j.info.version).padStart(3, "0")}</span>` : ""}</td>
+      <td>${esc(j.name)}${j.info?.version ? ` <span class="muted">v${String(j.info.version).padStart(3, "0")}</span>` : ""}${j.kind === "set" ? ` <span class="muted">· ${j.info?.set?.batches} batches</span>` : ""}</td>
       <td>${esc(j.user)}</td>
       <td><span class="badge s-${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${["running", "postprocessing", "dispatched"].includes(j.status) || j.status === "done"
@@ -347,6 +377,7 @@ $("#jobs").addEventListener("click", async e => {
     if (t.dataset.copy) { await navigator.clipboard.writeText(t.dataset.copy); t.textContent = "copied"; setTimeout(() => t.textContent = "copy", 1200); return; }
     if (t.dataset.cancel) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.cancel}`, { method: "DELETE" })); render(); return; }
     if (t.dataset.retry) { const j = await api(`/api/v1/jobs/${t.dataset.retry}/retry`, { method: "POST" }); upsert(j); state.open.add(j.id); render(); return; }
+    if (t.dataset.retryfailed) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.retryfailed}/retry-failed`, { method: "POST" })); await loadBatches(t.dataset.retryfailed); return; }
     if (t.dataset.prompt) {
       const data = await api(`/api/v1/jobs/${t.dataset.prompt}/prompt`);
       const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })), download: t.dataset.prompt.slice(0, 8) + "_api.json" });
@@ -354,7 +385,12 @@ $("#jobs").addEventListener("click", async e => {
     }
   } catch (err) { alert(err.message); return; }
   const row = t.closest("tr.row");
-  if (row && !t.closest("button")) { const id = row.dataset.id; state.open.has(id) ? state.open.delete(id) : state.open.add(id); render(); }
+  if (row && !t.closest("button")) {
+    const id = row.dataset.id;
+    if (state.open.has(id)) { state.open.delete(id); state.batches.delete(id); }
+    else { state.open.add(id); if (state.jobs.get(id)?.kind === "set") loadBatches(id).catch(() => {}); }
+    render();
+  }
 });
 
 for (const [id, key] of [["#scope", "scope"], ["#filter", "filter"]]) {
@@ -391,6 +427,7 @@ async function refreshJobs() {
   try {
     const q = state.filter === "active" ? "?active=true&limit=500" : "?limit=500";
     (await api("/api/v1/jobs" + q)).jobs.forEach(upsert);
+    for (const id of state.batches.keys()) await loadBatches(id);   // open sets' batches
     (await api("/api/v1/workers")).workers.forEach(w => state.workers.set(w.name, w));
     renderWorkers(); render();
   } catch (err) { /* shown via the live indicator */ }

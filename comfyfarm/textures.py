@@ -17,6 +17,10 @@ What the convention asks for, and how the gateway does it:
 - The frame is 4 digits, 0000 for a texture that isn't animated.
 - There's no version in the names, so each run goes into its own versioned folder.
 
+A texture with more tiles than the manifest's `textures.batch` (CHORD: as many as fit in
+the GPU's memory at once) is a set: one output folder, filled by batches of tiles that
+each run through the workflow on their own (split_batches()).
+
 The manifest's `textures` section lists the save node of each map and its channel.
 ComfyUI writes PNGs into the job's scratch folder; once the job is done, write_maps()
 converts each one with oiiotool straight to its final name.
@@ -69,6 +73,7 @@ class TextureSpec:
     path_input: str = "output_path"      # save node input that gets the scratch folder
     prefix_input: str = "filename_prefix"
     ext: str = "png"                     # what the save nodes write
+    batch: int | None = None             # most tiles per run; more make a set of batches
 
     @classmethod
     def from_manifest(cls, d: dict) -> "TextureSpec":
@@ -80,7 +85,7 @@ class TextureSpec:
         return cls(maps=maps, name=d.get("name") or DEFAULT_NAME,
                    dirs=[dirs] if isinstance(dirs, str) else list(dirs),
                    path_input=d.get("path_input", "output_path"), prefix_input=d.get("prefix_input", "filename_prefix"),
-                   ext=str(d.get("ext", "png")).lstrip("."))
+                   ext=str(d.get("ext", "png")).lstrip("."), batch=d.get("batch"))
 
     def check(self, naming_params: set[str]) -> list[str]:
         problems = []
@@ -115,6 +120,10 @@ class TextureSpec:
                 problems.append(f"textures.dir '{d}' needs {{version}}: file names carry no version")
         for p in sorted(naming_params - NAMING_PARAMS):
             problems.append(f"param {p}: naming params can only be {', '.join(sorted(NAMING_PARAMS))}")
+        b = self.batch
+        if b is not None and (isinstance(b, bool) or not isinstance(b, int) or b < 1):
+            problems.append(f"textures.batch: {b!r} isn't a number of tiles (1 or more); leave it out to run "
+                            f"every tile of a texture at once")
         return problems
 
 
@@ -177,6 +186,31 @@ def name_pattern(template: str, m: dict, tokens: dict, items: list) -> tuple[str
         other = {"frame": items[0][1]} if v == "udim" else {"udim": items[0][0]}
         return pat.format(colorspace=m["colorspace"], channel=m["channel"], **other, **tokens), min(nums), max(nums)
     return file_name(template, m, tokens, *items[0]), None, None
+
+
+def split_batches(sizes: list, batch: int | None) -> list[tuple[int, int]]:
+    """[start, end) ranges of tiles, in order, each run through the workflow on its own:
+    at most `batch` tiles, all the same size. The loader resizes and crops every image to
+    the most common size of its batch, so tiles of another size would come back cropped.
+    `sizes` has one entry per tile (None when unknown: those go together)."""
+    out, start = [], 0
+    for i in range(1, len(sizes) + 1):
+        if i == len(sizes) or sizes[i] != sizes[start] or (batch and i - start >= batch):
+            out.append((start, i))
+            start = i
+    return out
+
+
+def batch_label(items: list, has_udim: bool) -> str:
+    """'UDIMs 1001–1004', 'UDIM 1011', 'frames 1–8': which tiles a batch is."""
+    v = varying(items)
+    if v == "frame" or (v is None and not has_udim):
+        nums, word = [i[1] for i in items], "frame"
+    else:
+        nums, word = [i[0] for i in items], "UDIM"
+    if len(nums) == 1:
+        return f"{word} {nums[0]}"
+    return f"{word}s {nums[0]}–{nums[-1]}" + ("" if len(nums) == nums[-1] - nums[0] + 1 else f" ({len(nums)})")
 
 
 def output_dir(dirs: list[str], **tokens) -> str:
@@ -268,6 +302,13 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    return map_outputs(t, out_dir, mappings, items)
+
+
+def map_outputs(t: dict, out_dir: str, mappings: list[PathMapping], items: list) -> dict:
+    """A job's outputs: each map's files as a pattern with its range (what a Nuke Read
+    takes). For a set, `items` are the tiles of every batch that finished."""
+    items = sorted(tuple(i) for i in items)
     maps_out = {}
     for m in t["maps"]:
         pat, first, last = name_pattern(t["name"], m, t["tokens"], items)
@@ -275,9 +316,9 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
         maps_out[m["channel"]] = {"name": m["name"], "pattern": full, "pattern_posix": P.to_posix(full, mappings),
                                   "first": first, "last": last, "files": len(items)}
     main = maps_out[next((m for m in t["maps"] if m["color"]), t["maps"][0])["channel"]]
-    return {"maps": maps_out, "files": len(work), "frames": len(items), "first": main["first"],
+    return {"maps": maps_out, "files": len(items) * len(t["maps"]), "frames": len(items), "first": main["first"],
             "last": main["last"], "frame_pattern": main["pattern"], "frame_pattern_posix": main["pattern_posix"]}
 
 
 __all__ = ["TextureSpec", "MapSpec", "items_for", "resolve_tile", "name_tokens", "file_name", "name_pattern",
-           "output_dir", "describe", "map_command", "write_maps"]
+           "split_batches", "batch_label", "output_dir", "describe", "map_command", "write_maps", "map_outputs"]

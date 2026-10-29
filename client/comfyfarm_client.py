@@ -20,6 +20,7 @@ From a shell:
     python comfyfarm_client.py status <job id>
     python comfyfarm_client.py list [--mine]
     python comfyfarm_client.py cancel <job id>
+    python comfyfarm_client.py retry-failed <set id>   # a texture set's failed batches, same folder
 """
 
 from __future__ import annotations
@@ -130,7 +131,18 @@ def cancel(job_id: str) -> dict:
 
 
 def retry(job_id: str) -> dict:
+    """Run a finished job again, as a new job (a new version)."""
     return _request("POST", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/retry")
+
+
+def retry_failed(job_id: str) -> dict:
+    """A texture set: run its failed and cancelled batches again, into the same folder."""
+    return _request("POST", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/retry-failed")
+
+
+def batches(set_id: str) -> list:
+    """A texture set's batch jobs, in order."""
+    return _request("GET", "/api/v1/jobs?" + urllib.parse.urlencode({"parent": set_id, "limit": 5000}))["jobs"]
 
 
 def wait(job_id: str, poll: float = 3.0, timeout: float | None = None, on_update=None) -> dict:
@@ -218,6 +230,8 @@ def main(argv: list[str]) -> int:
             print(describe(cancel(args[0])))
         elif cmd == "retry":
             print(describe(retry(args[0])))
+        elif cmd == "retry-failed":
+            print(describe(retry_failed(args[0])))
         else:
             print(f"unknown command {cmd}\n{__doc__}")
             return 2

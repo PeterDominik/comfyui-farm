@@ -234,10 +234,12 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/workflows` | Workflows and parameter schemas, plus any preflight problems |
 | POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?}` → job |
 | POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing |
-| GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs, with `queue_position` and `eta_seconds` |
+| GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs and texture sets, with `queue_position` and `eta_seconds` |
+| GET | `/api/v1/jobs?parent={set id}` | A texture set's batches, in order |
 | GET | `/api/v1/jobs/{id}` | One job (full id or 8-char prefix) |
 | DELETE | `/api/v1/jobs/{id}` | Cancel (queued, waiting in ComfyUI, or running) |
 | POST | `/api/v1/jobs/{id}/retry` | Same params, new version |
+| POST | `/api/v1/jobs/{id}/retry-failed` | A texture set: run its failed and cancelled batches again, same folder |
 | GET | `/api/v1/jobs/{id}/prompt` | The exact API JSON sent to ComfyUI |
 | GET | `/api/v1/jobs/{id}/preview` | MP4 preview |
 | GET | `/api/v1/workers` | Online state, GPU, free VRAM, slots, preflight problems |
@@ -249,6 +251,10 @@ when `auth.api_keys` is set in `config.yaml`.
 Job statuses: `preparing` (EXR/movie inputs being converted) → `queued` → `dispatched`
 (waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, copying preview,
 writing texture maps as EXR) → `done`, or `failed` / `cancelled`.
+
+A job's `kind` is `job`, or for a large texture `set` (what was submitted; its status,
+progress and outputs come from its batches) and `batch` (one run of a set, with
+`parent_id` = the set). Lists show jobs and sets; a set's batches come with `?parent=`.
 
 A finished texture job's `outputs.maps` has one entry per channel: its `pattern` (a
 `%04d` over the UDIMs, or the file itself for one tile), `pattern_posix`, `first`/`last`
@@ -326,6 +332,39 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
     then have 1024² worth of detail, scaled up.
 - **Nuke:** *Create Read node* on a texture job makes one Read per map, in a row. UDIM
   tiles read as frames (1001, 1002, 1011, …), missing tiles show black.
+
+### Large textures: sets of batches
+
+CHORD estimates every tile of a run in one pass on the GPU, so its memory grows with
+the number of tiles: 5 tiles used about 29 GB of the 5090's 32 GB. So a texture with more
+tiles than the manifest's `textures.batch` (4 for `chord_pbr`) is submitted as a **set**:
+
+- **You submit it once** and it shows as one job: *rockA_diffuse v001 · 148 batches*, with
+  progress in tiles (*230/591 UDIMs*) and a time left from its finished batches.
+- **One output folder.** The set takes one version; every batch writes its maps into it.
+  The file names are per UDIM, so batches never overwrite each other.
+- **Each batch is an ordinary run** of up to 4 tiles, with its own scratch folder,
+  conversion, retries and cancel. Open the set in the dashboard to see them.
+- **Other jobs get in between.** The farm picks the next run by priority, then the user
+  with the fewest runs on the GPU, then the set (or job) with the fewest. So someone else's
+  job, or your own small one, waits for at most a batch or two, not the whole set.
+- **Conversion stays a few batches ahead** of the GPU (`convert.batches_ahead`, 2), so
+  other jobs' inputs get converted in between and scratch space stays small.
+- **A failed batch doesn't stop the set.** The rest carry on, and the set ends *failed*,
+  listing which UDIMs didn't finish and why. **Retry failed** (dashboard, Nuke panel, or
+  `comfyfarm_client.py retry-failed <set id>`) runs just those batches again, into the
+  same folder. **Run again** runs the whole set as a new version.
+- **Cancel** cancels every batch that hasn't finished. The maps already written stay, and
+  Retry failed can finish the set later.
+- **Tiles of different sizes go in different batches**, even in a set smaller than the
+  batch size. The loader resizes and crops every image of a run to the most common size,
+  so a 1024×512 tile among 1024² ones would otherwise come back cropped.
+- **Timing on the farm machine** (4K EXR tiles at `work_resolution` 1024): 1 tile 5 s,
+  2 tiles 8 s, 3 tiles 11 s, 4 tiles 15 s, 5 tiles 18 s. That's about 2 s per run plus
+  3.3 s per tile, so batches of 4 cost 3.75 s a tile. 591 tiles take roughly 35 minutes.
+- **Height per tile.** CHORD stretches each tile's height to 0–1 on its own, so bump
+  strength can differ a little between UDIMs. That doesn't depend on the batch size: each
+  tile is computed on its own.
 
 ### OCIO
 
@@ -488,6 +527,8 @@ outputs:                       # nodes the gateway points at each job's versione
   input gives wins (default `{root}/{shot}/…`, then `{root}/{asset}/…`, then
   `{root}/{source}.{tag}_v{version:03d}`). Params with `naming: true` (`uvset`, `tile`,
   `state`, `description`, `numbering`) go into the file names and take no `targets`.
+  Optional `batch`: the most tiles per run; a texture with more is a set of batches (see
+  *Large textures*). Set it from the GPU memory one run of that many tiles needs.
   See `workflows/chord_pbr/manifest.yaml`.
 - Removing a param from the manifest changes the API: clients still sending it get
   "Unknown parameter". The Nuke panel and dashboard read the parameters from the farm,

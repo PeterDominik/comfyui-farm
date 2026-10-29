@@ -197,7 +197,9 @@ class PanelModel:
         start = job.get("started_at") or job.get("dispatched_at")
         took = _dur(job["finished_at"] - start) if job.get("finished_at") and start else (
             _dur(now - job["started_at"]) if job.get("started_at") else "")
-        if status == "queued":
+        if status == "queued" and job.get("kind") == "set":   # a texture set: its batches queue
+            wait = f"~{_dur(job['eta_seconds'])}" if job.get("eta_seconds") else ""
+        elif status == "queued":
             wait = f"#{job.get('queue_position') or '?'}" + (f" · ~{_dur(job['eta_seconds'])}" if job.get("eta_seconds") else "")
         elif status in ("dispatched", "running") and job.get("eta_seconds"):
             wait = f"~{_dur(job['eta_seconds'])} left"
@@ -755,6 +757,11 @@ if QtWidgets is not None:
             again.setEnabled(job["status"] in farm.FINISHED)
             again.triggered.connect(lambda *_: self._async(lambda: self._retry(job["id"]),
                                                         lambda _r, e: self._after_action(e)))
+            if job.get("kind") == "set":   # a texture set: rerun only what didn't finish, same folder
+                failed = menu.addAction("Retry failed batches")
+                failed.setEnabled(job["status"] in ("failed", "cancelled") or "failed" in (job.get("stage") or ""))
+                failed.triggered.connect(lambda *_: self._async(lambda: farm.retry_failed(job["id"]),
+                                                             lambda _r, e: self._after_action(e)))
             if job.get("error"):
                 err = menu.addAction("Show error")
                 err.triggered.connect(lambda *_: QtWidgets.QMessageBox.warning(self, "ComfyFarm", job["error"]))

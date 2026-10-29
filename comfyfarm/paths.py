@@ -83,6 +83,7 @@ class Sequence:
     load_dir: str | None = None   # where the loader reads from, when not `directory`
     convert: dict | None = None   # how to make the frames the loader reads (exr/movie/image)
     frames: list[int] | None = None   # the numbers read, when gaps are allowed (UDIM tiles)
+    sizes: list | None = None     # (width, height) of each file read, when all were read
 
     def as_dict(self) -> dict:
         return asdict(self)

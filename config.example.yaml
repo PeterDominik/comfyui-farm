@@ -66,6 +66,8 @@ convert:
   max_parallel_jobs: 1     # conversions at once; they run while the GPU works on other jobs
   frame_workers: 6         # oiiotool processes per EXR job
   keep_failed: false       # keep converted frames of failed jobs for debugging
+  batches_ahead: 2         # texture sets: batches converted ahead of the GPU, so other jobs'
+                           # inputs are converted in between and scratch stays small
   # Empty = the gateway's venv (oiiotool from OpenImageIO, ffmpeg from imageio-ffmpeg),
   # then PATH. ffprobe is optional: without it, movie info is read with ffmpeg.
   tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}

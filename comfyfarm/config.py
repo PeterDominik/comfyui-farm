@@ -109,6 +109,7 @@ class ConvertConfig(BaseModel):
     max_parallel_jobs: int = 1      # conversions at once (CPU/disk); they overlap GPU work
     frame_workers: int = 6          # oiiotool processes per EXR job
     keep_failed: bool = False       # keep converted frames of failed jobs for debugging
+    batches_ahead: int = 2          # texture sets: batches converted ahead of the GPU
     # Empty = look next to the gateway's Python (the venv), then on PATH.
     # A path, or a command as a list (e.g. [python, script.py]).
     tools: dict[str, str | list[str]] = Field(default_factory=lambda: {"oiiotool": "", "ffmpeg": "", "ffprobe": ""})
