@@ -16,6 +16,7 @@ reads from there.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -470,7 +471,7 @@ def scaled_text(sizes: list[tuple[int, int] | None], limit: int | None) -> str |
 
 def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
                   shot: str | None = None, texture: bool = False, ocio: OcioConfig | None = None,
-                  work_resolution: int | None = None) -> Sequence:
+                  work_resolution: int | None = None, preview: bool = False) -> Sequence:
     """Any supported input -> a Sequence. Converted kinds carry `convert` details.
 
     With `texture` (texture workflows such as CHORD): a folder means the texture in it,
@@ -480,7 +481,11 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
     `work_resolution` (the workflow's manifest): images larger than this many pixels on
     their longer side are scaled down to it before the workflow, keeping their aspect.
     EXRs are scaled as they're converted; png/jpg/tif inputs that are too large are
-    converted for it too (kind "image"), and read as they are when they fit."""
+    converted for it too (kind "image"), and read as they are when they fit.
+
+    Texture inputs have every tile's size read (UDIM tiles may differ), into seq.sizes;
+    a `preview` (the dashboard's live destination) reads only the first, which is enough
+    to show what will happen and doesn't read hundreds of headers per keystroke."""
     if not raw or not raw.strip():
         raise SequenceError("No input sequence given.")
     path, _, _ = parse_input(raw)
@@ -492,12 +497,15 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
         raw = texture_input(raw, pc)
     seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture)
     limit = work_resolution or None
+    every = texture and not preview
     if seq.kind == "exr":
         scaled = None
         if pc.validate_inputs:
             require_tool(cc, "oiiotool")
             if limit:
-                scaled = scaled_text(_sizes(seq, loaded_names(seq), texture), limit)
+                sizes = _sizes(seq, loaded_names(seq), every)
+                seq.sizes = sizes if every else None
+                scaled = scaled_text(sizes, limit)
         seq.convert = {"kind": "exr", "src_dir": seq.directory, "src_pattern": seq.filename,
                        "first": seq.first, "last": seq.last, "frames": seq.frames,
                        "extra_args": list(cc.exr.extra_args), "png_compression": cc.exr.png_compression,
@@ -505,7 +513,9 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
                        **ocio_setup(ocio or OcioConfig(), pc)}
     elif seq.kind == "frames" and limit and pc.validate_inputs:
         names = loaded_names(seq)
-        scaled = scaled_text(_sizes(seq, names, texture), limit)
+        sizes = _sizes(seq, names, every)
+        seq.sizes = sizes if every else None
+        scaled = scaled_text(sizes, limit)
         if scaled:   # too large: scaled into the scratch folder, like a converted EXR
             require_tool(cc, "oiiotool")
             if seq.frames:
@@ -519,6 +529,50 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
                            "png_compression": cc.exr.png_compression, "work_resolution": limit,
                            "scaled": scaled, "notes": []}
     return seq
+
+
+def work_sizes(seq: Sequence, names: list[str], limit: int | None) -> list[tuple[int, int] | None]:
+    """The size each loaded image has when the workflow gets it: after work_resolution
+    for converted inputs. Reads the files' headers if resolve_input didn't."""
+    raw = seq.sizes if seq.sizes and len(seq.sizes) == len(names) else _sizes(seq, names, True)
+    raw = [tuple(s) if s else None for s in raw]
+    if seq.kind in ("exr", "image") and limit:
+        return [fit_size(s, limit) if s else None for s in raw]
+    return raw
+
+
+def _numbers(seq: Sequence) -> list[int] | None:
+    """The frame (or UDIM) number of each image the loader gets, in order."""
+    if seq.kind == "image":
+        return list(seq.convert["frames"])
+    if seq.frames:
+        return list(seq.frames)
+    if seq.first is not None and seq.last is not None:
+        return list(range(seq.first, seq.last + 1))
+    return None
+
+
+def batch_sequence(seq: Sequence, start: int, end: int) -> Sequence:
+    """The part of a texture input one batch of a set reads: images start..end-1 of what
+    the whole input would load. Converted inputs convert only those; read directly, the
+    loader skips to them (they're consecutive in its listing, as the whole input was)."""
+    b = copy.deepcopy(seq)
+    nums = _numbers(seq)
+    if nums:
+        sub = nums[start:end]
+        b.first, b.last = sub[0], sub[-1]
+        if seq.frames:
+            b.frames = sub
+    b.frame_count = end - start
+    b.sizes = seq.sizes[start:end] if seq.sizes else None
+    if b.kind == "frames":
+        b.skip, b.cap = seq.skip + start, end - start
+    c = b.convert
+    if c and c["kind"] == "exr" and nums:
+        c.update(frames=sub, first=sub[0], last=sub[-1])
+    elif c and c["kind"] == "image":
+        c.update(names=c["names"][start:end], frames=c["frames"][start:end])
+    return b
 
 
 def point_loader_at_scratch(seq: Sequence, scratch_root: str, job_id: str) -> None:

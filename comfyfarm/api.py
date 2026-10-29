@@ -138,10 +138,13 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/v1/jobs")
     def list_jobs(user: str | None = None, status: str | None = None,
-                  active: bool = False, limit: int = Query(200, ge=1, le=2000),
-                  ident: Identity = Depends(identity)):
+                  active: bool = False, limit: int = Query(200, ge=1, le=5000),
+                  parent: str | None = None, ident: Identity = Depends(identity)):
+        """Jobs and texture sets, newest first; `parent`: a set's batches, in order."""
         statuses = tuple(s.strip() for s in status.split(",")) if status else (ACTIVE if active else None)
-        return {"jobs": farm.annotate(store.list(user=user, statuses=statuses, limit=limit))}
+        if parent:
+            parent = _job_or_404(parent)["id"]
+        return {"jobs": farm.annotate(store.list(user=user, statuses=statuses, limit=limit, parent=parent))}
 
     @app.get("/api/v1/jobs/{job_id}")
     def get_job(job_id: str, ident: Identity = Depends(identity)):
@@ -158,6 +161,13 @@ def create_app(cfg: Config) -> FastAPI:
         job = _job_or_404(job_id)
         _may_touch(ident, job)
         return farm.annotate([farm.retry(job["id"], ident.user if cfg.auth.api_keys else job["user"])])[0]
+
+    @app.post("/api/v1/jobs/{job_id}/retry-failed")
+    def retry_failed(job_id: str, ident: Identity = Depends(identity)):
+        """A texture set: run its failed and cancelled batches again, into the same folder."""
+        job = _job_or_404(job_id)
+        _may_touch(ident, job)
+        return farm.annotate([farm.retry_failed(job["id"])])[0]
 
     @app.get("/api/v1/jobs/{job_id}/prompt")
     def job_prompt(job_id: str, ident: Identity = Depends(identity)):

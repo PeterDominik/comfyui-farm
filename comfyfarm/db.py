@@ -1,5 +1,9 @@
 """SQLite job store. The gateway's database is the source of truth for job state;
-ComfyUI's own queue and history are in memory and vanish when it restarts."""
+ComfyUI's own queue and history are in memory and vanish when it restarts.
+
+Job kinds: "job" (one ComfyUI run), and for texture sets too large for one run, a "set"
+(what the artist submitted; one output folder; its status is worked out from its
+batches) and its "batch" jobs (parent_id = the set), each an ordinary run."""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import json
 import sqlite3
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +72,12 @@ class JobStore:
             have = {r[1] for r in self._db.execute("PRAGMA table_info(jobs)")}
             if "output_key" not in have:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN output_key TEXT")
+            if "kind" not in have:
+                self._db.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'job'")
+            if "parent_id" not in have:
+                self._db.execute("ALTER TABLE jobs ADD COLUMN parent_id TEXT")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
+            self._db.execute("CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id)")
 
     # ---------------------------------------------------------------- helpers
     @staticmethod
@@ -75,11 +85,11 @@ class JobStore:
         if row is None:
             return None
         d = dict(row)
+        if not with_prompt:   # before parsing: a set's batches are listed often, prompts are big
+            d.pop("prompt", None)
         for k in JSON_FIELDS:
             if k in d and d[k] is not None:
                 d[k] = json.loads(d[k])
-        if not with_prompt:
-            d.pop("prompt", None)
         d["warnings"] = d.get("warnings") or []
         d["short_id"] = d["id"][:8]
         return d
@@ -89,16 +99,34 @@ class JobStore:
             return self._db.execute(sql, args).fetchall()
 
     # ---------------------------------------------------------------- jobs
-    def insert(self, job: dict) -> dict:
+    @staticmethod
+    def _encoded(job: dict) -> dict:
         job = dict(job)
         for k in JSON_FIELDS:
             if k in job and job[k] is not None:
                 job[k] = json.dumps(job[k])
+        return job
+
+    def insert(self, job: dict) -> dict:
+        job = self._encoded(job)
         cols = ",".join(job)
         with self._lock:
             self._db.execute(f"INSERT INTO jobs ({cols}) VALUES ({','.join('?' * len(job))})",
                              tuple(job.values()))
         return self.get(job["id"])
+
+    def insert_many(self, jobs: list[dict]) -> None:
+        """Several jobs in one transaction (a set's batches): one disk sync, not hundreds."""
+        with self._lock:
+            self._db.execute("BEGIN")
+            try:
+                for job in map(self._encoded, jobs):
+                    self._db.execute(f"INSERT INTO jobs ({','.join(job)}) VALUES ({','.join('?' * len(job))})",
+                                     tuple(job.values()))
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
 
     def update(self, job_id: str, **fields: Any) -> dict | None:
         if fields:
@@ -138,7 +166,11 @@ class JobStore:
         rows = self._q("SELECT * FROM jobs WHERE prompt_id=?", (prompt_id,))
         return self._row(rows[0] if rows else None)
 
-    def list(self, user: str | None = None, statuses: tuple | None = None, limit: int = 200) -> list[dict]:
+    def list(self, user: str | None = None, statuses: tuple | None = None, limit: int = 200,
+             parent: str | None = None, top_level: bool = True, work_only: bool = False) -> list[dict]:
+        """Newest first. By default what artists submitted: jobs and sets, not a set's
+        batches. `parent`: that set's batches, in order. `top_level=False` includes
+        batches; `work_only` leaves out sets (the farm's own loops: only real runs)."""
         sql, args = "SELECT * FROM jobs WHERE 1=1", []
         if user:
             sql += " AND user=?"
@@ -146,7 +178,14 @@ class JobStore:
         if statuses:
             sql += f" AND status IN ({','.join('?' * len(statuses))})"
             args += list(statuses)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        if parent:
+            sql += " AND parent_id=?"
+            args.append(parent)
+        elif top_level:
+            sql += " AND parent_id IS NULL"
+        if work_only:
+            sql += " AND kind != 'set'"
+        sql += " ORDER BY created_at ASC, rowid ASC LIMIT ?" if parent else " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         args.append(limit)
         return [self._row(r) for r in self._q(sql, tuple(args))]
 
@@ -160,15 +199,33 @@ class JobStore:
         return self._q(f"SELECT COUNT(*) FROM jobs WHERE worker=? AND status IN ({marks})",
                        (worker, *ON_WORKER))[0][0]
 
-    def queued(self, with_prompt: bool = True) -> list[dict]:
-        """Queued jobs in dispatch order: priority, then the user with the fewest
-        jobs already on the farm (so one person can't hog the GPU), then age."""
-        rows = self._q("""
-            SELECT j.*, (SELECT COUNT(*) FROM jobs k WHERE k.user=j.user
-                         AND k.status IN ('dispatched','running')) AS user_inflight
-            FROM jobs j WHERE j.status='queued'
-            ORDER BY j.priority DESC, user_inflight ASC, j.created_at ASC""")
+    def queued(self, with_prompt: bool = False) -> list[dict]:
+        """Queued runs in dispatch order: priority, then the user with the fewest runs
+        already on the farm (so one person can't hog the GPU), then the set (or job) with
+        the fewest (so a big set lets other jobs in between its batches, the same
+        artist's too), then age."""
+        rows = self._q("SELECT * FROM jobs WHERE status='queued' AND kind != 'set' "
+                       "ORDER BY created_at ASC, rowid ASC")
+        busy = self._q("SELECT user, COALESCE(parent_id, id) AS grp FROM jobs "
+                       "WHERE status IN ('dispatched','running') AND kind != 'set'")
+        users, groups = Counter(r["user"] for r in busy), Counter(r["grp"] for r in busy)
+        rows = sorted(rows, key=lambda r: (-r["priority"], users[r["user"]], groups[r["parent_id"] or r["id"]]))
         return [self._row(r, with_prompt=with_prompt) for r in rows]
+
+    def batch_states(self, set_id: str) -> list[dict]:
+        """What a set's status is worked out from: each batch's state, without its prompt
+        or full info."""
+        rows = self._q("""
+            SELECT id, status, progress, error, cancel_requested, dispatched_at, started_at, finished_at,
+                   json_extract(info, '$.batch.tiles') AS tiles, json_extract(info, '$.batch.label') AS label,
+                   json_extract(info, '$.textures.items') AS items, json_extract(outputs, '$.files') AS files
+            FROM jobs WHERE parent_id=? ORDER BY created_at ASC, rowid ASC""", (set_id,))
+        return [dict(r) for r in rows]
+
+    def queued_batches(self) -> Counter:
+        """Converted batches waiting for the GPU, per set."""
+        return Counter(r[0] for r in self._q(
+            "SELECT parent_id FROM jobs WHERE status='queued' AND parent_id IS NOT NULL"))
 
     def output_reserved(self, key: str) -> bool:
         """This output (folder + file pattern) is promised to a job that hasn't finished,

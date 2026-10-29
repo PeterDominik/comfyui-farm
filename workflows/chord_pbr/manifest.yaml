@@ -99,6 +99,13 @@ textures:
   path_input: output_path
   prefix_input: filename_prefix
   ext: png
+  # Tiles per run. A texture with more tiles is a set: one output folder, filled by runs of
+  # up to this many tiles. CHORD estimates a whole batch in one pass, so GPU memory grows
+  # with it: 5 tiles used about 29 GB of the 5090's 32. Measured on the farm (4K EXR
+  # tiles at work_resolution 1024): 1 tile 5 s, 2 tiles 8 s, 3 tiles 11 s, 4 tiles 15 s,
+  # 5 tiles 18 s. About 2 s per run plus 3.3 s per tile, so 4 is 3.75 s a tile with room
+  # to spare.
+  batch: 4
   maps:
     - {name: basecolor, node: "19", class: ComfyFarmSaveImage, channel: color01, color: true, bits: half}
     - {name: normal,    node: "24", class: ComfyFarmSaveImage, channel: nrm02,   bits: half}

@@ -23,6 +23,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "client"))
 farm = importlib.import_module("comfyfarm_client")
+sys.path.insert(0, str(REPO / "tests"))
+from test_textures import exr_header, exr_sized, png_bytes
 
 SEQ = "/rdo/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/abc_0010.pre.v1.%04d.png"
 
@@ -119,6 +121,15 @@ convert:
             (tex / sub).mkdir(parents=True)
             for n in names:
                 (tex / sub / n).write_bytes(b"x")
+        # More tiles than CHORD's batch (4): a set. Only the headers are read (the sizes).
+        (tex / "set").mkdir()
+        for u in range(1001, 1011):
+            (tex / "set" / f"rockB_diffuse.{u}.png").write_bytes(png_bytes(2, (2048, 2048)))
+        (tex / "setexr").mkdir()
+        for u in range(1001, 1007):   # 1005 starts the second batch and has no R, G, B
+            data = exr_header(["diffuse.B", "diffuse.G", "diffuse.R"], (0, 0, 2047, 2047)) if u == 1005 \
+                else exr_sized(2048, 2048)
+            (tex / "setexr" / f"rockB_color.{u}.exr").write_bytes(data)
         # Larger than CHORD's work_resolution (1024). Only the header is read (the size).
         (tex / "big").mkdir()
         (tex / "big" / "rockA_big.png").write_bytes(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
@@ -132,6 +143,7 @@ convert:
 
     @classmethod
     def tearDownClass(cls):
+        os.environ.pop("FAKE_OIIOTOOL_LOG", None)   # its folder goes below; later tests run oiiotool too
         for p in (cls.gw, cls.comfy):
             if p and p.poll() is None:
                 p.terminate()
@@ -507,6 +519,51 @@ convert:
             farm.submit("chord_pbr", {"input": "/rdo/shows/xyz/.published/abc/abc_0010/edit/abc_0010_ref.mov"})
         with self.assertRaisesRegex(farm.FarmError, "UV set 'uv1' won't do"):
             farm.submit("chord_pbr", {"input": f"{tex}/src", "uvset": "uv1"})
+
+    def test_0497_texture_set_in_batches(self):
+        """More tiles than the manifest's batch: one set the artist sees, batches of 4 tiles
+        that run on their own into one folder, and failed batches retried in place."""
+        tex = "/rdo/shows/xyz/_asset/rockA/cg/textures"
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "chord_pbr", "params": {"input": f"{tex}/set"}})
+        self.assertEqual((plan["batches"], plan["what"]), (3, "50 EXRs (5 maps × 10 UDIM tiles) in 3 batches of up to 4"))
+        s = farm.submit("chord_pbr", {"input": f"{tex}/set"})
+        self.assertEqual((s["kind"], s["info"]["set"]["batches"]), ("set", 3))
+        mine = [j["id"] for j in farm.jobs(limit=500)]
+        batches = farm.batches(s["id"])
+        self.assertIn(s["id"], mine)
+        self.assertFalse({b["id"] for b in batches} & set(mine))      # batches aren't listed as jobs
+        done = self.wait_for(s["id"], ("done", "failed"), timeout=60)
+        self.assertEqual((done["status"], done["stage"]), ("done", "10/10 UDIMs"), done.get("error"))
+        out = Path(done["output_dir"])
+        self.assertTrue(str(out).endswith("rockB_diffuse.chord_v001"))
+        self.assertEqual(len(os.listdir(out)), 50)
+        o = done["outputs"]
+        self.assertEqual((o["files"], o["frames"], o["first"], o["last"]), (50, 10, 1001, 1010))
+        self.assertTrue(o["maps"]["color01"]["pattern_posix"].endswith("/acescg_map1_noTile_defState_color01.%04d.0000.exr"))
+        batches = farm.batches(s["id"])
+        self.assertEqual([b["status"] for b in batches], ["done"] * 3)
+        prompt = farm._request("GET", f"/api/v1/jobs/{batches[2]['id']}/prompt")
+        self.assertTrue(prompt["17"]["inputs"]["directory"].endswith(f"/scratch/{batches[2]['id']}/"))
+        scaled = [c["args"] for c in self.oiiotool_calls() if "/set/rockB_diffuse." in " ".join(c["args"])]
+        self.assertEqual(len(scaled), 10)
+        self.assertFalse((self.tmp / "scratch" / batches[0]["id"]).exists())
+
+        # EXR tiles; the second batch can't be converted, the first still writes its maps.
+        e = farm.submit("chord_pbr", {"input": f"{tex}/setexr"})
+        ed = self.wait_for(e["id"], ("done", "failed"), timeout=60)
+        self.assertEqual(ed["status"], "failed")
+        self.assertIn("1 of 2 batches didn't finish (UDIMs 1005–1006): Converting the input failed: "
+                      "rockB_color.1005.exr has no R, G, B", ed["error"])
+        self.assertEqual(len(os.listdir(ed["output_dir"])), 20)
+        with self.assertRaisesRegex(farm.FarmError, "one batch of a set"):
+            farm.retry(farm.batches(e["id"])[1]["id"])
+        fixed = self.tmp / "shows/xyz/_asset/rockA/cg/textures/setexr/rockB_color.1005.exr"
+        fixed.write_bytes(exr_sized(2048, 2048))
+        r = farm.retry_failed(e["id"])
+        self.assertEqual(r["status"], "running")
+        ed = self.wait_for(e["id"], ("done", "failed"), timeout=60)
+        self.assertEqual((ed["status"], ed["outputs"]["files"]), ("done", 30), ed.get("error"))
+        self.assertEqual(len(os.listdir(ed["output_dir"])), 30)               # the same folder
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
