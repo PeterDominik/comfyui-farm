@@ -81,7 +81,8 @@ sequence:
 outputs:
   root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational
 
-# The maps. Each save node writes PNGs into the job's scratch folder; the gateway converts
+# The maps. Each save node (ComfyFarm Save Image, from comfyui_nodes/ in this repo) writes
+# uncompressed PNGs into the job's scratch folder; the gateway converts
 # them to EXR with oiiotool and names them. color: true maps go color_picking ->
 # scene_linear (ocio/config.ocio); the others keep their values.
 # ChordMaterialEstimation outputs basecolor, normal, roughness, metalness;
@@ -93,8 +94,8 @@ textures:
   prefix_input: filename_prefix
   ext: png
   maps:
-    - {name: basecolor, node: "19", class: "Image Save", channel: color01, color: true, bits: half}
-    - {name: normal,    node: "24", class: "Image Save", channel: nrm02,   bits: half}
-    - {name: height,    node: "28", class: "Image Save", channel: bmp02,   bits: float}
-    - {name: roughness, node: "31", class: "Image Save", channel: spcr01,  bits: half}
-    - {name: metalness, node: "32", class: "Image Save", channel: metal01, bits: half}
+    - {name: basecolor, node: "19", class: ComfyFarmSaveImage, channel: color01, color: true, bits: half}
+    - {name: normal,    node: "24", class: ComfyFarmSaveImage, channel: nrm02,   bits: half}
+    - {name: height,    node: "28", class: ComfyFarmSaveImage, channel: bmp02,   bits: float}
+    - {name: roughness, node: "31", class: ComfyFarmSaveImage, channel: spcr01,  bits: half}
+    - {name: metalness, node: "32", class: ComfyFarmSaveImage, channel: metal01, bits: half}

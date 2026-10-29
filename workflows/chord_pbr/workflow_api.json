@@ -94,32 +94,20 @@
   },
   "19": {
     "inputs": {
+      "images": [
+        "4",
+        0
+      ],
       "output_path": [
         "22",
         0
       ],
       "filename_prefix": "color01",
-      "filename_delimiter": "_",
-      "filename_number_padding": 4,
-      "filename_number_start": "false",
-      "extension": "png",
-      "dpi": 300,
-      "quality": 100,
-      "optimize_image": "false",
-      "lossless_webp": "false",
-      "overwrite_mode": "false",
-      "show_history": "false",
-      "show_history_by_prefix": "true",
-      "embed_workflow": "false",
-      "show_previews": "true",
-      "images": [
-        "4",
-        0
-      ]
+      "compress_level": 0
     },
-    "class_type": "Image Save",
+    "class_type": "ComfyFarmSaveImage",
     "_meta": {
-      "title": "Image Save"
+      "title": "ComfyFarm Save Image (color01)"
     }
   },
   "20": {
@@ -159,32 +147,20 @@
   },
   "24": {
     "inputs": {
+      "images": [
+        "4",
+        1
+      ],
       "output_path": [
         "22",
         0
       ],
       "filename_prefix": "nrm01",
-      "filename_delimiter": "_",
-      "filename_number_padding": 4,
-      "filename_number_start": "false",
-      "extension": "png",
-      "dpi": 300,
-      "quality": 100,
-      "optimize_image": "false",
-      "lossless_webp": "false",
-      "overwrite_mode": "false",
-      "show_history": "false",
-      "show_history_by_prefix": "true",
-      "embed_workflow": "false",
-      "show_previews": "true",
-      "images": [
-        "4",
-        1
-      ]
+      "compress_level": 0
     },
-    "class_type": "Image Save",
+    "class_type": "ComfyFarmSaveImage",
     "_meta": {
-      "title": "Image Save"
+      "title": "ComfyFarm Save Image (nrm01)"
     }
   },
   "25": {
@@ -213,32 +189,20 @@
   },
   "28": {
     "inputs": {
+      "images": [
+        "26",
+        0
+      ],
       "output_path": [
         "22",
         0
       ],
       "filename_prefix": "bmp01",
-      "filename_delimiter": "_",
-      "filename_number_padding": 4,
-      "filename_number_start": "false",
-      "extension": "png",
-      "dpi": 300,
-      "quality": 100,
-      "optimize_image": "false",
-      "lossless_webp": "false",
-      "overwrite_mode": "false",
-      "show_history": "false",
-      "show_history_by_prefix": "true",
-      "embed_workflow": "false",
-      "show_previews": "true",
-      "images": [
-        "26",
-        0
-      ]
+      "compress_level": 0
     },
-    "class_type": "Image Save",
+    "class_type": "ComfyFarmSaveImage",
     "_meta": {
-      "title": "Image Save"
+      "title": "ComfyFarm Save Image (bmp01)"
     }
   },
   "29": {
@@ -267,62 +231,38 @@
   },
   "31": {
     "inputs": {
+      "images": [
+        "4",
+        2
+      ],
       "output_path": [
         "22",
         0
       ],
       "filename_prefix": "spcr01",
-      "filename_delimiter": "_",
-      "filename_number_padding": 4,
-      "filename_number_start": "false",
-      "extension": "png",
-      "dpi": 300,
-      "quality": 100,
-      "optimize_image": "false",
-      "lossless_webp": "false",
-      "overwrite_mode": "false",
-      "show_history": "false",
-      "show_history_by_prefix": "true",
-      "embed_workflow": "false",
-      "show_previews": "true",
-      "images": [
-        "4",
-        2
-      ]
+      "compress_level": 0
     },
-    "class_type": "Image Save",
+    "class_type": "ComfyFarmSaveImage",
     "_meta": {
-      "title": "Image Save"
+      "title": "ComfyFarm Save Image (spcr01)"
     }
   },
   "32": {
     "inputs": {
+      "images": [
+        "4",
+        3
+      ],
       "output_path": [
         "22",
         0
       ],
       "filename_prefix": "metal01",
-      "filename_delimiter": "_",
-      "filename_number_padding": 4,
-      "filename_number_start": "false",
-      "extension": "png",
-      "dpi": 300,
-      "quality": 100,
-      "optimize_image": "false",
-      "lossless_webp": "false",
-      "overwrite_mode": "false",
-      "show_history": "false",
-      "show_history_by_prefix": "true",
-      "embed_workflow": "false",
-      "show_previews": "true",
-      "images": [
-        "4",
-        3
-      ]
+      "compress_level": 0
     },
-    "class_type": "Image Save",
+    "class_type": "ComfyFarmSaveImage",
     "_meta": {
-      "title": "Image Save"
+      "title": "ComfyFarm Save Image (metal01)"
     }
   },
   "33": {

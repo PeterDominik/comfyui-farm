@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 # Used to estimate progress when no worker has told us which classes are output nodes.
 FALLBACK_OUTPUT_CLASSES = {
-    "SaveImage", "PreviewImage", "PreviewAny", "VHS_VideoCombine", "Image Save",
+    "SaveImage", "PreviewImage", "PreviewAny", "VHS_VideoCombine", "Image Save", "ComfyFarmSaveImage",
     "easy clearCacheAll", "SaveVideo", "SaveAnimatedWEBP",
 }
 
@@ -250,7 +250,11 @@ class Workflow:
             info = object_info.get(ct)
             label = f"node {nid} '{self.title(nid)}'"
             if info is None:
-                problems.append(f"{label}: class {ct} is not installed (missing custom node pack?)")
+                if (ct or "").startswith("ComfyFarm"):
+                    problems.append(f"{label}: class {ct} is not installed. It comes with this repo: run "
+                                    f"scripts\\setup.ps1 -ComfyUIDir <ComfyUI folder>, then restart ComfyUI")
+                else:
+                    problems.append(f"{label}: class {ct} is not installed (missing custom node pack?)")
                 continue
             spec = {}
             for section in ("required", "optional"):
