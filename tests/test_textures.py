@@ -233,7 +233,8 @@ class InputTests(unittest.TestCase):
         self.assertEqual(loaded_names(seq), ["rock.1001.exr", "rock.1003.exr"])
         cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
         self.assertEqual(cmd, ["oiiotool", "--colorconfig", self.oc.config, "in.exr", "--ch", "R,G,B", "--croptofull",
-                               "--colorconvert", "scene_linear", "color_picking", "-d", "uint8", "-o", "out.png"])
+                               "--colorconvert", "scene_linear", "color_picking", "-d", "uint8", "--compression", "none",
+                               "-o", "out.png"])
         self.assertEqual(summary(seq, self.cfg)["to"], "color_picking")
 
     def test_movies_refused(self):
@@ -281,7 +282,7 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(c["extra_args"][1], "R,G,B")                        # the job's settings aren't changed
         self.assertEqual(exr_command(["oiiotool"], dict(c, extra_args=["--croptofull"]), "a", "b", "R=Y,G=Y,B=Y"),
                          ["oiiotool", "--colorconfig", "c.ocio", "a", "--croptofull", "--colorconvert", "a", "b",
-                          "-d", "uint8", "-o", "b"])                         # no --ch configured: none added
+                          "-d", "uint8", "--compression", "none", "-o", "b"])   # no --ch configured: none added
 
     def test_greyscale_exr_input(self):
         d = tempfile.mkdtemp()

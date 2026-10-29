@@ -152,8 +152,29 @@ class OcioTests(unittest.TestCase):
         self.assertEqual(exr_command(["oiiotool"], c, "in.exr", "out.png"),
                          ["oiiotool", "--colorconfig", f"{self.root}/ocio/config.ocio", "in.exr", "--ch", "R,G,B",
                           "--croptofull", "--colorconvert", "scene_linear", "color_picking", "-d", "uint8",
-                          "-o", "out.png"])
+                          "--compression", "none", "-o", "out.png"])
         self.assertEqual(summary(self.exr(), self.pc)["to"], "color_picking")
+
+    def test_png_compression(self):
+        # Scratch PNGs are written uncompressed by default: compressing a 4K frame cost
+        # oiiotool ~6 s of the ~8 s on the farm machine.
+        from pydantic import ValidationError
+        c = self.exr().convert
+        self.assertEqual(c["png_compression"], 0)
+        cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
+        self.assertEqual(cmd[cmd.index("-d"):], ["-d", "uint8", "--compression", "none", "-o", "out.png"])
+        cc = ConvertConfig(tools=self.cc.tools, exr={"png_compression": 6})
+        c = resolve_input("/rdo/shows/raa/.published/bpash/bpash_1545/plate/v1/bpash_1545.plate.v1.%04d.exr",
+                          self.pc, cc, ocio=self.oc).convert
+        cmd = exr_command(["oiiotool"], c, "in.exr", "out.png")
+        self.assertEqual(cmd[cmd.index("-d"):], ["-d", "uint8", "--compression", "default", "--attrib:type=int",
+                                                 "png:compressionLevel", "6", "-o", "out.png"])
+        for bad in (-1, 10, "fast"):
+            with self.assertRaises(ValidationError):
+                ConvertConfig(exr={"png_compression": bad})
+        old = dict(c)
+        del old["png_compression"]          # a job queued before the setting existed
+        self.assertIn("none", exr_command(["oiiotool"], old, "in.exr", "out.png"))
 
     def test_repo_relative_config(self):
         self.assertEqual(ocio_config_path(OcioConfig()), (REPO / "ocio/config.ocio").as_posix())

@@ -348,6 +348,13 @@ in `config.yaml`.
   - RGB only, cropped to the display window (`--ch R,G,B --croptofull`).
   - Output is 8-bit PNG at plate resolution. The workflow then works at its own
     resolution, as for PNG inputs.
+  - The PNGs are written uncompressed by default. `convert.exr.png_compression` sets the
+    zlib level: 0 is off (the default), 1 is fast, 6 is OpenImageIO's own default, 9 is
+    smallest. They're scratch files ComfyUI reads once.
+    - On the farm machine, a 4K frame took 8.3 s at level 6 and 1.9 s at 0.
+    - Uncompressed takes about 3 bytes per pixel, so a 4096² frame is 50 MB.
+    - Raise the level only if scratch disk space runs short. It changes the files' size on
+      disk, not memory: ComfyUI decodes every frame to the same full-size image either way.
 - **If EXR colours look wrong** (lifted, shifted), compare numbers rather than by eye.
   On the farm machine:
 

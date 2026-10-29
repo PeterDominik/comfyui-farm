@@ -403,7 +403,7 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
             require_tool(cc, "oiiotool")
         seq.convert = {"kind": "exr", "src_dir": seq.directory, "src_pattern": seq.filename,
                        "first": seq.first, "last": seq.last, "frames": seq.frames,
-                       "extra_args": list(cc.exr.extra_args),
+                       "extra_args": list(cc.exr.extra_args), "png_compression": cc.exr.png_compression,
                        **ocio_setup(ocio or OcioConfig(), pc)}
     return seq
 
@@ -454,6 +454,16 @@ async def _run(cmd: list[str], env: dict | None = None) -> tuple[int, str]:
     return proc.returncode, (err or b"").decode(errors="replace") + (out or b"").decode(errors="replace")
 
 
+def png_compression_args(level) -> list[str]:
+    """oiiotool options for a PNG zlib level (convert.exr.png_compression). 0 = no
+    compression; 1-9 go through OpenImageIO's png:compressionLevel."""
+    level = {"none": 0, "pngfast": 1, "default": 6}.get(level, level) if isinstance(level, str) else level
+    level = max(0, min(9, int(level or 0)))
+    if level == 0:
+        return ["--compression", "none"]
+    return ["--compression", "default", "--attrib:type=int", "png:compressionLevel", str(level)]
+
+
 def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, ch: str | None = None) -> list[str]:
     """The oiiotool call for one EXR frame: a Nuke Write set to "default (color_picking)"
     (also run by `comfyfarm check` and tools/ocio_compare.py). `ch` replaces the `--ch`
@@ -461,11 +471,12 @@ def exr_command(oiiotool: list[str], c: dict, src: str, dst: str, ch: str | None
     extra = list(c["extra_args"])
     if ch and "--ch" in extra[:-1]:
         extra[extra.index("--ch") + 1] = ch
+    out = ["-d", "uint8", *png_compression_args(c.get("png_compression", 0)), "-o", dst]
     if "display" in c:   # a job queued before the switch to the repo config, frozen with its own settings
         return [*oiiotool, "--colorconfig", c["config"], src, *extra,
-                f"--ociodisplay:from={c['input_colorspace']}", c["display"], c["view"], "-d", "uint8", "-o", dst]
+                f"--ociodisplay:from={c['input_colorspace']}", c["display"], c["view"], *out]
     return [*oiiotool, "--colorconfig", c["config"], src, *extra,
-            "--colorconvert", c["from"], c["to"], "-d", "uint8", "-o", dst]
+            "--colorconvert", c["from"], c["to"], *out]
 
 
 async def convert_exr(c: dict, cc: ConvertConfig, progress) -> None:
