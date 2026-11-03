@@ -39,7 +39,7 @@ NUKE_RAMP = {0.02: 23, 0.05: 43, 0.18: 99, 0.5: 170, 1.0: 209}
 def ocio_config_path(oc: OcioConfig | None) -> str:
     """ocio.config as a full path: relative paths are inside the repo. Built-in configs
     (ocio://...) are passed through."""
-    config = (oc.config if oc is not None else None) or DEFAULT_CONFIG
+    config = oc.config if oc is not None else DEFAULT_CONFIG   # None: ocio.config's default
     if config.startswith("ocio://"):
         return config
     path = Path(config)
