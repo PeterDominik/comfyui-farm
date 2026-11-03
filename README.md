@@ -131,14 +131,14 @@ warnings, errors with traceback, the MP4 preview (if any), *Run again* and *API 
 export COMFYFARM_URL=http://comfyfarm01:8000
 python comfyfarm_client.py workflows
 python comfyfarm_client.py submit ltx25_alpha_gen \
-    "input=/rdo/shows/<show>/.../<shot>.preprocess.%04d.png 1001-1158" seed=7 --wait
+    "input=/rdo/shows/<show>/.../<shot>.preprocess.%04d.png 1001-1158" --wait
 python comfyfarm_client.py list --mine
 python comfyfarm_client.py cancel 3f2a9c1e
 ```
 
 ```python
 import comfyfarm_client as farm
-job = farm.submit("ltx25_alpha_gen", {"input": ".../plate.%04d.png 1001-1158", "seed": 7})
+job = farm.submit("ltx25_alpha_gen", {"input": ".../plate.%04d.png 1001-1158"})
 job = farm.wait(job["id"])                  # call from a thread inside a DCC
 farm.output_pattern(job)                    # /rdo/shows/.../<shot>_alpha_v001.%04d.png
 ```
@@ -199,10 +199,10 @@ if PySide6 or PySide2 is installed.
 |---|---|---|
 | `input` | required | Sequence path with `%04d` / `%d` / `####` and optional `first-last` range (png/jpg/tif/webp/exr), or a `.mov`/`.mp4` with an optional range in timecode frame numbers |
 | `output_path` | show default | Root folder: frames go to `<this>/<shot>/<source>.alpha_vNNN.<frame>.png`, each run taking the next free version. Its parent must exist; never inside `.published`. Empty = the show's renders folder. Inputs outside the publish layout (no shot) go straight into it |
-| `seed` | 42 | |
-| `enhance_prompt` | false | Gemma prompt enhancer |
-| `shorter_side` | 1088 | Working resolution; multiple of 32 |
-| `fps` | 24 | |
+
+That's the whole form. The workflow's other settings are fixed in it: seed 42, working
+resolution 1088 on the shorter side, 24 fps, prompt enhancer off. Sending any of them is
+refused as an unknown parameter.
 
 Optional job fields: `name`, `priority` (−10…10; above 0 is admin only when keys are on),
 and `show` / `shot` overrides for inputs outside the publish layout.
@@ -467,12 +467,13 @@ overwrites the input, output and save-path nodes on every job.
 
 Re-exporting can renumber nodes. Because every manifest target names its node class,
 a renumbered workflow fails the check with a clear message. It can't silently write
-the seed into the wrong node.
+a value into the wrong node.
 
 ### Workflow manifests
 
 The manifest says what artists can set and where each value goes in the API JSON.
-Anything not listed stays exactly as exported.
+Anything not listed stays exactly as exported. In the example below, `seed` shows how a
+plain setting is written; the shipped `ltx25_alpha_gen` has only `input` and `output_path`.
 
 ```yaml
 name: ltx25_alpha_gen          # id used by the API and clients
@@ -551,8 +552,8 @@ outputs:                       # nodes the gateway points at each job's versione
   `output_path` input (`chord_pbr` uses *ComfyFarm Save Image* instead). The current WAS release replaced that input with a sandboxed
   `root` setting. Don't update WAS on the farm machine without re-testing; the preflight
   check flags it if it happens.
-- **This workflow's outputs are at the working resolution** (`shorter_side`, 1088 by
-  default), not the plate's. Reformat in comp if you need plate res. If the model returns
+- **This workflow's outputs are at the working resolution** (1088 on the shorter side, fixed
+  in the workflow), not the plate's. Reformat in comp if you need plate res. If the model returns
   a different number of frames than it was given, the job carries a warning.
 - **Security:** with no API keys, anyone on the network can submit and cancel, and user
   names are taken on trust. Set `auth.api_keys` to require keys.
@@ -560,8 +561,8 @@ outputs:                       # nodes the gateway points at each job's versione
 ## Development
 
 ```bash
-pip install -r requirements.txt
-python -m unittest discover -s tests -t . -v      # unit + end-to-end (~30 s)
+pip install -r requirements-dev.txt               # the farm's requirements + what only the tests use
+python -m unittest discover -s tests -t . -v      # unit + end-to-end (~30 s on Linux, ~80 s on Windows)
 
 # Manual testing without a GPU:
 python tools/mock_comfyui.py --port 8188 --output mock_output

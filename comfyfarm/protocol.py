@@ -57,8 +57,9 @@ class JobHost(Protocol):
         """A cancel the manager asked for has taken effect on the worker."""
 
     def lost(self, job: dict, reason: str) -> None:
-        """The worker lost the job (ComfyUI restarted, machine unreachable): run it
-        again, or fail it after farm.max_attempts."""
+        """The worker lost the job's run with job["prompt_id"] (ComfyUI restarted, machine
+        unreachable): run it again, or fail it after farm.max_attempts. Ignored if the job
+        has moved on to another run since."""
 
     def record_run(self, workflow: str, seconds: float, node_count: int | None) -> None:
         """How long a finished run took, for ETAs and progress."""

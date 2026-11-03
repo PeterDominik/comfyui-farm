@@ -108,7 +108,7 @@ def create_map_reads(job: dict, near: str | None = None) -> list:
     """Texture jobs (CHORD): one Read per map. UDIM tiles are read as frames
     (1001, 1002, 1011, ...), so scrubbing steps through the tiles; missing tiles are black."""
     out = job.get("outputs") or {}
-    reads, new, posix = [], [], os.name != "nt"
+    reads, new, posix = [], [], farm.POSIX
     for channel, m in out["maps"].items():
         path = ((m.get("pattern_posix") if posix else None) or m["pattern"]).replace("\\", "/")
         existing = next((n for n in nuke.allNodes("Read", recurseGroups=False)

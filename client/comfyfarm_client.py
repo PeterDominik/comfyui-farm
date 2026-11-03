@@ -9,14 +9,13 @@ Settings (environment variables):
 
 From Python:
     import comfyfarm_client as farm
-    job = farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/.../plate.%04d.png 1001-1158",
-                                          "positive_prompt": "..."})
+    job = farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/.../plate.%04d.png 1001-1158"})
     job = farm.wait(job["id"], on_update=lambda j: print(j["status"], j["progress"]))
     print(job["outputs"]["frame_pattern_posix"])
 
 From a shell:
     python comfyfarm_client.py workflows
-    python comfyfarm_client.py submit ltx25_alpha_gen input="/rdo/shows/.../x.%04d.png 1001-1158" seed=7 --wait
+    python comfyfarm_client.py submit ltx25_alpha_gen input="/rdo/shows/.../x.%04d.png 1001-1158" --wait
     python comfyfarm_client.py status <job id>
     python comfyfarm_client.py list [--mine]
     python comfyfarm_client.py cancel <job id>
@@ -35,6 +34,9 @@ import urllib.parse
 import urllib.request
 
 FINISHED = ("done", "failed", "cancelled")
+# Whether this machine sees show storage as Linux paths (/rdo/shows/...) rather than the
+# farm machine's (Windows) ones. Tests set it.
+POSIX = os.name != "nt"
 
 
 class FarmError(Exception):
@@ -166,7 +168,7 @@ def output_pattern(job: dict, posix: bool | None = None) -> str | None:
     """Frame pattern of a finished job, as this machine sees it."""
     out = job.get("outputs") or {}
     if posix is None:
-        posix = os.name != "nt"
+        posix = POSIX
     return out.get("frame_pattern_posix" if posix else "frame_pattern") or out.get("frame_pattern")
 
 

@@ -68,6 +68,7 @@ class StoreTests(unittest.TestCase):
         self.t = now()
 
     def tearDown(self):
+        self.store.close()   # Windows can't delete an open database
         shutil.rmtree(self.tmp)
 
     def add(self, jid, user, status="queued", kind="job", parent=None, dt=0.0, info=None):
@@ -118,6 +119,7 @@ class StoreTests(unittest.TestCase):
         job = store.get("old")
         self.assertEqual((job["kind"], job["parent_id"]), ("job", None))
         self.assertEqual([j["id"] for j in store.queued()], ["old"])
+        store.close()
 
 
 @unittest.skipIf(Farm is None, "needs the manager's dependencies (pydantic, pyyaml)")
@@ -142,6 +144,7 @@ class FarmSetTests(unittest.TestCase):
         self.asset = f"{self.root}/shows/xyz/_asset/rockA/cg/textures"
 
     def tearDown(self):
+        self.store.close()   # Windows can't delete an open database
         shutil.rmtree(self.tmp)
 
     def tiles(self, folder, name, udims, data, ext="png"):
