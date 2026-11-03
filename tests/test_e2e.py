@@ -320,7 +320,7 @@ convert:
         self.assertEqual((plan["input_kind"], c["from"], c["to"]), ("exr", "scene_linear", "color_picking"))
         self.assertTrue(c["config"].endswith("/ocio/config.ocio"))
         job = farm.submit("ltx25_alpha_gen", {"input": f"{src} 1002-1005"})
-        self.assertEqual(job["status"], "preparing")
+        self.assertEqual(job["status"], "queued")   # converted on the worker that takes it
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
         self.assertEqual((done["outputs"]["frames"], done["outputs"]["first"], done["outputs"]["last"]), (4, 1002, 1005))
@@ -490,7 +490,7 @@ convert:
 
         # EXR tiles are converted like any EXR input: linear -> color_picking PNGs.
         exr = farm.submit("chord_pbr", {"input": f"{tex}/exr"})
-        self.assertEqual(exr["status"], "preparing")
+        self.assertEqual(exr["status"], "queued")
         ed = self.wait_for(exr["id"], ("done", "failed"))
         self.assertEqual(ed["status"], "done", ed.get("error"))
         self.assertEqual(len(os.listdir(ed["info"]["output_dir"])), 10)
@@ -504,7 +504,7 @@ convert:
         plan = farm._request("POST", "/api/v1/plan", {"workflow": "chord_pbr", "params": big_input})
         self.assertEqual(plan["convert"], {"kind": "image", "work_resolution": 1024, "scaled": "4096×2048 → 1024×512"})
         big = farm.submit("chord_pbr", big_input)
-        self.assertEqual(big["status"], "preparing")
+        self.assertEqual(big["status"], "queued")
         bd = self.wait_for(big["id"], ("done", "failed"))
         self.assertEqual(bd["status"], "done", bd.get("error"))
         self.assertIn("acescg_map1_noTile_defState_color01.1001.0000.exr", os.listdir(bd["info"]["output_dir"]))

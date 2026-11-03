@@ -1,11 +1,10 @@
-"""The manager side of the farm: submitting and planning jobs (validated inputs, versioned
-output folders), texture sets, the queue and its order, dispatching to workers, input
-conversion ahead of the GPU, cancels and retries.
+"""The manager's side of the farm: submitting and planning jobs (validated inputs,
+versioned output folders), texture sets, the queue and its order, cancels and retries.
 
-Everything that talks to a ComfyUI (submitting a prompt, following it over the websocket,
-checking ComfyUI's queue and history, collecting the outputs) is a worker's job: see
-comfyfarm.agent.worker.WorkerRunner. The Farm is the host the workers report to
-(protocol.JobHost). For now they run in this process, one per configured ComfyUI."""
+Running jobs is the agents' work: one per ComfyUI, in this process (standalone) or on
+other machines. They take jobs from the queue through the manager's desk (manager.desk,
+protocol.py), convert the inputs, run them on their ComfyUI, collect the outputs and
+report back; the Farm applies what they report to the jobs."""
 
 from __future__ import annotations
 
@@ -18,20 +17,19 @@ import uuid
 from typing import TYPE_CHECKING
 
 from ..config import Config
-from ..fileio import convert as C
 from ..fileio import inputs as I
 from ..fileio import naming as N
 from ..fileio import ocio as OC
 from ..fileio import paths as P
 from ..fileio import scratch as S
 from ..fileio import textures as T
-from ..protocol import ACTIVE, FINISHED, ON_WORKER, now
-from ..workflows import ParamError, Workflow, WorkflowRegistry
+from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
+from ..workflows import ParamError, WorkflowRegistry
 from .db import JobStore
 from .events import EventBus
 
-if TYPE_CHECKING:   # the manager never imports the agent; workers are attached to it
-    from ..agent.worker import WorkerRunner
+if TYPE_CHECKING:
+    from .desk import Desk
 
 log = logging.getLogger("comfyfarm")
 
@@ -43,61 +41,49 @@ class FarmError(Exception):
 
 
 class Farm:
-    """Job queue, sets and dispatch; the host its workers report to (protocol.JobHost)."""
+    """Job queue, sets, cancels; the agents' reports, applied (through manager.desk)."""
 
     def __init__(self, cfg: Config, store: JobStore, registry: WorkflowRegistry, events: EventBus):
         self.cfg = cfg
         self.store = store
         self.registry = registry
         self.events = events
-        # The workers that run jobs, by name: one per ComfyUI, attached with attach().
-        self.workers: dict[str, WorkerRunner] = {}
+        self.desk: Desk | None = None     # where agents take jobs and report (set by Desk)
         self.loop: asyncio.AbstractEventLoop | None = None
-        self._wake: asyncio.Event | None = None
         self._submit_lock = threading.Lock()
-        self._tasks: list[asyncio.Task] = []
-        self._converting: dict[str, asyncio.Task] = {}   # job id -> conversion task
-        self._converting_set: dict[str, str] = {}         # job id -> its set, for batches converting
         self._set_seen: dict[str, tuple] = {}             # set id -> last state published
-        self._convert_wake: asyncio.Event | None = None
+        # Where inputs are converted, as the jobs are planned. It's sent to the agents as
+        # @scratch/ (fileio.wire), so each converts into its own scratch folder.
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
-
-    def attach(self, worker: WorkerRunner) -> None:
-        """Add a worker that runs this farm's jobs on its ComfyUI."""
-        self.workers[worker.name] = worker
 
     # ================================================================ lifecycle
     async def start(self) -> None:
         self.loop = asyncio.get_running_loop()
         self.events.bind(self.loop)
-        self._wake = asyncio.Event()
-        for j in self.store.list(statuses=("postprocessing",), limit=10000, top_level=False, work_only=True):
-            self.store.update(j["id"], status="failed", finished_at=now(), stage="failed",
-                              error="The gateway restarted while collecting outputs. Frames written "
-                                    f"so far are in {j['info'].get('output_dir')}.")
+        # Jobs waiting for the manager's own conversion (before agents converted their
+        # inputs) go back in the queue: an agent converts them.
+        for j in self.store.list(statuses=("preparing",), limit=10000, top_level=False, work_only=True):
+            if not j["worker"]:
+                self.store.transition(j["id"], ("preparing",), status="queued", stage="queued")
         for s_ in self.store.list(statuses=ACTIVE, limit=10000):
             if s_["kind"] == "set":
                 self._refresh_set(s_["id"])
-        for w in self.workers.values():
-            w.start()   # its health, event and reconcile loops
-        self._tasks.append(asyncio.create_task(self._dispatch_loop(), name="dispatch"))
-        self._convert_wake = asyncio.Event()
-        self._tasks.append(asyncio.create_task(self._convert_loop(), name="convert"))
-        await asyncio.to_thread(self._clean_orphan_scratch)
-        log.info("farm started with workers: %s", ", ".join(self.workers) or "none")
+        if self.desk:
+            await self.desk.start()
+        log.info("manager started")
 
     async def stop(self) -> None:
-        for t in self._tasks:
-            t.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        for w in self.workers.values():
-            await w.stop()
+        if self.desk:
+            await self.desk.stop()
 
     def wake(self) -> None:
-        if self.loop and self._wake:
-            self.loop.call_soon_threadsafe(self._wake.set)
-        if self.loop and self._convert_wake:
-            self.loop.call_soon_threadsafe(self._convert_wake.set)
+        """Something changed that an agent may be waiting for: a job to take, a cancel.
+        Safe from any thread."""
+        if self.desk:
+            self.desk.wake()
+
+    def online_workers(self) -> int:
+        return self.desk.online_count() if self.desk else 0
 
     # ================================================================ events
     def _emit(self, job: dict | None) -> None:
@@ -170,11 +156,11 @@ class Farm:
             return None
         avg = sum(took) / len(took)
         left = sum(1 - (r["progress"] or 0) for r in rows if r["status"] in ACTIVE)
-        return avg * left / max(1, sum(1 for w in self.workers.values() if w.online))
+        return avg * left / max(1, self.online_workers())
 
     def annotate(self, jobs: list[dict]) -> list[dict]:
         """Add queue_position and a rough eta_seconds (from past run times)."""
-        n_workers = max(1, sum(1 for w in self.workers.values() if w.online))
+        n_workers = max(1, self.online_workers())
         avg = {}
 
         def avg_for(wf: str) -> float | None:
@@ -371,10 +357,10 @@ class Farm:
             job = self.store.insert({
                 "id": job_id, "workflow": wf.name, "user": user,
                 "name": name or plan["shot"] or plan["source"],
-                "status": "preparing" if seq and seq.convert else "queued",
+                "status": "queued",
                 "priority": priority, "params": values, "info": info,
                 "prompt": prompt, "output_dir": out_dir, "output_key": plan.get("output_key"),
-                "created_at": now(), "stage": "waiting to convert input" if seq and seq.convert else "queued",
+                "created_at": now(), "stage": "queued",
                 "warnings": list(plan["notes"]),
             })
         log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, plan["source"], out_dir)
@@ -402,6 +388,9 @@ class Farm:
             "preview_name": pc.preview_name,
             # Texture workflows: every map's file names, also frozen per job.
             "textures": textures, "what": what,
+            # What the agent collects when the run is done, from the manifest the prompt
+            # was built with.
+            "collect": {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview")},
         }
 
     def _insert_set(self, plan: dict, set_id: str, user: str, name: str | None, priority: int) -> dict:
@@ -432,12 +421,12 @@ class Farm:
                                                              tex["numbering"]))
             binfo["batch"] = {"set": set_id, "index": k + 1, "of": len(ranges), "tiles": b - a, "label": label}
             rows.append({"id": bid, "kind": "batch", "parent_id": set_id, "workflow": wf.name, "user": user,
-                         "name": f"{name} · {label}", "status": "preparing" if bseq.convert else "queued",
+                         "name": f"{name} · {label}", "status": "queued",
                          "priority": priority, "params": values, "info": binfo,
                          "prompt": wf.build(values, bseq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
                                             textures=btex),
                          "output_dir": out_dir, "output_key": None, "created_at": t,
-                         "stage": "waiting to convert input" if bseq.convert else "queued", "warnings": []})
+                         "stage": "queued", "warnings": []})
         self.store.insert_many(rows)
         return self._refresh_set(set_id) or self.store.get(set_id)
 
@@ -460,11 +449,9 @@ class Farm:
         self.store.update(set_id, cancel_requested=0)
         self._set_seen.pop(set_id, None)
         for b in targets:
-            convert = ((b["info"] or {}).get("input") or {}).get("convert")
-            self.store.transition(b["id"], ("failed", "cancelled"), status="preparing" if convert else "queued",
-                                  stage="waiting to convert input" if convert else "queued", error=None,
+            self.store.transition(b["id"], ("failed", "cancelled"), status="queued", stage="queued", error=None,
                                   progress=0, worker=None, prompt_id=None, dispatched_at=None, started_at=None,
-                                  finished_at=None, cancel_requested=0, outputs=None)
+                                  finished_at=None, cancel_requested=0, outputs=None, lease_until=None)
         log.info("set %s: retrying %d batch(es)", set_id[:8], len(targets))
         j = self._refresh_set(set_id)
         self.wake()
@@ -488,27 +475,24 @@ class Farm:
         jid = job["id"]
         if job["kind"] == "set":
             return await self._cancel_set(job)
-        if job["status"] in ("preparing", "queued"):
-            j = self.store.transition(jid, ("preparing", "queued"), status="cancelled", stage="cancelled",
-                                      finished_at=now())
+        if job["status"] in ("queued", "preparing"):
+            # Not in a ComfyUI yet, so it's cancelled now. An agent preparing it (converting
+            # its input) is told to drop it, and anything it reports about it is ignored.
+            j = self.store.transition(jid, ("queued", "preparing"), status="cancelled", stage="cancelled",
+                                      finished_at=now(), cancel_requested=1)
             if j:
-                task = self._converting.pop(jid, None)
-                if task:
-                    task.cancel()   # kills oiiotool/ffmpeg
-                S.cleanup(j, self.scratch_root)
                 self._emit(j)
+                self.wake()
                 return j
             job = self.store.get(jid)
         if job["status"] in ON_WORKER:
-            w = self.workers.get(job["worker"])
-            pid = job["prompt_id"]
-            job = self.store.update(jid, cancel_requested=1, stage="cancelling")
-            self._emit(job)
-            if w is None:
-                return self._finish_cancel(jid)
-            if await w.cancel(jid, pid):
-                return self._finish_cancel(jid)   # it was only waiting; now gone
-            return self.store.get(jid)   # the interrupt event finishes it
+            if self.desk is None or not self.desk.alive(job["worker"]):
+                return self._finish_cancel(jid)   # its agent is gone; told to drop it if it comes back
+            # Its agent takes it out of ComfyUI and reports it cancelled.
+            j = self.store.transition(jid, ON_WORKER, cancel_requested=1, stage="cancelling")
+            self._emit(j)
+            self.wake()
+            return j or self.store.get(jid)
         if job["status"] == "postprocessing":
             raise FarmError("The job already finished on the GPU and is collecting outputs.", 409)
         raise FarmError(f"Job is already {job['status']}.", 409)
@@ -527,19 +511,16 @@ class Farm:
                 pass
         return self._refresh_set(job["id"]) or self.store.get(job["id"])
 
-    def _finish_cancel(self, job_id: str) -> dict | None:
-        j = self.store.transition(job_id, ON_WORKER + ("queued",), status="cancelled",
-                                  stage="cancelled", finished_at=now())
-        if j:
-            self._forget(j)
-            S.cleanup(j, self.scratch_root)
+    def _finish_cancel(self, job_id: str, only_prompt: str | None = None) -> dict | None:
+        j = self.store.transition(job_id, ("queued", "preparing", "dispatched", "running"), only_prompt=only_prompt,
+                                  status="cancelled", stage="cancelled", finished_at=now())
         self._emit(j)
         self.wake()
         return j or self.store.get(job_id)
 
     def _fail(self, job_id: str, message: str, from_statuses: tuple = ACTIVE,
-              traceback: str | None = None) -> dict | None:
-        j = self.store.transition(job_id, from_statuses, status="failed", error=message,
+              traceback: str | None = None, only_prompt: str | None = None) -> dict | None:
+        j = self.store.transition(job_id, from_statuses, only_prompt=only_prompt, status="failed", error=message,
                                   stage="failed", finished_at=now())
         if j:
             log.warning("job %s failed: %s", job_id[:8], message)
@@ -547,222 +528,39 @@ class Farm:
                 info = dict(j["info"] or {})
                 info["traceback"] = traceback[-8000:]
                 j = self.store.update(job_id, info=info)
-            self._forget(j)
-            if not self.cfg.convert.keep_failed:
-                S.cleanup(j, self.scratch_root)
         self._emit(j)
         self.wake()
         return j
 
-    # ================================================================ input conversion
-    def _clean_orphan_scratch(self) -> None:
-        """Converted frames of jobs that are gone (finished while the gateway was down)."""
-        active = {j["id"] for j in self.store.list(statuses=ACTIVE, limit=100000, top_level=False)}
-
-        def keep(name: str) -> bool:
-            if name in active:
-                return True
-            job = self.store.get(name)
-            return bool(self.cfg.convert.keep_failed and job and job["status"] == "failed")
-
-        S.clean_orphans(self.scratch_root, keep)
-
-    async def _convert_loop(self) -> None:
-        """Convert EXR/movie inputs ahead of the GPU: jobs wait in 'preparing', then join
-        the queue in their original order once their frames are ready."""
-        while True:
-            try:
-                await asyncio.wait_for(self._convert_wake.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                pass
-            self._convert_wake.clear()
-            try:
-                waiting = [j for j in reversed(self.store.list(statuses=("preparing",), limit=10000,
-                                                               top_level=False, work_only=True))
-                           if j["id"] not in self._converting]
-                # A set's batches are converted only a few ahead of the GPU, so other jobs'
-                # inputs get converted in between and scratch space stays small.
-                ahead = self.store.queued_batches()
-                ahead.update(p for p in self._converting_set.values())
-                for job in waiting:
-                    if len(self._converting) >= max(1, self.cfg.convert.max_parallel_jobs):
-                        break
-                    pid = job.get("parent_id")
-                    if pid and ahead[pid] >= max(1, self.cfg.convert.batches_ahead):
-                        continue
-                    if pid:
-                        ahead[pid] += 1
-                        self._converting_set[job["id"]] = pid
-                    task = asyncio.create_task(self._convert_job(job["id"]), name=f"convert-{job['id'][:8]}")
-                    self._converting[job["id"]] = task
-                    task.add_done_callback(lambda _t, jid=job["id"]: (self._converting.pop(jid, None),
-                                                                      self._converting_set.pop(jid, None)))
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                log.exception("convert loop error")
-
-    async def _convert_job(self, job_id: str) -> None:
-        job = self.store.get(job_id)
-        if not job or job["status"] != "preparing":
-            return
-        seq_info = (job["info"] or {}).get("input") or {}
-        conv = seq_info.get("convert", {})
-        kind = conv.get("kind", "?")
-        to = conv.get("to") or "PNG"
-        at = f" at {conv['work_resolution']} px" if conv.get("scaled") else ""
-        label = {"exr": f"converting EXR to {to}{at}", "movie": "extracting movie frames",
-                 "image": f"scaling the input to {conv.get('work_resolution')} px"}.get(kind, kind)
-        t0 = now()
-        last = [0.0]
-
-        def progress(done: int, total: int) -> None:
-            if now() - last[0] < 0.5 and done < total:
-                return
-            last[0] = now()
-            self._emit(self.store.transition(job_id, ("preparing",), stage=f"{label} {done}/{total}"))
-
-        self._emit(self.store.transition(job_id, ("preparing",), stage=label))
-        log.info("job %s: %s", job_id[:8], label)
-        try:
-            await C.convert(seq_info, self.cfg.convert, progress)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            msg = str(e) if isinstance(e, (C.ConvertError, P.SequenceError)) else f"{type(e).__name__}: {e}"
-            self._fail(job_id, f"Converting the input failed: {msg}", ("preparing",))
-            return
-        j = self.store.transition(job_id, ("preparing",), status="queued", stage="queued")
-        if j:
-            log.info("job %s: input ready in %.0fs", job_id[:8], now() - t0)
-            self._emit(j)
-            self.wake()
-        else:   # cancelled meanwhile
-            S.cleanup(self.store.get(job_id) or {}, self.scratch_root)
-
-    # ================================================================ dispatch
-    async def _dispatch_loop(self) -> None:
-        while True:
-            try:
-                await asyncio.wait_for(self._wake.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                pass
-            self._wake.clear()
-            try:
-                await self._dispatch_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                log.exception("dispatch error")
-
-    async def _dispatch_once(self) -> None:
-        online = [w for w in self.workers.values() if w.online and w.ws_connected and w.checked]
-        if not online:
-            return
-        for job in self.store.queued():
-            capable = online
-            if self.cfg.farm.strict_preflight:
-                capable = [w for w in online if not w.problems.get(job["workflow"])]
-                if not capable:
-                    probs = online[0].problems[job["workflow"]]
-                    self._fail(job["id"], "The farm machine can't run this workflow: " + "; ".join(probs[:4])
-                               + (f" (+{len(probs) - 4} more)" if len(probs) > 4 else "")
-                               + ". Run `python -m comfyfarm check` on the farm machine.", ("queued",))
-                    continue
-            free = [w for w in capable if self.store.count_on_worker(w.name) < w.cfg.max_inflight]
-            if not free:
-                continue
-            w = min(free, key=lambda x: self.store.count_on_worker(x.name))
-            job = self.store.get(job["id"], with_prompt=True)
-            if job is None or job["status"] != "queued":
-                continue
-            if await w.dispatch(job) is None:
-                return   # worker trouble; try again on the next tick
-
-    async def check_workers(self) -> dict:
-        for w in self.workers.values():
-            if w.online:
-                await w.refresh_object_info()
-        return {w.name: w.summary() for w in self.workers.values()}
-
-    # ================================================================ host for the workers
-    # protocol.JobHost: what a WorkerRunner reads and reports through.
-    def job(self, job_id: str, with_prompt: bool = False) -> dict | None:
-        return self.store.get(job_id, with_prompt=with_prompt)
-
-    def job_by_prompt(self, prompt_id: str) -> dict | None:
-        return self.store.by_prompt_id(prompt_id)
-
-    def jobs_on_worker(self, worker: str, statuses: tuple = ON_WORKER) -> list[dict]:
-        return self.store.on_worker(worker, statuses)
-
-    def inflight(self, worker: str) -> int:
-        return self.store.count_on_worker(worker)
-
-    def transition(self, job_id: str, from_statuses: tuple, **fields) -> dict | None:
-        return self.store.transition(job_id, from_statuses, **fields)
-
-    def emit(self, job: dict | None) -> None:
-        self._emit(job)
-
-    def fail(self, job_id: str, message: str, from_statuses: tuple = ACTIVE,
-             traceback: str | None = None) -> dict | None:
-        return self._fail(job_id, message, from_statuses, traceback=traceback)
-
-    def finish_cancel(self, job_id: str) -> dict | None:
-        return self._finish_cancel(job_id)
-
+    # ================================================================ what agents report
     def lost(self, job: dict, reason: str) -> None:
-        """A worker lost a job (its ComfyUI restarted, or it was unreachable too long):
-        queue it again, or give up after farm.max_attempts.
+        """An agent lost a job's run (its ComfyUI restarted, the agent restarted or stopped
+        checking in): queue it again, or give up after farm.max_attempts runs in ComfyUI.
 
-        Only about the run the job is on now. The report carries the worker's view of the
-        job, which can be stale: the job may have been queued again and sent to ComfyUI
-        since (another check of the same worker got there first). Requeuing it then would
-        run it twice, so a report about an earlier run is ignored."""
+        Only about the run the job is on now (job["prompt_id"] is the run's attempt id).
+        The caller's view of the job can be stale: the job may have been queued again and
+        taken by an agent since. Requeuing it then would run it twice, so a report about an
+        earlier run is ignored."""
         pid = job.get("prompt_id")
         job = self.store.get(job["id"])
-        if not job or job["status"] not in ON_WORKER or not pid or job["prompt_id"] != pid:
+        if not job or job["status"] not in HELD or not pid or job["prompt_id"] != pid:
             return
         if job["cancel_requested"]:
-            self._finish_cancel(job["id"])
+            self._finish_cancel(job["id"], only_prompt=pid)
         elif job["attempts"] < self.cfg.farm.max_attempts:
-            j = self.store.transition(job["id"], ON_WORKER, only_prompt=pid, status="queued", worker=None,
+            j = self.store.transition(job["id"], HELD, only_prompt=pid, status="queued", worker=None,
                                       prompt_id=None, progress=0, stage="requeued", started_at=None,
-                                      warnings=job["warnings"] + [reason])
+                                      dispatched_at=None, lease_until=None, warnings=job["warnings"] + [reason])
             if j is None:
                 return
             log.warning("job %s requeued: %s", job["id"][:8], reason)
             self._emit(j)
             self.wake()
         else:
-            self._fail(job["id"], f"{reason} Gave up after {job['attempts']} attempts.", ON_WORKER)
+            self._fail(job["id"], f"{reason} Gave up after {job['attempts']} attempts.", HELD, only_prompt=pid)
 
     def record_run(self, workflow: str, seconds: float, node_count: int | None) -> None:
         self.store.record_run(workflow, seconds, node_count)
-
-    def worker_changed(self, worker: WorkerRunner) -> None:
-        self.events.publish({"type": "worker", "worker": worker.summary()})
-
-    def workflow(self, name: str) -> Workflow | None:
-        return self.registry.workflows.get(name)
-
-    def workflow_stats(self, name: str) -> dict:
-        return self.store.stats(name)
-
-    def workflow_problems(self, object_info: dict) -> dict[str, list[str]]:
-        problems = {}
-        for name, wf in self.registry.workflows.items():
-            probs = wf.check_object_info(object_info)
-            if probs:
-                problems[name] = probs
-        return problems
-
-    def _forget(self, job: dict) -> None:
-        """A job that ended here (failed, cancelled): its worker stops following it."""
-        w = self.workers.get(job.get("worker") or "")
-        if w is not None and job.get("prompt_id"):
-            w.forget(job["prompt_id"])
 
 
 __all__ = ["Farm", "FarmError", "ParamError"]

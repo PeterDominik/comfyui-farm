@@ -182,7 +182,7 @@ class FarmSetTests(unittest.TestCase):
             full = self.store.get(b["id"], with_prompt=True)
             c = b["info"]["input"]["convert"]
             self.assertEqual((b["kind"], b["status"], b["output_dir"], b["output_key"]),
-                             ("batch", "preparing", out, None))
+                             ("batch", "queued", out, None))
             self.assertEqual(c["dst_dir"], f"{self.root}/scratch/{b['id']}/")   # its own scratch folder
             self.assertEqual(full["prompt"]["17"]["inputs"]["directory"], c["dst_dir"])
             self.assertEqual(full["prompt"]["28"]["inputs"]["output_path"], f"{self.root}/scratch/{b['id']}/maps")
@@ -216,7 +216,7 @@ class FarmSetTests(unittest.TestCase):
         # Retry failed: only that batch, back to converting; the set is running again.
         s = self.farm.retry_failed(s["id"])
         self.assertEqual((s["status"], s["error"]), ("running", None))
-        self.assertEqual([b["status"] for b in self.store.list(parent=s["id"])], ["done", "preparing", "done"])
+        self.assertEqual([b["status"] for b in self.store.list(parent=s["id"])], ["done", "queued", "done"])
         self.assertTrue(self.store.output_reserved(out + "/"))
         self.finish(self.store.get(batches[1]["id"]))
         s = self.store.get(s["id"])
@@ -235,7 +235,7 @@ class FarmSetTests(unittest.TestCase):
         with self.assertRaisesRegex(FarmError, "already cancelled"):
             asyncio.run(self.farm.cancel(s["id"]))
         s = self.farm.retry_failed(s["id"])     # cancelled batches can be finished later too
-        self.assertEqual((s["status"], len(self.store.list(parent=s["id"], statuses=("preparing",)))), ("queued", 3))
+        self.assertEqual((s["status"], len(self.store.list(parent=s["id"], statuses=("queued",)))), ("queued", 3))
 
     def test_tiles_of_another_size_get_their_own_batch(self):
         """Even under the batch size: the loader would crop them to the others' size."""
@@ -268,30 +268,6 @@ class FarmSetTests(unittest.TestCase):
         self.assertEqual(M.image_size(f"{self.root}/scratch/{b1['id']}/rockA_color.1004.png"), (1024, 1024))
         with self.assertRaisesRegex(C.ConvertError, "rockA_color.1005.exr has no R, G, B"):
             asyncio.run(C.convert(b2["info"]["input"], self.farm.cfg.convert, lambda d, n: None))
-
-    def test_conversion_stays_a_few_batches_ahead(self):
-        src = self.tiles("src", "rockA_diffuse", range(1001, 1021), png_bytes(2, (2048, 2048)))
-        s = self.farm.submit("chord_pbr", {"input": src}, "ann")
-        single = self.farm.submit("chord_pbr", {"input": src + "/rockA_diffuse.%04d.png 1001-1001"}, "bob")
-        started = []
-
-        async def fake_convert(job_id):
-            started.append(job_id)
-            self.store.transition(job_id, ("preparing",), status="queued")
-
-        async def run():
-            self.farm._convert_job = fake_convert
-            self.farm._convert_wake = asyncio.Event()
-            loop = asyncio.create_task(self.farm._convert_loop())
-            for _ in range(20):
-                await asyncio.sleep(0.05)
-                self.farm._convert_wake.set()
-            loop.cancel()
-
-        asyncio.run(run())
-        batches = [b["id"] for b in self.store.list(parent=s["id"])]
-        # Two of the set's five batches (convert.batches_ahead), and bob's job in between.
-        self.assertEqual(started, batches[:2] + [single["id"]])
 
 
 if __name__ == "__main__":

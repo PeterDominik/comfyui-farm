@@ -1,5 +1,6 @@
 # local, per-machine
 config.yaml
+agent.yaml
 data/
 logs/
 mock_output/

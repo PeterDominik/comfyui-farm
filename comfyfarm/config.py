@@ -103,13 +103,12 @@ class MovieConvertConfig(BaseModel):
 
 
 class ConvertConfig(BaseModel):
-    """EXR sequences and movies are converted to PNG frames on the farm machine before
-    the workflow runs, so one ComfyUI graph handles every input format."""
+    """EXR sequences and movies are converted to PNG frames on the worker that runs the
+    job, before the workflow runs, so one ComfyUI graph handles every input format."""
     scratch_dir: str = "data/scratch"
     max_parallel_jobs: int = 1      # conversions at once (CPU/disk); they overlap GPU work
     frame_workers: int = 6          # oiiotool processes per EXR job
     keep_failed: bool = False       # keep converted frames of failed jobs for debugging
-    batches_ahead: int = 2          # texture sets: batches converted ahead of the GPU
     # Empty = look next to the gateway's Python (the venv), then on PATH.
     # A path, or a command as a list (e.g. [python, script.py]).
     tools: dict[str, str | list[str]] = Field(default_factory=lambda: {"oiiotool": "", "ffmpeg": "", "ffprobe": ""})
@@ -130,11 +129,19 @@ class AuthConfig(BaseModel):
     admins: list[str] = Field(default_factory=list)
 
 
+class AgentsConfig(BaseModel):
+    """Agents on other machines (`comfyfarm agent`) check in over HTTP."""
+    # Shared secret agents send (their agent.yaml `token`). Empty = any agent may check in.
+    token: str = ""
+
+
 class FarmConfig(BaseModel):
     max_attempts: int = 2            # resubmits when a worker loses a job (crash/restart)
     reconcile_seconds: float = 20.0  # cross-check job state against ComfyUI this often
     health_seconds: float = 5.0
-    lost_after_seconds: float = 300.0  # worker unreachable this long -> its jobs are requeued
+    # An agent that hasn't checked in for this long has its jobs queued again (its lease);
+    # an agent whose ComfyUI is unreachable this long gives its jobs back.
+    lost_after_seconds: float = 300.0
     delete_comfy_history: bool = True  # drop finished prompts from ComfyUI's in-memory history
     # Fail jobs straight away when the worker is missing a node pack, an input the
     # workflow uses, or a model file (see `python -m comfyfarm check`).
@@ -153,6 +160,7 @@ class Config(BaseModel):
     convert: ConvertConfig = Field(default_factory=ConvertConfig)
     textures: TexturesConfig = Field(default_factory=TexturesConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)
     obsolete_keys: list[str] = Field(default_factory=list, exclude=True)
@@ -160,6 +168,67 @@ class Config(BaseModel):
     def resolve(self, p: str) -> Path:
         path = Path(p)
         return path if path.is_absolute() else (self.base_dir / path)
+
+
+class AgentPathsConfig(BaseModel):
+    # Show storage as Linux workstations see it, and as this machine sees it. Empty on a
+    # Linux machine that mounts it at the same place.
+    mappings: list[PathMapping] = Field(default_factory=list)
+
+
+class AgentConfig(BaseModel):
+    """One agent: runs the manager's jobs on one ComfyUI (agent.example.yaml). Everything
+    here describes this machine; how jobs are run (colour, naming, versions) comes with
+    each job from the manager."""
+    name: str                                   # as the dashboard shows it, e.g. rtx5090-a
+    manager: str = "http://127.0.0.1:8000"      # the manager's address
+    token: str = ""                             # the manager's agents.token, if it has one
+    comfyui: str = "http://127.0.0.1:8188"      # this machine's ComfyUI (keep it on localhost)
+    max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
+    log_dir: str = "logs"
+    paths: AgentPathsConfig = Field(default_factory=AgentPathsConfig)
+    convert: ConvertConfig = Field(default_factory=ConvertConfig)   # scratch_dir, tools, frame_workers
+    textures: TexturesConfig = Field(default_factory=TexturesConfig)
+    heartbeat_wait: float = 10.0       # the manager holds a check-in this long while it has nothing for us
+    retry_seconds: float = 2.0         # first wait when the manager can't be reached (doubles, up to 30)
+    health_seconds: float = 5.0        # ComfyUI checked this often
+    reconcile_seconds: float = 20.0    # our jobs cross-checked against ComfyUI's queue and history
+    lost_after_seconds: float = 300.0  # ComfyUI unreachable this long: its jobs go back to the manager
+    delete_comfy_history: bool = True
+
+    base_dir: Path = Field(default=Path("."), exclude=True)
+
+    def resolve(self, p: str) -> Path:
+        path = Path(p)
+        return path if path.is_absolute() else (self.base_dir / path)
+
+
+def standalone_agent_config(cfg: Config, worker: WorkerConfig, scratch_dir: str | None = None) -> AgentConfig:
+    """The agent of one of config.yaml's workers, run inside the manager (standalone)."""
+    convert = cfg.convert.model_copy()
+    if scratch_dir:
+        convert.scratch_dir = scratch_dir
+    return AgentConfig(name=worker.name, comfyui=worker.url, max_inflight=worker.max_inflight, log_dir=cfg.log_dir,
+                       paths=AgentPathsConfig(mappings=cfg.paths.mappings), convert=convert, textures=cfg.textures,
+                       health_seconds=cfg.farm.health_seconds, reconcile_seconds=cfg.farm.reconcile_seconds,
+                       lost_after_seconds=cfg.farm.lost_after_seconds,
+                       delete_comfy_history=cfg.farm.delete_comfy_history, base_dir=cfg.base_dir)
+
+
+def default_agent_config_path() -> Path:
+    env = os.environ.get("COMFYFARM_AGENT_CONFIG")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parent.parent / "agent.yaml"
+
+
+def load_agent_config(path: str | os.PathLike | None = None) -> AgentConfig:
+    cfg_path = Path(path) if path else default_agent_config_path()
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"No agent config at {cfg_path}. Copy agent.example.yaml to agent.yaml and edit it.")
+    cfg = AgentConfig.model_validate(yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {})
+    cfg.base_dir = cfg_path.resolve().parent
+    return cfg
 
 
 def default_config_path() -> Path:
@@ -208,6 +277,9 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     if old_ocio:
         cfg.obsolete_keys.append(f"ocio: {', '.join(old_ocio)} no longer used; the repo's ocio/config.ocio "
                                  f"names its colour spaces itself. Delete those lines")
+    if "batches_ahead" in (data.get("convert") or {}):
+        cfg.obsolete_keys.append("convert.batches_ahead is no longer used: each worker converts the job it "
+                                 "takes next while its GPU runs the current one. Delete the line")
     patterns = paths.get("context_patterns")
     if patterns and not any("movhistory" in p for p in patterns):
         cfg.obsolete_keys.append("paths.context_patterns has no shot movhistory pattern; add "

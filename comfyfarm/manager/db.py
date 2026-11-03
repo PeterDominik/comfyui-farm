@@ -14,9 +14,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ..protocol import ACTIVE, FINISHED, ON_WORKER, now
+from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 
-__all__ = ["JobStore", "ACTIVE", "ON_WORKER", "FINISHED", "now"]
+__all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "now"]
 
 JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt")
 
@@ -76,6 +76,8 @@ class JobStore:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'job'")
             if "parent_id" not in have:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN parent_id TEXT")
+            if "lease_until" not in have:   # an agent holds the job until then (protocol.py)
+                self._db.execute("ALTER TABLE jobs ADD COLUMN lease_until REAL")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id)")
 
@@ -216,7 +218,7 @@ class JobStore:
         rows = self._q("SELECT * FROM jobs WHERE status='queued' AND kind != 'set' "
                        "ORDER BY created_at ASC, rowid ASC")
         busy = self._q("SELECT user, COALESCE(parent_id, id) AS grp FROM jobs "
-                       "WHERE status IN ('dispatched','running') AND kind != 'set'")
+                       "WHERE status IN ('preparing','dispatched','running') AND kind != 'set'")
         users, groups = Counter(r["user"] for r in busy), Counter(r["grp"] for r in busy)
         rows = sorted(rows, key=lambda r: (-r["priority"], users[r["user"]], groups[r["parent_id"] or r["id"]]))
         return [self._row(r, with_prompt=with_prompt) for r in rows]
@@ -230,6 +232,26 @@ class JobStore:
                    json_extract(info, '$.textures.items') AS items, json_extract(outputs, '$.files') AS files
             FROM jobs WHERE parent_id=? ORDER BY created_at ASC, rowid ASC""", (set_id,))
         return [dict(r) for r in rows]
+
+    def held_by(self, worker: str, with_prompt: bool = False) -> list[dict]:
+        """The jobs leased to this agent (preparing, in its ComfyUI, or collecting outputs)."""
+        return self.on_worker(worker, HELD) if with_prompt else [
+            self._row(r) for r in self._q(f"SELECT * FROM jobs WHERE worker=? AND status IN ({','.join('?' * len(HELD))})",
+                                          (worker, *HELD))]
+
+    def lease_expired(self, t: float) -> list[dict]:
+        """Held jobs whose agent hasn't renewed the lease by t."""
+        marks = ",".join("?" * len(HELD))
+        return [self._row(r) for r in self._q(
+            f"SELECT * FROM jobs WHERE status IN ({marks}) AND (lease_until IS NULL OR lease_until < ?)", (*HELD, t))]
+
+    def extend_leases(self, until: float) -> int:
+        """Every held job's lease runs until at least `until` (the manager starting: its
+        agents get a full lease to check in again)."""
+        marks = ",".join("?" * len(HELD))
+        with self._lock:
+            return self._db.execute(f"UPDATE jobs SET lease_until=? WHERE status IN ({marks}) AND "
+                                    f"(lease_until IS NULL OR lease_until < ?)", (until, *HELD, until)).rowcount
 
     def queued_batches(self) -> Counter:
         """Converted batches waiting for the GPU, per set."""

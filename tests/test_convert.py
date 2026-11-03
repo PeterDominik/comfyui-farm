@@ -190,11 +190,12 @@ class OcioTests(unittest.TestCase):
         path = f"{self.root}/config.yaml"
         with open(path, "w") as fh:
             fh.write("ocio:\n  config: ocio/config.ocio\n  linear: scene_linear\n  image: color_picking\n"
-                     "  data: data\n  context: {}\n")
+                     "  data: data\n  context: {}\nconvert:\n  batches_ahead: 2\n")
         cfg = load_config(path)
         self.assertEqual(cfg.ocio.config, "ocio/config.ocio")
         self.assertTrue(any(n.startswith("ocio: context, data, image, linear no longer used") for n in cfg.obsolete_keys),
                         cfg.obsolete_keys)
+        self.assertTrue(any(n.startswith("convert.batches_ahead is no longer used") for n in cfg.obsolete_keys))
 
     def test_missing_config(self):
         os.remove(f"{self.root}/ocio/config.ocio")

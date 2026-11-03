@@ -1,4 +1,5 @@
-"""The manager's REST + websocket API and the dashboard."""
+"""The manager's REST + websocket API, the dashboard, and the endpoints agents check in
+at (/api/v1/agent/..., protocol.py)."""
 
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from ..fileio.errors import SequenceError
 from ..fileio.naming import default_output_dir_display
 from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
+from .desk import Desk
 from .events import EventBus
 from .farm import Farm, FarmError
 
@@ -41,25 +43,39 @@ class JobRequest(BaseModel):
     user: str | None = None   # ignored when API keys are configured
 
 
-def create_app(cfg: Config) -> FastAPI:
+def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
+    """The manager. With local_agents (standalone), an agent for each of config.yaml's
+    workers runs in this process too; agents on other machines can check in either way."""
     store = JobStore(cfg.resolve(cfg.database))
     registry = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
     events = EventBus()
     farm = Farm(cfg, store, registry, events)
-    # Standalone: each configured ComfyUI gets a worker in this process.
-    from ..agent.worker import WorkerRunner
-    for w in cfg.workers:
-        if w.enabled:
-            farm.attach(WorkerRunner(w, cfg, farm))
+    desk = Desk(farm)
+    agents = []
+    if local_agents:
+        from ..agent.agent import Agent
+        from ..agent.link import LocalLink
+        from ..config import standalone_agent_config
+        enabled = [w for w in cfg.workers if w.enabled]
+        for w in enabled:
+            # One worker converts into the scratch folder itself; several each get their own.
+            scratch = cfg.convert.scratch_dir if len(enabled) == 1 else f"{cfg.convert.scratch_dir}/{w.name}"
+            agents.append(Agent(standalone_agent_config(cfg, w, scratch), LocalLink(desk)))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await farm.start()
+        for a in agents:
+            a.start()
         yield
+        for a in agents:
+            await a.stop()
         await farm.stop()
 
     app = FastAPI(title="ComfyUI farm", version=__version__, lifespan=lifespan)
     app.state.farm = farm
+    app.state.desk = desk
+    app.state.agents = agents
 
     # ------------------------------------------------------------ errors
     @app.exception_handler(ParamError)
@@ -108,7 +124,7 @@ def create_app(cfg: Config) -> FastAPI:
     def health():
         return {"ok": True, "version": __version__,
                 "auth": bool(cfg.auth.api_keys),
-                "workers_online": sum(1 for w in farm.workers.values() if w.online),
+                "workers_online": farm.online_workers(),
                 "queued": len(store.queued(with_prompt=False))}
 
     @app.get("/api/v1/workflows")
@@ -122,8 +138,8 @@ def create_app(cfg: Config) -> FastAPI:
                     tpl = next((d for d in wf.textures.dirs if "{asset}" in d), wf.textures.dirs[0]) \
                         if wf.textures else None
                     p["placeholder"] = "Empty = " + default_output_dir_display(cfg.paths, wf.tag, tpl)
-            s["worker_problems"] = {w.name: w.problems[wf.name] for w in farm.workers.values()
-                                    if wf.name in w.problems}
+            s["worker_problems"] = {a.name: a.problems[wf.name] for a in list(desk.agents.values())
+                                    if wf.name in a.problems}
             out.append(s)
         return {"workflows": out, "load_errors": registry.load_errors}
 
@@ -197,13 +213,42 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/v1/workers")
     def workers(ident: Identity = Depends(identity)):
-        return {"workers": [w.summary() for w in farm.workers.values()]}
+        return {"workers": desk.summaries()}
 
     @app.post("/api/v1/workers/check")
     async def check_workers(ident: Identity = Depends(identity)):
+        """Agents send their ComfyUI's node definitions again (shortly; the reply shows
+        the workers as they are now)."""
         if cfg.auth.api_keys and not ident.admin:
             raise HTTPException(403, "Admins only.")
-        return {"workers": list((await farm.check_workers()).values())}
+        desk.request_nodes()
+        return {"workers": desk.summaries()}
+
+    # ------------------------------------------------------------ agents (protocol.py)
+    def agent_auth(x_agent_token: str | None = Header(None)) -> None:
+        if cfg.agents.token and x_agent_token != cfg.agents.token:
+            raise HTTPException(401, "Unknown agent token (agents.token in the manager's config.yaml).")
+
+    # async: the desk runs on the event loop, with the jobs' state.
+    @app.post("/api/v1/agent/hello", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_hello(request: Request):
+        return desk.hello(await request.json())
+
+    @app.post("/api/v1/agent/status", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_status(request: Request):
+        return desk.status(await request.json())
+
+    @app.post("/api/v1/agent/nodes", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_nodes(request: Request):
+        return desk.nodes(await request.json())
+
+    @app.post("/api/v1/agent/heartbeat", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_heartbeat(request: Request):
+        return await desk.heartbeat(await request.json())
+
+    @app.post("/api/v1/agent/report", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_report(request: Request):
+        return desk.report(await request.json())
 
     @app.websocket("/api/v1/events")
     async def events_ws(ws: WebSocket):
@@ -216,7 +261,7 @@ def create_app(cfg: Config) -> FastAPI:
             await ws.send_json({
                 "type": "snapshot",
                 "jobs": farm.annotate(store.list(limit=200)),
-                "workers": [w.summary() for w in farm.workers.values()],
+                "workers": desk.summaries(),
             })
             while True:
                 try:
