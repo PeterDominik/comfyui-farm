@@ -22,35 +22,48 @@ the GPU's memory at once) is a set: one output folder, filled by batches of tile
 each run through the workflow on their own (split_batches()).
 
 The manifest's `textures` section lists the save node of each map and its channel.
-ComfyUI writes PNGs into the job's scratch folder; once the job is done, write_maps()
-converts each one with oiiotool straight to its final name.
+ComfyUI writes PNGs into the job's scratch folder; once the job is done,
+fileio.outputs.write_maps() converts each one with oiiotool straight to its final name.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
 import re
-import uuid
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from . import convert as C
+from . import naming as N
 from . import paths as P
-from .config import ConvertConfig, PathMapping, TexturesConfig
+from .errors import SequenceError
+from .inputs import texture_numbers
+
+if TYPE_CHECKING:   # type hints only: fileio never imports pydantic
+    from ..config import PathMapping
+
+__all__ = ["TextureSpec", "MapSpec", "items_for", "resolve_tile", "name_tokens", "file_name", "name_pattern",
+           "split_batches", "batch_label", "output_dir", "describe", "map_outputs"]
+
 
 NAME_TOKENS = {"colorspace", "uvset", "tile", "state", "channel", "description", "udim", "frame"}
+
 DIR_TOKENS = {"root", "show", "seq", "shot", "asset", "source", "tag", "version"}
+
 DEFAULT_NAME = "{colorspace}_{uvset}_{tile}_{state}_{channel}{description}.{udim:04d}.{frame:04d}.exr"
+
 # Where a job's maps go: the first of these whose tokens the input path gives.
 DEFAULT_DIRS = [
     "{root}/{shot}/{source}.{tag}_v{version:03d}",
     "{root}/{asset}/{source}.{tag}_v{version:03d}",
     "{root}/{source}.{tag}_v{version:03d}",
 ]
+
 # Params the gateway reads by name for the file names (manifest params with naming: true).
 NAMING_PARAMS = {"uvset", "tile", "state", "description", "numbering"}
+
 DEFAULTS = {"uvset": "map1", "tile": "auto", "state": "defState", "description": "", "numbering": "udim"}
+
 CHANNEL_RE = re.compile(r"^[a-z]+\d{2}$")
+
 RESERVED_CHANNELS = {"bmp01", "nrm01", "dsp01", "cav01"}   # modeling's published maps
 
 
@@ -127,24 +140,23 @@ class TextureSpec:
         return problems
 
 
-# ============================================================== names
 def items_for(names: list[str], numbering: str) -> tuple[list[tuple[int, int]], bool]:
     """(UDIM, frame) for each input texture, and whether the names carried UDIMs.
     Refuses inputs where two images would get the same output name."""
     items, has_udim, by_key = [], False, {}
     for n in names:
-        udim, frame, had = P.texture_numbers(n, numbering)
+        udim, frame, had = texture_numbers(n, numbering)
         key = (udim, frame)
         if key in by_key:
             hint = (" If these are animation frames rather than UDIM tiles, set Numbering to frame."
                     if numbering == "udim" else "")
-            raise P.SequenceError(f"{by_key[key]} and {n} would both be written as UDIM {udim}, frame {frame:04d}."
+            raise SequenceError(f"{by_key[key]} and {n} would both be written as UDIM {udim}, frame {frame:04d}."
                                   + hint)
         by_key[key] = n
         items.append(key)
         has_udim |= had
     if not items:
-        raise P.SequenceError("No input textures.")
+        raise SequenceError("No input textures.")
     return items, has_udim
 
 
@@ -152,7 +164,7 @@ def resolve_tile(choice: str, items: list[tuple[int, int]], has_udim: bool) -> s
     """auto: a UDIM set is noTile, anything else a tileable 1001 texture."""
     udims = sorted({u for u, _ in items})
     if choice == "tile" and udims != [1001]:
-        raise P.SequenceError(f"A tile texture is one 1001 tile, but this input has UDIMs "
+        raise SequenceError(f"A tile texture is one 1001 tile, but this input has UDIMs "
                               f"{', '.join(map(str, udims[:8]))}{'…' if len(udims) > 8 else ''}. "
                               f"Use noTile (or auto).")
     if choice in ("tile", "noTile"):
@@ -217,10 +229,10 @@ def output_dir(dirs: list[str], **tokens) -> str:
     """The first folder template whose tokens are all known."""
     for tpl in dirs:
         try:
-            return P.output_dir(tpl, **tokens)
-        except P.SequenceError:
+            return N.output_dir(tpl, **tokens)
+        except SequenceError:
             continue
-    raise P.SequenceError("Can't build the output folder from the input path. Give an Output folder instead.")
+    raise SequenceError("Can't build the output folder from the input path. Give an Output folder instead.")
 
 
 def describe(n_maps: int, items: list, has_udim: bool, numbering: str) -> str:
@@ -228,81 +240,6 @@ def describe(n_maps: int, items: list, has_udim: bool, numbering: str) -> str:
     n = len(items)
     unit = "UDIM tile" if has_udim else ("frame" if numbering == "frame" and n > 1 else "texture")
     return f"{n_maps * n} EXR{'s' if n_maps * n != 1 else ''} ({n_maps} maps × {n} {unit}{'s' if n != 1 else ''})"
-
-
-# ============================================================== EXR writing
-def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str, ch: str = "R,G,B") -> list[str]:
-    """oiiotool for one map image -> its final EXR (also run by `comfyfarm check`).
-    `ocio` is the job's frozen convert.ocio_setup(): colour maps go image -> linear (a Nuke
-    Read set to "default (color_picking)"); data maps are only tagged. `ch` comes from
-    convert.channel_args(): greyscale maps (height, roughness, metalness) are copied into
-    R, G and B (R=Y,G=Y,B=Y) rather than asked for R, G, B they don't have."""
-    cmd = [*oiiotool, "--colorconfig", ocio["config"], src, "--ch", ch]
-    cmd += ["--colorconvert", ocio["image"], ocio["linear"]] if m["color"] else ["--iscolorspace", ocio["data"]]
-    return cmd + ["-d", m["bits"], "--compression", "zip", "-o", dst]
-
-
-def _raw_files(names: list[str], prefix: str, ext: str) -> list[str]:
-    """A save node's images, in the order it wrote them (prefix_0001.png, ...)."""
-    rx = re.compile(re.escape(prefix) + r"(?:\D?(\d+))?\." + re.escape(ext) + "$", re.IGNORECASE)
-    return [n for _, n in sorted((int(m.group(1) or 0), n) for n, m in ((n, rx.match(n)) for n in names) if m)]
-
-
-async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfig,
-                     mappings: list[PathMapping], progress) -> dict:
-    """Convert every map image ComfyUI wrote into its named EXR in out_dir.
-
-    t is the job's info['textures'] (frozen at submit). Each save node wrote one image
-    per input texture, in input order, so the n-th image is the n-th UDIM/frame."""
-    oiiotool = C.require_tool(cc, "oiiotool")
-    raw = t["raw_dir"].rstrip("/")
-    try:
-        names = os.listdir(raw)
-    except OSError:
-        names = []
-    items = [tuple(i) for i in t["items"]]
-    work = []
-    for m in t["maps"]:
-        files = _raw_files(names, m["prefix"], t["ext"])
-        if len(files) != len(items):
-            raise C.ConvertError(f"The {m['name']} map ({m['channel']}) came back as {len(files)} image(s) for "
-                                 f"{len(items)} input texture(s), so they can't be named reliably.")
-        for f, (udim, frame) in zip(files, items):
-            work.append((m, f"{raw}/{f}", f"{out_dir}/{file_name(t['name'], m, t['tokens'], udim, frame)}"))
-
-    sem = asyncio.Semaphore(max(1, tc.workers))
-    env = dict(os.environ, **t["ocio"].get("context", {}))
-    done = 0
-
-    async def one(m: dict, src: str, dst: str) -> None:
-        nonlocal done
-        # oiiotool picks the format from the extension, so the temporary name ends in .exr too.
-        tmp = f"{dst[:-4]}.{uuid.uuid4().hex[:8]}.part.exr"
-        ch = C.channel_args(src)
-        async with sem:
-            code, out = await C._run(map_command(oiiotool, t["ocio"], m, src, tmp, ch), env)
-        if code == 0 and C.UNKNOWN_CHANNEL in out:
-            code, out = 1, f"{os.path.basename(src)} is missing channels, so the map would be black: {out}"
-        if code != 0 or not os.path.isfile(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-            raise C.ConvertError(f"oiiotool failed writing {os.path.basename(dst)}: "
-                                 f"{out.strip()[-600:] or f'exit {code}'}")
-        await asyncio.to_thread(os.replace, tmp, dst)
-        done += 1
-        progress(done, len(work))
-
-    tasks = [asyncio.create_task(one(*w)) for w in work]
-    try:
-        await asyncio.gather(*tasks)
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    return map_outputs(t, out_dir, mappings, items)
 
 
 def map_outputs(t: dict, out_dir: str, mappings: list[PathMapping], items: list) -> dict:
@@ -318,7 +255,3 @@ def map_outputs(t: dict, out_dir: str, mappings: list[PathMapping], items: list)
     main = maps_out[next((m for m in t["maps"] if m["color"]), t["maps"][0])["channel"]]
     return {"maps": maps_out, "files": len(items) * len(t["maps"]), "frames": len(items), "first": main["first"],
             "last": main["last"], "frame_pattern": main["pattern"], "frame_pattern_posix": main["pattern_posix"]}
-
-
-__all__ = ["TextureSpec", "MapSpec", "items_for", "resolve_tile", "name_tokens", "file_name", "name_pattern",
-           "split_batches", "batch_label", "output_dir", "describe", "map_command", "write_maps", "map_outputs"]

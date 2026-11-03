@@ -15,13 +15,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from comfyfarm import convert as C
-from comfyfarm import textures as T
-from comfyfarm.__main__ import ocio_roles
 from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig, TexturesConfig
-from comfyfarm.convert import REPO, exr_command, resolve_input, summary
-from comfyfarm.paths import SequenceError, loaded_names, resolve_sequence, texture_input, texture_numbers
-from comfyfarm.paths import Sequence
+from comfyfarm.fileio import convert as C
+from comfyfarm.fileio import inputs as I
+from comfyfarm.fileio import media as M
+from comfyfarm.fileio import outputs as Out
+from comfyfarm.fileio import scratch as S
+from comfyfarm.fileio import textures as T
+from comfyfarm.fileio.convert import exr_command
+from comfyfarm.fileio.errors import SequenceError
+from comfyfarm.fileio.inputs import (Sequence, loaded_names, resolve_input, resolve_sequence, summary, texture_input,
+                                     texture_numbers)
+from comfyfarm.fileio.ocio import ocio_roles
 from comfyfarm.workflows import ParamError, Workflow
 
 REPO = Path(__file__).resolve().parent.parent
@@ -267,22 +272,22 @@ class ChannelTests(unittest.TestCase):
                                  (2, ["R", "G", "B"], "R,G,B"), (6, ["R", "G", "B", "A"], "R,G,B"),
                                  (3, ["R", "G", "B"], "R,G,B")):
             path = self.write(f"map{ctype}.png", png_bytes(ctype))
-            self.assertEqual((C.image_channels(path), C.channel_args(path)), (names, ch), ctype)
+            self.assertEqual((M.image_channels(path), M.channel_args(path)), (names, ch), ctype)
 
     def test_exr_channels(self):
         cases = ((["Y"], "R=Y,G=Y,B=Y"), (["B", "G", "R"], "R,G,B"), (["A", "B", "G", "R", "depth.Z"], "R,G,B"),
                  (["BY", "RY", "Y"], "R,G,B"), (["height"], "R=height,G=height,B=height"))
         for names, ch in cases:
             path = self.write("t.exr", exr_header(names))
-            self.assertEqual((C.image_channels(path), C.channel_args(path)), (names, ch), names)
+            self.assertEqual((M.image_channels(path), M.channel_args(path)), (names, ch), names)
         layered = self.write("t.exr", exr_header(["diffuse.B", "diffuse.G", "diffuse.R"]))
         with self.assertRaisesRegex(C.ConvertError, "t.exr has no R, G, B or single grey channel .*diffuse.B"):
-            C.channel_args(layered)
+            M.channel_args(layered)
 
     def test_unreadable_files_keep_rgb(self):
-        self.assertEqual(C.channel_args(self.write("empty.png", b"")), "R,G,B")
-        self.assertEqual(C.channel_args(self.write("odd.tif", b"II*\0")), "R,G,B")
-        self.assertEqual(C.channel_args("/nope/missing.exr"), "R,G,B")
+        self.assertEqual(M.channel_args(self.write("empty.png", b"")), "R,G,B")
+        self.assertEqual(M.channel_args(self.write("odd.tif", b"II*\0")), "R,G,B")
+        self.assertEqual(M.channel_args("/nope/missing.exr"), "R,G,B")
 
     def test_exr_command_uses_the_channels(self):
         c = {"config": "c.ocio", "extra_args": ["--ch", "R,G,B", "--croptofull"], "from": "a", "to": "b"}
@@ -341,7 +346,7 @@ class WorkResolutionTests(unittest.TestCase):
                              work_resolution=limit)
 
     def run_convert(self, seq):
-        C.point_loader_at_scratch(seq, f"{self.root}/scratch", "job1")
+        S.point_loader_at_scratch(seq, f"{self.root}/scratch", "job1")
         log = Path(f"{self.root}/oiio.log")
         log.unlink(missing_ok=True)
         os.environ["FAKE_OIIOTOOL_LOG"] = str(log)
@@ -356,11 +361,11 @@ class WorkResolutionTests(unittest.TestCase):
         self.put("nowindow.exr", exr_header(["R", "G", "B"]))
         self.put("long.exr", exr_header(["R", "G", "B"], (0, 0, 799, 599), padding=200_000))   # past the first 64 KB
         self.put("empty.png", b"")
-        sizes = {n: C.image_size(f"{self.dir}/{n}") for n in os.listdir(self.dir)}
+        sizes = {n: M.image_size(f"{self.dir}/{n}") for n in os.listdir(self.dir)}
         self.assertEqual(sizes, {"a.png": (4096, 2048), "a.exr": (4096, 4096), "offset.exr": (1024, 1024),
                                  "nowindow.exr": None, "long.exr": (800, 600), "empty.png": None})
-        self.assertEqual(C.image_channels(f"{self.dir}/long.exr"), ["R", "G", "B"])
-        self.assertIsNone(C.image_size(f"{self.dir}/missing.png"))
+        self.assertEqual(M.image_channels(f"{self.dir}/long.exr"), ["R", "G", "B"])
+        self.assertIsNone(M.image_size(f"{self.dir}/missing.png"))
 
     def test_fit_and_resize_args(self):
         cases = {(4096, 4096): ((1024, 1024), ["--resize", "1024x0"]),
@@ -368,12 +373,12 @@ class WorkResolutionTests(unittest.TestCase):
                  (2048, 4096): ((512, 1024), ["--resize", "0x1024"]),
                  (1024, 1024): ((1024, 1024), []), (800, 600): ((800, 600), [])}
         for size, (fit, args) in cases.items():
-            self.assertEqual((C.fit_size(size, 1024), C.resize_args(size, 1024)), (fit, args), size)
+            self.assertEqual((M.fit_size(size, 1024), C.resize_args(size, 1024)), (fit, args), size)
         self.assertEqual((C.resize_args(None, 1024), C.resize_args((4096, 4096), None)), ([], []))
-        self.assertEqual(C.scaled_text([(4096, 4096)], 1024), "4096×4096 → 1024×1024")
-        self.assertEqual(C.scaled_text([(4096, 4096), (1024, 1024), (2048, 1024)], 1024),
+        self.assertEqual(I.scaled_text([(4096, 4096)], 1024), "4096×4096 → 1024×1024")
+        self.assertEqual(I.scaled_text([(4096, 4096), (1024, 1024), (2048, 1024)], 1024),
                          "4096×4096 → 1024×1024 (2 of 3 images)")
-        self.assertIsNone(C.scaled_text([(800, 800), None], 1024))
+        self.assertIsNone(I.scaled_text([(800, 800), None], 1024))
 
     def test_large_png_scaled_into_scratch(self):
         self.put("cliff.png", png_bytes(2, (4096, 4096)))
@@ -390,7 +395,7 @@ class WorkResolutionTests(unittest.TestCase):
         self.assertEqual(calls, [["--iconfig", "oiio:UnassociatedAlpha", "1", src, "--reorient",
                                   "--resize", "1024x0", "-d", "uint8", "--compression", "none", "-o", dst]])
         self.assertEqual(os.listdir(f"{self.root}/scratch/job1"), ["cliff.0001.png"])
-        self.assertEqual(C.image_size(dst), (1024, 1024))            # the fake oiiotool honours --resize
+        self.assertEqual(M.image_size(dst), (1024, 1024))            # the fake oiiotool honours --resize
 
     def test_small_or_unknown_inputs_read_as_they_are(self):
         self.put("small.png", png_bytes(2, (800, 800)))
@@ -416,7 +421,7 @@ class WorkResolutionTests(unittest.TestCase):
         resize = {a[a.index("-o") + 1].rsplit("/", 1)[1]: a[a.index("--reorient") + 1:a.index("-d")] for a in calls}
         self.assertEqual(resize, {"rock_diffuse.1001.png": ["--resize", "1024x0"], "rock_diffuse.1002.png": [],
                                   "rock_diffuse.1011.png": ["--resize", "1024x0"]})
-        self.assertEqual(C.image_size(f"{self.root}/scratch/job1/rock_diffuse.1011.png"), (1024, 512))
+        self.assertEqual(M.image_size(f"{self.root}/scratch/job1/rock_diffuse.1011.png"), (1024, 512))
         # The tiles keep their UDIMs, so the maps do too.
         items, has_udim = T.items_for(loaded_names(seq), "udim")
         self.assertEqual(([i[0] for i in items], has_udim), ([1001, 1002, 1011], True))
@@ -474,7 +479,7 @@ class WriteMapsTests(unittest.TestCase):
             os.environ["FAKE_OIIOTOOL_LOG"] = log
             self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
             seen = []
-            res = asyncio.run(T.write_maps(t, out, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+            res = asyncio.run(Out.write_maps(t, out, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
                                            [PathMapping(posix="/rdo/x", windows=out)], lambda d, n: seen.append((d, n))))
             names = sorted(os.listdir(out))
             self.assertEqual(names, [f"acescg_map1_noTile_defState_{c}.{u}.0000.exr"
@@ -511,7 +516,7 @@ class WriteMapsTests(unittest.TestCase):
             log = f"{tmp}/oiio.log"
             os.environ["FAKE_OIIOTOOL_LOG"] = log
             self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
-            asyncio.run(T.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+            asyncio.run(Out.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
                                      [], lambda d, n: None))
             calls = [json.loads(line) for line in Path(log).read_text().splitlines()]
             ch = {next(m["channel"] for m in CHORD_MAPS if f"_{m['channel']}_" in " ".join(c["args"])):
@@ -526,9 +531,9 @@ class WriteMapsTests(unittest.TestCase):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
             t = self.chord_maps(tmp)
-            with mock.patch.object(C, "channel_args", return_value="R,G,B"), \
+            with mock.patch.object(M, "channel_args", return_value="R,G,B"), \
                     self.assertRaisesRegex(Exception, "_cfj1_.*_0001.png is missing channels, so the map would be black"):
-                asyncio.run(T.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+                asyncio.run(Out.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
                                          [], lambda d, n: None))
 
     def test_missing_images_fail_loudly(self):
@@ -538,13 +543,13 @@ class WriteMapsTests(unittest.TestCase):
             t = {"raw_dir": raw, "name": T.DEFAULT_NAME, "ext": "png", "tokens": TOKENS, "items": [[1001, 0], [1002, 0]],
                  "maps": [dict(MAPS[0], prefix="_cfj1_color01")], "ocio": JOB_OCIO}
             with self.assertRaisesRegex(Exception, r"basecolor map \(color01\) came back as 1 image\(s\) for 2"):
-                asyncio.run(T.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+                asyncio.run(Out.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
                                          [], lambda d, n: None))
 
 
 class PreflightTests(unittest.TestCase):
     def check(self, oc=None, oiiotool=None):
-        from comfyfarm.__main__ import check_ocio
+        from comfyfarm.cli import check_ocio
         from comfyfarm.config import Config
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

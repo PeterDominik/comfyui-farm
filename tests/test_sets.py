@@ -14,18 +14,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from comfyfarm import convert as C
-from comfyfarm import textures as T
 from comfyfarm.config import Config
-from comfyfarm.db import JobStore, now
+from comfyfarm.fileio import convert as C
+from comfyfarm.fileio import media as M
+from comfyfarm.fileio import textures as T
+from comfyfarm.manager.db import JobStore, now
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_textures import FAKE_OIIOTOOL, OCIO_CONFIG, exr_header, exr_sized, png_bytes
 
 REPO = Path(__file__).resolve().parent.parent
-try:   # the farm module needs the gateway's dependencies
-    from comfyfarm.events import EventBus
-    from comfyfarm.farm import Farm, FarmError
+try:   # the manager's farm needs pydantic and yaml (not the web stack)
+    from comfyfarm.manager.events import EventBus
+    from comfyfarm.manager.farm import Farm, FarmError
     from comfyfarm.workflows import WorkflowRegistry
 except ImportError:   # pragma: no cover
     Farm = None
@@ -119,7 +120,7 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([j["id"] for j in store.queued()], ["old"])
 
 
-@unittest.skipIf(Farm is None, "needs the gateway's dependencies (fastapi, httpx, websockets)")
+@unittest.skipIf(Farm is None, "needs the manager's dependencies (pydantic, pyyaml)")
 class FarmSetTests(unittest.TestCase):
     """Planning, submitting and finishing a set, without ComfyUI: batches are moved through
     their states by hand, as the farm's loops would."""
@@ -261,7 +262,7 @@ class FarmSetTests(unittest.TestCase):
                          [[1001, 1002, 1003, 1004], [1005, 1006]])
         self.assertEqual(b2["info"]["convert_summary"]["scaled"], "4096×4096 → 1024×1024")
         asyncio.run(C.convert(b1["info"]["input"], self.farm.cfg.convert, lambda d, n: None))
-        self.assertEqual(C.image_size(f"{self.root}/scratch/{b1['id']}/rockA_color.1004.png"), (1024, 1024))
+        self.assertEqual(M.image_size(f"{self.root}/scratch/{b1['id']}/rockA_color.1004.png"), (1024, 1024))
         with self.assertRaisesRegex(C.ConvertError, "rockA_color.1005.exr has no R, G, B"):
             asyncio.run(C.convert(b2["info"]["input"], self.farm.cfg.convert, lambda d, n: None))
 

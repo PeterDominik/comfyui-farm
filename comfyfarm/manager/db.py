@@ -1,4 +1,4 @@
-"""SQLite job store. The gateway's database is the source of truth for job state;
+"""SQLite job store. The manager's database is the source of truth for job state;
 ComfyUI's own queue and history are in memory and vanish when it restarts.
 
 Job kinds: "job" (one ComfyUI run), and for texture sets too large for one run, a "set"
@@ -10,14 +10,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-ACTIVE = ("preparing", "queued", "dispatched", "running", "postprocessing")
-ON_WORKER = ("dispatched", "running")
-FINISHED = ("done", "failed", "cancelled")
+from ..protocol import ACTIVE, FINISHED, ON_WORKER, now
+
+__all__ = ["JobStore", "ACTIVE", "ON_WORKER", "FINISHED", "now"]
+
 JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt")
 
 SCHEMA = """
@@ -256,7 +256,3 @@ class JobStore:
                 "ON CONFLICT(workflow) DO UPDATE SET runs=excluded.runs, avg_seconds=excluded.avg_seconds, "
                 "node_count=COALESCE(excluded.node_count, node_count)",
                 (workflow, runs, avg, node_count))
-
-
-def now() -> float:
-    return time.time()

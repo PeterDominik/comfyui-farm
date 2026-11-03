@@ -47,7 +47,12 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 
 | Path | What |
 |---|---|
-| `comfyfarm/` | The gateway: API, dispatcher/monitor, job DB, workflow builder, dashboard |
+| `comfyfarm/manager/` | The manager: API, dashboard, job database, planning, texture sets, queue and dispatch |
+| `comfyfarm/agent/` | The worker side, one per ComfyUI: submits jobs to it, follows them live, collects the outputs |
+| `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
+| `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
+| `comfyfarm/protocol.py` | Job states, and what a worker reports to the manager |
+| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`) and `check` |
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
@@ -560,8 +565,16 @@ python -m unittest discover -s tests -t . -v      # unit + end-to-end (~30 s)
 
 # Manual testing without a GPU:
 python tools/mock_comfyui.py --port 8188 --output mock_output
-python -m comfyfarm serve
+python -m comfyfarm standalone                    # `serve` is the same, under its old name
 ```
+
+`standalone` runs the manager and a worker for each ComfyUI in `workers:`, in one process.
+The worker (`comfyfarm/agent/worker.py`) reports to the manager only through the calls in
+`comfyfarm/protocol.py`; `tests/test_worker.py` runs the two together against an in-memory
+ComfyUI. `tests/test_layout.py` keeps the layers apart: `fileio` imports with the standard
+library alone, and the manager doesn't need the agent or the web stack. So most tests run
+with just pydantic and pyyaml installed; `test_worker` also needs httpx and websockets, and
+the end-to-end suite the whole of `requirements.txt`.
 
 The end-to-end suite runs the real gateway against the mock. It covers submit to done
 (frame renaming, preview, versioning), cancelling in each state, failures with

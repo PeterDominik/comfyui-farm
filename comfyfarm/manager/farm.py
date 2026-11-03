@@ -1,5 +1,11 @@
-"""The farm: job submission, dispatch to ComfyUI workers, live monitoring over each
-worker's websocket, reconciliation after restarts, and output collection."""
+"""The manager side of the farm: submitting and planning jobs (validated inputs, versioned
+output folders), texture sets, the queue and its order, dispatching to workers, input
+conversion ahead of the GPU, cancels and retries.
+
+Everything that talks to a ComfyUI (submitting a prompt, following it over the websocket,
+checking ComfyUI's queue and history, collecting the outputs) is a worker's job: see
+comfyfarm.agent.worker.WorkerRunner. The Farm is the host the workers report to
+(protocol.JobHost). For now they run in this process, one per configured ComfyUI."""
 
 from __future__ import annotations
 
@@ -7,23 +13,25 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import threading
 import uuid
-from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import httpx
-import websockets
-
-from . import convert as C
-from . import paths as P
-from . import textures as T
-from .comfy import ComfyClient, ComfyRejected, describe_rejection
-from .config import Config, WorkerConfig
-from .db import ACTIVE, FINISHED, ON_WORKER, JobStore, now
+from ..config import Config
+from ..fileio import convert as C
+from ..fileio import inputs as I
+from ..fileio import naming as N
+from ..fileio import ocio as OC
+from ..fileio import paths as P
+from ..fileio import scratch as S
+from ..fileio import textures as T
+from ..protocol import ACTIVE, FINISHED, ON_WORKER, now
+from ..workflows import ParamError, Workflow, WorkflowRegistry
+from .db import JobStore
 from .events import EventBus
-from .workflows import ParamError, WorkflowRegistry
+
+if TYPE_CHECKING:   # the manager never imports the agent; workers are attached to it
+    from ..agent.worker import WorkerRunner
 
 log = logging.getLogger("comfyfarm")
 
@@ -34,88 +42,29 @@ class FarmError(Exception):
         self.status = status
 
 
-@dataclass
-class Runtime:
-    """Live progress of one job on a worker (not persisted)."""
-    job_id: str
-    expected: int
-    titles: dict
-    done: set = field(default_factory=set)
-    current: str | None = None
-    frac: float = 0.0
-    last_push: float = 0.0
-
-    def progress(self) -> float:
-        return min((len(self.done) + self.frac) / max(self.expected, 1), 0.99)
-
-
-class Worker:
-    def __init__(self, cfg: WorkerConfig):
-        self.cfg = cfg
-        self.name = cfg.name
-        self.client = ComfyClient(cfg.url)
-        self.client_id = "comfyfarm-" + uuid.uuid5(uuid.NAMESPACE_URL, cfg.url + cfg.name).hex[:12]
-        self.online = False
-        self.ws_connected = False
-        self.checked = False
-        self.offline_since = now()
-        self.last_seen: float | None = None
-        self.stats: dict | None = None
-        self.output_classes: set[str] | None = None
-        self.problems: dict[str, list[str]] = {}
-        self.queue_remaining: int | None = None
-        self.error: str | None = None
-        self.abandoned: set[str] = set()   # prompt ids we gave up on; cancel if seen again
-
-    def summary(self, store: JobStore) -> dict:
-        gpu = None
-        for dev in (self.stats or {}).get("devices", []) or []:
-            gpu = {"name": dev.get("name"), "vram_total": dev.get("vram_total"),
-                   "vram_free": dev.get("vram_free")}
-            break
-        current = store.on_worker(self.name, ("running",))
-        return {
-            "name": self.name, "url": self.cfg.url, "online": self.online,
-            "connected": self.ws_connected, "enabled": self.cfg.enabled,
-            "max_inflight": self.cfg.max_inflight, "inflight": store.count_on_worker(self.name),
-            "running_job": current[0]["id"] if current else None,
-            "queue_remaining": self.queue_remaining, "last_seen": self.last_seen,
-            "error": self.error, "gpu": gpu,
-            "comfyui_version": ((self.stats or {}).get("system") or {}).get("comfyui_version"),
-            "problems": self.problems,
-        }
-
-
-def _history_failure(hist: dict) -> tuple[str, bool, str | None]:
-    """(message, interrupted, traceback) from a failed ComfyUI history entry."""
-    for name, data in (hist.get("status") or {}).get("messages") or []:
-        if name == "execution_interrupted":
-            return "Interrupted on the farm machine.", True, None
-        if name == "execution_error":
-            tb = "".join(data.get("traceback") or []) or None
-            return (f"{data.get('node_type')} (node {data.get('node_id')}): "
-                    f"{data.get('exception_message', '').strip()}"), False, tb
-    return "ComfyUI reported an error.", False, None
-
-
 class Farm:
+    """Job queue, sets and dispatch; the host its workers report to (protocol.JobHost)."""
+
     def __init__(self, cfg: Config, store: JobStore, registry: WorkflowRegistry, events: EventBus):
         self.cfg = cfg
         self.store = store
         self.registry = registry
         self.events = events
-        self.workers = {w.name: Worker(w) for w in cfg.workers if w.enabled}
-        self.runtime: dict[str, Runtime] = {}      # prompt_id -> Runtime
+        # The workers that run jobs, by name: one per ComfyUI, attached with attach().
+        self.workers: dict[str, WorkerRunner] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
         self._wake: asyncio.Event | None = None
         self._submit_lock = threading.Lock()
         self._tasks: list[asyncio.Task] = []
-        self._bg: set[asyncio.Task] = set()
         self._converting: dict[str, asyncio.Task] = {}   # job id -> conversion task
         self._converting_set: dict[str, str] = {}         # job id -> its set, for batches converting
         self._set_seen: dict[str, tuple] = {}             # set id -> last state published
         self._convert_wake: asyncio.Event | None = None
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
+
+    def attach(self, worker: WorkerRunner) -> None:
+        """Add a worker that runs this farm's jobs on its ComfyUI."""
+        self.workers[worker.name] = worker
 
     # ================================================================ lifecycle
     async def start(self) -> None:
@@ -130,9 +79,7 @@ class Farm:
             if s_["kind"] == "set":
                 self._refresh_set(s_["id"])
         for w in self.workers.values():
-            self._tasks += [asyncio.create_task(self._health_loop(w), name=f"health-{w.name}"),
-                            asyncio.create_task(self._ws_loop(w), name=f"ws-{w.name}"),
-                            asyncio.create_task(self._reconcile_loop(w), name=f"reconcile-{w.name}")]
+            w.start()   # its health, event and reconcile loops
         self._tasks.append(asyncio.create_task(self._dispatch_loop(), name="dispatch"))
         self._convert_wake = asyncio.Event()
         self._tasks.append(asyncio.create_task(self._convert_loop(), name="convert"))
@@ -140,22 +87,17 @@ class Farm:
         log.info("farm started with workers: %s", ", ".join(self.workers) or "none")
 
     async def stop(self) -> None:
-        for t in self._tasks + list(self._bg):
+        for t in self._tasks:
             t.cancel()
-        await asyncio.gather(*self._tasks, *self._bg, return_exceptions=True)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         for w in self.workers.values():
-            await w.client.close()
+            await w.stop()
 
     def wake(self) -> None:
         if self.loop and self._wake:
             self.loop.call_soon_threadsafe(self._wake.set)
         if self.loop and self._convert_wake:
             self.loop.call_soon_threadsafe(self._convert_wake.set)
-
-    def _spawn(self, coro) -> None:
-        t = asyncio.create_task(coro)
-        self._bg.add(t)
-        t.add_done_callback(self._bg.discard)
 
     # ================================================================ events
     def _emit(self, job: dict | None) -> None:
@@ -230,9 +172,6 @@ class Farm:
         left = sum(1 - (r["progress"] or 0) for r in rows if r["status"] in ACTIVE)
         return avg * left / max(1, sum(1 for w in self.workers.values() if w.online))
 
-    def _emit_worker(self, w: Worker) -> None:
-        self.events.publish({"type": "worker", "worker": w.summary(self.store)})
-
     def annotate(self, jobs: list[dict]) -> list[dict]:
         """Add queue_position and a rough eta_seconds (from past run times)."""
         n_workers = max(1, sum(1 for w in self.workers.values() if w.online))
@@ -277,12 +216,12 @@ class Farm:
         wf = self.registry.get(workflow)
         values = wf.validate(params or {})
         pc = self.cfg.paths
-        seq = C.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
+        seq = I.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
                               texture=bool(wf.textures), ocio=self.cfg.ocio,
                               work_resolution=wf.work_resolution, preview=job_id == "preview") \
             if wf.sequence_param else None
         if seq is not None and seq.convert:
-            C.point_loader_at_scratch(seq, self.scratch_root, job_id)
+            S.point_loader_at_scratch(seq, self.scratch_root, job_id)
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
         seq_name = seq.seq_name if seq else None
@@ -298,17 +237,17 @@ class Farm:
             return plan
 
         picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
-        root = P.resolve_output_folder(picked, pc) if picked else P.output_root(pc, show_, seq_name, shot_)
+        root = N.resolve_output_folder(picked, pc) if picked else N.output_root(pc, show_, seq_name, shot_)
         dir_template = pc.output_dir
         if picked and not shot_ and "{shot" in dir_template:
             dir_template = "{root}"
             plan["notes"].append("No shot in the input path, so the frames go straight into the output folder.")
         versioned = "{version" in pc.frame_name or "{version" in dir_template
-        exists = P.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
+        exists = N.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
         base = {"source": source, "show": show_, "seq": seq_name, "shot": shot_, "tag": wf.tag,
                 "ext": wf.outputs["frames"].get("ext", "png")}
         for v in range(1, 1000):
-            out_dir = P.output_dir(dir_template, root=root, version=v, **base)
+            out_dir = N.output_dir(dir_template, root=root, version=v, **base)
             tokens = dict(base, version=v, folder=out_dir.rpartition("/")[2])
             pattern = P.render(P.frame_pattern(pc.frame_name), "file name", **tokens)
             key = f"{out_dir}/{pattern}"
@@ -339,7 +278,7 @@ class Farm:
             raise FarmError("This workflow needs an input texture.")
         numbering = values.get("numbering") or T.DEFAULTS["numbering"]
         if pc.validate_inputs:
-            names = P.loaded_names(seq)
+            names = I.loaded_names(seq)
         else:   # can't list the input: go by the frame numbers alone
             nums = seq.frames or (range(seq.first, seq.last + 1) if seq.first is not None else [None])
             names = [f"x.{n:04d}.png" if n is not None else "x.png" for n in nums]
@@ -347,8 +286,8 @@ class Farm:
         tokens = T.name_tokens(values, T.resolve_tile(values.get("tile") or "auto", items, has_udim))
 
         picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
-        root = P.resolve_output_folder(picked, pc) if picked else \
-            P.output_root(pc, plan["show"], plan["seq_name"], plan["shot"])
+        root = N.resolve_output_folder(picked, pc) if picked else \
+            N.output_root(pc, plan["show"], plan["seq_name"], plan["shot"])
         asset = P.context_from_path(seq.farm_path, pc.context_patterns, pc.shot_name).get("asset")
         base = {"root": root, "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"],
                 "asset": asset, "source": plan["source"], "tag": wf.tag}
@@ -374,14 +313,14 @@ class Farm:
                     "tokens": tokens, "items": [list(i) for i in items], "maps": maps, "has_udim": has_udim,
                     "numbering": numbering,
                     # Frozen per job, like the input conversion: the repo's OCIO config.
-                    "ocio": C.ocio_setup(self.cfg.ocio, pc)}
+                    "ocio": OC.ocio_setup(self.cfg.ocio, pc)}
         shown = next((m for m in maps if m["color"]), maps[0])
         what = T.describe(len(maps), items, has_udim, numbering)
         # More tiles than fit in one run (textures.batch), or tiles of different sizes (the
         # loader would crop them to one size): a set of batches, filling one folder.
         batches = None
         if len(items) > 1 and (spec.batch or pc.validate_inputs):
-            sizes = C.work_sizes(seq, names, wf.work_resolution) \
+            sizes = I.work_sizes(seq, names, wf.work_resolution) \
                 if pc.validate_inputs and job_id != "preview" else [None] * len(items)
             ranges = T.split_batches(sizes, spec.batch)
             if len(ranges) > 1:
@@ -405,7 +344,7 @@ class Farm:
             "first": seq.first if seq else None, "last": seq.last if seq else None,
             "output_dir": out, "output_dir_posix": P.to_posix(out, pc.mappings) if out else None,
             "picked": plan["picked"], "version": plan["version"], "notes": plan["notes"],
-            "input_kind": seq.kind if seq else None, "convert": C.summary(seq, pc),
+            "input_kind": seq.kind if seq else None, "convert": I.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
             "what": plan.get("what"), "asset": plan.get("asset"),
             "maps": [m["channel"] for m in plan["textures"]["maps"]] if plan.get("textures") else None,
@@ -456,7 +395,7 @@ class Farm:
             "output_dir": out_dir, "output_dir_picked": plan["picked"],
             "output_dir_posix": P.to_posix(out_dir, pc.mappings) if out_dir else None,
             "notes": plan["notes"], "input_kind": seq.kind if seq else None,
-            "convert_summary": C.summary(seq, pc),
+            "convert_summary": I.summary(seq, pc),
             "frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"],
             # Frozen per job, so a config edit can't rename frames of jobs already queued.
             "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
@@ -483,9 +422,9 @@ class Farm:
                  "warnings": list(plan["notes"])}]
         for k, (a, b) in enumerate(ranges):
             bid = str(uuid.uuid4())
-            bseq = C.batch_sequence(seq, a, b)
+            bseq = I.batch_sequence(seq, a, b)
             if bseq.convert:
-                C.point_loader_at_scratch(bseq, self.scratch_root, bid)
+                S.point_loader_at_scratch(bseq, self.scratch_root, bid)
             btex = dict(tex, items=tex["items"][a:b], raw_dir=f"{self.scratch_root}/{bid}/maps",
                         maps=[dict(m, prefix=f"_cf{bid[:8]}_{m['channel']}") for m in tex["maps"]])
             label = T.batch_label(items[a:b], tex["has_udim"])
@@ -556,7 +495,7 @@ class Farm:
                 task = self._converting.pop(jid, None)
                 if task:
                     task.cancel()   # kills oiiotool/ffmpeg
-                self._cleanup_scratch(j)
+                S.cleanup(j, self.scratch_root)
                 self._emit(j)
                 return j
             job = self.store.get(jid)
@@ -567,21 +506,8 @@ class Farm:
             self._emit(job)
             if w is None:
                 return self._finish_cancel(jid)
-            try:
-                running, pending = await w.client.queue()
-                if pid in pending:
-                    await w.client.delete_queued([pid])
-                    running, pending = await w.client.queue()
-                if pid in running:
-                    # Only interrupt what is actually running: older ComfyUI builds ignore
-                    # prompt_id and would stop whichever job is on the GPU.
-                    await w.client.interrupt(pid)
-                elif pid not in pending and not await w.client.history(pid):
-                    return self._finish_cancel(jid)   # it was only waiting; now gone
-            except httpx.HTTPError as e:
-                log.warning("cancel %s: worker %s unreachable (%s); will cancel when it returns",
-                            jid[:8], w.name, e)
-                w.abandoned.add(pid)
+            if await w.cancel(jid, pid):
+                return self._finish_cancel(jid)   # it was only waiting; now gone
             return self.store.get(jid)   # the interrupt event finishes it
         if job["status"] == "postprocessing":
             raise FarmError("The job already finished on the GPU and is collecting outputs.", 409)
@@ -604,10 +530,9 @@ class Farm:
     def _finish_cancel(self, job_id: str) -> dict | None:
         j = self.store.transition(job_id, ON_WORKER + ("queued",), status="cancelled",
                                   stage="cancelled", finished_at=now())
-        if j and j.get("prompt_id"):
-            self.runtime.pop(j["prompt_id"], None)
         if j:
-            self._cleanup_scratch(j)
+            self._forget(j)
+            S.cleanup(j, self.scratch_root)
         self._emit(j)
         self.wake()
         return j or self.store.get(job_id)
@@ -622,43 +547,25 @@ class Farm:
                 info = dict(j["info"] or {})
                 info["traceback"] = traceback[-8000:]
                 j = self.store.update(job_id, info=info)
-            if j.get("prompt_id"):
-                self.runtime.pop(j["prompt_id"], None)
+            self._forget(j)
             if not self.cfg.convert.keep_failed:
-                self._cleanup_scratch(j)
+                S.cleanup(j, self.scratch_root)
         self._emit(j)
         self.wake()
         return j
 
     # ================================================================ input conversion
-    def _scratch_dir(self, job: dict) -> str | None:
-        """<scratch>/<job id>/: converted input frames, and the raw images of texture maps
-        (in its maps/ subfolder)."""
-        info = job.get("info") or {}
-        conv = (info.get("input") or {}).get("convert")
-        if conv:
-            return conv.get("dst_dir")
-        tex = info.get("textures")
-        return P.normalize(tex["raw_dir"]).rstrip("/").rpartition("/")[0] + "/" if tex else None
-
-    def _cleanup_scratch(self, job: dict) -> None:
-        d = self._scratch_dir(job)
-        if d and P.normalize(d).startswith(self.scratch_root + "/"):
-            shutil.rmtree(d, ignore_errors=True)
-
     def _clean_orphan_scratch(self) -> None:
         """Converted frames of jobs that are gone (finished while the gateway was down)."""
-        if not os.path.isdir(self.scratch_root):
-            return
         active = {j["id"] for j in self.store.list(statuses=ACTIVE, limit=100000, top_level=False)}
-        failed_keep = self.cfg.convert.keep_failed
-        for name in os.listdir(self.scratch_root):
+
+        def keep(name: str) -> bool:
             if name in active:
-                continue
+                return True
             job = self.store.get(name)
-            if failed_keep and job and job["status"] == "failed":
-                continue
-            shutil.rmtree(os.path.join(self.scratch_root, name), ignore_errors=True)
+            return bool(self.cfg.convert.keep_failed and job and job["status"] == "failed")
+
+        S.clean_orphans(self.scratch_root, keep)
 
     async def _convert_loop(self) -> None:
         """Convert EXR/movie inputs ahead of the GPU: jobs wait in 'preparing', then join
@@ -731,23 +638,7 @@ class Farm:
             self._emit(j)
             self.wake()
         else:   # cancelled meanwhile
-            self._cleanup_scratch(self.store.get(job_id) or {})
-
-    async def _requeue_or_fail(self, w: Worker, job: dict, reason: str) -> None:
-        if job.get("prompt_id"):
-            self.runtime.pop(job["prompt_id"], None)
-            w.abandoned.add(job["prompt_id"])
-        if job["cancel_requested"]:
-            self._finish_cancel(job["id"])
-        elif job["attempts"] < self.cfg.farm.max_attempts:
-            j = self.store.transition(job["id"], ON_WORKER, status="queued", worker=None, prompt_id=None,
-                                      progress=0, stage="requeued", started_at=None,
-                                      warnings=job["warnings"] + [reason])
-            log.warning("job %s requeued: %s", job["id"][:8], reason)
-            self._emit(j)
-            self.wake()
-        else:
-            self._fail(job["id"], f"{reason} Gave up after {job['attempts']} attempts.", ON_WORKER)
+            S.cleanup(self.store.get(job_id) or {}, self.scratch_root)
 
     # ================================================================ dispatch
     async def _dispatch_loop(self) -> None:
@@ -785,413 +676,82 @@ class Farm:
             job = self.store.get(job["id"], with_prompt=True)
             if job is None or job["status"] != "queued":
                 continue
-            if await self._dispatch(w, job) is None:
+            if await w.dispatch(job) is None:
                 return   # worker trouble; try again on the next tick
-
-    async def _dispatch(self, w: Worker, job: dict) -> bool | None:
-        info = job["info"] or {}
-        titles = {nid: (n.get("_meta") or {}).get("title") or n.get("class_type")
-                  for nid, n in job["prompt"].items()}
-        out_dir = info.get("output_dir")
-        if out_dir:
-            try:
-                await asyncio.to_thread(os.makedirs, out_dir, exist_ok=True)
-            except OSError as e:
-                self._fail(job["id"], f"Can't create the output folder {out_dir}: {e.strerror or e}", ("queued",))
-                return False
-        tex = info.get("textures")
-        if tex:
-            # Empty, so a second attempt can't mix its map images with the first one's.
-            try:
-                await asyncio.to_thread(shutil.rmtree, tex["raw_dir"], True)
-                await asyncio.to_thread(os.makedirs, tex["raw_dir"], exist_ok=True)
-            except OSError as e:
-                self._fail(job["id"], f"Can't create the scratch folder {tex['raw_dir']}: {e.strerror or e}", ("queued",))
-                return False
-        pid = job["id"] if job["attempts"] == 0 else str(uuid.uuid4())
-        extra = {"comfyfarm_job": job["id"], "comfyfarm_user": job["user"]}
-        try:
-            pid, node_errors = await w.client.submit(job["prompt"], pid, w.client_id, extra)
-        except ComfyRejected as e:
-            self._fail(job["id"], "ComfyUI rejected the job: " + describe_rejection(e.body, titles), ("queued",))
-            return False
-        except httpx.HTTPError as e:
-            # The request may have landed even though we got no answer; our own prompt id
-            # lets us check instead of risking a duplicate run.
-            try:
-                running, pending = await w.client.queue()
-                if pid not in running and pid not in pending and not await w.client.history(pid):
-                    raise LookupError
-                node_errors = {}
-            except Exception:  # noqa: BLE001
-                log.warning("submit to %s failed: %s", w.name, e)
-                return None
-        if node_errors:
-            try:
-                await w.client.delete_queued([pid])
-            except httpx.HTTPError:
-                w.abandoned.add(pid)
-            body = {"error": {"message": "Some outputs failed validation"}, "node_errors": node_errors}
-            self._fail(job["id"], "ComfyUI rejected the job: " + describe_rejection(body, titles), ("queued",))
-            return False
-        j = self.store.transition(job["id"], ("queued",), status="dispatched", worker=w.name, prompt_id=pid,
-                                  dispatched_at=now(), stage="waiting for GPU", attempts=job["attempts"] + 1)
-        if j is None:   # cancelled while we were submitting
-            try:
-                await w.client.delete_queued([pid])
-            except httpx.HTTPError:
-                w.abandoned.add(pid)
-            return False
-        self._new_runtime(w, j, pid, titles)
-        log.info("job %s -> %s (prompt %s)", j["id"][:8], w.name, pid[:8])
-        self._emit(j)
-        return True
-
-    def _new_runtime(self, w: Worker, job: dict, pid: str, titles: dict | None = None) -> Runtime:
-        wf = self.registry.workflows.get(job["workflow"])
-        stats = self.store.stats(job["workflow"])
-        expected = stats.get("node_count") or (wf.expected_nodes(w.output_classes) if wf else 20)
-        if titles is None:
-            prompt = (self.store.get(job["id"], with_prompt=True) or {}).get("prompt") or {}
-            titles = {nid: (n.get("_meta") or {}).get("title") or n.get("class_type") for nid, n in prompt.items()}
-        rt = Runtime(job_id=job["id"], expected=expected, titles=titles)
-        self.runtime[pid] = rt
-        return rt
-
-    # ================================================================ monitoring
-    async def _ws_loop(self, w: Worker) -> None:
-        backoff = 1.0
-        while True:
-            try:
-                async with websockets.connect(w.client.ws_url(w.client_id), max_size=None,
-                                              open_timeout=10, ping_interval=20, ping_timeout=30) as ws:
-                    w.ws_connected = True
-                    backoff = 1.0
-                    log.info("connected to %s events", w.name)
-                    # A reconnect usually means ComfyUI restarted, maybe after node packs
-                    # or models changed: re-run the preflight before dispatching again.
-                    w.checked = False
-                    await self._refresh_object_info(w)
-                    self._emit_worker(w)
-                    await self._reconcile(w)
-                    self.wake()
-                    async for raw in ws:
-                        if isinstance(raw, bytes):
-                            continue   # live preview images
-                        try:
-                            msg = json.loads(raw)
-                        except ValueError:
-                            continue
-                        try:
-                            await self._on_message(w, msg)
-                        except Exception:  # noqa: BLE001
-                            log.exception("error handling %s event", msg.get("type"))
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                log.debug("ws %s: %s", w.name, e)
-            if w.ws_connected:
-                w.ws_connected = False
-                log.warning("lost event connection to %s", w.name)
-                self._emit_worker(w)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
-
-    def _runtime_for(self, w: Worker, pid: str) -> tuple[dict | None, Runtime | None]:
-        rt = self.runtime.get(pid)
-        job = self.store.get(rt.job_id) if rt else self.store.by_prompt_id(pid)
-        if job is None:
-            return None, None
-        if rt is None and job["status"] in ON_WORKER:
-            rt = self._new_runtime(w, job, pid)
-        return job, rt
-
-    def _push_progress(self, job: dict, rt: Runtime, stage: str | None = None, force: bool = False) -> None:
-        t = now()
-        if not force and t - rt.last_push < 0.5:
-            return
-        rt.last_push = t
-        fields = {"progress": round(rt.progress(), 4)}
-        if stage:
-            fields["stage"] = stage
-        self._emit(self.store.transition(job["id"], ON_WORKER, **fields))
-
-    async def _on_message(self, w: Worker, msg: dict) -> None:
-        kind, data = msg.get("type"), msg.get("data") or {}
-        if kind == "status":
-            w.queue_remaining = ((data.get("status") or {}).get("exec_info") or {}).get("queue_remaining")
-            return
-        pid = data.get("prompt_id")
-        if not pid:
-            return
-        if pid in w.abandoned:
-            return
-        job, rt = self._runtime_for(w, pid)
-        if job is None:
-            return
-        jid = job["id"]
-
-        if kind == "execution_start":
-            j = self.store.transition(jid, ("dispatched",), status="running", started_at=now(), stage="starting")
-            self._emit(j)
-        elif kind == "execution_cached" and rt:
-            rt.done.update(data.get("nodes") or [])
-            self._push_progress(job, rt, "using cached results")
-        elif kind == "executing" and rt:
-            node = data.get("node")
-            if job["status"] == "dispatched":
-                job = self.store.transition(jid, ("dispatched",), status="running", started_at=now()) or job
-            if rt.current and rt.current != node:
-                rt.done.add(rt.current)
-            rt.current, rt.frac = node, 0.0
-            if node is None:   # older ComfyUI signals completion this way
-                self._spawn(self._finalize(w, jid, pid))
-            else:
-                self._push_progress(job, rt, rt.titles.get(node, node), force=True)
-        elif kind == "progress" and rt:
-            node = data.get("node")
-            if node and node != rt.current:
-                if rt.current:
-                    rt.done.add(rt.current)
-                rt.current = node
-            mx = data.get("max") or 0
-            rt.frac = (data.get("value") or 0) / mx if mx else 0.0
-            self._push_progress(job, rt, f"{rt.titles.get(rt.current, rt.current)} "
-                                         f"{data.get('value')}/{mx}")
-        elif kind == "executed" and rt:
-            if data.get("node"):
-                rt.done.add(data["node"])
-        elif kind == "execution_success":
-            self._spawn(self._finalize(w, jid, pid))
-        elif kind == "execution_error":
-            title = rt.titles.get(str(data.get("node_id")), "") if rt else ""
-            msg_ = (f"{data.get('node_type')} (node {data.get('node_id')}"
-                    f"{' ' + repr(title) if title else ''}): {str(data.get('exception_message', '')).strip()}")
-            self._fail(jid, msg_, ON_WORKER, traceback="".join(data.get("traceback") or []) or None)
-            self._spawn(self._drop_history(w, pid))
-        elif kind == "execution_interrupted":
-            if job["cancel_requested"]:
-                self._finish_cancel(jid)
-            else:
-                self._fail(jid, "Interrupted on the farm machine.", ON_WORKER)
-            self._spawn(self._drop_history(w, pid))
-
-    async def _drop_history(self, w: Worker, pid: str) -> None:
-        if not self.cfg.farm.delete_comfy_history:
-            return
-        try:
-            await w.client.delete_history([pid])
-        except httpx.HTTPError:
-            pass
-
-    # ================================================================ reconcile
-    async def _reconcile_loop(self, w: Worker) -> None:
-        while True:
-            await asyncio.sleep(self.cfg.farm.reconcile_seconds)
-            if not (w.online and w.ws_connected):
-                continue
-            try:
-                await self._reconcile(w)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                log.exception("reconcile %s failed", w.name)
-
-    async def _reconcile(self, w: Worker) -> None:
-        """Correct our view from ComfyUI's queue and history: catches events missed while
-        disconnected, and jobs ComfyUI lost because it restarted."""
-        t0 = now()
-        jobs = [j for j in self.store.on_worker(w.name) if (j["dispatched_at"] or 0) < t0 - 2]
-        if not jobs and not w.abandoned:
-            return
-        running, pending = await w.client.queue()
-        for pid in list(w.abandoned):
-            try:
-                if pid in pending:
-                    await w.client.delete_queued([pid])
-                elif pid in running:
-                    await w.client.interrupt(pid)
-            except httpx.HTTPError:
-                continue
-            if pid not in running:
-                w.abandoned.discard(pid)
-        for j in jobs:
-            pid = j["prompt_id"]
-            if pid in running:
-                if j["status"] == "dispatched":
-                    self._emit(self.store.transition(j["id"], ("dispatched",), status="running", started_at=now()))
-                if pid not in self.runtime:
-                    self._new_runtime(w, j, pid)
-                continue
-            if pid in pending:
-                continue
-            hist = await w.client.history(pid)
-            if hist:
-                status = hist.get("status") or {}
-                if status.get("status_str") == "success" or (status.get("completed") and status.get("status_str") != "error"):
-                    self._spawn(self._finalize(w, j["id"], pid, hist))
-                else:
-                    message, interrupted, tb = _history_failure(hist)
-                    if interrupted and j["cancel_requested"]:
-                        self._finish_cancel(j["id"])
-                    else:
-                        self._fail(j["id"], message, ON_WORKER, traceback=tb)
-                    self._spawn(self._drop_history(w, pid))
-                continue
-            await self._requeue_or_fail(w, j, f"ComfyUI on {w.name} lost the job (restarted?).")
-
-    # ================================================================ health
-    async def _health_loop(self, w: Worker) -> None:
-        fails = 0
-        while True:
-            try:
-                w.stats = await w.client.system_stats()
-                w.last_seen = now()
-                fails = 0
-                if not w.online:
-                    w.online, w.error = True, None
-                    log.info("worker %s online", w.name)
-                    self._emit_worker(w)
-                    self.wake()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                fails += 1
-                if w.online and fails >= 2:
-                    w.online, w.offline_since = False, now()
-                    w.error = str(e) or type(e).__name__
-                    log.warning("worker %s offline: %s", w.name, w.error)
-                    self._emit_worker(w)
-                if not w.online and now() - w.offline_since > self.cfg.farm.lost_after_seconds:
-                    for j in self.store.on_worker(w.name):
-                        await self._requeue_or_fail(
-                            w, j, f"Worker {w.name} was unreachable for over "
-                                  f"{self.cfg.farm.lost_after_seconds / 60:.0f} minutes.")
-            await asyncio.sleep(self.cfg.farm.health_seconds)
-
-    async def _refresh_object_info(self, w: Worker) -> None:
-        try:
-            oi = await w.client.object_info()
-        except Exception as e:  # noqa: BLE001
-            log.warning("couldn't read node definitions from %s: %s", w.name, e)
-            w.checked = True
-            return
-        w.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
-        w.problems = {}
-        for name, wf in self.registry.workflows.items():
-            probs = wf.check_object_info(oi)
-            if probs:
-                w.problems[name] = probs
-                for p in probs:
-                    log.error("worker %s / workflow %s: %s", w.name, name, p)
-        w.checked = True
 
     async def check_workers(self) -> dict:
         for w in self.workers.values():
             if w.online:
-                await self._refresh_object_info(w)
-        return {w.name: w.summary(self.store) for w in self.workers.values()}
+                await w.refresh_object_info()
+        return {w.name: w.summary() for w in self.workers.values()}
 
-    # ================================================================ outputs
-    async def _finalize(self, w: Worker, job_id: str, pid: str, hist: dict | None = None) -> None:
-        j = self.store.transition(job_id, ON_WORKER, status="postprocessing",
-                                  stage="collecting outputs", progress=0.99)
-        if j is None:
-            return   # already handled (duplicate event, cancel, reconcile)
-        rt = self.runtime.pop(pid, None)
-        self._emit(j)
-        try:
-            if hist is None:
-                for _ in range(10):   # history is written just after the success event
-                    hist = await w.client.history(pid)
-                    if hist:
-                        break
-                    await asyncio.sleep(0.5)
-            outputs, warnings = await self._collect_outputs(w, j, hist or {})
-            t = now()
-            done = self.store.transition(job_id, ("postprocessing",), status="done", progress=1.0,
-                                         stage="done", finished_at=t, outputs=outputs,
-                                         warnings=j["warnings"] + warnings)
-            self._emit(done)
-            self._cleanup_scratch(j)
-            started = j["started_at"] or j["dispatched_at"] or t
-            nodes = len(rt.done | ({rt.current} if rt.current else set())) if rt else None
-            if j["kind"] != "batch":   # a set's ETA comes from its own batches
-                self.store.record_run(j["workflow"], t - started, nodes or None)
-            log.info("job %s done in %.0fs -> %s", job_id[:8], t - started, outputs.get("output_dir"))
-        except Exception as e:  # noqa: BLE001
-            log.exception("collecting outputs for %s failed", job_id[:8])
-            self._fail(job_id, f"Finished on the GPU but collecting outputs failed: {e}", ("postprocessing",))
-        finally:
-            await self._drop_history(w, pid)
+    # ================================================================ host for the workers
+    # protocol.JobHost: what a WorkerRunner reads and reports through.
+    def job(self, job_id: str, with_prompt: bool = False) -> dict | None:
+        return self.store.get(job_id, with_prompt=with_prompt)
+
+    def job_by_prompt(self, prompt_id: str) -> dict | None:
+        return self.store.by_prompt_id(prompt_id)
+
+    def jobs_on_worker(self, worker: str, statuses: tuple = ON_WORKER) -> list[dict]:
+        return self.store.on_worker(worker, statuses)
+
+    def inflight(self, worker: str) -> int:
+        return self.store.count_on_worker(worker)
+
+    def transition(self, job_id: str, from_statuses: tuple, **fields) -> dict | None:
+        return self.store.transition(job_id, from_statuses, **fields)
+
+    def emit(self, job: dict | None) -> None:
+        self._emit(job)
+
+    def fail(self, job_id: str, message: str, from_statuses: tuple = ACTIVE,
+             traceback: str | None = None) -> dict | None:
+        return self._fail(job_id, message, from_statuses, traceback=traceback)
+
+    def finish_cancel(self, job_id: str) -> dict | None:
+        return self._finish_cancel(job_id)
+
+    def lost(self, job: dict, reason: str) -> None:
+        """A worker lost a job (its ComfyUI restarted, or it was unreachable too long):
+        queue it again, or give up after farm.max_attempts."""
+        if job["cancel_requested"]:
+            self._finish_cancel(job["id"])
+        elif job["attempts"] < self.cfg.farm.max_attempts:
+            j = self.store.transition(job["id"], ON_WORKER, status="queued", worker=None, prompt_id=None,
+                                      progress=0, stage="requeued", started_at=None,
+                                      warnings=job["warnings"] + [reason])
+            log.warning("job %s requeued: %s", job["id"][:8], reason)
+            self._emit(j)
             self.wake()
+        else:
+            self._fail(job["id"], f"{reason} Gave up after {job['attempts']} attempts.", ON_WORKER)
 
-    async def _collect_outputs(self, w: Worker, job: dict, hist: dict) -> tuple[dict, list[str]]:
-        info = job["info"] or {}
-        wf = self.registry.workflows.get(job["workflow"])
-        pc = self.cfg.paths
-        out_dir = info.get("output_dir")
-        outputs: dict = {"output_dir": out_dir, "output_dir_posix": info.get("output_dir_posix")}
-        warnings: list[str] = []
-        tokens = dict(info.get("name_tokens") or {})
-        if wf is None:
-            return outputs, ["Workflow no longer loaded; outputs left as ComfyUI wrote them."]
+    def record_run(self, workflow: str, seconds: float, node_count: int | None) -> None:
+        self.store.record_run(workflow, seconds, node_count)
 
-        tex = info.get("textures")
-        if tex and out_dir:
-            last = [0.0]
+    def worker_changed(self, worker: WorkerRunner) -> None:
+        self.events.publish({"type": "worker", "worker": worker.summary()})
 
-            def progress(done: int, total: int) -> None:
-                if now() - last[0] < 0.5 and done < total:
-                    return
-                last[0] = now()
-                self._emit(self.store.transition(job["id"], ("postprocessing",), stage=f"writing EXR maps {done}/{total}"))
+    def workflow(self, name: str) -> Workflow | None:
+        return self.registry.workflows.get(name)
 
-            outputs.update(await T.write_maps(tex, out_dir, self.cfg.textures, self.cfg.convert, pc.mappings, progress))
+    def workflow_stats(self, name: str) -> dict:
+        return self.store.stats(name)
 
-        fr = wf.outputs.get("frames")
-        if fr and out_dir:
-            res = await asyncio.to_thread(self._rename_frames, info, fr.get("ext", "png"))
-            outputs.update(res)
-            exp = info.get("expected_frames")
-            if exp and res["frames"] != exp:
-                warnings.append(f"Got {res['frames']} output frames from {exp} input frames; "
-                                f"numbering starts at {res['first']} and may not line up with the plate.")
+    def workflow_problems(self, object_info: dict) -> dict[str, list[str]]:
+        problems = {}
+        for name, wf in self.registry.workflows.items():
+            probs = wf.check_object_info(object_info)
+            if probs:
+                problems[name] = probs
+        return problems
 
-        pv = wf.outputs.get("preview")
-        if pv:
-            node_out = (hist.get("outputs") or {}).get(str(pv["node"])) or {}
-            entries = node_out.get("gifs") or node_out.get("videos") or node_out.get("images") or []
-            if entries and out_dir:
-                e = entries[-1]
-                dest = Path(out_dir) / (info.get("preview_name") or pc.preview_name).format(**tokens)
-                try:
-                    await w.client.download(e["filename"], e.get("subfolder", ""), e.get("type", "output"), dest)
-                    outputs["preview"] = P.normalize(str(dest))
-                    outputs["preview_posix"] = P.to_posix(outputs["preview"], pc.mappings)
-                except Exception as ex:  # noqa: BLE001
-                    warnings.append(f"Couldn't copy the preview video: {ex}")
-            elif not entries:
-                warnings.append("ComfyUI returned no preview video.")
-        return outputs, warnings
-
-    def _rename_frames(self, info: dict, ext: str) -> dict:
-        pc = self.cfg.paths
-        out_dir = info["output_dir"]
-        prefix = info["frames_prefix"]
-        names = sorted(n for n in os.listdir(out_dir)
-                       if n.startswith(prefix) and n.lower().endswith("." + ext.lower()))
-        if not names:
-            raise RuntimeError(f"no frames were written to {out_dir}")
-        first = info.get("first_frame")
-        first = 1 if first is None else first
-        template = info.get("frame_name") or pc.frame_name
-        tokens = dict(info.get("name_tokens") or {}, ext=ext)
-        for i, n in enumerate(names):
-            os.replace(os.path.join(out_dir, n), os.path.join(out_dir, template.format(frame=first + i, **tokens)))
-        pattern = f"{out_dir}/{P.frame_pattern(template).format(**tokens)}"
-        return {"frames": len(names), "first": first, "last": first + len(names) - 1,
-                "frame_pattern": pattern, "frame_pattern_posix": P.to_posix(pattern, pc.mappings)}
+    def _forget(self, job: dict) -> None:
+        """A job that ended here (failed, cancelled): its worker stops following it."""
+        w = self.workers.get(job.get("worker") or "")
+        if w is not None and job.get("prompt_id"):
+            w.forget(job["prompt_id"])
 
 
 __all__ = ["Farm", "FarmError", "ParamError"]
