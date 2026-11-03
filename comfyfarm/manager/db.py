@@ -142,18 +142,23 @@ class JobStore:
                 self._db.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*fields.values(), job_id))
         return self.get(job_id)
 
-    def transition(self, job_id: str, from_statuses: tuple, **fields: Any) -> dict | None:
+    def transition(self, job_id: str, from_statuses: tuple, *, only_prompt: str | None = None,
+                   **fields: Any) -> dict | None:
         """Update only if the job is still in one of from_statuses (guards races
-        between websocket events, reconciliation and cancels). None if it wasn't."""
+        between websocket events, reconciliation and cancels), and with only_prompt, only
+        while that is still its ComfyUI prompt (the same run, not a later attempt). None
+        if it wasn't."""
         for k in JSON_FIELDS:
             if k in fields and fields[k] is not None:
                 fields[k] = json.dumps(fields[k])
         sets = ",".join(f"{k}=?" for k in fields)
         marks = ",".join("?" * len(from_statuses))
+        where, args = f"id=? AND status IN ({marks})", [job_id, *from_statuses]
+        if only_prompt is not None:
+            where += " AND prompt_id=?"
+            args.append(only_prompt)
         with self._lock:
-            cur = self._db.execute(
-                f"UPDATE jobs SET {sets} WHERE id=? AND status IN ({marks})",
-                (*fields.values(), job_id, *from_statuses))
+            cur = self._db.execute(f"UPDATE jobs SET {sets} WHERE {where}", (*fields.values(), *args))
             if cur.rowcount == 0:
                 return None
         return self.get(job_id)

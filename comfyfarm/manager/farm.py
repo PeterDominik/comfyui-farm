@@ -714,13 +714,24 @@ class Farm:
 
     def lost(self, job: dict, reason: str) -> None:
         """A worker lost a job (its ComfyUI restarted, or it was unreachable too long):
-        queue it again, or give up after farm.max_attempts."""
+        queue it again, or give up after farm.max_attempts.
+
+        Only about the run the job is on now. The report carries the worker's view of the
+        job, which can be stale: the job may have been queued again and sent to ComfyUI
+        since (another check of the same worker got there first). Requeuing it then would
+        run it twice, so a report about an earlier run is ignored."""
+        pid = job.get("prompt_id")
+        job = self.store.get(job["id"])
+        if not job or job["status"] not in ON_WORKER or not pid or job["prompt_id"] != pid:
+            return
         if job["cancel_requested"]:
             self._finish_cancel(job["id"])
         elif job["attempts"] < self.cfg.farm.max_attempts:
-            j = self.store.transition(job["id"], ON_WORKER, status="queued", worker=None, prompt_id=None,
-                                      progress=0, stage="requeued", started_at=None,
+            j = self.store.transition(job["id"], ON_WORKER, only_prompt=pid, status="queued", worker=None,
+                                      prompt_id=None, progress=0, stage="requeued", started_at=None,
                                       warnings=job["warnings"] + [reason])
+            if j is None:
+                return
             log.warning("job %s requeued: %s", job["id"][:8], reason)
             self._emit(j)
             self.wake()

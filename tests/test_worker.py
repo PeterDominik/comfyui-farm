@@ -59,9 +59,11 @@ class FakeComfy:
         return prompt_id, {}
 
     async def queue(self):
+        await asyncio.sleep(0)   # a real request lets other tasks run meanwhile
         return set(self.running), set(self.pending)
 
     async def history(self, prompt_id):
+        await asyncio.sleep(0)
         return self.hist.get(prompt_id)
 
     async def delete_history(self, prompt_ids):
@@ -221,6 +223,32 @@ class WorkerTests(unittest.TestCase):
         self.comfy.pending.clear()
         self.wait(self.worker._reconcile())
         self.assertEqual(self.store.get(job["id"])["status"], "failed")   # farm.max_attempts is 2
+
+    def test_overlapping_checks_requeue_a_lost_job_once(self):
+        # After ComfyUI restarts, the reconnect and the periodic check can both look at the
+        # job at once. Only one of them may requeue it.
+        job = self.dispatched()
+        self.store.update(job["id"], dispatched_at=job["dispatched_at"] - 10)
+        self.comfy.pending.clear()
+        calls, lost = [], self.farm.lost
+        self.farm.lost = lambda j, reason: (calls.append(j["id"]), lost(j, reason))[1]
+
+        async def both():   # gathered inside the loop: outside it, gather needs a current loop
+            await asyncio.gather(self.worker._reconcile(), self.worker._reconcile())
+        self.wait(both())
+        self.assertEqual(calls, [job["id"]])
+        self.assertEqual(self.store.get(job["id"])["status"], "queued")
+
+    def test_a_late_report_about_an_earlier_run_is_ignored(self):
+        job = self.dispatched()
+        self.farm.lost(job, "ComfyUI lost the job.")     # queued again...
+        self.wait(self.farm._dispatch_once())             # ...and sent to ComfyUI again
+        again = self.store.get(job["id"])
+        self.assertEqual((again["status"], again["attempts"]), ("dispatched", 2))
+        self.farm.lost(job, "late report")                # about the first run: stale
+        now = self.store.get(job["id"])
+        self.assertEqual((now["status"], now["attempts"], now["prompt_id"]), ("dispatched", 2, again["prompt_id"]))
+        self.assertNotIn("late report", now["warnings"])
 
 
 if __name__ == "__main__":

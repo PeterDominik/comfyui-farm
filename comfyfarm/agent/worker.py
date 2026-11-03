@@ -83,6 +83,9 @@ class WorkerRunner:
         self.scratch_root = P.normalize(str(farm_cfg.resolve(farm_cfg.convert.scratch_dir)))
         self._tasks: list[asyncio.Task] = []
         self._bg: set[asyncio.Task] = set()
+        # The reconnect and the periodic check both reconcile; one at a time, so they can't
+        # both act on the same lost job.
+        self._reconcile_lock = asyncio.Lock()
 
     def summary(self) -> dict:
         gpu = None
@@ -363,6 +366,10 @@ class WorkerRunner:
     async def _reconcile(self) -> None:
         """Correct our view from ComfyUI's queue and history: catches events missed while
         disconnected, and jobs ComfyUI lost because it restarted."""
+        async with self._reconcile_lock:
+            await self._reconcile_once()
+
+    async def _reconcile_once(self) -> None:
         t0 = now()
         jobs = [j for j in self.host.jobs_on_worker(self.name) if (j["dispatched_at"] or 0) < t0 - 2]
         if not jobs and not self.abandoned:
