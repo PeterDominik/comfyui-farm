@@ -2,7 +2,7 @@ import copy
 import unittest
 from pathlib import Path
 
-from comfyfarm.paths import Sequence
+from comfyfarm.fileio.inputs import Sequence
 from comfyfarm.workflows import ParamError, Target, Workflow, WorkflowRegistry
 
 WF_DIR = Path(__file__).resolve().parent.parent / "workflows"

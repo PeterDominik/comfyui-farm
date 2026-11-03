@@ -9,12 +9,16 @@ import types
 from pathlib import Path
 from unittest import mock
 
-from comfyfarm import convert
 from comfyfarm.config import ConvertConfig, OcioConfig, PathMapping, PathsConfig
-from comfyfarm.convert import (exr_command, find_tool, ocio_config_path, ocio_setup, parse_ffmpeg_info,
-                               parse_probe, point_loader_at_scratch, probe_movie, probe_movie_ffmpeg,
-                               read_movie_info, resolve_input, summary, timecode_to_frame)
-from comfyfarm.paths import SequenceError
+from comfyfarm.fileio import convert, media, tools
+from comfyfarm.fileio.convert import exr_command
+from comfyfarm.fileio.errors import SequenceError
+from comfyfarm.fileio.inputs import resolve_input, summary
+from comfyfarm.fileio.media import (parse_ffmpeg_info, parse_probe, probe_movie, probe_movie_ffmpeg, read_movie_info,
+                                    timecode_to_frame)
+from comfyfarm.fileio.ocio import ocio_config_path, ocio_setup
+from comfyfarm.fileio.scratch import point_loader_at_scratch
+from comfyfarm.fileio.tools import find_tool
 
 REPO = Path(__file__).resolve().parent.parent
 CONFIG = ("ocio_profile_version: 2\nroles:\n  scene_linear: ACES - ACEScg\n  color_picking: Output - sRGB\n"
@@ -87,8 +91,8 @@ class FfmpegOnlyProbeTests(unittest.TestCase):
             parse_ffmpeg_info("Input #0 ...\n  Stream #0:0: Audio: aac\n", 10)
 
     def test_ffmpeg_used_when_no_ffprobe(self):
-        with mock.patch.object(convert, "find_tool", side_effect=lambda n, c=None: None if n == "ffprobe" else ["ffmpeg"]), \
-                mock.patch.object(convert, "probe_movie_ffmpeg", return_value={"via": "ffmpeg"}) as m:
+        with mock.patch.object(tools, "find_tool", side_effect=lambda n, c=None: None if n == "ffprobe" else ["ffmpeg"]), \
+                mock.patch.object(media, "probe_movie_ffmpeg", return_value={"via": "ffmpeg"}) as m:
             self.assertEqual(read_movie_info("x.mov", ConvertConfig()), {"via": "ffmpeg"})
             m.assert_called_once_with("x.mov", ["ffmpeg"])
 
@@ -98,7 +102,7 @@ class FfmpegOnlyProbeTests(unittest.TestCase):
         fake = types.SimpleNamespace(get_ffmpeg_exe=lambda: exe.name)
         try:
             with mock.patch.dict(sys.modules, {"imageio_ffmpeg": fake}), \
-                    mock.patch.object(convert.sys, "executable", os.path.join(tempfile.gettempdir(), "venv", "python")):
+                    mock.patch.object(tools.sys, "executable", os.path.join(tempfile.gettempdir(), "venv", "python")):
                 self.assertEqual(find_tool("ffmpeg"), [exe.name])
                 self.assertEqual(find_tool("ffmpeg", "C:/tools/ffmpeg.exe"), ["C:/tools/ffmpeg.exe"])   # config wins
         finally:

@@ -62,7 +62,7 @@ On the farm machine:
   1. Copy the new config into `reference/`.
   2. Copy the files its `ACES-look` uses into `luts/`.
   3. Update `comfy_png` here.
-  4. Measure the ramp in Nuke again, and update it here and in `comfyfarm/convert.py`
+  4. Measure the ramp in Nuke again, and update it here and in `comfyfarm/fileio/ocio.py`
      (`NUKE_RAMP`).
 - **Nuke can load `config.ocio`.** It is a regular OCIO v2 config, so you can compare by eye:
   a Write with `default (color_picking)` gives the farm's PNG.

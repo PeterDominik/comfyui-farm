@@ -33,7 +33,7 @@ def tiny_png(grey: int = 128, size: int = 1, height: int | None = None) -> bytes
 def input_size(path):
     """(width, height) from a PNG's or EXR's header, as the farm reads it."""
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-    from comfyfarm.convert import image_size
+    from comfyfarm.fileio.media import image_size
     return image_size(path)
 
 

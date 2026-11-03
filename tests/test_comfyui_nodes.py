@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "comfyui_nodes")
 import comfyfarm_nodes  # noqa: E402
 from comfyfarm_nodes.save_image import ComfyFarmSaveImage, next_number, to_uint8  # noqa: E402
 
-from comfyfarm.textures import _raw_files  # noqa: E402
+from comfyfarm.fileio.outputs import _raw_files  # noqa: E402
 
 
 class FakeTensor:

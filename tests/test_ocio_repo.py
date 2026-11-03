@@ -12,7 +12,7 @@ import numpy as np
 import yaml
 
 from comfyfarm.config import OcioConfig
-from comfyfarm.convert import DATA, IMAGE, LINEAR, NUKE_RAMP, REPO, ocio_config_path
+from comfyfarm.fileio.ocio import DATA, IMAGE, LINEAR, NUKE_RAMP, REPO, ocio_config_path
 
 CONFIG = ocio_config_path(OcioConfig())
 OCIO_DIR = REPO / "ocio"

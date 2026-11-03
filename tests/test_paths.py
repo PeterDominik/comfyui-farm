@@ -3,10 +3,11 @@ import tempfile
 import unittest
 
 from comfyfarm.config import PathMapping, PathsConfig
-from comfyfarm.paths import (SequenceError, context_from_path, default_output_dir_display,
-                             default_output_root_display, frame_pattern, output_dir, output_root,
-                             parse_input, render, resolve_output_folder, resolve_sequence,
-                             sequence_exists, source_stem, to_farm, to_posix)
+from comfyfarm.fileio.errors import SequenceError
+from comfyfarm.fileio.inputs import resolve_sequence
+from comfyfarm.fileio.naming import (default_output_dir_display, default_output_root_display, output_dir, output_root,
+                                     resolve_output_folder, sequence_exists)
+from comfyfarm.fileio.paths import context_from_path, frame_pattern, parse_input, render, source_stem, to_farm, to_posix
 
 PATTERNS = ["/shows/{show}/.published/{seq}/{shot}/", "/shows/{show}/"]
 

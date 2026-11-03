@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from . import textures as T
+from .fileio import textures as T
 
 log = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-"""REST + websocket API and the dashboard."""
+"""The manager's REST + websocket API and the dashboard."""
 
 from __future__ import annotations
 
@@ -12,16 +12,17 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Web
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__
-from .config import Config
+from .. import __version__
+from ..config import Config
+from ..fileio.errors import SequenceError
+from ..fileio.naming import default_output_dir_display
+from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
 from .events import EventBus
 from .farm import Farm, FarmError
-from .paths import SequenceError, default_output_dir_display
-from .workflows import ParamError, WorkflowRegistry
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parent
+REPO = HERE.parent.parent
 
 
 @dataclass
@@ -45,6 +46,11 @@ def create_app(cfg: Config) -> FastAPI:
     registry = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
     events = EventBus()
     farm = Farm(cfg, store, registry, events)
+    # Standalone: each configured ComfyUI gets a worker in this process.
+    from ..agent.worker import WorkerRunner
+    for w in cfg.workers:
+        if w.enabled:
+            farm.attach(WorkerRunner(w, cfg, farm))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -191,7 +197,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.get("/api/v1/workers")
     def workers(ident: Identity = Depends(identity)):
-        return {"workers": [w.summary(store) for w in farm.workers.values()]}
+        return {"workers": [w.summary() for w in farm.workers.values()]}
 
     @app.post("/api/v1/workers/check")
     async def check_workers(ident: Identity = Depends(identity)):
@@ -210,7 +216,7 @@ def create_app(cfg: Config) -> FastAPI:
             await ws.send_json({
                 "type": "snapshot",
                 "jobs": farm.annotate(store.list(limit=200)),
-                "workers": [w.summary(store) for w in farm.workers.values()],
+                "workers": [w.summary() for w in farm.workers.values()],
             })
             while True:
                 try:

@@ -25,9 +25,11 @@ sys.path.insert(0, str(ROOT))
 import OpenImageIO as oiio  # noqa: E402
 import PyOpenColorIO as OCIO  # noqa: E402
 
-from comfyfarm import convert as C  # noqa: E402
-from comfyfarm import textures as T  # noqa: E402
 from comfyfarm.config import load_config  # noqa: E402
+from comfyfarm.fileio import convert as C  # noqa: E402
+from comfyfarm.fileio import ocio as OC  # noqa: E402
+from comfyfarm.fileio import outputs as Out  # noqa: E402
+from comfyfarm.fileio import tools as TL  # noqa: E402
 
 
 def read(path, fmt=oiio.FLOAT):
@@ -86,9 +88,9 @@ def main():
     a = ap.parse_args()
 
     cfg = load_config(a.config)
-    ocio = C.ocio_setup(cfg.ocio, cfg.paths)
+    ocio = OC.ocio_setup(cfg.ocio, cfg.paths)
     conv = dict(ocio, extra_args=list(cfg.convert.exr.extra_args))
-    tool = C.require_tool(cfg.convert, "oiiotool")
+    tool = TL.require_tool(cfg.convert, "oiiotool")
     env = dict(os.environ)
     help_text = subprocess.run([*tool, "--help"], capture_output=True, text=True, env=env).stdout
     ver = subprocess.run([*tool, "--version"], capture_output=True, text=True, env=env).stdout.strip()
@@ -105,10 +107,10 @@ def main():
 
     ocfg = OCIO.Config.CreateFromFile(ocio["config"])
     ctx = ocfg.getCurrentContext()
-    fwd = ocfg.getProcessor(ctx, C.LINEAR, C.IMAGE).getDefaultCPUProcessor()
-    inv = ocfg.getProcessor(ctx, C.IMAGE, C.LINEAR).getDefaultCPUProcessor()
-    print(f"OpenColorIO     {C.LINEAR} = {ocfg.getColorSpace(C.LINEAR).getName()}, "
-          f"{C.IMAGE} = {ocfg.getColorSpace(C.IMAGE).getName()}")
+    fwd = ocfg.getProcessor(ctx, OC.LINEAR, OC.IMAGE).getDefaultCPUProcessor()
+    inv = ocfg.getProcessor(ctx, OC.IMAGE, OC.LINEAR).getDefaultCPUProcessor()
+    print(f"OpenColorIO     {OC.LINEAR} = {ocfg.getColorSpace(OC.LINEAR).getName()}, "
+          f"{OC.IMAGE} = {ocfg.getColorSpace(OC.IMAGE).getName()}")
 
     tmp = Path(tempfile.mkdtemp(prefix="ocio_compare_"))
     # ------------------------------------------------------------------ test ramp
@@ -125,7 +127,7 @@ def main():
     print("   linear                     OpenColorIO        farm             diff        Nuke")
     nuke_off = 0
     for v, w_, f in zip(vals, want, farm):
-        nk = next((n for k, n in C.NUKE_RAMP.items() if v[0] == v[1] == v[2] and abs(v[0] - k) < 1e-3), None)
+        nk = next((n for k, n in OC.NUKE_RAMP.items() if v[0] == v[1] == v[2] and abs(v[0] - k) < 1e-3), None)
         nuke_off += nk is not None and nk != f[1]
         print(f"   {np.array2string(v, precision=3):24s} {str(w_):16s} {str(f):16s} {str(f - w_):11s} "
               f"{'' if nk is None else nk}")
@@ -133,7 +135,7 @@ def main():
           f"{'matches Nuke' if not nuke_off else f'{nuke_off} value(s) differ from Nuke'}")
 
     write(tmp / "ramp_ref.png", np.repeat(np.repeat(want[None].astype(np.uint8), 8, 0), 8, 1), oiio.UINT8)
-    run(T.map_command(tool, ocio, {"color": True, "bits": "half"}, str(tmp / "ramp_ref.png"),
+    run(Out.map_command(tool, ocio, {"color": True, "bits": "half"}, str(tmp / "ramp_ref.png"),
                       str(tmp / "ramp_back.exr")), env)
     back = read(tmp / "ramp_back.exr")[0, ::8]
     want_back = apply(inv, want / 255.0)
@@ -174,7 +176,7 @@ def main():
             print("   mean PNG code per band of Nuke's code:")
             by_level("Nuke", nuke[mask], [nuke[mask], farm[mask], want[mask]], ["Nuke", "farm", "OCIO"])
 
-            run(T.map_command(tool, ocio, {"color": True, "bits": "half"}, str(a.nuke_png), str(tmp / "nuke_back.exr")),
+            run(Out.map_command(tool, ocio, {"color": True, "bits": "half"}, str(a.nuke_png), str(tmp / "nuke_back.exr")),
                 env)
             nb = read(tmp / "nuke_back.exr")
             ob = apply(inv, nuke / 255.0)

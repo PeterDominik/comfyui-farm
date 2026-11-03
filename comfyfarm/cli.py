@@ -1,0 +1,216 @@
+"""python -m comfyfarm standalone | serve | check
+
+standalone (serve is the same, under its old name): the manager and a worker per
+configured ComfyUI, in one process, as the farm has always run."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import logging.handlers
+import os
+import re
+import subprocess
+import sys
+
+from . import __version__
+from .config import Config, load_config
+from .fileio.ocio import nuke_ramp, ocio_roles
+from .workflows import WorkflowRegistry
+
+
+def setup_logging(cfg: Config, verbose: bool = False) -> None:
+    log_dir = cfg.resolve(cfg.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(fmt)
+    fileh = logging.handlers.RotatingFileHandler(log_dir / "comfyfarm.log", maxBytes=5_000_000,
+                                                 backupCount=5, encoding="utf-8")
+    fileh.setFormatter(fmt)
+    root.handlers[:] = [console, fileh]
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def check_ocio(cfg: Config) -> int:
+    """The repo's OCIO config: its roles, the values Nuke gives (OC.NUKE_RAMP), and the exact
+    oiiotool commands jobs run with it, on a test image. A missing config or LUT, or a
+    config that no longer matches Nuke, shows up here, not in a job."""
+    import tempfile
+
+    from .fileio import convert as C
+    from .fileio import ocio as OC
+    from .fileio import outputs as O
+    from .fileio.errors import SequenceError
+    from .fileio.tools import find_tool
+    try:
+        ocio = OC.ocio_setup(cfg.ocio, cfg.paths)
+    except SequenceError as e:
+        print(f"  [FAIL] OCIO: {e}")
+        return 1
+    shown_config = OC._config_display(ocio["config"], cfg.paths)
+    roles = ocio_roles(ocio["config"], [OC.LINEAR, OC.IMAGE, OC.DATA])
+    if roles.get("__error__"):
+        print(f"  [FAIL] OCIO config {shown_config}: {roles['__error__']}")
+        return 1
+    missing = [n for n, v in roles.items() if v is None]
+    if missing:
+        print(f"  [FAIL] OCIO config {shown_config} has no {', '.join(missing)} role")
+        return 1
+    shown = ", ".join(f"{n} = {v}" for n, v in roles.items()) if roles else f"{OC.LINEAR} -> {OC.IMAGE}"
+    try:
+        ramp = nuke_ramp(ocio["config"])
+    except Exception as e:  # noqa: BLE001  (a LUT file missing or unreadable)
+        print(f"  [FAIL] OCIO config {shown_config}: {str(e).splitlines()[0][:300]}")
+        return 1
+    if ramp is not None and ramp != OC.NUKE_RAMP:
+        off = ", ".join(f"{v}: {ramp[v]} (Nuke {OC.NUKE_RAMP[v]})" for v in OC.NUKE_RAMP if ramp[v] != OC.NUKE_RAMP[v])
+        print(f"  [FAIL] OCIO config {shown_config} no longer matches Nuke: linear grey -> PNG code {off}. "
+              f"See ocio/README.md")
+        return 1
+    cmd = find_tool("oiiotool", cfg.convert.tools.get("oiiotool"))
+    if not cmd:
+        print(f"  [WARN] OCIO config {shown_config} ({shown}): oiiotool not found, so EXR inputs and texture "
+              f"maps can't be converted (run scripts\\setup.ps1)")
+        return 0
+    conv = dict(ocio, extra_args=list(cfg.convert.exr.extra_args))
+    with tempfile.TemporaryDirectory() as d:
+        png, exr = f"{d}/check.png", f"{d}/check.exr"
+        steps = [
+            ("make a test image", [*cmd, "--create", "4x4", "3", "-d", "uint8", "-o", png]),
+            (f"texture colour map {OC.IMAGE} -> {OC.LINEAR}",
+             O.map_command(cmd, ocio, {"color": True, "bits": "half"}, png, exr)),
+            (f"texture data map tagged {OC.DATA}",
+             O.map_command(cmd, ocio, {"color": False, "bits": "float"}, png, f"{d}/data.exr")),
+            (f"EXR input {OC.LINEAR} -> {OC.IMAGE}", C.exr_command(cmd, conv, exr, f"{d}/back.png")),
+        ]
+        for label, step in steps:
+            try:
+                out = subprocess.run(step, capture_output=True, text=True, timeout=60)
+                ok, text = out.returncode == 0, (out.stderr or out.stdout).strip()
+            except (OSError, subprocess.TimeoutExpired) as e:
+                ok, text = False, str(e)
+            if not ok:
+                print(f"  [FAIL] OCIO: {label} with {shown_config}: {text[-300:] or 'failed'}")
+                return 1
+    matches = "matches Nuke, " if ramp is not None else ""
+    print(f"  [ ok ] OCIO config {shown_config} ({shown}): {matches}oiiotool converts {OC.LINEAR} <-> {OC.IMAGE}")
+    return 0
+
+
+async def run_check(cfg: Config) -> int:
+    """Preflight: workflows load, workers reachable, node packs/models present, storage visible."""
+    bad = 0
+    print(f"comfyfarm {__version__}  config: {cfg.base_dir}")
+    for note in cfg.obsolete_keys:
+        print(f"  [WARN] config.yaml: {note}")
+    reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
+    for name, err in reg.load_errors.items():
+        print(f"  [FAIL] workflow {name}: {err}")
+        bad += 1
+    for wf in reg.workflows.values():
+        if wf.problems:
+            bad += 1
+            print(f"  [FAIL] workflow {wf.name}:")
+            for p in wf.problems:
+                print(f"         - {p}")
+        else:
+            print(f"  [ ok ] workflow {wf.name} ({len(wf.params)} params)")
+
+    from .agent.comfy import ComfyClient   # here, so check_ocio and --help don't need httpx
+    from .fileio.tools import find_tool
+    for tool, args, use in (("oiiotool", ["--buildinfo"], "EXR inputs"), ("ffmpeg", ["-version"], "movie inputs"),
+                            ("ffprobe", ["-version"], "movie inputs")):
+        cmd = find_tool(tool, cfg.convert.tools.get(tool))
+        if not cmd and tool == "ffprobe":
+            print("  [ ok ] ffprobe: not installed; movie info is read with ffmpeg instead")
+            continue
+        if not cmd:
+            print(f"  [WARN] {tool} not found: {use} will be refused (run scripts\\setup.ps1)")
+            continue
+        try:
+            out = subprocess.run([*cmd, *args], capture_output=True, text=True, timeout=30)
+            text = (out.stdout or out.stderr).strip()
+            first = text.splitlines()[0] if text else f"exit {out.returncode}"
+            ocio = ""
+            if tool == "oiiotool":
+                m = re.search(r"OpenColorIO[^\n,;]*", text)
+                ocio = f"  ({m.group(0).strip()})" if m else "  (no OpenColorIO support found!)"
+            print(f"  [ ok ] {tool}: {first[:70]}{ocio}")
+        except Exception as e:  # noqa: BLE001
+            bad += 1
+            print(f"  [FAIL] {tool} ({' '.join(cmd)}): {e}")
+
+    bad += check_ocio(cfg)
+
+    for m in cfg.paths.mappings:
+        ok = os.path.isdir(m.windows)
+        print(f"  [{' ok ' if ok else 'WARN'}] storage {m.posix} -> {m.windows}"
+              + ("" if ok else "  (not reachable from this machine/account)"))
+
+    for w in cfg.workers:
+        if not w.enabled:
+            continue
+        c = ComfyClient(w.url)
+        try:
+            stats = await c.system_stats()
+            dev = (stats.get("devices") or [{}])[0]
+            ver = (stats.get("system") or {}).get("comfyui_version", "?")
+            print(f"  [ ok ] worker {w.name} {w.url}  ComfyUI {ver}  {dev.get('name', '')}")
+            oi = await c.object_info()
+            for wf in reg.workflows.values():
+                probs = wf.check_object_info(oi)
+                if probs:
+                    bad += 1
+                    print(f"  [FAIL] {w.name} can't run {wf.name}:")
+                    for p in probs:
+                        print(f"         - {p}")
+                else:
+                    print(f"  [ ok ] {w.name} has every node, input and model {wf.name} needs")
+        except Exception as e:  # noqa: BLE001
+            bad += 1
+            print(f"  [FAIL] worker {w.name} {w.url}: {e}")
+        finally:
+            await c.close()
+    print("All good." if not bad else f"{bad} problem(s).")
+    return 1 if bad else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="comfyfarm", description="ComfyUI farm gateway")
+    ap.add_argument("--config", help="config.yaml path (default: repo root, or $COMFYFARM_CONFIG)")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("standalone", help="run the manager and a worker per configured ComfyUI, in one process")
+    sub.add_parser("serve", help="the same as standalone (its old name)")
+    sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
+    args = ap.parse_args(argv)
+
+    # Node titles contain emoji (VHS nodes); a service's redirected stdout on Windows
+    # defaults to cp1252 and would choke on them.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+    cfg = load_config(args.config)
+    if args.cmd == "check":
+        return asyncio.run(run_check(cfg))
+
+    setup_logging(cfg, args.verbose)
+    for note in cfg.obsolete_keys:
+        logging.getLogger("comfyfarm").warning("config.yaml: %s", note)
+    import uvicorn
+
+    from .manager.app import create_app
+    uvicorn.run(create_app(cfg), host=cfg.server.host, port=cfg.server.port,
+                log_config=None, ws_ping_interval=20)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
