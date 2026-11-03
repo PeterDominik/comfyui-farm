@@ -271,7 +271,10 @@ class MovieTests(unittest.TestCase):
         # Frame 1001 is the movie's second frame (the first after the slate).
         full = f"{self.root}/full"
         os.makedirs(full)
-        subprocess.run(["ffmpeg", "-v", "error", "-i", f"{root}/plate.mov", "-vf", "scale=in_color_matrix=bt709",
+        # The farm's own ffmpeg (the venv's), as convert_movie uses: another build may encode
+        # the same pixels into different PNG bytes.
+        subprocess.run([*find_tool("ffmpeg"), "-v", "error", "-i", f"{root}/plate.mov",
+                        "-vf", "scale=in_color_matrix=bt709",
                         "-fps_mode", "passthrough", "-start_number", "1000", "-pix_fmt", "rgb24", f"{full}/f.%04d.png"],
                        check=True)
         with open(f"{full}/f.1001.png", "rb") as a, open(seq.convert["dst_dir"] + "plate.1001.png", "rb") as b:

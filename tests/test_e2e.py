@@ -9,7 +9,6 @@ import importlib
 import json
 import os
 import shutil
-import signal
 import socket
 import struct
 import subprocess
@@ -165,7 +164,7 @@ convert:
 
     @classmethod
     def stop_comfy(cls):
-        cls.comfy.send_signal(signal.SIGKILL)   # a crash, not a clean shutdown
+        cls.comfy.kill()   # a crash, not a clean shutdown (SIGKILL; TerminateProcess on Windows)
         cls.comfy.wait(10)
 
     @classmethod
@@ -206,7 +205,7 @@ convert:
 
     # ------------------------------------------------------------ tests
     def test_01_happy_path(self):
-        job = self.submit("1003-1010", seed=7)
+        job = self.submit("1003-1010")
         self.assertEqual(job["status"], "queued")
         self.assertEqual((job["info"]["input"]["skip"], job["info"]["input"]["cap"]), (2, 8))
         done = self.wait_for(job["id"], ("done", "failed"))
@@ -219,7 +218,7 @@ convert:
         self.assertTrue(done["info"]["output_dir_posix"].endswith("/comfyui/renders/abc_0010"))
         self.assertFalse([n for n in names if "_raw" in n], "raw frames should be renamed")
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
-        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 7)
+        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 42)   # not on the form: as exported
         self.assertEqual(done["progress"], 1.0)
 
     def test_02_versions_and_cancel_waiting_jobs(self):
@@ -242,11 +241,14 @@ convert:
         self.assertEqual(self.wait_for(job["id"], ("cancelled", "done", "failed"))["status"], "cancelled")
 
     def test_04_failure_reports_node_and_traceback(self):
-        job = self.submit(seed=666)
+        # The mock fails any node with MOCK_FAIL in a text input: here OUTPUT_PATH, which gets
+        # the output folder.
+        (self.tmp / "shows/xyz/_project_ref/_cg/fail").mkdir(parents=True, exist_ok=True)
+        job = self.submit(output_path="/rdo/shows/xyz/_project_ref/_cg/fail/MOCK_FAIL")
         failed = self.wait_for(job["id"], ("failed", "done"))
         self.assertEqual(failed["status"], "failed")
         self.assertIn("Mock failure requested", failed["error"])
-        self.assertIn("RandomNoise (node 5516:4832", failed["error"])
+        self.assertIn("PrimitiveString (node 9093", failed["error"])
         self.assertTrue(failed["info"].get("traceback"))
 
     def test_045_picked_folder_is_root_with_shot_folder(self):
@@ -377,15 +379,16 @@ convert:
         m.load_workflows()
         wf = m.workflow("ltx25_alpha_gen")
         self.assertEqual((m.sequence_param(wf), m.output_param(wf)), ("input", "output_path"))
-        # Form values as the widgets hold them: text, blanks for "use the default".
-        raw = {"input": f"{SEQ} 1001-1004", "output_path": "  ", "seed": " 11 ", "enhance_prompt": False,
-               "shorter_side": "", "fps": "24"}
+        # Form values as the widgets hold them: text, blanks for "use the default". "seed" is a
+        # field the workflow no longer has (a panel built before the manifest changed): it's
+        # left out, not sent and refused.
+        raw = {"input": f"{SEQ} 1001-1004", "output_path": "  ", "seed": " 11 "}
         text = m.destination_html(m.plan("ltx25_alpha_gen", raw))
         self.assertIn("Will write</b> 4 frames", text)
         self.assertIn("/comfyui/renders/abc_0010/</code>", text)
         job = m.submit("ltx25_alpha_gen", raw, source_node="Read3")
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
-        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 11)
+        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 42)
         finished, end = [], time.time() + 40
         while not finished and time.time() < end:
             jobs, finished = m.poll(mine=True, active_only=True)
@@ -568,8 +571,9 @@ convert:
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
             self.submit("1001-1014")
-        with self.assertRaisesRegex(farm.FarmError, "multiple of 32"):
-            self.submit(shorter_side=1000)
+        with self.assertRaisesRegex(farm.FarmError,
+                                    r"Unknown parameter\(s\): shorter_side\. Known: input, output_path"):
+            self.submit(shorter_side=1088)     # not on the form: fixed in the workflow
         with self.assertRaisesRegex(farm.FarmError, "Can't use '.dpx' files"):
             farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/xyz/a.%04d.dpx 1-2"})
 

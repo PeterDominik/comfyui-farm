@@ -100,7 +100,7 @@ class WorkerTests(unittest.TestCase):
         })
         registry = WorkflowRegistry(REPO / "workflows")
         self.store = JobStore(Path(f"{root}/farm.db"))
-        self.addCleanup(self.store._db.close)   # before the folder is removed: Windows can't delete an open file
+        self.addCleanup(self.store.close)   # before the folder is removed: Windows can't delete an open file
         self.farm = Farm(cfg, self.store, registry, EventBus())
         self.worker = WorkerRunner(WorkerConfig(name="gpu1", url="http://fake:8188"), cfg, self.farm)
         installed = {}   # every node pack and model both workflows use

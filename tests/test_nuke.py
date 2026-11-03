@@ -95,11 +95,13 @@ def done_job(**kw):
 
 
 class NukeHelpers(unittest.TestCase):
-    def load(self, nodes, **kw):
+    def load(self, nodes, posix=True, **kw):
+        """The helpers with a stand-in Nuke, on a machine that sees show storage as Linux
+        paths (as artists' workstations do) unless posix=False (a Windows machine)."""
         fake = fake_nuke(nodes, **kw)
-        patcher = mock.patch.dict(sys.modules, {"nuke": fake})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.dict(sys.modules, {"nuke": fake}), mock.patch.object(farm, "POSIX", posix)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         sys.modules.pop("comfyfarm_nuke", None)
         self.addCleanup(sys.modules.pop, "comfyfarm_nuke", None)
         return importlib.import_module("comfyfarm_nuke"), fake
@@ -163,6 +165,18 @@ class NukeHelpers(unittest.TestCase):
         self.assertTrue(all(r.selected for r in reads))
         nk.create_read(job)
         self.assertEqual(len(nodes), 4)                                   # already read in: no duplicates
+
+    def test_windows_reads_use_the_farm_paths(self):
+        src = Node("Read", "Plate", x=100, y=200, file=SEQ.replace("%04d", "####"), first=1001, last=1012)
+        nodes = [src]
+        nk, _ = self.load(nodes, posix=False)
+        read = nk.create_read(done_job())
+        self.assertEqual(read["file"].value(), done_job()["outputs"]["frame_pattern"])
+        base = "/rdo/shows/xyz/out/rockA_diffuse.chord_v001/acescg_map1_noTile_defState_"
+        maps = {"color01": {"pattern": "//srv" + base[4:] + "color01.%04d.0000.exr",
+                            "pattern_posix": f"{base}color01.%04d.0000.exr", "first": 1001, "last": 1001, "files": 1}}
+        reads = nk.create_map_reads(done_job(outputs={"maps": maps}))
+        self.assertEqual([r["file"].value() for r in reads], [maps["color01"]["pattern"]])
 
     def test_panel_expression_needs_no_imports(self):
         # Nuke builds the panel by evaluating this text in __main__, which hasn't imported

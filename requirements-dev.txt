@@ -1,0 +1,5 @@
+# What the tests need on top of the farm itself:
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+numpy    # tests that read and write images
+Pillow   # test_comfyui_nodes (ComfyUI's own Python has it; the farm's venv doesn't need it)

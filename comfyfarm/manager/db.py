@@ -79,6 +79,10 @@ class JobStore:
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id)")
 
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
     # ---------------------------------------------------------------- helpers
     @staticmethod
     def _row(row: sqlite3.Row | None, with_prompt: bool = False) -> dict | None:
