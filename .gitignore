@@ -3,6 +3,7 @@ config.yaml
 agent.yaml
 data/
 logs/
+run/
 mock_output/
 .venv/
 venv/
