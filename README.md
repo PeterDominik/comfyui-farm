@@ -276,9 +276,14 @@ update that changed `comfyui_nodes/`. (`standalone` with services: `deploy\windo
 
 ## Using it
 
-**Dashboard:** `http://<farm-machine>:8000`. Pick the workflow, paste the sequence path,
-submit. The job table updates live. Click a row for input/output paths (copy buttons),
-warnings, errors with traceback, the MP4 preview (if any), *Run again* and *API JSON*.
+**Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Three tabs:
+
+- **Submit:** pick the workflow, fill in the form, check the destination line, submit.
+- **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on. Click a
+  row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
+  (if any), *Run again* and *API JSON*.
+- **Machines:** each GPU machine: whether it takes jobs, its GPU and free VRAM, its jobs, versions,
+  and any workflow it can't run (a missing node pack or model) and why.
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
@@ -303,11 +308,11 @@ farm.output_pattern(job)                    # /rdo/shows/.../<shot>_alpha_v001.%
 
 ### Nuke panel
 
-The ComfyFarm panel is the dashboard inside Nuke. The form is built from the farm's
-workflow list, so it has the same fields as the web page and picks up manifest changes
-without a client update. It shows the same live destination line, and it has a job list.
-Nuke stays usable while jobs run, and a Read node for each finished job is created next to
-its source.
+The ComfyFarm panel is the dashboard inside Nuke, with the same three tabs: *Submit*, *Queue*
+and *Machines*. The form is built from the farm's workflow list, so it has the same fields as
+the web page and picks up manifest changes without a client update. It shows the same live
+destination line. Nuke stays usable while jobs run, and a Read node for each finished job is
+created next to its source. Jobs are always submitted from the form.
 
 **Install:** each artist runs `python3 /rdo/bank/comfy_farm/client/nuke/install_for_me.py`
 once and restarts Nuke (*Deploying → Artists*). The manager keeps that copy of the client
@@ -320,20 +325,20 @@ installed: the client is standard library only.
 
 1. Prerender the plate to a PNG sequence with a Write node (`…/name.%04d.png`), with the
    colour baked in the way the workflow expects. The farm reads the PNGs exactly as they are.
-2. Select the Read (or the Write that rendered it) and run *ComfyFarm → Submit selected
-   Read…*. You can also open the panel (*ComfyFarm → Open panel*, or *Windows → Custom →
-   ComfyFarm*) and click *From selected*. Either way the input field gets `path first-last`
-   from the node. *Browse…* or pasting a path works too.
+2. Open the panel (*ComfyFarm → Open panel*, or *Windows → Custom → ComfyFarm*). On the
+   *Submit* tab, fill in the form: paste the input path, *Browse…*, or select the Read (or
+   the Write that rendered it) and click *From selected*, which fills in `path first-last`
+   from the node.
 3. Check the line under the form. It shows the frame count, the exact output folder, and
    the first and last file names, or the problem (missing frames, no shot found in the
    path, and so on) before anything is queued.
-4. Click *Submit*. *Submit selected nodes* queues one job per selected Read/Write, with the
-   same settings.
-5. Follow the job in the list. It shows everyone's jobs, like the dashboard; tick *Only mine*
-   or *Only active* to narrow it. When a job finishes, a Read
-   appears next to the source node (turn this off with the checkbox). Right-click a job to
-   create its Read, copy the output path, reuse its input, cancel it, run it again, or see
-   the error. Double-click a finished job to create its Read.
+4. Click *Submit*.
+5. Follow the job on the *Queue* tab: everyone's jobs, like the dashboard, with the workflow
+   and the machine running it; tick *Only mine* or *Only active* to narrow it. When a job
+   finishes, a Read appears next to the source node (turn this off on the *Submit* tab).
+   Right-click a job to create its Read, copy the output path, reuse its input, cancel it,
+   run it again, or see the error. Double-click a finished job to create its Read.
+6. The *Machines* tab shows the farm's GPU machines and what each is running.
 
 Movies: a Read of a `movhistory` `.mov` sends the whole movie. The farm numbers its frames
 from the timecode and drops the slate, as it does from the dashboard.

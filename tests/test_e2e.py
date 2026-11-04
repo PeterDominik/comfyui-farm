@@ -396,17 +396,14 @@ convert:
         self.assertEqual([(j["id"], j["status"]) for j in finished], [(job["id"], "done")])   # once,
         self.assertEqual(m.poll(mine=True, active_only=True)[1], [])                          # not twice
         self.assertEqual(m.sources[job["id"]], "Read3")
-        row = m.row(finished[0])
-        self.assertEqual(row[3], "done")
+        row = m.row(finished[0], labels=m.labels())
+        self.assertEqual(row[panel.COLUMNS.index("Status")], "done")
         self.assertRegex(row[1], r"abc_0010  v\d{3}")
+        self.assertEqual(row[2:4], [wf["label"], "mock"])     # which workflow, on which machine
         mov = "/rdo/shows/xyz/abc/0010/movhistory/abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov"
         self.assertIn("first frame (1000) is a slate", m.destination_html(m.plan("ltx25_alpha_gen", {"input": mov})))
         with self.assertRaises(farm.FarmError):
             m.plan("ltx25_alpha_gen", {"input": "/rdo/shows/xyz/nope.%04d.png 1-3"})
-        results = m.submit_many("ltx25_alpha_gen", raw, [("Read1", f"{SEQ} 1001-1002"),
-                                                         ("Read2", "/rdo/shows/xyz/nope.%04d.png 1-3")])
-        self.assertEqual([(n, bool(j), bool(e)) for n, j, e in results], [("Read1", True, False), ("Read2", False, True)])
-        self.assertEqual(self.wait_for(results[0][1]["id"], ("done", "failed"))["status"], "done")
 
     def test_049_conversion_cancel_and_failure(self):
         base = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010"

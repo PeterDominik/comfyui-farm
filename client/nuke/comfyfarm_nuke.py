@@ -6,10 +6,11 @@ manager.json next to it, or $COMFYFARM_URL. menu.py adds a ComfyFarm menu
 and the ComfyFarm panel (also under Windows > Custom, and it can be saved in a
 workspace layout like any other panel).
 
-Artist workflow: prerender the plate to a PNG sequence, select its Read (or the
-Write that rendered it), open the panel, "From selected", check where the frames
-will go, Submit. A Read node for the result appears next to the source when the
-job is done. Nuke stays usable while jobs run.
+Artist workflow: prerender the plate to a PNG sequence, open the panel (ComfyFarm >
+Open panel) and fill in the form on its Submit tab: the input path (typed, browsed, or
+"From selected" for a Read/Write node), check where the frames will go, Submit. Jobs
+are always submitted from the form. A Read node for the result appears next to the
+source when the job is done. Nuke stays usable while jobs run.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ import nuke
 
 import comfyfarm_client as farm
 
-WORKFLOW = "ltx25_alpha_gen"
 PANEL_ID = "com.rodeofx.comfyfarm"
 # Nuke evaluates this text in its own __main__ namespace when it builds the panel, where
 # comfyfarm_panel was never imported, so the expression imports it itself.
@@ -183,31 +183,6 @@ def show_panel():
     pane = nuke.getPaneFor("Properties.1") or nuke.getPaneFor("DAG.1")
     _panel.addToPane(pane)
     return _panel
-
-
-def _panel_widget():
-    import comfyfarm_panel
-    alive = []
-    for w in comfyfarm_panel.ComfyFarmPanel.instances:
-        try:
-            w.isVisible()   # raises once Qt has deleted the widget
-            alive.append(w)
-        except RuntimeError:
-            pass
-    comfyfarm_panel.ComfyFarmPanel.instances[:] = alive
-    return alive[-1] if alive else None
-
-
-def submit_selected(workflow: str = WORKFLOW) -> None:
-    """Menu command: open the panel with the selected node's sequence filled in."""
-    found = selected_sequences()
-    if not found:
-        nuke.message("Select a Read node (or the Write that rendered the PNGs) first.")
-        return   # before the panel opens and takes focus
-    show_panel()
-    widget = _panel_widget()
-    if widget is not None:
-        widget.prefill(workflow, found)
 
 
 def load_job() -> None:

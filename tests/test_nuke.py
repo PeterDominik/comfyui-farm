@@ -249,23 +249,46 @@ class PanelLogic(unittest.TestCase):
         self.assertEqual([j["status"] for j in self.m.poll()[1]], ["failed"])
         self.assertEqual((self.m.poll()[1], self.m.session_jobs, self.m.sources), ([], {}, {a["id"]: "Read1"}))
 
-    def test_submit_many_keeps_going_after_a_bad_input(self):
-        res = self.m.submit_many("wf", {"seed": "3"}, [("R1", "/a.%04d.png 1-2"), ("R2", "/bad.png"), ("R3", "/c.png")])
-        self.assertEqual([(n, bool(j), e) for n, j, e in res], [("R1", True, None), ("R2", False, "No frames"),
-                                                               ("R3", True, None)])
-        self.assertEqual([s[1]["input"] for s in self.client.submitted], ["/a.%04d.png 1-2", "/bad.png", "/c.png"])
-        self.assertEqual(self.m.sources, {"job1": "R1", "job3": "R3"})
-
     def test_rows(self):
         now = 10_000.0
+        labels = {"ltx25_alpha_gen": "LTX 2.5 alpha generation"}
         q = self.panel.PanelModel.row({"id": "abcdef1234", "status": "queued", "user": "jane", "name": "abc_0010",
-                                       "queue_position": 2, "eta_seconds": 125, "created_at": now - 30,
-                                       "info": {"version": 3}}, now)
-        self.assertEqual(q, ["abcdef12", "abc_0010  v003", "jane", "queued", "", "#2 · ~2m 05s", "just now", ""])
+                                       "workflow": "ltx25_alpha_gen", "queue_position": 2, "eta_seconds": 125,
+                                       "created_at": now - 30, "info": {"version": 3}}, now, labels)
+        self.assertEqual(q, ["abcdef12", "abc_0010  v003", "LTX 2.5 alpha generation", "", "jane", "queued", "",
+                             "#2 · ~2m 05s", "just now", ""])        # queued: no machine yet
         f = self.panel.PanelModel.row({"id": "x" * 10, "short_id": "xxxxxxxx", "status": "failed", "user": "j",
+                                       "workflow": "chord_pbr", "worker": "wrk1125l-3090",
                                        "error": "CUDA out of memory", "created_at": now - 7200,
-                                       "started_at": now - 100, "finished_at": now - 40}, now)
-        self.assertEqual((f[4], f[6], f[7]), ("CUDA out of memory", "2 h ago", "1m 00s"))
+                                       "started_at": now - 100, "finished_at": now - 40}, now, labels)
+        self.assertEqual(f[2:4], ["chord_pbr", "wrk1125l-3090"])     # no label known: the workflow's name
+        cols = self.panel.COLUMNS
+        self.assertEqual((f[cols.index("Progress")], f[cols.index("Submitted")], f[cols.index("Took")]),
+                         ("CUDA out of memory", "2 h ago", "1m 00s"))
+        s = self.panel.PanelModel.row({"id": "s" * 10, "status": "running", "kind": "set", "workflow": "chord_pbr"}, now)
+        self.assertEqual(s[3], "per batch")                           # a texture set's batches run anywhere
+        self.assertEqual(self.m.labels(), {"wf": "wf"})
+
+    def test_machines(self):
+        now = 10_000.0
+        PM = self.panel.PanelModel
+        w = {"name": "wrk59467w-5090", "online": True, "connected": True, "checked": True, "inflight": 1,
+             "max_inflight": 2, "last_seen": now - 2, "comfyui_version": "0.33.0", "agent_version": "0.1.0+590a1d1",
+             "gpu": {"name": "cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync", "vram_free": 21 * 2**30,
+                     "vram_total": 32 * 2**30}, "problems": {}}
+        jobs = [{"id": "a", "name": "abc_0010", "worker": "wrk59467w-5090", "status": "running"},
+                {"id": "b", "name": "old", "worker": "wrk59467w-5090", "status": "done"},
+                {"id": "c", "name": "elsewhere", "worker": "wrk1125l-3090", "status": "running"}]
+        self.assertEqual(PM.machine_row(w, jobs, now),
+                         ["wrk59467w-5090", "busy", "NVIDIA GeForce RTX 5090", "21.0 GB of 32.0 GB", "1/2",
+                          "abc_0010", "0.33.0", "590a1d1", "just now"])
+        self.assertEqual(PM.machine_state(dict(w, inflight=0))[0], "ready")
+        self.assertEqual(PM.machine_state(dict(w, online=False))[0], "offline")
+        self.assertEqual(PM.machine_state(dict(w, checked=False))[0], "checking nodes")
+        self.assertEqual(PM.machine_state(dict(w, problems={"chord_pbr": ["x"]}))[0], "can't run chord_pbr")
+        line = PM.summary({"queued": 3}, [w, dict(w, name="b", online=False), dict(w, problems={"x": ["y"]})], "peter")
+        self.assertIn("2 of 3 machines online", line)      # one lacking a workflow's nodes still takes jobs
+        self.assertIn("3 queued", line)
 
     def test_destination_text(self):
         html = self.panel.PanelModel.destination_html({
