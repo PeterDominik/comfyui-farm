@@ -88,7 +88,7 @@ requirements: `oiiotool` (OpenImageIO, with OpenColorIO) and `ffmpeg` (imageio-f
 
 | Script | What |
 |---|---|
-| `deploy/linux/setup.sh manager\|agent` | Conda env (Python 3.12, your Miniconda), requirements, `config.yaml` or `agent.yaml` from its example, the check |
+| `deploy/linux/setup.sh manager\|agent` | Conda env (Python 3.12, your Miniconda), requirements (from pypi.org rather than the pipeline's package mirror; `--index-url` to change), `config.yaml` or `agent.yaml` from its example, the check |
 | `deploy/linux/farmctl.sh start\|stop\|restart\|status\|ensure\|log\|check manager\|agent` | Runs it in the background, with the pipeline's Python settings (`PYTHONPATH`, rez) removed |
 | `deploy/linux/install_cron.sh manager\|agent` | Your crontab starts it at boot and checks it every minute (`--remove` to undo) |
 | `deploy\windows\setup.ps1 [-Agent]` | `.venv`, requirements, `agent.yaml` (`-Agent`) or `config.yaml`, the check |
