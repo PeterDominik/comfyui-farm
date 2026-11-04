@@ -152,14 +152,18 @@ class LinuxDeployTests(unittest.TestCase):
         link = comfy / "custom_nodes/comfyfarm_nodes"
         self.assertEqual(os.readlink(link), str(self.root / "comfyui_nodes/comfyfarm_nodes"))
         calls = [c["args"] for c in (json.loads(x) for x in (env_py.parent / "calls.jsonl").read_text().splitlines())]
-        self.assertIn(["-m", "pip", "install", "-q", "-r", str(self.root / "requirements.txt")], calls)
+        self.assertIn(["-m", "pip", "install", "--prefer-binary", "--index-url", "https://pypi.org/simple", "-r",
+                       str(self.root / "requirements.txt")], calls)     # not the pipeline's mirror
         self.assertEqual(calls[-1], ["-m", "comfyfarm", "agent", "--config", str(self.root / "agent.yaml"), "--check"])
         self.assertIn("install_cron.sh agent", r.stdout)
         (self.root / "agent.yaml").write_text("name: mine\n")      # re-run: an edited config is kept
-        r = subprocess.run(["bash", str(self.root / "deploy/linux/setup.sh"), "agent", "--conda", str(conda)],
-                           env=self.env, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(["bash", str(self.root / "deploy/linux/setup.sh"), "agent", "--conda", str(conda),
+                            "--index-url", ""], env=self.env, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.root / "agent.yaml").read_text(), "name: mine\n")
+        calls = [c["args"] for c in (json.loads(x) for x in (env_py.parent / "calls.jsonl").read_text().splitlines())]
+        self.assertIn(["-m", "pip", "install", "--prefer-binary", "-r", str(self.root / "requirements.txt")],
+                      calls)                                            # pip's own setting
 
 
 @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "the Windows deploy scripts")

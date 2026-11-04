@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # First-time install on a Linux machine, without sudo (safe to re-run):
 #
-#   deploy/linux/setup.sh manager [--conda DIR] [--env DIR]
-#   deploy/linux/setup.sh agent   [--conda DIR] [--env DIR] [--comfyui DIR]
+#   deploy/linux/setup.sh manager [--conda DIR] [--env DIR] [--index-url URL]
+#   deploy/linux/setup.sh agent   [--conda DIR] [--env DIR] [--index-url URL] [--comfyui DIR]
 #
-#   --conda DIR    your Miniconda (default: the conda on PATH, else ~/miniconda3)
-#   --env DIR      the farm's conda env (default: <conda>/envs/comfyfarm), kept apart from
-#                  the pipeline's Python
-#   --comfyui DIR  agent: ComfyUI's folder; links the farm's ComfyUI nodes into its custom_nodes
+#   --conda DIR      your Miniconda (default: the conda on PATH, else ~/miniconda3)
+#   --env DIR        the farm's conda env (default: <conda>/envs/comfyfarm), kept apart from
+#                    the pipeline's Python
+#   --index-url URL  where pip gets the requirements (default: https://pypi.org/simple, not
+#                    the pipeline's package mirror, which may be too old); '' = pip's own setting
+#   --comfyui DIR    agent: ComfyUI's folder; links the farm's ComfyUI nodes into its custom_nodes
 #
 # Creates the env (Python 3.12) and installs requirements.txt into it, copies
 # config.example.yaml (manager) or agent.example.yaml (agent) if there's no config yet,
@@ -17,12 +19,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 role="${1:-}"
-case "$role" in manager|agent) shift ;; *) echo "usage: $0 manager|agent [--conda DIR] [--env DIR] [--comfyui DIR]" >&2; exit 2 ;; esac
-conda_dir="" env_dir="" comfyui=""
+case "$role" in manager|agent) shift ;; *) echo "usage: $0 manager|agent [--conda DIR] [--env DIR] [--index-url URL] [--comfyui DIR]" >&2; exit 2 ;; esac
+conda_dir="" env_dir="" comfyui="" index_url="https://pypi.org/simple"
 while [ $# -gt 0 ]; do
   case "$1" in
     --conda) conda_dir="$2"; shift 2 ;;
     --env) env_dir="$2"; shift 2 ;;
+    --index-url) index_url="$2"; shift 2 ;;
     --comfyui) comfyui="$2"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -49,9 +52,12 @@ if [ ! -x "$py" ]; then
   echo "Creating the conda env $env_dir (Python 3.12)..."
   "${clean[@]}" "$conda" create -y -q -p "$env_dir" python=3.12
 fi
-echo "Installing requirements into $env_dir..."
-"${clean[@]}" "$py" -m pip install -q --upgrade pip
-"${clean[@]}" "$py" -m pip install -q -r "$ROOT/requirements.txt"
+# The pipeline's pip settings (a package mirror) can hold versions too old for the farm.
+index=()
+[ -n "$index_url" ] && index=(--index-url "$index_url")
+echo "Installing requirements into $env_dir${index_url:+ from $index_url}..."
+"${clean[@]}" "$py" -m pip install ${index[@]+"${index[@]}"} --upgrade pip
+"${clean[@]}" "$py" -m pip install --prefer-binary ${index[@]+"${index[@]}"} -r "$ROOT/requirements.txt"
 
 umask 022
 mkdir -p "$ROOT/data" "$ROOT/logs" "$ROOT/run"
