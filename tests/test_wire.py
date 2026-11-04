@@ -4,6 +4,7 @@
 import unittest
 
 from comfyfarm.config import PathMapping
+from comfyfarm.fileio import paths as P
 from comfyfarm.fileio import wire as W
 
 LINUX = W.View(mappings=[], scratch="/var/comfyfarm/scratch", repo="/opt/comfyfarm")
@@ -54,6 +55,14 @@ class WireTests(unittest.TestCase):
         self.assertEqual(on_windows, outputs)
         self.assertEqual(W.localize(W.portable(outputs, WINDOWS), LINUX)["frame_pattern_posix"],
                          "/rdo/shows/xyz/out/a.%04d.png")
+
+    def test_shows_alias_reaches_agents_as_rdo_shows(self):
+        manager = W.View(mappings=[PathMapping(posix="/rdo/shows", windows="/rdo/shows"),
+                                   PathMapping(posix="/shows", windows="/rdo/shows")], scratch="/s", repo="/r")
+        job = {"input": P.to_farm("/shows/bri3/plate.%04d.exr", manager.mappings)}   # as the artist typed it
+        wire = W.portable(job, manager)
+        self.assertEqual(wire["input"], "/rdo/shows/bri3/plate.%04d.exr")
+        self.assertEqual(W.localize(wire, WINDOWS)["input"], "//rodeofx.com/smb/shows/bri3/plate.%04d.exr")
 
     def test_same_machine_is_unchanged(self):
         self.assertEqual(W.localize(W.portable(JOB_ON_WINDOWS, WINDOWS), WINDOWS)["info"]["input"]["farm_path"],

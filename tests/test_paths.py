@@ -46,6 +46,18 @@ class MappingTests(unittest.TestCase):
         other = PathMapping.model_validate({"posix": "/rdo/shows", "local": "/mnt/shows"})   # mounted elsewhere
         self.assertEqual(to_farm("/rdo/shows/xyz/a.png", [other]), "/mnt/shows/xyz/a.png")
 
+    def test_shows_is_another_name_for_rdo_shows(self):
+        linux = [PathMapping(posix="/rdo/shows"), PathMapping(posix="/shows", local="/rdo/shows")]
+        windows = [PathMapping(posix="/rdo/shows", windows="//rodeofx.com/smb/shows"),
+                   PathMapping(posix="/shows", windows="//rodeofx.com/smb/shows")]
+        for maps, local in ((linux, "/rdo/shows/bri3/a.exr"), (windows, "//rodeofx.com/smb/shows/bri3/a.exr")):
+            self.assertEqual(to_farm("/shows/bri3/a.exr", maps), local)
+            self.assertEqual(to_farm("/rdo/shows/bri3/a.exr", maps), local)
+            self.assertEqual(to_posix(local, maps), "/rdo/shows/bri3/a.exr")     # reported as /rdo/shows
+        cfg = PathsConfig(mappings=linux)
+        self.assertEqual(resolve_output_folder("/shows/bri3/_project_ref/out", cfg, isdir=lambda p: True),
+                         "/rdo/shows/bri3/_project_ref/out")
+
     def test_output_root_as_a_studio_path(self):
         cfg = PathsConfig(mappings=MAP, output_root="/rdo/shows/{show}/_project_ref/_cg/comfyui/renders")
         self.assertEqual(output_root(cfg, "xyz"), "//rodeofx.com/smb/shows/xyz/_project_ref/_cg/comfyui/renders")

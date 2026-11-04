@@ -110,7 +110,8 @@ Then edit `config.yaml`:
 
 - `share.dir: /rdo/bank/comfy_farm`: the shared folder (below);
 - `agents.token`: a long random string, e.g. `python3 -c "import secrets; print(secrets.token_hex(16))"`;
-- `paths.mappings: [{posix: /rdo/shows}]`: this machine sees show storage as it is;
+- `paths.mappings: [{posix: /rdo/shows}, {posix: /shows, local: /rdo/shows}]`: this machine sees show
+  storage as it is, and `/shows/...` inputs are the same storage (the farm reports them as `/rdo/shows/...`);
 - `paths.output_root: /rdo/shows/{show}/_project_ref/_cg/comfyui/renders`;
 - `workers: []`: agents check in instead.
 
