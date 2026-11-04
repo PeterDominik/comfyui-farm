@@ -13,8 +13,9 @@ manager: http://pipeline-ws42:8000
 token: ''                        # the manager's agents.token, if it has one
 comfyui: http://127.0.0.1:8188   # this machine's ComfyUI. Keep it on localhost (no --listen):
                                  # only this agent talks to it, and agents need no open port
-max_inflight: 2                  # jobs in ComfyUI at once: one running + one waiting. One more
-                                 # is converted ahead, so the GPU never waits on a conversion
+max_inflight: 2                  # jobs in ComfyUI at once: one running + one waiting. The
+                                 # manager gives a machine a job waiting behind its current one
+                                 # only when every GPU on the farm is busy
 
 # Optional: how to start ComfyUI. The agent then starts it when it isn't running, and again
 # if it dies (output in logs/comfyui-<name>.log). Stopping the agent leaves ComfyUI running.

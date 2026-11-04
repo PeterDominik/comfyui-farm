@@ -36,7 +36,8 @@ STATUS_COLORS = {"preparing": "#ecc98a", "queued": "#cdbdf0", "dispatched": "#b8
                  "postprocessing": "#9fcdf2", "done": "#93d6a6", "failed": "#f0a59c", "cancelled": "#a3a9b0"}
 COLUMNS = ["Job", "Shot / name", "Workflow", "Machine", "User", "Status", "Progress", "Wait", "Submitted", "Took"]
 STATUS_COL, PROGRESS_COL = COLUMNS.index("Status"), COLUMNS.index("Progress")
-MACHINE_COLUMNS = ["Machine", "Status", "GPU", "VRAM free", "Jobs", "Running", "ComfyUI", "Agent", "Last seen"]
+MACHINE_COLUMNS = ["#", "Machine", "Status", "GPU", "VRAM free", "Jobs", "Running", "ComfyUI", "Agent", "Last seen"]
+MACHINE_STATUS_COL = 2
 ACTIVE = ("queued", "preparing", "dispatched", "running", "postprocessing")
 ON_MACHINE = ("preparing", "dispatched", "running", "postprocessing")
 
@@ -256,10 +257,16 @@ class PanelModel:
         vram = f"{_gb(gpu.get('vram_free'))} of {_gb(gpu.get('vram_total'))}" if gpu.get("vram_total") else ""
         running = [j.get("name") or j.get("short_id") or "" for j in jobs
                    if j.get("worker") == w["name"] and j.get("status") in ON_MACHINE]
-        return [w["name"], PanelModel.machine_state(w)[0], _gpu_name(w), vram,
+        rank = w.get("rank")
+        return ["" if rank is None else str(rank), w["name"], PanelModel.machine_state(w)[0], _gpu_name(w), vram,
                 f"{w.get('inflight', 0)}/{w.get('max_inflight', 0)}", ", ".join(running),
                 w.get("comfyui_version") or "", (w.get("agent_version") or "").split("+")[-1],
                 _ago(w.get("last_seen"), now)]
+
+    @staticmethod
+    def machines(workers: list[dict]) -> list[dict]:
+        """In the order they get jobs (rank): a job goes to the first free one that can run it."""
+        return sorted(workers, key=lambda w: (w.get("rank") if w.get("rank") is not None else 10**9, w.get("name") or ""))
 
     @staticmethod
     def online(workers: list[dict]) -> int:
@@ -500,12 +507,13 @@ if QtWidgets is not None:
             jobs = list(self._jobs.values())
             self.machines.clear()
             notes = []
-            for w in self._workers:
+            for w in PanelModel.machines(self._workers):
                 item = QtWidgets.QTreeWidgetItem(PanelModel.machine_row(w, jobs, now))
                 state, color = PanelModel.machine_state(w)
-                item.setForeground(1, QtGui.QBrush(QtGui.QColor(color)))
+                item.setForeground(MACHINE_STATUS_COL, QtGui.QBrush(QtGui.QColor(color)))
                 tip = w.get("error") or "; ".join(f"{wf}: {'; '.join(p)}" for wf, p in (w.get("problems") or {}).items())
-                item.setToolTip(1, tip)
+                item.setToolTip(MACHINE_STATUS_COL, tip)
+                item.setToolTip(0, "The order machines get jobs in: a job goes to the first free one that can run it")
                 self.machines.addTopLevelItem(item)
                 if w.get("problems"):
                     notes.append(f"<b>{html.escape(w['name'])}</b> can't run "
