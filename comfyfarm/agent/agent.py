@@ -41,6 +41,7 @@ from ..fileio import wire as W
 from ..fileio.errors import ConvertError, SequenceError
 from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, TERMINAL, LinkError, build, duration, now
+from ..workflows import fit_to_options
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
 from .launch import Launcher
 
@@ -435,7 +436,7 @@ class Agent:
         if h.dropped:
             self._release(h)
             return
-        prompt = h.job["prompt"]
+        prompt = fit_to_options(h.job["prompt"], self.object_info)   # LTX\\x vs LTX/x on this OS
         titles = _titles(prompt)
         extra = {"comfyfarm_job": h.id, "comfyfarm_user": h.job.get("user")}
         h.submitting = True

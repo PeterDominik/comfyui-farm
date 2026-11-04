@@ -131,6 +131,28 @@ def _combo_options(spec: Any) -> list[str] | None:
     return None
 
 
+def fit_to_options(prompt: dict, object_info: dict | None) -> dict:
+    """File names in a prompt's lists (LoRAs, checkpoints) written as another machine's
+    ComfyUI lists them: a workflow saved on Windows says LTX\\x.safetensors, a Linux ComfyUI
+    lists LTX/x.safetensors and refuses anything else. Changes the prompt in place."""
+    for node in prompt.values():
+        info = (object_info or {}).get(node.get("class_type")) or {}
+        spec = {}
+        for section in ("required", "optional"):
+            spec.update((info.get("input") or {}).get(section) or {})
+        inputs = node.get("inputs") or {}
+        for key, val in inputs.items():
+            if not isinstance(val, str) or ("\\" not in val and "/" not in val):
+                continue
+            opts = _combo_options(spec.get(key))
+            if not opts or val in opts:
+                continue
+            same = [o for o in opts if o.replace("\\", "/") == val.replace("\\", "/")]
+            if same:
+                inputs[key] = same[0]
+    return prompt
+
+
 class Workflow:
     def __init__(self, directory: Path):
         self.dir = directory

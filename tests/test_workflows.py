@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from comfyfarm.fileio.inputs import Sequence
-from comfyfarm.workflows import ParamError, Target, Workflow, WorkflowRegistry
+from comfyfarm.workflows import ParamError, Target, Workflow, WorkflowRegistry, fit_to_options
 
 WF_DIR = Path(__file__).resolve().parent.parent / "workflows"
 
@@ -158,6 +158,22 @@ class WorkflowTests(unittest.TestCase):
         oi["LTXICLoRALoaderModelOnly"]["input"]["required"]["lora_name"] = [
             ["LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors"], {}]
         self.assertEqual(self.wf.check_object_info(oi), [])
+
+    def test_file_names_follow_the_workers_separators(self):
+        prompt = copy.deepcopy(self.wf.template)
+        node = next(n for n in prompt.values() if n["class_type"] == "LTXICLoRALoaderModelOnly")
+        self.assertIn("\\", node["inputs"]["lora_name"])                     # saved on Windows
+        oi = fake_object_info(self.wf.template)
+        lora = node["inputs"]["lora_name"].replace("\\", "/")
+        oi["LTXICLoRALoaderModelOnly"]["input"]["required"]["lora_name"] = [["other.safetensors", lora], {}]
+        fit_to_options(prompt, oi)                                           # a Linux ComfyUI's list
+        self.assertEqual(node["inputs"]["lora_name"], lora)
+        windows = copy.deepcopy(self.wf.template)
+        self.assertEqual(fit_to_options(windows, fake_object_info(self.wf.template)), self.wf.template)
+        unknown = copy.deepcopy(self.wf.template)
+        oi["LTXICLoRALoaderModelOnly"]["input"]["required"]["lora_name"] = [["other.safetensors"], {}]
+        fit_to_options(unknown, oi)                                          # not there: left for ComfyUI to refuse
+        self.assertEqual(unknown, self.wf.template)
 
     def test_expected_nodes_skips_unused(self):
         n = self.wf.expected_nodes()
