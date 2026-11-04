@@ -9,5 +9,4 @@ comfyfarm_nuke.register_panel()   # Windows > Custom > ComfyFarm, restored with 
 
 m = nuke.menu("Nuke").addMenu("ComfyFarm")
 m.addCommand("Open panel", comfyfarm_nuke.show_panel)
-m.addCommand("Submit selected Read...", comfyfarm_nuke.submit_selected)
 m.addCommand("Load finished job...", comfyfarm_nuke.load_job)

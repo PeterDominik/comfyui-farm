@@ -2,11 +2,13 @@
 
 The panel builds its form from the farm's workflow definitions, so it shows the same
 fields as the web dashboard and stays in sync when a workflow changes. Artists
-prerender the plate to a PNG sequence (or use a movhistory .mov), then:
+prerender the plate to a PNG sequence (or use a movhistory .mov), then, on the Submit tab:
 
-  1. pick the sequence: "From selected" (Read/Write node), "Browse…", or paste a path
+  1. fill in the form: the input with "From selected" (a Read/Write node), "Browse…", or a
+     pasted path
   2. check the destination line (exact folder and file names, like the web form)
-  3. Submit. The job list updates live; a Read node is created when the job finishes.
+  3. Submit. The Queue tab follows the job (which workflow, on which machine); a Read node
+     is created when it finishes. The Machines tab shows the farm's GPU machines.
 
 Layout of this file:
   PanelModel      everything the panel does, without Qt or Nuke (unit-tested)
@@ -32,7 +34,11 @@ except ImportError:   # run straight from a checkout: python client/nuke/comfyfa
 
 STATUS_COLORS = {"preparing": "#ecc98a", "queued": "#cdbdf0", "dispatched": "#b8c6d8", "running": "#9fcdf2",
                  "postprocessing": "#9fcdf2", "done": "#93d6a6", "failed": "#f0a59c", "cancelled": "#a3a9b0"}
-COLUMNS = ["Job", "Shot / name", "User", "Status", "Progress", "Wait", "Submitted", "Took"]
+COLUMNS = ["Job", "Shot / name", "Workflow", "Machine", "User", "Status", "Progress", "Wait", "Submitted", "Took"]
+STATUS_COL, PROGRESS_COL = COLUMNS.index("Status"), COLUMNS.index("Progress")
+MACHINE_COLUMNS = ["Machine", "Status", "GPU", "VRAM free", "Jobs", "Running", "ComfyUI", "Agent", "Last seen"]
+ACTIVE = ("queued", "preparing", "dispatched", "running", "postprocessing")
+ON_MACHINE = ("preparing", "dispatched", "running", "postprocessing")
 
 
 def _ago(t: float | None, now: float) -> str:
@@ -56,6 +62,16 @@ def _dur(s: float | None) -> str:
         return f"{s}s"
     m = s // 60
     return f"{m}m {s % 60:02d}s" if m < 60 else f"{m // 60}h {m % 60:02d}m"
+
+
+def _gpu_name(worker: dict) -> str:
+    """'cuda:0 NVIDIA GeForce RTX 3090 : cudaMallocAsync' -> 'NVIDIA GeForce RTX 3090'."""
+    name = ((worker.get("gpu") or {}).get("name") or "").split(" : ")[0]
+    return name.split(" ", 1)[1] if name.startswith("cuda:") and " " in name else name
+
+
+def _gb(b) -> str:
+    return f"{b / 2**30:.1f} GB" if b else ""
 
 
 class PanelModel:
@@ -119,17 +135,6 @@ class PanelModel:
             self.sources[job["id"]] = source_node
         return job
 
-    def submit_many(self, wf_name: str, raw: dict, inputs: list[tuple[str, str]]) -> list[tuple[str, dict | None, str | None]]:
-        """One job per (node name, input) with the rest of the form shared."""
-        seq = self.sequence_param(self.workflow(wf_name))
-        results = []
-        for node_name, value in inputs:
-            try:
-                results.append((node_name, self.submit(wf_name, dict(raw, **{seq: value}), source_node=node_name), None))
-            except farm.FarmError as e:
-                results.append((node_name, None, str(e)))
-        return results
-
     def poll(self, mine: bool = True, active_only: bool = True, limit: int = 200) -> tuple[list[dict], list[dict]]:
         """(jobs to show, session jobs that finished since the last poll)."""
         jobs = self.client.jobs(user=self.user if mine else None, active=active_only, limit=limit)
@@ -190,8 +195,19 @@ class PanelModel:
             out += f"<br>Asset <code>{e(plan['asset'])}</code>, show <code>{e(plan.get('show') or '')}</code>."
         return out
 
+    def labels(self) -> dict[str, str]:
+        """Workflow name -> the label artists see."""
+        return {w["name"]: w.get("label") or w["name"] for w in self.workflows}
+
     @staticmethod
-    def row(job: dict, now: float | None = None) -> list[str]:
+    def machine_of(job: dict) -> str:
+        """Which machine runs (or ran) the job: a texture set's batches each have their own."""
+        if job.get("kind") == "set":
+            return "per batch"
+        return job.get("worker") or ""
+
+    @staticmethod
+    def row(job: dict, now: float | None = None, labels: dict | None = None) -> list[str]:
         now = now or time.time()
         status = job["status"]
         start = job.get("started_at") or job.get("dispatched_at")
@@ -215,8 +231,48 @@ class PanelModel:
         version = (job.get("info") or {}).get("version")
         if version:
             name += f"  v{version:03d}"
-        return [job.get("short_id") or job["id"][:8], name, job.get("user", ""), status, progress, wait,
-                _ago(job.get("created_at"), now), took]
+        workflow = (labels or {}).get(job.get("workflow")) or job.get("workflow") or ""
+        return [job.get("short_id") or job["id"][:8], name, workflow, PanelModel.machine_of(job), job.get("user", ""),
+                status, progress, wait, _ago(job.get("created_at"), now), took]
+
+    # ------------------------------------------------------------ machines
+    @staticmethod
+    def machine_state(w: dict) -> tuple[str, str]:
+        """(what the machine is doing, a colour) for the Machines tab."""
+        if not w.get("online"):
+            return ("offline", "#e0675b")
+        if not w.get("connected"):
+            return ("ComfyUI connecting", "#e0a24a")
+        if w.get("checked") is False:
+            return ("checking nodes", "#e0a24a")
+        if w.get("problems"):
+            return ("can't run " + ", ".join(sorted(w["problems"])), "#e0a24a")
+        return ("busy" if w.get("inflight") else "ready", "#93d6a6")
+
+    @staticmethod
+    def machine_row(w: dict, jobs: list[dict], now: float | None = None) -> list[str]:
+        now = now or time.time()
+        gpu = w.get("gpu") or {}
+        vram = f"{_gb(gpu.get('vram_free'))} of {_gb(gpu.get('vram_total'))}" if gpu.get("vram_total") else ""
+        running = [j.get("name") or j.get("short_id") or "" for j in jobs
+                   if j.get("worker") == w["name"] and j.get("status") in ON_MACHINE]
+        return [w["name"], PanelModel.machine_state(w)[0], _gpu_name(w), vram,
+                f"{w.get('inflight', 0)}/{w.get('max_inflight', 0)}", ", ".join(running),
+                w.get("comfyui_version") or "", (w.get("agent_version") or "").split("+")[-1],
+                _ago(w.get("last_seen"), now)]
+
+    @staticmethod
+    def online(workers: list[dict]) -> int:
+        """Machines taking jobs (some may lack a workflow's nodes: see the Machines tab)."""
+        return sum(1 for w in workers if w.get("online") and w.get("connected") and w.get("checked") is not False)
+
+    @staticmethod
+    def summary(health: dict, workers: list[dict], user: str) -> str:
+        """One line above the tabs: how many machines are online, the queue, who you are."""
+        up = PanelModel.online(workers)
+        color = "#93d6a6" if workers and up == len(workers) else "#e0a24a"
+        return (f"<span style='color:{color}'>●</span> {up} of {len(workers)} machines online  ·  "
+                f"{health.get('queued', 0)} queued  ·  you are <b>{html.escape(user)}</b>")
 
 
 # ============================================================== Qt view
@@ -257,7 +313,7 @@ if QtWidgets is not None:
             self.name_edit = None
             self._jobs: dict[str, dict] = {}       # shown in the table, by id
             self._selected_node: tuple[str, str] | None = None   # (node, input) from "From selected"
-            self._pending: tuple | None = None   # prefill waiting for the workflows to load
+            self._workers: list[dict] = []
             self._plan_seq = 0
             self._polling = False
             self._polls = 0
@@ -295,17 +351,10 @@ if QtWidgets is not None:
             outer = QtWidgets.QVBoxLayout(self)
             outer.setContentsMargins(6, 6, 6, 6)
 
-            # Three panes with draggable handles: farm status | workflow form | job list.
-            split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-            outer.addWidget(split, 1)
-
-            header = QtWidgets.QWidget()
-            head = QtWidgets.QHBoxLayout(header)
-            head.setContentsMargins(0, 0, 0, 0)
-            head.setAlignment(QtCore.Qt.AlignTop)
+            # One line above the tabs: the farm in short, its address, the dashboard.
+            head = QtWidgets.QHBoxLayout()
             self.status_label = QtWidgets.QLabel("Connecting…")
             self.status_label.setTextFormat(QtCore.Qt.RichText)
-            self.status_label.setWordWrap(True)   # wraps into the pane's height when narrow
             self.url_edit = QtWidgets.QLineEdit(farm.base_url() or "")
             self.url_edit.setPlaceholderText("http://comfyfarm01:8000")
             self.url_edit.setToolTip("Farm address (normally from the shared folder's manager.json, or $COMFYFARM_URL)")
@@ -317,11 +366,14 @@ if QtWidgets is not None:
             head.addWidget(QtWidgets.QLabel("Farm:"))
             head.addWidget(self.url_edit)
             head.addWidget(dash)
-            split.addWidget(header)
+            outer.addLayout(head)
 
-            top = QtWidgets.QWidget()
-            tl = QtWidgets.QVBoxLayout(top)
-            tl.setContentsMargins(0, 0, 0, 0)
+            self.tabs = QtWidgets.QTabWidget()
+            outer.addWidget(self.tabs, 1)
+
+            # Submit: the workflow's form.
+            submit = QtWidgets.QWidget()
+            tl = QtWidgets.QVBoxLayout(submit)
             row = QtWidgets.QHBoxLayout()
             row.addWidget(QtWidgets.QLabel("Workflow:"))
             self.wf_combo = QtWidgets.QComboBox()
@@ -344,15 +396,10 @@ if QtWidgets is not None:
             actions = QtWidgets.QHBoxLayout()
             self.submit_btn = QtWidgets.QPushButton("Submit")
             self.submit_btn.clicked.connect(lambda *_: self._submit())
-            self.batch_btn = QtWidgets.QPushButton("Submit selected nodes")
-            self.batch_btn.setToolTip("One job per selected Read/Write node, with the settings above")
-            self.batch_btn.clicked.connect(lambda *_: self._submit_selected())
-            self.batch_btn.setEnabled(nk is not None)
             self.msg_label = QtWidgets.QLabel("")
             self.msg_label.setWordWrap(True)
             self.msg_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             actions.addWidget(self.submit_btn)
-            actions.addWidget(self.batch_btn)
             actions.addWidget(self.msg_label, 1)
             tl.addLayout(actions)
             self.autoread_check = QtWidgets.QCheckBox("Create a Read node when my jobs finish")
@@ -360,13 +407,17 @@ if QtWidgets is not None:
             self.autoread_check.setEnabled(nk is not None)
             self.autoread_check.toggled.connect(lambda v: self.settings.setValue("auto_read", "true" if v else "false"))
             tl.addWidget(self.autoread_check)
-            split.addWidget(top)
+            tl.addStretch(1)
+            scroll = QtWidgets.QScrollArea()   # a long form scrolls instead of squeezing
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            scroll.setWidget(submit)
+            self.tabs.addTab(scroll, "Submit")
 
-            bottom = QtWidgets.QWidget()
-            bl = QtWidgets.QVBoxLayout(bottom)
-            bl.setContentsMargins(0, 0, 0, 0)
+            # Queue: everyone's jobs, which workflow, on which machine.
+            queue = QtWidgets.QWidget()
+            bl = QtWidgets.QVBoxLayout(queue)
             filt = QtWidgets.QHBoxLayout()
-            filt.addWidget(QtWidgets.QLabel("Jobs:"))
             self.mine_check = QtWidgets.QCheckBox("Only mine")
             self.mine_check.setChecked(False)   # show everyone's jobs, like the dashboard
             self.active_check = QtWidgets.QCheckBox("Only active")
@@ -391,10 +442,30 @@ if QtWidgets is not None:
             self.table.customContextMenuRequested.connect(self._job_menu)
             self.table.itemDoubleClicked.connect(lambda item, _c: self._read_for(item))
             bl.addWidget(self.table, 1)
-            split.addWidget(bottom)
-            split.setStretchFactor(0, 0)   # header and form keep their size;
-            split.setStretchFactor(1, 0)
-            split.setStretchFactor(2, 1)   # the job list takes the extra height
+            self.tabs.addTab(queue, "Queue")
+
+            # Machines: the farm's GPU machines and what they're doing.
+            machines = QtWidgets.QWidget()
+            ml = QtWidgets.QVBoxLayout(machines)
+            self.machines = QtWidgets.QTreeWidget()
+            self.machines.setColumnCount(len(MACHINE_COLUMNS))
+            self.machines.setHeaderLabels(MACHINE_COLUMNS)
+            self.machines.setRootIsDecorated(False)
+            self.machines.setUniformRowHeights(True)
+            self.machines.setAlternatingRowColors(True)
+            ml.addWidget(self.machines, 1)
+            self.machines_note = QtWidgets.QLabel("")
+            self.machines_note.setWordWrap(True)
+            self.machines_note.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            ml.addWidget(self.machines_note)
+            self.tabs.addTab(machines, "Machines")
+
+            self.tabs.setCurrentIndex(int(self.settings.value("tab", 0) or 0))
+            self.tabs.currentChanged.connect(self._tab_changed)
+
+        def _tab_changed(self, index):
+            self.settings.setValue("tab", index)
+            self._poll(force=True)
 
         # -------------------------------------------------------- farm / workflows
         def _connect(self):
@@ -419,15 +490,32 @@ if QtWidgets is not None:
             self._poll(force=True)
 
         def _show_status(self, health, workers):
-            bits = []
-            for w in workers:
-                dot = "#93d6a6" if w.get("online") and w.get("connected") else "#e0675b"
-                gpu = ((w.get("gpu") or {}).get("name") or "").split(" : ")[0]
-                gpu = gpu.split(" ", 1)[1] if gpu.startswith("cuda:") and " " in gpu else gpu   # "cuda:0 NVIDIA …"
-                bits.append(f"<span style='color:{dot}'>●</span> <b>{html.escape(w['name'])}</b> "
-                            f"{html.escape(gpu)} · {w.get('inflight', 0)}/{w.get('max_inflight', 0)} slots")
-            bits.append(f"{health.get('queued', 0)} queued")
-            self.status_label.setText("  ·  ".join(bits) + f"  ·  you are <b>{html.escape(self.model.user)}</b>")
+            self._workers = workers
+            self.status_label.setText(PanelModel.summary(health, workers, self.model.user))
+            self.tabs.setTabText(2, f"Machines ({PanelModel.online(workers)}/{len(workers)} online)")
+            self._fill_machines()
+
+        def _fill_machines(self):
+            now = time.time()
+            jobs = list(self._jobs.values())
+            self.machines.clear()
+            notes = []
+            for w in self._workers:
+                item = QtWidgets.QTreeWidgetItem(PanelModel.machine_row(w, jobs, now))
+                state, color = PanelModel.machine_state(w)
+                item.setForeground(1, QtGui.QBrush(QtGui.QColor(color)))
+                tip = w.get("error") or "; ".join(f"{wf}: {'; '.join(p)}" for wf, p in (w.get("problems") or {}).items())
+                item.setToolTip(1, tip)
+                self.machines.addTopLevelItem(item)
+                if w.get("problems"):
+                    notes.append(f"<b>{html.escape(w['name'])}</b> can't run "
+                                 + "; ".join(f"{html.escape(wf)} ({html.escape(p[0])})" for wf, p in w["problems"].items()))
+                elif w.get("error") and not w.get("online"):
+                    notes.append(f"<b>{html.escape(w['name'])}</b>: {html.escape(w['error'])}")
+            for col in range(len(MACHINE_COLUMNS)):
+                self.machines.resizeColumnToContents(col)
+            self.machines_note.setText("<br>".join(notes) if notes else
+                                       ("" if self._workers else "No machines have checked in."))
 
         def _url_changed(self):
             url = self.url_edit.text().strip().rstrip("/")
@@ -472,9 +560,6 @@ if QtWidgets is not None:
             self.form.addRow("Job name", self.name_edit)
             self.submit_btn.setEnabled(bool(wf.get("enabled", True)))
             self._schedule_plan()
-            if self._pending:
-                pending, self._pending = self._pending, None
-                self.prefill(*pending)
 
         def _field(self, wf, p):
             """(value widget, row widget or layout) for one parameter."""
@@ -536,21 +621,12 @@ if QtWidgets is not None:
             if value:
                 widget.setText(value)
 
-        def prefill(self, workflow=None, found=None):
-            """Pick a workflow and fill the input from selected nodes, once the form exists."""
-            if not self.fields:
-                self._pending = (workflow, found)
-                return
-            if workflow:
-                idx = self.wf_combo.findData(workflow)
-                if idx >= 0 and idx != self.wf_combo.currentIndex():
-                    self.wf_combo.setCurrentIndex(idx)
-            self.fill_from_selection(found)
-
-        def fill_from_selection(self, found=None):
+        def fill_from_selection(self):
+            """Fill the input field from the selected Read/Write node (the form is still
+            the artist's to check and submit)."""
             if nk is None:
                 return
-            found = found if found is not None else nk.selected_sequences()
+            found = nk.selected_sequences()
             seq = PanelModel.sequence_param(self._wf() or {"params": []})
             if not found or not seq:
                 self._message("Select a Read or Write node with a rendered PNG sequence (or a movhistory .mov).", True)
@@ -558,8 +634,7 @@ if QtWidgets is not None:
             self.fields[seq][1].setText(found[0][1])
             self._selected_node = found[0]
             if len(found) > 1:
-                self._message(f"{len(found)} nodes selected: used {found[0][0]}. "
-                              f"'Submit selected nodes' submits all of them.")
+                self._message(f"{len(found)} nodes selected: used {found[0][0]}.")
 
         def _raw(self) -> dict:
             raw = {}
@@ -627,30 +702,6 @@ if QtWidgets is not None:
                 self._poll(force=True)
             self._async(lambda: self.model.submit(wf["name"], raw, name, source_node=node), done)
 
-        def _submit_selected(self):
-            wf = self._wf()
-            if not wf or nk is None:
-                return
-            found = nk.selected_sequences()
-            if not found:
-                self._message("Select one or more Read/Write nodes first.", True)
-                return
-            raw = self._raw()
-            self.batch_btn.setEnabled(False)
-            self.msg_label.setText(f"Submitting {len(found)} jobs…")
-
-            def done(results, error):
-                self.batch_btn.setEnabled(True)
-                if error:
-                    self._message(str(error), True)
-                    return
-                ok = [r for r in results if r[1]]
-                bad = [f"{n}: {e}" for n, _j, e in results if e]
-                self._message(f"Queued {len(ok)} of {len(results)}." + (" Not submitted: " + " | ".join(bad) if bad else ""),
-                              bool(bad))
-                self._poll(force=True)
-            self._async(lambda: self.model.submit_many(wf["name"], raw, found), done)
-
         # -------------------------------------------------------- jobs
         def _poll(self, force=False):
             # Hidden tab: still follow jobs submitted from here (for their Read nodes).
@@ -658,7 +709,7 @@ if QtWidgets is not None:
                 return
             self._polling = True
             self._polls += 1
-            header = force or self._polls % 5 == 0
+            header = force or self._polls % 5 == 0 or self.tabs.currentIndex() == 2   # machines: every poll
             mine, active = self.mine_check.isChecked(), self.active_check.isChecked()
 
             def work():
@@ -672,9 +723,9 @@ if QtWidgets is not None:
                     self.status_label.setText(f"<span style='color:#e0675b'>{html.escape(str(error))}</span>")
                     return
                 jobs, finished, status = result
-                if status:
-                    self._show_status(*status)
                 self._fill_table(jobs)
+                if status:
+                    self._show_status(*status)   # after the jobs: the Machines tab lists what each runs
                 for job in finished:
                     self._job_finished(job)
             self._async(work, done)
@@ -682,6 +733,7 @@ if QtWidgets is not None:
         def _fill_table(self, jobs):
             """Update rows in place, so scrolling and selection survive the refresh."""
             now = time.time()
+            labels = self.model.labels()
             items = {}
             for i in range(self.table.topLevelItemCount()):
                 item = self.table.topLevelItem(i)
@@ -702,14 +754,16 @@ if QtWidgets is not None:
                 elif self.table.indexOfTopLevelItem(item) != idx:
                     self.table.takeTopLevelItem(self.table.indexOfTopLevelItem(item))
                     self.table.insertTopLevelItem(idx, item)
-                for col, text in enumerate(PanelModel.row(job, now)):
+                for col, text in enumerate(PanelModel.row(job, now, labels)):
                     item.setText(col, text)
-                item.setForeground(3, QtGui.QBrush(QtGui.QColor(STATUS_COLORS.get(job["status"], "#d9dde2"))))
-                item.setToolTip(4, job.get("error") or "")
+                item.setForeground(STATUS_COL, QtGui.QBrush(QtGui.QColor(STATUS_COLORS.get(job["status"], "#d9dde2"))))
+                item.setToolTip(PROGRESS_COL, job.get("error") or "")
             self._jobs = {j["id"]: j for j in jobs}
+            active = sum(1 for j in jobs if j["status"] in ACTIVE)
+            self.tabs.setTabText(1, f"Queue ({active} active)" if active else "Queue")
             if added:
                 for col in range(len(COLUMNS)):
-                    if col != 4:
+                    if col != PROGRESS_COL:
                         self.table.resizeColumnToContents(col)
 
         def _job_finished(self, job):

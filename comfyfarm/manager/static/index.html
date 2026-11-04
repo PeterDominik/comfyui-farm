@@ -15,7 +15,13 @@
   header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
   h1 span { color: var(--accent); }
-  .workers { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
+  .spacer { flex: 1; }
+  nav.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+  nav.tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+                    color: var(--muted); padding: 10px 14px; font-weight: 600; }
+  nav.tabs button:hover { color: var(--text); }
+  nav.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+  nav.tabs .count { color: var(--muted); font-weight: 400; margin-left: 4px; }
   .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font-size: 12px; color: var(--muted); }
   .chip b { color: var(--text); font-weight: 600; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); vertical-align: 1px; }
@@ -72,13 +78,16 @@
   video { max-width: 520px; width: 100%; border-radius: 5px; border: 1px solid var(--line); background: #000; }
   .warn { color: var(--accent); } .err { color: var(--bad); }
   .empty { padding: 26px; text-align: center; color: var(--muted); }
+  .wfcell { white-space: nowrap; color: var(--muted); font-size: 12px; }
+  .ok { color: var(--ok); }
+  td.problems { color: var(--accent); font-size: 12px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>ComfyUI <span>farm</span></h1>
-  <div class="workers" id="workers"></div>
+  <div class="spacer"></div>
   <div class="ident">
     <span id="live" class="chip"><span class="dot"></span>connecting</span>
     <label id="userBox">user <input id="user" size="12" placeholder="your login"></label>
@@ -86,8 +95,14 @@
   </div>
 </header>
 
+<nav class="tabs" id="tabs">
+  <button data-tab="submit">Submit</button>
+  <button data-tab="queue">Queue<span class="count" id="queueCount"></span></button>
+  <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
+</nav>
+
 <main>
-  <section>
+  <section id="tab-submit">
     <div class="sechead">
       <h2>New job</h2>
       <select id="wfSelect"></select>
@@ -95,15 +110,23 @@
     <form id="form" autocomplete="off"></form>
   </section>
 
-  <section>
+  <section id="tab-queue" hidden>
     <div class="sechead">
-      <h2>Jobs</h2>
+      <h2>Queue</h2>
       <div class="seg" id="scope"><button data-v="mine">Mine</button><button data-v="all" class="on">Everyone</button></div>
       <div class="seg" id="filter"><button data-v="active" class="on">Active</button><button data-v="finished">Finished</button><button data-v="all">All</button></div>
     </div>
     <table>
-      <thead><tr><th>Job</th><th>Shot / name</th><th>User</th><th>Status</th><th>Progress</th><th>Wait</th><th>Submitted</th><th>Took</th><th></th></tr></thead>
+      <thead><tr><th>Job</th><th>Shot / name</th><th>Workflow</th><th>Machine</th><th>User</th><th>Status</th><th>Progress</th><th>Wait</th><th>Submitted</th><th>Took</th><th></th></tr></thead>
       <tbody id="jobs"></tbody>
+    </table>
+  </section>
+
+  <section id="tab-machines" hidden>
+    <div class="sechead"><h2>Machines</h2></div>
+    <table>
+      <thead><tr><th>Machine</th><th>Status</th><th>GPU</th><th>VRAM free</th><th>Jobs</th><th>Running</th><th>ComfyUI</th><th>Agent</th><th>Last seen</th></tr></thead>
+      <tbody id="machines"></tbody>
     </table>
   </section>
 </main>
@@ -145,15 +168,53 @@ const dur = s => { if (s == null) return ""; s = Math.round(s); if (s < 60) retu
   const m = Math.floor(s / 60); return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`; };
 const gb = b => b ? (b / 1e9).toFixed(1) + " GB" : "?";
 
-// ------------------------------------------------------------- workers
+// ------------------------------------------------------------- tabs
+const TABS = ["submit", "queue", "machines"];
+function showTab(tab) {
+  if (!TABS.includes(tab)) tab = "submit";
+  for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
+  $("#tabs").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  store.set("comfyfarm.tab", tab);
+  if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
+}
+$("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); });
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+
+// ------------------------------------------------------------- machines
+const ON_MACHINE = ["preparing", "dispatched", "running", "postprocessing"];
+const gpuName = w => ((w.gpu?.name || "").split(" : ")[0]).replace(/^cuda:\d+\s+/, "");
+function machineState(w) {
+  if (!w.online) return ["offline", "err"];
+  if (!w.connected) return ["ComfyUI connecting", "warn"];
+  if (w.checked === false) return ["checking nodes", "warn"];
+  const probs = Object.keys(w.problems || {});
+  if (probs.length) return ["can't run " + probs.sort().join(", "), "warn"];
+  return [w.inflight ? "busy" : "ready", "ok"];
+}
 function renderWorkers() {
-  $("#workers").innerHTML = [...state.workers.values()].map(w => `
-    <span class="chip" title="${esc(w.error || w.url)}${w.problems && Object.keys(w.problems).length ? " — preflight problems, see logs" : ""}">
-      <span class="dot ${w.online && w.connected ? "on" : ""}"></span><b>${esc(w.name)}</b>
-      ${w.gpu ? " · " + esc(w.gpu.name) + " · " + gb(w.gpu.vram_free) + " free" : ""}
-      · ${w.inflight}/${w.max_inflight} slots
-      ${Object.keys(w.problems || {}).length ? ' · <span class="err">preflight</span>' : ""}
-    </span>`).join("") || '<span class="chip">no workers configured</span>';
+  const ws = [...state.workers.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const up = ws.filter(w => w.online && w.connected && w.checked !== false).length;   // taking jobs
+  $("#machineCount").textContent = ws.length ? ` ${up}/${ws.length} online` : "";
+  $("#machines").innerHTML = ws.length ? ws.map(w => {
+    const [st, cls] = machineState(w);
+    const running = [...state.jobs.values(), ...[...state.batches.values()].flatMap(m => [...m.values()])]
+      .filter(j => j.worker === w.name && ON_MACHINE.includes(j.status))
+      .map(j => `<span title="${esc(j.short_id)}">${esc(j.name || j.short_id)}</span>`).join(", ");
+    const vram = w.gpu?.vram_total ? `${gb(w.gpu.vram_free)} of ${gb(w.gpu.vram_total)}` : "";
+    const probs = Object.entries(w.problems || {});
+    return `<tr>
+      <td><b>${esc(w.name)}</b></td>
+      <td class="${cls}" title="${esc(w.error || "")}">${esc(st)}</td>
+      <td>${esc(gpuName(w))}</td>
+      <td class="muted">${esc(vram)}</td>
+      <td>${w.inflight}/${w.max_inflight}</td>
+      <td>${running || '<span class="muted">—</span>'}</td>
+      <td class="muted">${esc(w.comfyui_version || "")}</td>
+      <td class="muted mono">${esc((w.agent_version || "").split("+").pop())}</td>
+      <td class="muted">${ago(w.last_seen)}</td>
+    </tr>${probs.length ? `<tr><td></td><td colspan="8" class="problems">${probs.map(([wf, p]) => `<b>${esc(wf)}</b>: ${esc(p.join("; "))}`).join("<br>")}</td></tr>` : ""}
+    ${!w.online && w.error ? `<tr><td></td><td colspan="8" class="err">${esc(w.error)}</td></tr>` : ""}`;
+  }).join("") : '<tr><td colspan="9" class="empty">No machines have checked in.</td></tr>';
 }
 
 // ------------------------------------------------------------- submit form
@@ -189,6 +250,7 @@ function renderForm() {
        <div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
   for (const p of [seqP, outP, ...wf.params.filter(p => p.naming)])
     if (p) $("#p_" + p.name).addEventListener(p.type === "choice" ? "change" : "input", () => scheduleDest(wf, seqP, outP));
+  f.onclick = e => { if (e.target.dataset.showjob) { state.open.add(e.target.dataset.showjob); showTab("queue"); render(); } };
   f.onsubmit = async e => {
     e.preventDefault();
     const params = {};
@@ -206,7 +268,9 @@ function renderForm() {
     try {
       const job = await api("/api/v1/jobs", { method: "POST", body: JSON.stringify({ workflow: wf.name, params, name: $("#jobname").value.trim() || null }) });
       upsert(job); state.open.add(job.id); render();
-      msg.className = "msg ok"; msg.textContent = `Queued ${job.short_id} → ${job.info.output_dir_posix || job.info.output_dir}`;
+      msg.className = "msg ok";
+      msg.innerHTML = `Queued ${esc(job.short_id)} → ${esc(job.info.output_dir_posix || job.info.output_dir)} `
+        + `<button class="small" type="button" data-showjob="${esc(job.id)}">show in queue</button>`;
       $("#p_" + wf.params.find(p => p.type === "sequence")?.name)?.select();
       scheduleDest(wf, seqP, outP, 0);   // that folder is now taken; show where the next run would go
     } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
@@ -312,7 +376,9 @@ function pathRow(label, path) {
 function detail(j) {
   const i = j.info || {}, o = j.outputs || {}, inp = i.input || {};
   const keyq = $("#key").value.trim() ? "?key=" + encodeURIComponent($("#key").value.trim()) : "";
-  return `<tr class="detail"><td colspan="9"><div class="kv">
+  const local = o.maps ? i.output_dir : (o.frame_pattern || i.output_dir);
+  const windows = /^(\/\/|[A-Za-z]:[\/])/.test(local || "") ? local : "";   // a Windows farm machine's own path
+  return `<tr class="detail"><td colspan="11"><div class="kv">
     <div>Workflow</div><div>${esc(j.workflow)}${j.params?.seed != null ? ` · seed ${esc(j.params.seed)}` : ""} · ${j.kind === "set" ? `a set of ${j.info?.set?.batches} batches` : esc(j.worker || "not dispatched")}${j.attempts > 1 ? ` · attempt ${j.attempts}` : ""}</div>
     ${pathRow("Input", i.input_posix ? i.input_posix + (inp.first != null ? ` ${inp.first}-${inp.last}` : "") : inp.farm_path)}
     <div>Frames in</div><div>${inp.frame_count ?? "?"}${inp.skip || inp.cap ? ` <span class="muted">(loader skip ${inp.skip}, cap ${inp.cap})</span>` : ""}</div>
@@ -322,7 +388,7 @@ function detail(j) {
              : o.frames ? `<div>Frames out</div><div>${o.frames} (${o.first}-${o.last})</div>` : ""}
     ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
     ${j.kind === "set" ? setDetail(j) : ""}
-    ${pathRow("Output (Windows)", o.maps ? i.output_dir : (o.frame_pattern || i.output_dir))}
+    ${pathRow("Output (Windows)", windows)}
     ${j.params?.positive_prompt ? `<div>Prompt</div><div>${esc(j.params.positive_prompt)}</div>` : ""}
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
     ${j.error ? `<div>Error</div><div class="err">${esc(j.error)}</div>` : ""}
@@ -337,6 +403,7 @@ function detail(j) {
     </div></div></td></tr>`;
 }
 
+const wfLabel = name => state.workflows.find(w => w.name === name)?.label || name || "";
 function render() {
   const rows = visible();
   $("#jobs").innerHTML = rows.length ? rows.map(j => {
@@ -348,6 +415,8 @@ function render() {
     return `<tr class="row" data-id="${j.id}">
       <td class="mono">${esc(j.short_id)}</td>
       <td>${esc(j.name)}${j.info?.version ? ` <span class="muted">v${String(j.info.version).padStart(3, "0")}</span>` : ""}${j.kind === "set" ? ` <span class="muted">· ${j.info?.set?.batches} batches</span>` : ""}</td>
+      <td class="wfcell" title="${esc(j.workflow)}">${esc(wfLabel(j.workflow))}</td>
+      <td class="wfcell">${j.kind === "set" ? "per batch" : esc(j.worker || "")}</td>
       <td>${esc(j.user)}</td>
       <td><span class="badge s-${esc(j.status)}">${esc(j.status)}</span></td>
       <td>${["running", "postprocessing", "dispatched"].includes(j.status) || j.status === "done"
@@ -358,7 +427,10 @@ function render() {
       <td class="muted">${took}</td>
       <td>${(j.warnings || []).length ? '<span class="warn" title="has warnings">!</span>' : ""}</td>
     </tr>${state.open.has(j.id) ? detail(j) : ""}`;
-  }).join("") : `<tr><td colspan="9" class="empty">No ${state.filter === "all" ? "" : state.filter} jobs.</td></tr>`;
+  }).join("") : `<tr><td colspan="11" class="empty">No ${state.filter === "all" ? "" : state.filter} jobs.</td></tr>`;
+  const active = [...state.jobs.values()].filter(j => !["done", "failed", "cancelled"].includes(j.status)).length;
+  $("#queueCount").textContent = active ? ` ${active} active` : "";
+  renderWorkers();   // the Machines tab lists what each machine runs
   // Re-attach the same <video> elements so playback survives live updates.
   document.querySelectorAll(".vslot").forEach(slot => {
     let v = videos.get(slot.dataset.vid);
@@ -450,6 +522,7 @@ async function boot() {
     $("#form").innerHTML = `<div class="msg err" style="grid-column:1/-1">${esc(err.message)}${state.auth ? " — enter your API key (top right)." : ""}</div>`;
   }
 }
+showTab(location.hash.slice(1) || store.get("comfyfarm.tab") || "submit");
 setInterval(refreshJobs, 15000);   // keeps queue positions / ETAs fresh
 setInterval(() => { if (visible().some(j => j.status === "running")) render(); }, 1000);
 boot();
