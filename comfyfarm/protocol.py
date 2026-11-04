@@ -1,82 +1,91 @@
-"""What the manager and the agent share: job states, and the interface an agent reports
-its jobs through.
+"""What the manager and its agents share: job states, and the messages between them.
 
 The manager decides everything about a job and stores it; an agent runs it on its
-ComfyUI and reports back. For now both run in one process and the manager's Farm is the
-host every WorkerRunner reports to. Later the same calls go over HTTP, so this is the
-list of what that protocol has to carry."""
+ComfyUI and reports back. Agents only ever call the manager (they need no open port):
+
+  hello      an agent starts: its name, its ComfyUI, how many jobs it takes at once, the
+             jobs it holds. The reply lists jobs the manager has on it that it didn't
+             mention (after a restart): it picks them up again from ComfyUI, or reports
+             them lost.
+  status     its ComfyUI's state: reachable, connected, GPU, queue (on change, and every
+             few seconds for the dashboard).
+  nodes      its ComfyUI's node definitions (object_info), when it connects. The manager
+             checks every workflow against them; an agent only gets jobs it can run.
+  heartbeat  the jobs it holds, which renews their leases. The manager answers as soon as
+             it has something for the agent (new jobs, cancels, jobs to drop) or after
+             `wait` seconds.
+  report     one step of one job's run: preparing progress, dispatched, running,
+             progress, postprocessing, done, failed, cancelled, lost.
+
+Every job an agent holds is one run of it, named by its attempt id (also the prompt id
+in ComfyUI). The manager acts on a report only while that run is the job's current one,
+so a late or duplicate report about an earlier run changes nothing. If an agent stops
+checking in for farm.lost_after_seconds, the manager queues its jobs again.
+
+Between machines, a job's paths are studio paths, with @scratch/ and @repo/ for the
+agent's scratch folder and repo (fileio.wire). The manager keeps them in its database as
+it sees them, so its API and dashboard are as before.
+
+Messages are plain JSON. In `standalone` the agents run in the manager's process and
+call it directly (agent.link.LocalLink); otherwise over HTTP (agent.link.HttpLink, the
+/api/v1/agent/... endpoints)."""
 
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any, Protocol
 
-if TYPE_CHECKING:
-    from .workflows import Workflow
-
-# Job statuses. preparing: input being converted; queued: waiting for a worker;
-# dispatched: waiting in a ComfyUI's queue; running; postprocessing: outputs being
-# collected (frames renamed, texture maps written); then done, failed or cancelled.
-ACTIVE = ("preparing", "queued", "dispatched", "running", "postprocessing")
-ON_WORKER = ("dispatched", "running")
+# Job statuses. queued: waiting for a worker; preparing: on a worker, getting ready
+# (converting the input); dispatched: waiting in its ComfyUI's queue; running;
+# postprocessing: outputs being collected (frames renamed, texture maps written); then
+# done, failed or cancelled.
+ACTIVE = ("queued", "preparing", "dispatched", "running", "postprocessing")
+ON_WORKER = ("dispatched", "running")                                # in a ComfyUI
+HELD = ("preparing", "dispatched", "running", "postprocessing")     # leased to an agent
 FINISHED = ("done", "failed", "cancelled")
+
+# report events
+EVENTS = ("progress", "dispatched", "running", "postprocessing", "done", "failed", "cancelled", "lost")
+TERMINAL = ("done", "failed", "cancelled", "lost")
 
 
 def now() -> float:
     return time.time()
 
 
-class JobHost(Protocol):
-    """What a worker needs from the manager. Job dicts are as JobStore returns them."""
+def duration(seconds: float) -> str:
+    """300 -> '5 minutes', 45 -> '45 seconds': for messages artists read."""
+    if seconds >= 90:
+        m = round(seconds / 60)
+        return f"{m} minutes"
+    s = round(seconds)
+    return f"{s} second{'' if s == 1 else 's'}"
 
-    # ---- reading jobs
-    def job(self, job_id: str, with_prompt: bool = False) -> dict | None:
-        """One job (None if it's gone)."""
 
-    def job_by_prompt(self, prompt_id: str) -> dict | None:
-        """The job a ComfyUI prompt id belongs to."""
+_BUILD: str | None = None
 
-    def jobs_on_worker(self, worker: str, statuses: tuple = ON_WORKER) -> list[dict]:
-        """Jobs the manager believes this worker has, with their prompts."""
 
-    def inflight(self, worker: str) -> int:
-        """How many jobs this worker has in its ComfyUI (dispatched or running)."""
+def build() -> str:
+    """This checkout's version: comfyfarm's version and its git commit, e.g. 0.1.0+a6800d0.
+    Agents send it, so the manager can warn about one running other code."""
+    global _BUILD
+    if _BUILD is None:
+        import subprocess
+        from pathlib import Path
 
-    # ---- reporting
-    def transition(self, job_id: str, from_statuses: tuple, **fields: Any) -> dict | None:
-        """Update a job only if it's still in one of from_statuses (None if it isn't:
-        cancelled or finished meanwhile). Doesn't publish the change; emit() does."""
+        from . import __version__
+        commit = ""
+        try:
+            out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).resolve().parent.parent,
+                                 capture_output=True, text=True, timeout=10)
+            commit = out.stdout.strip() if out.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            pass
+        _BUILD = __version__ + (f"+{commit}" if commit else "")
+    return _BUILD
 
-    def emit(self, job: dict | None) -> None:
-        """Publish a job's new state to dashboards and clients."""
 
-    def fail(self, job_id: str, message: str, from_statuses: tuple, traceback: str | None = None) -> dict | None:
-        """The job failed on the worker."""
+class LinkError(Exception):
+    """The manager couldn't be reached, or refused the call."""
 
-    def finish_cancel(self, job_id: str) -> dict | None:
-        """A cancel the manager asked for has taken effect on the worker."""
 
-    def lost(self, job: dict, reason: str) -> None:
-        """The worker lost the job's run with job["prompt_id"] (ComfyUI restarted, machine
-        unreachable): run it again, or fail it after farm.max_attempts. Ignored if the job
-        has moved on to another run since."""
-
-    def record_run(self, workflow: str, seconds: float, node_count: int | None) -> None:
-        """How long a finished run took, for ETAs and progress."""
-
-    def worker_changed(self, worker: Any) -> None:
-        """The worker's state changed (online, connected, problems): publish it."""
-
-    def wake(self) -> None:
-        """Something changed that may let more jobs be dispatched."""
-
-    # ---- workflows
-    def workflow(self, name: str) -> Workflow | None:
-        """A workflow's manifest and template."""
-
-    def workflow_stats(self, name: str) -> dict:
-        """Past runs of a workflow: avg_seconds, node_count."""
-
-    def workflow_problems(self, object_info: dict) -> dict[str, list[str]]:
-        """What each workflow is missing on a ComfyUI with this object_info (node packs,
-        inputs, models); only workflows with problems are listed."""
+__all__ = ["ACTIVE", "ON_WORKER", "HELD", "FINISHED", "EVENTS", "TERMINAL", "now", "build", "LinkError"]

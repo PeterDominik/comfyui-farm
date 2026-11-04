@@ -1,17 +1,26 @@
 # ComfyUI farm gateway
 
 A small job queue and REST API in front of ComfyUI, so artists can run studio
-workflows on the RTX 5090 box from a browser, Nuke, or a script, without touching
+workflows on the farm's GPUs from a browser, Nuke, or a script, without touching
 ComfyUI itself.
 
 ```
-Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  ComfyUI 127.0.0.1:8188
-                                       queue · monitor · versioned outputs     never exposed
+Artists (dashboard / Nuke / CLI)
+     │  HTTP :8000
+Manager (FastAPI + SQLite)        queue · planning · monitoring · versioned outputs
+     ▲  agents check in over HTTP; they need no open port
+Agent, one per GPU machine        converts inputs · runs the job · writes the outputs
+     │  localhost
+ComfyUI 127.0.0.1:8188            never exposed
 ```
 
-- **Queue owned by the gateway.** Jobs survive ComfyUI crashes and gateway restarts.
-  Dispatch order is priority first, then whoever has the fewest jobs running, then age.
-  ComfyUI only ever holds one running job plus one waiting.
+One machine can run all of it (`standalone`), or the manager runs on one machine and an
+agent on each GPU machine, Linux or Windows (*Several machines* below).
+
+- **Queue owned by the manager** (the gateway). Jobs survive ComfyUI crashes and restarts
+  of the manager or an agent. Dispatch order is priority first, then whoever has the
+  fewest jobs running, then age. Each ComfyUI only ever holds one running job plus one
+  waiting.
 - **Live monitoring** over ComfyUI's websocket shows status, the current node, sampler
   steps, progress, and queue position with an ETA learned from past runs. A periodic
   check against ComfyUI's queue and history catches anything the websocket missed.
@@ -47,12 +56,13 @@ Artists (dashboard / Nuke / CLI)  →  Gateway :8000 (FastAPI + SQLite)  →  Co
 
 | Path | What |
 |---|---|
-| `comfyfarm/manager/` | The manager: API, dashboard, job database, planning, texture sets, queue and dispatch |
-| `comfyfarm/agent/` | The worker side, one per ComfyUI: submits jobs to it, follows them live, collects the outputs |
+| `comfyfarm/manager/` | The manager: API, dashboard, job database, planning, texture sets, the queue, and the desk agents check in with (`desk.py`) |
+| `comfyfarm/agent/` | The agent, one per ComfyUI: takes jobs from the manager, converts their inputs, runs them, follows them live, writes the outputs |
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
-| `comfyfarm/protocol.py` | Job states, and what a worker reports to the manager |
-| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`) and `check` |
+| `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
+| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent` and `check` |
+| `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
@@ -117,6 +127,48 @@ scripts\update.ps1               # git pull, pip install, preflight, restart ser
 ```
 
 Queued and running jobs carry on across the restart.
+
+## Several machines: manager and agents
+
+The farm splits into a **manager** (queue, API, dashboard: one machine) and an **agent** on
+each GPU machine (its ComfyUI, input conversion, writing the outputs). `standalone` runs
+both in one process, as above. To spread them over machines:
+
+1. **The manager.** On the manager machine (Linux or Windows), with `config.yaml` as above
+   and `agents.token` set to a long random string:
+
+   ```bash
+   python -m comfyfarm manager
+   ```
+
+   `workers:` isn't used in this mode: agents check in instead.
+2. **An agent on each GPU machine.** The same repo and requirements, ComfyUI with the node
+   packs (see *Install*), and `agent.yaml` copied from `agent.example.yaml`: the machine's
+   name, the manager's address and token, how it sees show storage, and its scratch folder.
+
+   ```bash
+   python -m comfyfarm agent
+   ```
+
+   It joins the worker list as soon as it has checked in and the manager has checked its
+   ComfyUI's node definitions against the workflows.
+
+How they work together:
+
+- **Agents only ever call the manager** (`/api/v1/agent/...`), so GPU machines need no
+  open port and the manager needs no list of them. An agent checks in every few seconds;
+  one that stops for `farm.lost_after_seconds` (5 minutes) has its jobs queued again for
+  the others.
+- **An agent takes jobs when it has room:** `max_inflight` in its ComfyUI plus one being
+  converted ahead. Agents whose ComfyUI lacks a workflow's nodes or models don't get it.
+- **Paths travel as studio paths** (`/rdo/shows/...`) and each machine maps them its own
+  way (`paths.mappings` in its config), so Linux and Windows workers mix. Inputs are
+  converted on the agent that runs the job, in its own scratch folder.
+- **Restarts:** a restarted agent follows its jobs again in its ComfyUI's queue and
+  history. While the manager is down, agents finish what they hold and report it when the
+  manager is back.
+- **Run the same commit everywhere.** The manager logs a warning when an agent runs
+  another version; `/api/v1/workers` lists each agent's `agent_version`.
 
 ## Using it
 
@@ -353,8 +405,8 @@ tiles than the manifest's `textures.batch` (4 for `chord_pbr`) is submitted as a
 - **Other jobs get in between.** The farm picks the next run by priority, then the user
   with the fewest runs on the GPU, then the set (or job) with the fewest. So someone else's
   job, or your own small one, waits for at most a batch or two, not the whole set.
-- **Conversion stays a few batches ahead** of the GPU (`convert.batches_ahead`, 2), so
-  other jobs' inputs get converted in between and scratch space stays small.
+- **Conversion stays one batch ahead** of the GPU: each worker converts only the run it
+  takes next, so other jobs' inputs get converted in between and scratch space stays small.
 - **A failed batch doesn't stop the set.** The rest carry on, and the set ends *failed*,
   listing which UDIMs didn't finish and why. **Retry failed** (dashboard, Nuke panel, or
   `comfyfarm_client.py retry-failed <set id>`) runs just those batches again, into the
@@ -542,12 +594,15 @@ outputs:                       # nodes the gateway points at each job's versione
 
 ## Operations notes
 
-- **Logs:** `logs/comfyfarm.log` (rotating), plus `logs/*-service.log` for the services.
+- **Logs:** `logs/comfyfarm.log` (rotating), plus `logs/*-service.log` for the services. Each
+  agent on another machine logs to `logs/agent-<name>.log` there.
 - **State:** `data/comfyfarm.db` (SQLite). Back it up or delete it; nothing else depends on it.
 - **Restarts:**
-  - Gateway restarts mid-job: on reconnect it reads ComfyUI's history and finishes the job.
+  - Manager restarts mid-job: agents carry on, and report what finished meanwhile when it's back.
+  - Agent (or `standalone`) restarts mid-job: it reads its ComfyUI's queue and history and finishes the job.
   - ComfyUI crashes mid-job: the job is requeued once (`farm.max_attempts`), with a warning on the job.
-  - Jobs on a machine that stays unreachable for 5 minutes are requeued.
+  - Jobs of an agent that stops checking in, or whose ComfyUI stays unreachable, for 5
+    minutes are requeued.
 - **Pin WAS Node Suite.** `ltx25_alpha_gen` saves frames with WAS *Image Save* using its
   `output_path` input (`chord_pbr` uses *ComfyFarm Save Image* instead). The current WAS release replaced that input with a sandboxed
   `root` setting. Don't update WAS on the farm machine without re-testing; the preflight
@@ -562,25 +617,30 @@ outputs:                       # nodes the gateway points at each job's versione
 
 ```bash
 pip install -r requirements-dev.txt               # the farm's requirements + what only the tests use
-python -m unittest discover -s tests -t . -v      # unit + end-to-end (~30 s on Linux, ~80 s on Windows)
+python -m unittest discover -s tests -t . -v      # unit + end-to-end (2-3 minutes)
 
 # Manual testing without a GPU:
 python tools/mock_comfyui.py --port 8188 --output mock_output
 python -m comfyfarm standalone                    # `serve` is the same, under its old name
 ```
 
-`standalone` runs the manager and a worker for each ComfyUI in `workers:`, in one process.
-The worker (`comfyfarm/agent/worker.py`) reports to the manager only through the calls in
-`comfyfarm/protocol.py`; `tests/test_worker.py` runs the two together against an in-memory
-ComfyUI. `tests/test_layout.py` keeps the layers apart: `fileio` imports with the standard
-library alone, and the manager doesn't need the agent or the web stack. So most tests run
-with just pydantic and pyyaml installed; `test_worker` also needs httpx and websockets, and
-the end-to-end suite the whole of `requirements.txt`.
+`standalone` runs the manager and an agent for each ComfyUI in `workers:`, in one process.
+Agents talk to the manager only through the messages in `comfyfarm/protocol.py`, in the
+same process (`agent/link.py`'s `LocalLink`) or over HTTP (`HttpLink`). `tests/test_agent.py`
+runs the manager and agents together against an in-memory ComfyUI: jobs, cancels, lost
+runs, restarts of either side, leases, agents with their own path mappings.
+`tests/test_layout.py` keeps the layers apart: `fileio` imports with the standard library
+alone, the manager doesn't need the agent or the web stack, and the agent doesn't need the
+manager. So most tests run with just pydantic and pyyaml installed; `test_agent` also needs
+httpx and websockets, and the end-to-end suites the whole of `requirements.txt`.
 
-The end-to-end suite runs the real gateway against the mock. It covers submit to done
-(frame renaming, preview, versioning), cancelling in each state, failures with
-tracebacks, bad input, a gateway restart mid-job, a ComfyUI crash mid-job, and a
-missing node pack.
+`tests/test_e2e.py` runs `standalone` against the mock. It covers submit to done (frame
+renaming, preview, versioning), cancelling in each state, failures with tracebacks, bad
+input, a restart mid-job, a ComfyUI crash mid-job, and a missing node pack.
+`tests/test_e2e_agents.py` runs a `manager` and two `agent` processes, each with its own
+mock ComfyUI, one seeing show storage under another folder: jobs spread over both, inputs
+converted on the agent, cancels, an agent restarting, an agent gone for good, and the
+manager restarting.
 
 `tests/test_nuke.py` covers the Nuke panel's logic and its Nuke helpers (with a stand-in
 `nuke` module), and the end-to-end suite drives the panel's logic against the gateway. The

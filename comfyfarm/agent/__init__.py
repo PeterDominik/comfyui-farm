@@ -1,1 +1,2 @@
-"""The agent: runs jobs on one ComfyUI and reports back to the manager."""
+"""The agent: runs the manager's jobs on one ComfyUI (agent.py), and reaches the manager
+in this process or over HTTP (link.py)."""

@@ -1,7 +1,10 @@
-"""python -m comfyfarm standalone | serve | check
+"""python -m comfyfarm standalone | serve | manager | agent | check
 
-standalone (serve is the same, under its old name): the manager and a worker per
-configured ComfyUI, in one process, as the farm has always run."""
+  standalone   the manager and an agent for each ComfyUI in config.yaml's workers, in one
+               process, as the farm has always run (serve is the same, under its old name)
+  manager      the manager only: agents on other machines check in (comfyfarm agent)
+  agent        one agent: runs the manager's jobs on this machine's ComfyUI (agent.yaml)
+  check        preflight: workflows, tools, OCIO, storage, and config.yaml's workers"""
 
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from .fileio.ocio import nuke_ramp, ocio_roles
 from .workflows import WorkflowRegistry
 
 
-def setup_logging(cfg: Config, verbose: bool = False) -> None:
+def setup_logging(cfg, verbose: bool = False, filename: str = "comfyfarm.log") -> None:
     log_dir = cfg.resolve(cfg.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
@@ -28,7 +31,7 @@ def setup_logging(cfg: Config, verbose: bool = False) -> None:
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(fmt)
-    fileh = logging.handlers.RotatingFileHandler(log_dir / "comfyfarm.log", maxBytes=5_000_000,
+    fileh = logging.handlers.RotatingFileHandler(log_dir / filename, maxBytes=5_000_000,
                                                  backupCount=5, encoding="utf-8")
     fileh.setFormatter(fmt)
     root.handlers[:] = [console, fileh]
@@ -180,12 +183,16 @@ async def run_check(cfg: Config) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="comfyfarm", description="ComfyUI farm gateway")
+    ap = argparse.ArgumentParser(prog="comfyfarm", description="ComfyUI farm")
     ap.add_argument("--config", help="config.yaml path (default: repo root, or $COMFYFARM_CONFIG)")
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("standalone", help="run the manager and a worker per configured ComfyUI, in one process")
+    sub.add_parser("standalone", help="run the manager and an agent per configured ComfyUI, in one process")
     sub.add_parser("serve", help="the same as standalone (its old name)")
+    sub.add_parser("manager", help="run the manager only; agents on other machines check in")
+    agent = sub.add_parser("agent", help="run an agent for this machine's ComfyUI")
+    agent.add_argument("--config", dest="agent_config",
+                       help="agent.yaml path (default: repo root, or $COMFYFARM_AGENT_CONFIG)")
     sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
     args = ap.parse_args(argv)
 
@@ -197,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
 
+    if args.cmd == "agent":
+        return run_agent(args.agent_config or args.config, args.verbose)
+
     cfg = load_config(args.config)
     if args.cmd == "check":
         return asyncio.run(run_check(cfg))
@@ -207,8 +217,24 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     from .manager.app import create_app
-    uvicorn.run(create_app(cfg), host=cfg.server.host, port=cfg.server.port,
-                log_config=None, ws_ping_interval=20)
+    uvicorn.run(create_app(cfg, local_agents=args.cmd != "manager"), host=cfg.server.host,
+                port=cfg.server.port, log_config=None, ws_ping_interval=20)
+    return 0
+
+
+def run_agent(path: str | None, verbose: bool = False) -> int:
+    """`comfyfarm agent`: this machine's agent, until it's stopped."""
+    from .agent.agent import Agent
+    from .agent.link import HttpLink
+    from .config import load_agent_config
+
+    cfg = load_agent_config(path)
+    setup_logging(cfg, verbose, f"agent-{cfg.name}.log")
+    agent = Agent(cfg, HttpLink(cfg.manager, cfg.token))
+    try:
+        asyncio.run(agent.run_forever())
+    except KeyboardInterrupt:
+        pass
     return 0
 
 

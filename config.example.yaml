@@ -1,5 +1,10 @@
-# Copy to config.yaml (git ignores it) and edit for this machine.
+# The manager's settings. Copy to config.yaml (git ignores it) and edit for this machine.
 # scripts/setup.ps1 does the copy for you on first install.
+#
+#   python -m comfyfarm standalone   the manager plus an agent for each of `workers:` below,
+#                                    in one process (one farm machine; `serve` is the same)
+#   python -m comfyfarm manager      the manager only: agents on the GPU machines check in
+#                                    (`python -m comfyfarm agent`, settings in agent.yaml)
 
 server:
   host: 0.0.0.0        # listen on the studio network
@@ -9,12 +14,19 @@ database: data/comfyfarm.db
 log_dir: logs
 workflows_dir: workflows
 
-# ComfyUI instances that run jobs. Keep ComfyUI itself on 127.0.0.1 (no --listen);
-# only the gateway talks to it. Add more GPU machines here later.
+# standalone: the ComfyUI instances on this machine that run jobs, each with an agent in
+# this process. Keep ComfyUI itself on 127.0.0.1 (no --listen); only its agent talks to
+# it. `manager` ignores this list: GPU machines run their own agent (agent.example.yaml).
 workers:
   - name: rtx5090
     url: http://127.0.0.1:8188
     max_inflight: 2      # one running + one waiting, so the GPU never idles between jobs
+
+# Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
+# port themselves; the manager's port must be reachable from them.
+agents:
+  token: ''            # shared secret, the same as `token` in each agent.yaml. Empty = any
+                       # agent may check in: set one as soon as the manager is on the network
 
 paths:
   # Linux workstations see /rdo/shows; this Windows machine sees the same share as UNC.
@@ -60,16 +72,17 @@ paths:
   validate_inputs: true
 
 convert:
-  # EXR sequences and movies are converted to PNG frames here (on the farm machine's
-  # local disk) before the workflow runs; deleted when the job finishes.
+  # EXR sequences and movies are converted to PNG frames by the worker that runs the job,
+  # into its scratch folder, before the workflow runs; deleted when the job finishes.
+  # These are the standalone agents' settings (several workers: a subfolder each); an agent
+  # on another machine has its own convert: in agent.yaml. The manager reads inputs' headers
+  # only (sizes, frame ranges, timecode) to plan jobs.
   scratch_dir: data/scratch
   max_parallel_jobs: 1     # conversions at once; they run while the GPU works on other jobs
   frame_workers: 6         # oiiotool processes per EXR job
   keep_failed: false       # keep converted frames of failed jobs for debugging
-  batches_ahead: 2         # texture sets: batches converted ahead of the GPU, so other jobs'
-                           # inputs are converted in between and scratch stays small
-  # Empty = the gateway's venv (oiiotool from OpenImageIO, ffmpeg from imageio-ffmpeg),
-  # then PATH. ffprobe is optional: without it, movie info is read with ffmpeg.
+  # Empty = the venv (oiiotool from OpenImageIO, ffmpeg from imageio-ffmpeg), then PATH.
+  # ffprobe is optional: without it, movie info is read with ffmpeg.
   tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}
   exr:
     extra_args: ['--ch', 'R,G,B', '--croptofull']   # before the colour conversion (see ocio:)
@@ -102,9 +115,10 @@ auth:
   admins: []           # user names allowed to cancel anyone's job and raise priority
 
 farm:
-  max_attempts: 2
-  reconcile_seconds: 20
-  health_seconds: 5
-  lost_after_seconds: 300
+  max_attempts: 2          # runs of a job before it fails, when a worker loses it (crash, restart)
+  lost_after_seconds: 300  # an agent that stops checking in this long has its jobs queued again
+  strict_preflight: true   # fail jobs no worker can run (missing node pack, input or model) at once
+  # standalone agents only (agent.yaml has its own):
+  reconcile_seconds: 20    # jobs cross-checked against ComfyUI's queue and history this often
+  health_seconds: 5        # ComfyUI checked this often
   delete_comfy_history: true
-  strict_preflight: true

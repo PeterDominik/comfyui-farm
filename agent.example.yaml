@@ -1,0 +1,46 @@
+# One GPU machine's agent: it runs the manager's jobs on this machine's ComfyUI.
+# Copy to agent.yaml (git ignores it), edit, then run:
+#
+#   python -m comfyfarm agent                 (or --config <path>, or $COMFYFARM_AGENT_CONFIG)
+#
+# Everything here describes this machine. How jobs are run (colour, naming, versions,
+# output folders) comes with each job from the manager, so it's the same on every worker.
+
+name: rtx5090-a                  # as the dashboard shows it; unique on the farm
+manager: http://pipeline-ws42:8000   # the manager's address (its host name or IP, and port)
+token: ''                        # the manager's agents.token, if it has one
+comfyui: http://127.0.0.1:8188   # this machine's ComfyUI. Keep it on localhost (no --listen):
+                                 # only this agent talks to it, and agents need no open port
+max_inflight: 2                  # jobs in ComfyUI at once: one running + one waiting. One more
+                                 # is converted ahead, so the GPU never waits on a conversion
+
+log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
+
+paths:
+  # How this machine sees show storage. Linux machines that see /rdo/shows need nothing
+  # here; Windows machines map it to the share:
+  mappings:
+    - posix: /rdo/shows
+      windows: //rodeofx.com/smb/shows
+
+convert:
+  # Inputs that need converting (EXR sequences, movies, large images) are converted here
+  # into PNG frames on this machine's local disk, then read by ComfyUI; deleted when the
+  # job ends. Fast local disk, a few GB free per job.
+  scratch_dir: data/scratch
+  max_parallel_jobs: 1           # conversions at once; they run while the GPU works on other jobs
+  frame_workers: 6               # oiiotool processes per EXR job
+  keep_failed: false             # keep converted frames of failed jobs for debugging
+  # Empty = this repo's venv (oiiotool from OpenImageIO, ffmpeg from imageio-ffmpeg), then PATH.
+  tools: {oiiotool: '', ffmpeg: '', ffprobe: ''}
+
+textures:
+  workers: 6                     # oiiotool processes per job when writing texture maps
+
+# Usually left as they are:
+heartbeat_wait: 10               # the manager holds a check-in this long while it has nothing
+retry_seconds: 2                 # first wait when the manager can't be reached (doubles, up to 30)
+health_seconds: 5                # ComfyUI checked this often
+reconcile_seconds: 20            # jobs cross-checked against ComfyUI's queue and history this often
+lost_after_seconds: 300          # ComfyUI unreachable this long: its jobs go back to the manager
+delete_comfy_history: true       # drop finished prompts from ComfyUI's in-memory history

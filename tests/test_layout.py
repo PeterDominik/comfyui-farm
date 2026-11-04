@@ -3,8 +3,10 @@ need made unimportable:
 
 - fileio uses the standard library only, so the farm's own ComfyUI nodes can import it
   in ComfyUI's Python (no pydantic, yaml or web stack there).
-- the manager's farm doesn't need the agent or the web stack, so the set and worker
-  tests run without them and a remote agent can replace the in-process one.
+- the manager's farm and desk don't need the agent or the web stack, so the set and
+  agent tests run without them and a remote agent can replace the in-process one.
+- the agent doesn't need the manager or its web server: a worker machine runs the agent
+  alone, talking to the manager over HTTP.
 """
 
 import subprocess
@@ -51,6 +53,26 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         r = import_without(["comfyfarm.manager.farm"], ["comfyfarm.agent"])
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_desk_needs_no_web_stack(self):
+        r = import_without(["comfyfarm.manager.desk"], WEB)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = import_without(["comfyfarm.manager.desk"], ["comfyfarm.agent"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_agent_needs_neither_the_manager_nor_its_web_server(self):
+        r = import_without(["comfyfarm.agent.agent", "comfyfarm.agent.link"],
+                           ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_example_configs_load_as_they_are(self):
+        from comfyfarm.config import load_agent_config, load_config
+        cfg = load_config(REPO / "config.example.yaml")
+        self.assertEqual(cfg.obsolete_keys, [])
+        self.assertEqual(cfg.agents.token, "")
+        agent = load_agent_config(REPO / "agent.example.yaml")
+        self.assertEqual((agent.comfyui, agent.max_inflight), ("http://127.0.0.1:8188", 2))
+        self.assertEqual(agent.base_dir, REPO)
 
     def test_cli_help_needs_no_web_stack(self):
         r = subprocess.run([sys.executable, "-c", textwrap.dedent(f"""
