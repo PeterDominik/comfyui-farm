@@ -369,6 +369,25 @@ function visible() {
   }).sort((a, b) => b.created_at - a.created_at);
 }
 
+// navigator.clipboard only exists on https:// pages (and localhost). The farm is plain http on
+// the studio network, so copy through a hidden text box instead; if the browser refuses that
+// too, show the text selected, ready for Ctrl+C.
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back below */ }
+  }
+  const ta = Object.assign(document.createElement("textarea"), { value: text, readOnly: true });
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  ta.remove();
+  if (!ok) window.prompt("Copy with Ctrl+C:", text);
+  return ok;
+}
+
 function pathRow(label, path) {
   return path ? `<div>${label}</div><div class="path"><code>${esc(path)}</code><button class="small" data-copy="${esc(path)}">copy</button></div>` : "";
 }
@@ -446,7 +465,7 @@ const videos = new Map();
 $("#jobs").addEventListener("click", async e => {
   const t = e.target;
   try {
-    if (t.dataset.copy) { await navigator.clipboard.writeText(t.dataset.copy); t.textContent = "copied"; setTimeout(() => t.textContent = "copy", 1200); return; }
+    if (t.dataset.copy) { if (await copyText(t.dataset.copy)) { t.textContent = "copied"; setTimeout(() => t.textContent = "copy", 1200); } return; }
     if (t.dataset.cancel) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.cancel}`, { method: "DELETE" })); render(); return; }
     if (t.dataset.retry) { const j = await api(`/api/v1/jobs/${t.dataset.retry}/retry`, { method: "POST" }); upsert(j); state.open.add(j.id); render(); return; }
     if (t.dataset.retryfailed) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.retryfailed}/retry-failed`, { method: "POST" })); await loadBatches(t.dataset.retryfailed); return; }
