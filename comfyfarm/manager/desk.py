@@ -172,9 +172,20 @@ class Desk:
     # ================================================================ messages
     def ping(self, msg: dict) -> dict:
         """`comfyfarm agent --check`: the manager's version, and the storage an agent must see."""
-        return {"manager": build(), "lease_seconds": self.lease_seconds,
-                "storage": [m.posix for m in self.cfg.paths.mappings],
+        return {"manager": build(), "lease_seconds": self.lease_seconds, "storage": self._storage_roots(),
                 "known": (msg.get("name") or "") in self.agents}
+
+    def _storage_roots(self) -> list[str]:
+        """The storage agents are sent paths on: one studio path per storage area. Other names
+        for the same storage (/shows for /rdo/shows) never reach agents, since jobs carry the
+        first mapping's studio path."""
+        seen, roots = set(), []
+        for m in self.cfg.paths.mappings:
+            local = P.normalize(m.windows).rstrip("/").lower()
+            if local not in seen:
+                seen.add(local)
+                roots.append(m.posix)
+        return roots
 
     def hello(self, msg: dict) -> dict:
         name = str(msg.get("name") or "").strip()

@@ -604,6 +604,12 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.job(job["id"])["outputs"]["frames"], 3)
         self.until(lambda: not a.manager_down and a.held == {}, what="manager back")
 
+    def test_agent_check_lists_each_storage_once(self):
+        from comfyfarm.config import PathMapping
+        self.cfg.paths.mappings.append(PathMapping(posix="/shows", windows=f"{self.root}/shows"))   # another name
+        self.cfg.paths.mappings.append(PathMapping(posix="/rdo/bank", windows=f"{self.root}/bank"))
+        self.assertEqual(self.desk.ping({"name": "gpu1"})["storage"], ["/rdo/shows", "/rdo/bank"])
+
     def test_a_check_in_waits_for_work(self):
         self.ready(self.agent())
 
