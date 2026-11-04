@@ -21,6 +21,7 @@ from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
 from .desk import Desk
 from .events import EventBus
+from . import share
 from .farm import Farm, FarmError
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +65,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await asyncio.to_thread(share.publish, cfg)   # manager.json and the client, in share.dir
         await farm.start()
         for a in agents:
             a.start()
@@ -230,6 +232,10 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             raise HTTPException(401, "Unknown agent token (agents.token in the manager's config.yaml).")
 
     # async: the desk runs on the event loop, with the jobs' state.
+    @app.post("/api/v1/agent/ping", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_ping(request: Request):
+        return desk.ping(await request.json())
+
     @app.post("/api/v1/agent/hello", include_in_schema=False, dependencies=[Depends(agent_auth)])
     async def agent_hello(request: Request):
         return desk.hello(await request.json())

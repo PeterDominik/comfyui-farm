@@ -1,5 +1,6 @@
-# ComfyFarm menu and panel. This folder and ../comfyfarm_client.py must be on NUKE_PATH,
-# and COMFYFARM_URL set (or typed once into the panel's Farm field).
+# ComfyFarm menu and panel. This folder must be on NUKE_PATH (init.py adds the client); the
+# farm's address comes from the shared folder's manager.json, $COMFYFARM_URL, or the
+# panel's Farm field.
 import nuke
 
 import comfyfarm_nuke

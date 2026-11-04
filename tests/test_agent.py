@@ -295,6 +295,20 @@ class AgentTests(unittest.TestCase):
                          ("gpu1", True, True, 0, "cuda:0 fake"))
         self.assertEqual(self.farm.online_workers(), 1)
 
+    @unittest.skipIf(os.name == "nt", "read permissions are set on Linux; on Windows the share decides")
+    def test_outputs_are_readable_by_everyone(self):
+        old = os.umask(0o077)                                  # an agent or ComfyUI with a private umask
+        self.addCleanup(os.umask, old)
+        a = self.ready(self.agent())
+        job = self.submit()
+        done = self.finish(a, job["id"], self.dispatched(a, job))
+        self.assertEqual(done["status"], "done", done["error"])
+        out = Path(done["output_dir"])
+        self.assertEqual(out.stat().st_mode & 0o555, 0o555)
+        self.assertEqual(out.parent.stat().st_mode & 0o555, 0o555)   # folders the agent created
+        for f in out.iterdir():
+            self.assertEqual(f.stat().st_mode & 0o444, 0o444, f.name)
+
     def test_an_agent_sees_the_job_through_its_own_paths(self):
         # gpu2 sees show storage under another folder (like a Windows machine's UNC path).
         link_dir(Path(self.root, "shows"), Path(self.root, "other/mount/shows"))

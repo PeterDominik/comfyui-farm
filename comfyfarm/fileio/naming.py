@@ -24,12 +24,14 @@ def output_root(cfg: PathsConfig, show: str | None, seq: str | None = None, shot
         raise SequenceError(
             "Couldn't work out the show from the input path. Give an Output folder instead."
         )
-    return normalize(cfg.output_root.format(show=show or "", seq=seq or "", shot=shot or "")).rstrip("/")
+    # A studio path (/rdo/shows/...) or this machine's own (a UNC path): either works.
+    root = to_farm(cfg.output_root.format(show=show or "", seq=seq or "", shot=shot or ""), cfg.mappings)
+    return normalize(root).rstrip("/")
 
 
 def default_output_root_display(cfg: PathsConfig) -> str:
     """The config default as artists see it, e.g. /rdo/shows/{show}/.../renders."""
-    root = normalize(cfg.output_root).rstrip("/")
+    root = to_farm(normalize(cfg.output_root), cfg.mappings).rstrip("/")
     return to_posix(root, cfg.mappings) or root
 
 

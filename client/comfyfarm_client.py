@@ -3,9 +3,13 @@ or any Python 3.7+ without installing anything. Grab it from the farm itself:
 
     http://<farm-machine>:8000/client.py
 
-Settings (environment variables):
-    COMFYFARM_URL      e.g. http://comfyfarm01:8000   (required)
-    COMFYFARM_API_KEY  only if the farm is configured with API keys
+The farm's address: the first of
+    COMFYFARM_URL            e.g. http://comfyfarm01:8000
+    COMFYFARM_ADDRESS_FILE   a manager.json the manager writes (share.dir in its config.yaml)
+    ../manager.json          next to the folder this file is in: run from the farm's shared
+                             folder (<share>/client/comfyfarm_client.py), it finds the
+                             manager wherever it runs
+COMFYFARM_API_KEY: only if the farm is configured with API keys.
 
 From Python:
     import comfyfarm_client as farm
@@ -52,10 +56,42 @@ def set_url(url: str | None) -> None:
     _url_override = (url or "").strip().rstrip("/") or None
 
 
+ADDRESS_FILE = "manager.json"
+
+
+def address_file() -> str | None:
+    """The manager.json this client reads its farm address from, if there is one."""
+    path = os.environ.get("COMFYFARM_ADDRESS_FILE")
+    if path:
+        return path
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(os.path.dirname(here), ADDRESS_FILE)
+    return path if os.path.isfile(path) else None
+
+
+_from_file = {"path": None, "mtime": None, "url": None}
+
+
+def _url_from_file() -> str | None:
+    path = address_file()
+    if not path:
+        return None
+    try:
+        mtime = os.stat(path).st_mtime
+        if (path, mtime) != (_from_file["path"], _from_file["mtime"]):   # re-read when it changes
+            with open(path, encoding="utf-8") as fh:
+                url = str(json.load(fh).get("url") or "").rstrip("/") or None
+            _from_file.update(path=path, mtime=mtime, url=url)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return _from_file["url"]
+
+
 def _base() -> str:
-    url = _url_override or os.environ.get("COMFYFARM_URL", "").rstrip("/")
+    url = _url_override or os.environ.get("COMFYFARM_URL", "").rstrip("/") or _url_from_file()
     if not url:
-        raise FarmError("Set COMFYFARM_URL to the farm address, e.g. http://comfyfarm01:8000")
+        raise FarmError("No farm address: run the client from the farm's shared folder (where the manager "
+                        "writes manager.json), or set COMFYFARM_URL, e.g. http://comfyfarm01:8000")
     return url
 
 

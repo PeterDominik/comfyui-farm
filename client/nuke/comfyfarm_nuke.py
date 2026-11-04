@@ -1,7 +1,8 @@
 """Nuke side of the ComfyUI farm: the panel's helpers and the menu commands.
 
-Install (once, for everyone): put this folder and ../comfyfarm_client.py on NUKE_PATH
-and set COMFYFARM_URL (e.g. http://comfyfarm01:8000). menu.py adds a ComfyFarm menu
+Install: add this folder to NUKE_PATH from the farm's shared folder (each artist once:
+`python3 <share>/client/nuke/install_for_me.py`); the farm's address comes from the
+manager.json next to it, or $COMFYFARM_URL. menu.py adds a ComfyFarm menu
 and the ComfyFarm panel (also under Windows > Custom, and it can be saved in a
 workspace layout like any other panel).
 

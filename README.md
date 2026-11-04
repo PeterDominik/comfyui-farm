@@ -15,7 +15,7 @@ ComfyUI 127.0.0.1:8188            never exposed
 ```
 
 One machine can run all of it (`standalone`), or the manager runs on one machine and an
-agent on each GPU machine, Linux or Windows (*Several machines* below).
+agent on each GPU machine, Linux or Windows (*Deploying* below).
 
 - **Queue owned by the manager** (the gateway). Jobs survive ComfyUI crashes and restarts
   of the manager or an agent. Dispatch order is priority first, then whoever has the
@@ -66,94 +66,196 @@ agent on each GPU machine, Linux or Windows (*Several machines* below).
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
-| `scripts/` | Windows setup, services (NSSM), firewall, update |
+| `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
 | `tools/mock_comfyui.py` | Fake ComfyUI for testing without a GPU |
 | `tests/` | Unit tests + end-to-end tests against the mock |
 
-## Install on the Windows farm machine
+## Deploying
 
-Needs **Git for Windows**, **Python 3.10+** (python.org, tick *Add to PATH*), and for the
-services, **[NSSM](https://nssm.cc)**. The tools for EXR and movie inputs come with the
-Python requirements, so `setup.ps1` installs them into `.venv`: `oiiotool` (OpenImageIO,
-with OpenColorIO) and `ffmpeg` (imageio-ffmpeg). ComfyUI must have the custom node packs
-the workflows use: VideoHelperSuite, WAS Node Suite, Easy-Use and ComfyUI-LTXVideo, plus
+The farm runs on one machine (`standalone`: the manager plus an agent per local ComfyUI),
+or as a **manager** on one machine and an **agent** on each GPU machine, Linux or
+Windows. Nothing below needs sudo or admin rights, except the optional Windows services.
+
+Every machine runs from its own git checkout of this repo, on local disk, at the same
+commit. ComfyUI needs the custom node packs the workflows use: VideoHelperSuite, WAS Node
+Suite, Easy-Use and ComfyUI-LTXVideo, plus
 [ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord) with `chord_v1.safetensors` in
 `ComfyUI/models/checkpoints` for `chord_pbr`. CHORD's weights are under Ubisoft's
 research-only licence. The farm's own nodes (`comfyui_nodes/`, e.g. *ComfyFarm Save
-Image*) come with this repo; `setup.ps1 -ComfyUIDir` links them into ComfyUI.
+Image*) come with this repo; the setup scripts link them into ComfyUI (`--comfyui` on
+Linux, `-ComfyUIDir` on Windows). The tools for EXR and movie inputs come with the Python
+requirements: `oiiotool` (OpenImageIO, with OpenColorIO) and `ffmpeg` (imageio-ffmpeg).
+
+| Script | What |
+|---|---|
+| `deploy/linux/setup.sh manager\|agent` | Conda env (Python 3.12, your Miniconda), requirements, `config.yaml` or `agent.yaml` from its example, the check |
+| `deploy/linux/farmctl.sh start\|stop\|restart\|status\|ensure\|log\|check manager\|agent` | Runs it in the background, with the pipeline's Python settings (`PYTHONPATH`, rez) removed |
+| `deploy/linux/install_cron.sh manager\|agent` | Your crontab starts it at boot and checks it every minute (`--remove` to undo) |
+| `deploy\windows\setup.ps1 [-Agent]` | `.venv`, requirements, `agent.yaml` (`-Agent`) or `config.yaml`, the check |
+| `deploy\windows\install_startup.ps1` | Starts the agent when you log in, and again if it exits (Startup folder, no admin; `-Stop`, `-Remove`) |
+| `deploy\windows\install_services.ps1` | `standalone` and ComfyUI as services (NSSM, admin) |
+| `deploy\windows\run_gateway.bat`, `update.ps1`, `open_firewall.ps1` | `standalone` in a console; update; open port 8000 (admin) |
+
+### The manager (Linux)
+
+On local disk (here `/mntx/raid/pdominik`), with Miniconda already there:
+
+```bash
+git clone https://github.com/PeterDominik/comfyui-farm.git /mntx/raid/pdominik/comfyui-farm
+cd /mntx/raid/pdominik/comfyui-farm
+deploy/linux/setup.sh manager --conda /mntx/raid/pdominik/miniconda3
+```
+
+Then edit `config.yaml`:
+
+- `share.dir: /rdo/bank/comfy_farm`: the shared folder (below);
+- `agents.token`: a long random string, e.g. `python3 -c "import secrets; print(secrets.token_hex(16))"`;
+- `paths.mappings: [{posix: /rdo/shows}]`: this machine sees show storage as it is;
+- `paths.output_root: /rdo/shows/{show}/_project_ref/_cg/comfyui/renders`;
+- `workers: []`: agents check in instead.
+
+```bash
+deploy/linux/farmctl.sh check manager     # workflows, tools, OCIO, storage, the shared folder
+deploy/linux/farmctl.sh start manager     # then open http://<this machine>:8000
+deploy/linux/install_cron.sh manager      # keep it running: at boot, and checked every minute
+```
+
+The database (`data/`) and logs (`logs/comfyfarm.log`, console output in
+`logs/manager.out`) stay in the checkout. If the workstation's firewall blocks port 8000,
+agents and artists can't reach it: that's the one thing that may need IT.
+
+**The shared folder** (`share.dir`) is how everyone finds the manager without a machine
+name in any config. At every start the manager writes `manager.json` (its address) there and
+copies the repo's `client/` into it, so the client artists run always matches the manager.
+If the manager moves to another machine, start it there: artists and agents follow.
+
+```
+/rdo/bank/comfy_farm/
+  manager.json       {"url": "http://<manager>:8000", "version": ..., ...}
+  client/            comfyfarm_client.py and nuke/ (the panel)
+```
+
+### An agent on a Linux GPU machine
+
+```bash
+git clone https://github.com/PeterDominik/comfyui-farm.git <local disk>/comfyui-farm
+cd <local disk>/comfyui-farm
+deploy/linux/setup.sh agent --conda <local disk>/miniconda3 --comfyui <ComfyUI folder>
+```
+
+Edit `agent.yaml` (see `agent.example.yaml`):
+
+- `name`;
+- `manager: /rdo/bank/comfy_farm/manager.json` (or the manager's URL), and `token`;
+- `comfyui` and `max_inflight` (2 on a 32 GB card);
+- `paths.mappings`: none needed where `/rdo/shows` is mounted as is;
+- `convert.scratch_dir`: on local disk;
+- `comfyui_launch` (optional): how to start ComfyUI. The agent then starts ComfyUI when it
+  isn't running and starts it again if it dies. Stopping or restarting the agent leaves
+  ComfyUI and its jobs running.
+
+Then:
+
+```bash
+deploy/linux/farmctl.sh check agent       # manager + token, ComfyUI and its nodes, storage, scratch, tools
+deploy/linux/farmctl.sh start agent
+deploy/linux/install_cron.sh agent
+```
+
+The agent shows up on the dashboard's worker list once it has checked in and its
+ComfyUI's nodes are checked. Logs: `logs/agent-<name>.log`; ComfyUI's output, when the
+agent starts it, `logs/comfyui-<name>.log`.
+
+### An agent on a Windows GPU machine
+
+Needs **Git for Windows** and **Python 3.10+** (python.org, tick *Add to PATH*).
 
 ```powershell
-git clone https://github.com/<org>/comfyui-farm.git C:\comfyfarm
+git clone https://github.com/PeterDominik/comfyui-farm.git D:\comfyfarm
+cd D:\comfyfarm
+powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -Agent -ComfyUIDir "C:\ComfyUI_windows_portable"
+```
+
+Edit `agent.yaml`:
+
+- `name`;
+- `manager: http://<manager>:8000` (or the shared folder's `manager.json` as this
+  machine sees it), and `token`;
+- `paths.mappings: [{posix: /rdo/shows, windows: //rodeofx.com/smb/shows}]`;
+- `convert.scratch_dir`;
+- `comfyui_launch`, optionally, e.g.
+  `command: [C:/ComfyUI_windows_portable/python_embeded/python.exe, -s, ComfyUI/main.py, --windows-standalone-build, --disable-auto-launch]`
+  with `cwd: C:/ComfyUI_windows_portable`.
+
+Then:
+
+```powershell
+.venv\Scripts\python.exe -m comfyfarm agent --check
+powershell -ExecutionPolicy Bypass -File deploy\windows\install_startup.ps1 -StartNow
+```
+
+It starts whenever you log in (locking the screen is fine, logging out stops it) and
+restarts the agent if it exits. `install_startup.ps1 -Stop` stops it; `-Remove` stops it
+starting at logon.
+
+### Artists (Nuke)
+
+Each artist runs this once, then restarts Nuke:
+
+```bash
+python3 /rdo/bank/comfy_farm/client/nuke/install_for_me.py
+```
+
+It adds one line to their `~/.nuke/init.py` (`--remove` takes it out again). The panel
+finds the manager through `manager.json` next to the client. A `COMFYFARM_URL` in
+someone's environment wins, and an address typed into the panel's *Farm* field applies
+until Nuke closes. Later, a Rez package can put `/rdo/bank/comfy_farm/client/nuke` on
+`NUKE_PATH` instead.
+
+### One machine (standalone, Windows)
+
+The whole farm on one Windows machine, as before: the manager plus an agent for each
+ComfyUI in `config.yaml`'s `workers:`.
+
+```powershell
+git clone https://github.com/PeterDominik/comfyui-farm.git C:\comfyfarm
 cd C:\comfyfarm
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
+powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
+deploy\windows\run_gateway.bat          # then open http://localhost:8000
 ```
 
-`setup.ps1` does the following:
-- creates `.venv` and installs the requirements;
-- copies `config.example.yaml` to `config.yaml` (git-ignored, so `git pull` never
-  overwrites it);
-- links `comfyui_nodes\comfyfarm_nodes` into ComfyUI's `custom_nodes` as a junction, so
-  `git pull` updates the nodes too (restart ComfyUI after a change);
-- runs the preflight check. Review `config.yaml`: path mappings, output layout, workers, optional API keys.
-
-Try it in a console first:
+As services, with admin rights and [NSSM](https://nssm.cc):
 
 ```powershell
-scripts\run_gateway.bat          # then open http://localhost:8000
-```
-
-Then make it permanent (as Administrator):
-
-```powershell
-# Gateway as a service; ComfyUI keeps running however you run it now:
-scripts\install_services.ps1 -User "DOMAIN\svc_account"
-# ...or both as services:
-scripts\install_services.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable" -User "DOMAIN\svc_account"
-scripts\open_firewall.ps1        # TCP 8000, domain network only
+deploy\windows\install_services.ps1 -User "DOMAIN\svc_account"          # ComfyUI keeps running as you run it now
+deploy\windows\install_services.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable" -User "DOMAIN\svc_account"
+deploy\windows\open_firewall.ps1        # TCP 8000, domain network only
 ```
 
 > **Service account.** ComfyUI reads plates from, and writes renders to, the show share.
 > Services running as LocalSystem usually can't reach it, so use a domain account with
-> access to both (`-User`). If ComfyUI stays in your own logged-in session, it uses
-> your access.
+> access to both (`-User`).
 
 > **Keep ComfyUI on localhost.** Remove `--listen` from its launch line if you added it.
-> Only the gateway should talk to it.
+> Only its agent should talk to it.
 
 ### Updating
 
-```powershell
-scripts\update.ps1               # git pull, pip install, preflight, restart service
+Run the same commit everywhere: the manager logs a warning when an agent runs another
+version, and `/api/v1/workers` lists each agent's `agent_version`. On each machine:
+
+```bash
+git pull && deploy/linux/setup.sh manager|agent && deploy/linux/farmctl.sh restart manager|agent
 ```
 
-Queued and running jobs carry on across the restart.
+```powershell
+git pull; deploy\windows\setup.ps1 -Agent; deploy\windows\install_startup.ps1 -Stop -StartNow
+```
 
-## Several machines: manager and agents
+Queued and running jobs carry on across restarts of either. Restart ComfyUI after an
+update that changed `comfyui_nodes/`. (`standalone` with services: `deploy\windows\update.ps1`.)
 
-The farm splits into a **manager** (queue, API, dashboard: one machine) and an **agent** on
-each GPU machine (its ComfyUI, input conversion, writing the outputs). `standalone` runs
-both in one process, as above. To spread them over machines:
-
-1. **The manager.** On the manager machine (Linux or Windows), with `config.yaml` as above
-   and `agents.token` set to a long random string:
-
-   ```bash
-   python -m comfyfarm manager
-   ```
-
-   `workers:` isn't used in this mode: agents check in instead.
-2. **An agent on each GPU machine.** The same repo and requirements, ComfyUI with the node
-   packs (see *Install*), and `agent.yaml` copied from `agent.example.yaml`: the machine's
-   name, the manager's address and token, how it sees show storage, and its scratch folder.
-
-   ```bash
-   python -m comfyfarm agent
-   ```
-
-   It joins the worker list as soon as it has checked in and the manager has checked its
-   ComfyUI's node definitions against the workflows.
-
-How they work together:
+### How the manager and agents work together
 
 - **Agents only ever call the manager** (`/api/v1/agent/...`), so GPU machines need no
   open port and the manager needs no list of them. An agent checks in every few seconds;
@@ -164,11 +266,12 @@ How they work together:
 - **Paths travel as studio paths** (`/rdo/shows/...`) and each machine maps them its own
   way (`paths.mappings` in its config), so Linux and Windows workers mix. Inputs are
   converted on the agent that runs the job, in its own scratch folder.
+- **Everything the farm writes is readable by everyone:** on Linux, agents add read
+  permission for all to the output files and folders, whatever ComfyUI's umask. On
+  Windows, the share's permissions apply.
 - **Restarts:** a restarted agent follows its jobs again in its ComfyUI's queue and
   history. While the manager is down, agents finish what they hold and report it when the
   manager is back.
-- **Run the same commit everywhere.** The manager logs a warning when an agent runs
-  another version; `/api/v1/workers` lists each agent's `agent_version`.
 
 ## Using it
 
@@ -205,20 +308,12 @@ without a client update. It shows the same live destination line, and it has a j
 Nuke stays usable while jobs run, and a Read node for each finished job is created next to
 its source.
 
-**Install once (pipeline):**
-
-1. Put the repo's `client/` folder (`comfyfarm_client.py` plus `nuke/`) somewhere every
-   workstation can read, e.g. a pipeline tools share. A git checkout works too.
-2. Add `<that>/client/nuke` to `NUKE_PATH`. Its `init.py` makes `../comfyfarm_client.py`
-   importable, and its `menu.py` adds the *ComfyFarm* menu and the panel.
-3. The farm address comes from `client/nuke/init.py` (`http://wrk59467w:8000`), so
-   artists don't need to set anything. If the farm moves, change it there. A
-   `COMFYFARM_URL` already set in someone's environment wins. An address typed into the
-   panel's *Farm* field applies until Nuke closes.
+**Install:** each artist runs `python3 /rdo/bank/comfy_farm/client/nuke/install_for_me.py`
+once and restarts Nuke (*Deploying → Artists*). The manager keeps that copy of the client
+up to date, and the panel finds the manager through the `manager.json` next to it.
 
 The panel works in Nuke 13 to 15 (PySide2) and Nuke 16+ (PySide6), and needs nothing
-installed: the client is standard library only. `NUKE_PATH` is read when Nuke starts, so
-artists restart Nuke after step 2.
+installed: the client is standard library only.
 
 **Artist workflow:**
 
@@ -426,7 +521,7 @@ tiles than the manifest's `textures.batch` (4 for `chord_pbr`) is submitted as a
 ### OCIO
 
 The farm does two colour conversions, with the small OCIO config in this repo's `ocio/`
-folder. `git pull` (or `scripts\update.ps1`) updates it on the farm machine. They are a
+folder. `git pull` on each worker updates it (see *Deploying → Updating*). They are a
 Nuke Write and Read set to `default (color_picking)` in Rodeo's published show config
 (bri3's `config_1_0_v1`):
 
@@ -595,7 +690,9 @@ outputs:                       # nodes the gateway points at each job's versione
 ## Operations notes
 
 - **Logs:** `logs/comfyfarm.log` (rotating), plus `logs/*-service.log` for the services. Each
-  agent on another machine logs to `logs/agent-<name>.log` there.
+  agent on another machine logs to `logs/agent-<name>.log` there, and ComfyUI, when its agent
+  starts it, to `logs/comfyui-<name>.log`. `farmctl.sh` keeps console output in
+  `logs/manager.out` and `logs/agent.out`.
 - **State:** `data/comfyfarm.db` (SQLite). Back it up or delete it; nothing else depends on it.
 - **Restarts:**
   - Manager restarts mid-job: agents carry on, and report what finished meanwhile when it's back.
@@ -611,7 +708,8 @@ outputs:                       # nodes the gateway points at each job's versione
   in the workflow), not the plate's. Reformat in comp if you need plate res. If the model returns
   a different number of frames than it was given, the job carries a warning.
 - **Security:** with no API keys, anyone on the network can submit and cancel, and user
-  names are taken on trust. Set `auth.api_keys` to require keys.
+  names are taken on trust. Set `auth.api_keys` to require keys. Set `agents.token` so only
+  your agents can check in and take jobs.
 
 ## Development
 
@@ -639,8 +737,12 @@ renaming, preview, versioning), cancelling in each state, failures with tracebac
 input, a restart mid-job, a ComfyUI crash mid-job, and a missing node pack.
 `tests/test_e2e_agents.py` runs a `manager` and two `agent` processes, each with its own
 mock ComfyUI, one seeing show storage under another folder: jobs spread over both, inputs
-converted on the agent, cancels, an agent restarting, an agent gone for good, and the
-manager restarting.
+converted on the agent, cancels, an agent restarting, an agent gone for good, the
+manager restarting, an agent keeping its ComfyUI running, `agent --check`, and the shared
+client finding the manager. `tests/test_share.py` covers the shared folder and read
+permissions, `tests/test_agent_host.py` the ComfyUI launcher and `manager.json` lookup, and
+`tests/test_deploy.py` the deploy scripts (Linux scripts with stand-ins for conda, Python
+and crontab; on Windows, that every PowerShell script parses).
 
 `tests/test_nuke.py` covers the Nuke panel's logic and its Nuke helpers (with a stand-in
 `nuke` module), and the end-to-end suite drives the panel's logic against the gateway. The

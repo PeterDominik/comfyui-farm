@@ -3,10 +3,10 @@
   Allow the gateway port through Windows Firewall on the domain network only.
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\open_firewall.ps1
+  powershell -ExecutionPolicy Bypass -File deploy\windows\open_firewall.ps1
 .EXAMPLE
   # Restrict to the workstation subnets
-  powershell -ExecutionPolicy Bypass -File scripts\open_firewall.ps1 -RemoteAddress 10.20.0.0/16,10.30.0.0/16
+  powershell -ExecutionPolicy Bypass -File deploy\windows\open_firewall.ps1 -RemoteAddress 10.20.0.0/16,10.30.0.0/16
 #>
 #Requires -RunAsAdministrator
 param(

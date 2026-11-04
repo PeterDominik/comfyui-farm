@@ -223,11 +223,13 @@ def _oiio_spec(path: str):
     try:
         import OpenImageIO as oiio
         inp = oiio.ImageInput.open(path)
-        if inp:
-            try:
-                return inp.spec()
-            finally:
-                inp.close()
+        if not inp:
+            oiio.geterror()             # read it, or OpenImageIO prints it when Python exits
+            return None
+        try:
+            return inp.spec()
+        finally:
+            inp.close()
     except Exception:  # noqa: BLE001
         pass
     return None

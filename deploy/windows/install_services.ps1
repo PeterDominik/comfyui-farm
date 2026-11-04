@@ -5,11 +5,11 @@
 
 .EXAMPLE
   # Gateway only (ComfyUI keeps running in your own session):
-  powershell -ExecutionPolicy Bypass -File scripts\install_services.ps1 -User "RODEO\svc_comfy"
+  powershell -ExecutionPolicy Bypass -File deploy\windows\install_services.ps1 -User "RODEO\svc_comfy"
 
 .EXAMPLE
   # Gateway + ComfyUI portable:
-  powershell -ExecutionPolicy Bypass -File scripts\install_services.ps1 `
+  powershell -ExecutionPolicy Bypass -File deploy\windows\install_services.ps1 `
       -ComfyUIDir "C:\ComfyUI_windows_portable" -User "RODEO\svc_comfy"
 
 .NOTES
@@ -28,12 +28,12 @@ param(
     [string]$User = ""
 )
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
+$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # the repo
 
 $nssmExe = (Get-Command $Nssm -ErrorAction SilentlyContinue).Source
 if (-not $nssmExe) { throw "nssm.exe not found. Download it from https://nssm.cc and pass -Nssm <path>." }
 $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $venvPy)) { throw "Run scripts\setup.ps1 first." }
+if (-not (Test-Path $venvPy)) { throw "Run deploy\windows\setup.ps1 first." }
 $logDir = Join-Path $Root "logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -79,4 +79,4 @@ Start-Service $ServiceName
 $names = @($ServiceName)
 if ($ComfyUIDir) { $names += $ComfyServiceName }
 Get-Service -Name $names | Format-Table Name, Status, StartType
-Write-Host "Dashboard: http://$($env:COMPUTERNAME):8000  (open the firewall with scripts\open_firewall.ps1)"
+Write-Host "Dashboard: http://$($env:COMPUTERNAME):8000  (open the firewall with deploy\windows\open_firewall.ps1)"

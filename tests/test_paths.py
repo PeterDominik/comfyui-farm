@@ -38,6 +38,22 @@ class MappingTests(unittest.TestCase):
         with self.assertRaises(SequenceError):
             parse_input("/a/b.%d.png 20-10")
 
+    def test_a_machine_that_sees_the_studio_path_as_is(self):
+        same = PathMapping(posix="/rdo/shows")                     # a Linux manager or agent
+        self.assertEqual(same.windows, "/rdo/shows")
+        self.assertEqual(to_farm("/rdo/shows/xyz/a.png", [same]), "/rdo/shows/xyz/a.png")
+        self.assertEqual(to_posix("/rdo/shows/xyz/a.png", [same]), "/rdo/shows/xyz/a.png")
+        other = PathMapping.model_validate({"posix": "/rdo/shows", "local": "/mnt/shows"})   # mounted elsewhere
+        self.assertEqual(to_farm("/rdo/shows/xyz/a.png", [other]), "/mnt/shows/xyz/a.png")
+
+    def test_output_root_as_a_studio_path(self):
+        cfg = PathsConfig(mappings=MAP, output_root="/rdo/shows/{show}/_project_ref/_cg/comfyui/renders")
+        self.assertEqual(output_root(cfg, "xyz"), "//rodeofx.com/smb/shows/xyz/_project_ref/_cg/comfyui/renders")
+        self.assertEqual(default_output_root_display(cfg), "/rdo/shows/{show}/_project_ref/_cg/comfyui/renders")
+        unc = PathsConfig(mappings=MAP, output_root="//rodeofx.com/smb/shows/{show}/renders")   # as before
+        self.assertEqual(output_root(unc, "xyz"), "//rodeofx.com/smb/shows/xyz/renders")
+        self.assertEqual(default_output_root_display(unc), "/rdo/shows/{show}/renders")
+
     def test_frame_pattern(self):
         self.assertEqual(frame_pattern("{shot}_v{version:03d}.{frame:04d}.{ext}"), "{shot}_v{version:03d}.%04d.{ext}")
 

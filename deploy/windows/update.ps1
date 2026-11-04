@@ -2,11 +2,11 @@
 .SYNOPSIS
   Pull the latest version from GitHub, update dependencies, check, and restart the service.
 
-  powershell -ExecutionPolicy Bypass -File scripts\update.ps1
+  powershell -ExecutionPolicy Bypass -File deploy\windows\update.ps1
 #>
 param([string]$ServiceName = "ComfyFarm")
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
+$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # the repo
 Set-Location $Root
 
 $before = (git rev-parse HEAD).Trim()

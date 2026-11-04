@@ -1,5 +1,5 @@
 # The manager's settings. Copy to config.yaml (git ignores it) and edit for this machine.
-# scripts/setup.ps1 does the copy for you on first install.
+# The setup scripts (deploy/linux/setup.sh manager, deploy\windows\setup.ps1) do the copy for you.
 #
 #   python -m comfyfarm standalone   the manager plus an agent for each of `workers:` below,
 #                                    in one process (one farm machine; `serve` is the same)
@@ -22,6 +22,13 @@ workers:
     url: http://127.0.0.1:8188
     max_inflight: 2      # one running + one waiting, so the GPU never idles between jobs
 
+# A folder every artist and agent can read. At every start the manager writes its address
+# there (manager.json) and copies the Nuke client into it (client/): artists install the
+# panel from <dir>/client/nuke, and agents can use <dir>/manager.json as their `manager:`.
+share:
+  dir: ''              # e.g. /rdo/bank/comfy_farm; empty = none
+  url: ''              # the address written there; empty = http://<this machine's name>:<server.port>
+
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.
 agents:
@@ -29,7 +36,9 @@ agents:
                        # agent may check in: set one as soon as the manager is on the network
 
 paths:
-  # Linux workstations see /rdo/shows; this Windows machine sees the same share as UNC.
+  # Show storage as Linux workstations see it (posix) and as this machine sees it. A Windows
+  # machine sees it as the UNC share; a Linux manager that sees /rdo/shows as it is lists
+  # just `- posix: /rdo/shows`.
   mappings:
     - posix: /rdo/shows
       windows: //rodeofx.com/smb/shows
@@ -51,7 +60,8 @@ paths:
   # replaces output_root. Each job takes the first {version} not already used in that
   # folder (by files there, or by a queued job), so runs never overwrite each other.
   #   tokens: {root} {show} {seq} {shot} {tag} {version}
-  output_root: '//rodeofx.com/smb/shows/{show}/_project_ref/_cg/comfyui/renders'
+  # A studio path (mapped above) or this machine's own path.
+  output_root: '/rdo/shows/{show}/_project_ref/_cg/comfyui/renders'
   output_dir: '{root}/{shot}'
 
   # File names. {source} = input file name without frame number and extension,
