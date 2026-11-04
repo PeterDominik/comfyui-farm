@@ -1,7 +1,8 @@
 """An agent: runs the manager's jobs on one ComfyUI (protocol.py).
 
-It checks in with the manager and takes jobs from it, as many as its ComfyUI runs at once
-(max_inflight) plus one prepared ahead. For each job it:
+It checks in with the manager and takes the jobs the manager gives it: one for its GPU,
+and one prepared ahead when every GPU on the farm is busy (never more than its ComfyUI runs
+at once, max_inflight, plus one). For each job it:
 
 1. converts the input (EXR, movie, images larger than the workflow's work_resolution)
    into its own scratch folder,

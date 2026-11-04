@@ -34,6 +34,10 @@ share:
 agents:
   token: ''            # shared secret, the same as `token` in each agent.yaml. Empty = any
                        # agent may check in: set one as soon as the manager is on the network
+  # A job goes to the best machine that is free, so the biggest GPUs (most VRAM) get jobs
+  # first. To put machines first in another order, list their names (agent.yaml `name`),
+  # best first; the others follow by VRAM. e.g. [wrk59467w-5090, wrk1125l-3090]
+  order: []
 
 paths:
   # Show storage as Linux workstations see it (posix) and as this machine sees it (windows,

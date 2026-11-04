@@ -110,6 +110,8 @@ Then edit `config.yaml`:
 
 - `share.dir: /rdo/bank/comfy_farm`: the shared folder (below);
 - `agents.token`: a long random string, e.g. `python3 -c "import secrets; print(secrets.token_hex(16))"`;
+- `agents.order` (optional): agent names that get jobs first, best first. Without it the
+  biggest GPUs (VRAM) get jobs first;
 - `paths.mappings: [{posix: /rdo/shows}, {posix: /shows, local: /rdo/shows}]`: this machine sees show
   storage as it is, and `/shows/...` inputs are the same storage (the farm reports them as `/rdo/shows/...`);
 - `paths.output_root: /rdo/shows/{show}/_project_ref/_cg/comfyui/renders`;
@@ -262,8 +264,12 @@ update that changed `comfyui_nodes/`. (`standalone` with services: `deploy\windo
   open port and the manager needs no list of them. An agent checks in every few seconds;
   one that stops for `farm.lost_after_seconds` (5 minutes) has its jobs queued again for
   the others.
-- **An agent takes jobs when it has room:** `max_inflight` in its ComfyUI plus one being
-  converted ahead. Agents whose ComfyUI lacks a workflow's nodes or models don't get it.
+- **A job goes to the best free GPU:** machines rank by VRAM (or by `agents.order` in
+  the manager's config, then VRAM), and each job goes to the best machine that is free and
+  can run its workflow; the next job to the next machine. Only when every GPU is busy does
+  a machine get a second job, prepared ahead of its current one (the best machine first).
+  The Machines tab shows the order (#). Machines whose ComfyUI lacks a workflow's nodes or
+  models don't get it.
 - **Paths travel as studio paths** (`/rdo/shows/...`) and each machine maps them its own
   way (`paths.mappings` in its config), so Linux and Windows workers mix. Inputs are
   converted on the agent that runs the job, in its own scratch folder.
@@ -282,8 +288,8 @@ update that changed `comfyui_nodes/`. (`standalone` with services: `deploy\windo
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on. Click a
   row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
   (if any), *Run again* and *API JSON*.
-- **Machines:** each GPU machine: whether it takes jobs, its GPU and free VRAM, its jobs, versions,
-  and any workflow it can't run (a missing node pack or model) and why.
+- **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
+  free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model) and why.
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):

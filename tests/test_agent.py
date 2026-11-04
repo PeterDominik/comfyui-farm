@@ -24,7 +24,7 @@ from test_workflows import fake_object_info
 
 from comfyfarm.config import AgentConfig, Config
 from comfyfarm.manager.db import JobStore
-from comfyfarm.manager.desk import Desk
+from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm
 from comfyfarm.protocol import LinkError
@@ -49,8 +49,9 @@ class FakeComfy:
     """ComfyUI's HTTP API as the agent uses it, in memory. Tests move prompts along by
     hand: running/pending, history, websocket messages."""
 
-    def __init__(self, object_info: dict | None = None):
+    def __init__(self, object_info: dict | None = None, vram: int = 1):
         self.oi = dict(object_info or INSTALLED)
+        self.vram = vram
         self.prompts: dict[str, dict] = {}
         self.running: set[str] = set()
         self.pending: set[str] = set()
@@ -60,7 +61,7 @@ class FakeComfy:
 
     async def system_stats(self):
         return {"system": {"comfyui_version": "test"},
-                "devices": [{"name": "cuda:0 fake", "vram_total": 1, "vram_free": 1}]}
+                "devices": [{"name": "cuda:0 fake", "vram_total": self.vram, "vram_free": self.vram}]}
 
     async def object_info(self):
         return self.oi
@@ -206,6 +207,10 @@ class AgentTests(unittest.TestCase):
         a = Agent(cfg, FlakyLink(self.desk), client=comfy or FakeComfy())
         self.agents.append(a)
         return a
+
+    def gpu(self, name, gb, object_info=None):
+        """An agent taking jobs, on a GPU with this much VRAM."""
+        return self.ready(self.agent(name, comfy=FakeComfy(object_info, vram=gb * 2**30)))
 
     def ready(self, a):
         """Checked in, its ComfyUI up and its node definitions checked."""
@@ -541,17 +546,87 @@ class AgentTests(unittest.TestCase):
         self.wait(a._obey(reply))
         self.until(lambda: self.job(job["id"])["status"] == "dispatched")
 
-    def test_agents_take_what_they_have_room_for(self):
+    def test_a_second_job_only_when_every_gpu_is_busy(self):
         a = self.ready(self.agent("gpu1", max_inflight=2))
         b = self.ready(self.agent("gpu2", max_inflight=1))
         jobs = [self.submit() for _ in range(6)]
         self.beat(a)
         self.beat(b)
         by = {j["id"]: self.job(j["id"])["worker"] for j in jobs}
-        self.assertEqual(sorted(w or "" for w in by.values()), ["", "gpu1", "gpu1", "gpu1", "gpu2", "gpu2"])
+        self.assertEqual([by[j["id"]] for j in jobs], ["gpu1", "gpu2", "gpu1", "gpu2", None, None])
         self.until(lambda: a._in_comfy == 2 and b._in_comfy == 1, what="ComfyUI places taken")
-        statuses = sorted(self.job(j)["status"] for j, w in by.items() if w == "gpu1")
-        self.assertEqual(statuses, ["dispatched", "dispatched", "preparing"])   # one prepared ahead
+        statuses = sorted(self.job(j)["status"] for j, w in by.items() if w == "gpu2")
+        self.assertEqual(statuses, ["dispatched", "preparing"])   # one prepared ahead, waiting for ComfyUI
+
+    # ------------------------------------------------------------ which machine gets a job
+    def test_the_best_free_gpu_takes_the_job(self):
+        small, mid, big = self.gpu("small", 24), self.gpu("mid", 32), self.gpu("big", 96)
+        self.assertEqual({w["name"]: w["rank"] for w in self.desk.summaries()}, {"big": 1, "mid": 2, "small": 3})
+        got = []
+        for _ in range(6):
+            job = self.submit()
+            for a in (small, mid, big):        # the worst checks in first
+                self.beat(a)
+            got.append(self.job(job["id"])["worker"])
+        # One per GPU, best first; then, every GPU busy, one prepared ahead on each, best first.
+        self.assertEqual(got, ["big", "mid", "small", "big", "mid", "small"])
+        job = self.submit()
+        for a in (small, mid, big):
+            self.beat(a)
+        self.assertEqual(self.job(job["id"])["status"], "queued")   # no room: it waits
+
+    def test_collecting_outputs_leaves_the_gpu_free(self):
+        big, small = self.gpu("big", 96), self.gpu("small", 24)
+        first = self.submit()
+        self.dispatched(big, first)
+        self.store.transition(first["id"], ("dispatched",), status="postprocessing")
+        job = self.submit()
+        self.beat(small)
+        self.beat(big)
+        self.assertEqual(self.job(job["id"])["worker"], "big")
+
+    def test_agents_order_puts_machines_first(self):
+        self.cfg.agents.order = ["Small"]
+        small, big = self.gpu("small", 24), self.gpu("big", 96)
+        self.gpu("mid", 32)
+        self.assertEqual({w["name"]: w["rank"] for w in self.desk.summaries()}, {"small": 1, "big": 2, "mid": 3})
+        job = self.submit()
+        self.beat(big)
+        self.beat(small)
+        self.assertEqual(self.job(job["id"])["worker"], "small")
+
+    def test_identical_gpus_take_turns(self):
+        a, b = self.gpu("gpu-a", 32), self.gpu("gpu-b", 32)
+        got = []
+        for _ in range(2):
+            job = self.submit()
+            self.beat(a)
+            self.beat(b)
+            got.append(self.job(job["id"])["worker"])
+            self.store.transition(job["id"], ("preparing", "dispatched"), status="postprocessing")   # its GPU free again
+        self.assertEqual(got, ["gpu-a", "gpu-b"])
+
+    def test_a_better_gpu_that_cant_run_the_workflow_doesnt_hold_it_up(self):
+        missing = {k: v for k, v in INSTALLED.items() if k != "VHS_LoadImagesPath"}
+        self.gpu("big", 96, missing)
+        small = self.gpu("small", 24)
+        job = self.submit()
+        self.beat(small)
+        self.assertEqual(self.job(job["id"])["worker"], "small")
+        self.assertEqual(self.desk._passed, {})
+
+    def test_a_job_the_best_gpu_doesnt_come_for_goes_to_the_next(self):
+        self.gpu("big", 96)                    # checked in, but never comes for jobs
+        small = self.gpu("small", 24)
+        job = self.submit()
+        self.beat(small)
+        self.assertEqual(self.job(job["id"])["status"], "queued")   # big's: it waits for big
+        name, since = self.desk._passed[job["id"]]
+        self.assertEqual(name, "big")
+        self.desk._passed[job["id"]] = (name, since - STEAL_SECONDS)   # big hasn't come for it since
+        self.beat(small)
+        self.assertEqual(self.job(job["id"])["worker"], "small")
+        self.assertNotIn(job["id"], self.desk._passed)
 
     def test_jobs_go_only_to_agents_that_can_run_them(self):
         missing = {k: v for k, v in INSTALLED.items() if k != "VHS_LoadImagesPath"}

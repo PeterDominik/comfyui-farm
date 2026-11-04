@@ -150,6 +150,9 @@ class AgentsConfig(BaseModel):
     """Agents on other machines (`comfyfarm agent`) check in over HTTP."""
     # Shared secret agents send (their agent.yaml `token`). Empty = any agent may check in.
     token: str = ""
+    # The machines (agent names) that get jobs first, best first. Machines not listed come
+    # after them, the biggest GPU (VRAM) first. Empty = all by VRAM.
+    order: list[str] = []
 
 
 class FarmConfig(BaseModel):

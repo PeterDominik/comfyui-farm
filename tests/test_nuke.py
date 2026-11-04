@@ -272,7 +272,7 @@ class PanelLogic(unittest.TestCase):
     def test_machines(self):
         now = 10_000.0
         PM = self.panel.PanelModel
-        w = {"name": "wrk59467w-5090", "online": True, "connected": True, "checked": True, "inflight": 1,
+        w = {"name": "wrk59467w-5090", "rank": 1, "online": True, "connected": True, "checked": True, "inflight": 1,
              "max_inflight": 2, "last_seen": now - 2, "comfyui_version": "0.33.0", "agent_version": "0.1.0+590a1d1",
              "gpu": {"name": "cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync", "vram_free": 21 * 2**30,
                      "vram_total": 32 * 2**30}, "problems": {}}
@@ -280,8 +280,10 @@ class PanelLogic(unittest.TestCase):
                 {"id": "b", "name": "old", "worker": "wrk59467w-5090", "status": "done"},
                 {"id": "c", "name": "elsewhere", "worker": "wrk1125l-3090", "status": "running"}]
         self.assertEqual(PM.machine_row(w, jobs, now),
-                         ["wrk59467w-5090", "busy", "NVIDIA GeForce RTX 5090", "21.0 GB of 32.0 GB", "1/2",
+                         ["1", "wrk59467w-5090", "busy", "NVIDIA GeForce RTX 5090", "21.0 GB of 32.0 GB", "1/2",
                           "abc_0010", "0.33.0", "590a1d1", "just now"])
+        ranked = PM.machines([dict(w, name="c", rank=None), dict(w, name="b", rank=2), w])
+        self.assertEqual([m["name"] for m in ranked], ["wrk59467w-5090", "b", "c"])   # in the order they get jobs
         self.assertEqual(PM.machine_state(dict(w, inflight=0))[0], "ready")
         self.assertEqual(PM.machine_state(dict(w, online=False))[0], "offline")
         self.assertEqual(PM.machine_state(dict(w, checked=False))[0], "checking nodes")
