@@ -151,7 +151,7 @@ class AddressFileTests(unittest.TestCase):
             link = HttpLink(str(self.file), "tok")
             self.assertEqual(link.shown, f"? (from {self.file})")
             http = await link._client()
-            self.assertEqual((link.url, http.base_url), ("http://ws42:8000", "http://ws42:8000/api/v1/agent"))
+            self.assertEqual((link.url, str(http.base_url).rstrip("/")), ("http://ws42:8000", "http://ws42:8000/api/v1/agent"))
             self.assertIs(await link._client(), http)              # unchanged: same connection
             self.file.write_text(json.dumps({"url": "http://ws77:8000"}))
             os.utime(self.file, (5, 5))
