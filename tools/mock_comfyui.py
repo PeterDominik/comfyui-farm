@@ -1,9 +1,10 @@
 """A fake ComfyUI for testing the gateway without a GPU.
 
 Speaks the same HTTP + websocket API as ComfyUI (the parts the gateway uses), "runs"
-prompts node by node with progress events, actually lists the input folder the way
-VHS Load Images (Path) does, and writes placeholder PNG frames / an MP4 where the
-real save nodes would.
+prompts node by node with progress events, actually finds the input files the way
+ComfyFarm Load Images (or VHS Load Images (Path)) would, and writes placeholder PNG
+frames / an MP4 where the real save nodes would. Its farm nodes are this checkout's
+version, as a ComfyUI started after the last pull would report.
 
     python tools/mock_comfyui.py --port 8188 --output ./mock_output [--delay 0.05]
 
@@ -29,6 +30,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+from comfyfarm.fileio import farmnodes  # noqa: E402
 OUTPUT_CLASSES = {"PreviewAny", "VHS_VideoCombine", "Image Save", "ComfyFarmSaveImage", "easy clearCacheAll",
                   "SaveImage"}
 IMG_EXT = {".jpg", ".jpeg", ".png", ".ppm", ".bmp", ".pgm", ".tif", ".tiff", ".webp"}
@@ -55,6 +58,10 @@ def build_object_info() -> dict:
                     spec["input"]["required"].setdefault(base, [[], {}])[0].append(v)
                 else:
                     spec["input"]["required"].setdefault(base, ["*", {}])
+    mark = farmnodes.marker(farmnodes.version(REPO), REPO)
+    for ct in farmnodes.CLASSES:
+        oi.setdefault(ct, {"input": {"required": {"path": ["STRING", {}]}, "optional": {}},
+                           "output_node": ct in OUTPUT_CLASSES, "name": ct})["description"] = mark
     return oi
 
 
@@ -146,6 +153,8 @@ class Mock:
                         self.check()
                         await asyncio.sleep(self.delay)
                         await self.send("progress", {"value": step, "max": 8, "prompt_id": pid, "node": node_id}, cid)
+                elif ct == "ComfyFarmLoadImages":
+                    values["frames"] = len(farmnodes.input_files(inp["path"], inp.get("frames") or ""))
                 elif ct == "VHS_LoadImagesPath":
                     d = inp["directory"].strip()
                     names = [n for n in sorted(os.listdir(d))

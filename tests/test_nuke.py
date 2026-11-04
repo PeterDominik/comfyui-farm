@@ -288,6 +288,13 @@ class PanelLogic(unittest.TestCase):
         self.assertEqual(PM.machine_state(dict(w, online=False))[0], "offline")
         self.assertEqual(PM.machine_state(dict(w, checked=False))[0], "checking nodes")
         self.assertEqual(PM.machine_state(dict(w, problems={"chord_pbr": ["x"]}))[0], "can't run chord_pbr")
+        # After a pull changed the farm nodes: no new jobs until ComfyUI restarts.
+        for state, shown in (("waiting", "new farm nodes: restarting ComfyUI when idle"),
+                             ("manual", "farm nodes out of date")):
+            self.assertEqual(PM.machine_state(dict(w, farm_nodes={"state": state, "message": "m"}))[0], shown)
+        restarting = dict(w, online=False, farm_nodes={"state": "restarting", "message": "m"})
+        self.assertEqual(PM.machine_state(restarting)[0], "restarting ComfyUI (new farm nodes)")
+        self.assertEqual(PM.online([w, dict(w, farm_nodes={"state": "waiting"})]), 1)
         line = PM.summary({"queued": 3}, [w, dict(w, name="b", online=False), dict(w, problems={"x": ["y"]})], "peter")
         self.assertIn("2 of 3 machines online", line)      # one lacking a workflow's nodes still takes jobs
         self.assertIn("3 queued", line)

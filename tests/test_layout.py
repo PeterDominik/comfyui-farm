@@ -16,7 +16,8 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-FILEIO = ["errors", "paths", "tools", "media", "ocio", "inputs", "naming", "textures", "convert", "outputs", "scratch"]
+FILEIO = ["errors", "paths", "tools", "media", "ocio", "inputs", "naming", "textures", "convert", "outputs", "scratch",
+          "farmnodes", "wire"]
 WEB = ["fastapi", "starlette", "uvicorn", "httpx", "websockets"]
 
 

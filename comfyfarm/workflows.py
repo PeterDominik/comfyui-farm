@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from . import loaders as L
 from .fileio import textures as T
 
 log = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class ParamError(ValueError):
 
 
 # Param types the gateway wires in itself (no `targets` in the manifest):
-#   sequence       -> input image sequence: path mapping, frame range, loader skip/cap
+#   sequence       -> input image sequence: path mapping, frame range, the loader's inputs (loaders.py)
 #   output_folder  -> where results go; the gateway still adds <shot>/<shot>_<tag>_vNNN
 GATEWAY_TYPES = ("sequence", "output_folder")
 
@@ -193,6 +194,12 @@ class Workflow:
         return next((n for n, p in self.params.items() if p.type == "sequence"), None)
 
     @property
+    def loader(self) -> L.Loader | None:
+        """The adapter for the sequence param's loader node (None if it has none)."""
+        ld = self.sequence.get("loader") if self.sequence_param else None
+        return L.get(ld.get("class")) if ld else None
+
+    @property
     def output_folder_param(self) -> str | None:
         return next((n for n, p in self.params.items() if p.type == "output_folder"), None)
 
@@ -256,9 +263,17 @@ class Workflow:
             ld = self.sequence.get("loader")
             if not ld:
                 problems.append("sequence.loader missing")
+            elif L.get(ld.get("class")) is None:
+                problems.append(f"sequence.loader: class {ld.get('class')!r} isn't a loader the farm can fill "
+                                f"(use {', '.join(L.LOADERS)})")
             else:
-                for inp in ("directory", "skip_first_images", "image_load_cap"):
+                for inp in L.get(ld["class"]).inputs:
                     problems += self._check_target("sequence.loader", str(ld["node"]), ld.get("class"), inp)
+        for nid, n in self.template.items():
+            if n.get("class_type") in L.VIDEO_LOADERS:
+                problems.append(f"node {nid} '{self.title(nid)}' loads a movie ({n['class_type']}): farm workflows "
+                                f"only take images. Load frames with ComfyFarm Load Images; the farm extracts a "
+                                f"movie's frames itself")
         o = self.outputs
         if o.get("root_node"):
             r = o["root_node"]
@@ -355,10 +370,7 @@ class Workflow:
             if pn:
                 rng = f" {seq.first}-{seq.last}" if seq.first is not None else ""
                 prompt[str(pn["node"])]["inputs"][pn["input"]] = seq.farm_path + rng
-            ld = prompt[str(self.sequence["loader"]["node"])]["inputs"]
-            ld["directory"] = seq.load_dir or seq.directory
-            ld["skip_first_images"] = seq.skip
-            ld["image_load_cap"] = seq.cap
+            self.loader.fill(prompt[str(self.sequence["loader"]["node"])]["inputs"], seq)
         o = self.outputs
         if out_dir:
             if o.get("root_node"):

@@ -4,15 +4,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from comfyfarm.fileio import farmnodes
 from comfyfarm.fileio.inputs import Sequence
 from comfyfarm.workflows import ParamError, Target, Workflow, WorkflowRegistry, fit_to_options
 
-WF_DIR = Path(__file__).resolve().parent.parent / "workflows"
+REPO = Path(__file__).resolve().parent.parent
+WF_DIR = REPO / "workflows"
 
 
 def fake_object_info(template: dict) -> dict:
-    """object_info that accepts exactly what the template uses."""
-    oi = {}
+    """object_info that accepts exactly what the template uses, with this checkout's farm
+    nodes (as a ComfyUI started after the last pull has them)."""
+    mark = farmnodes.marker(farmnodes.version(REPO), REPO)
+    oi = {c: {"input": {"required": {"path": ["STRING", {}]}}, "output_node": False, "description": mark}
+          for c in farmnodes.CLASSES}
     for node in template.values():
         spec = oi.setdefault(node["class_type"], {"input": {"required": {}}, "output_node": False})
         for k, v in node["inputs"].items():
@@ -122,8 +127,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(p["5516:4832"]["inputs"]["noise_seed"], 42)
         self.assertEqual(p["9107"]["inputs"]["fps"], 24)
         self.assertEqual(p["5548:5026"]["inputs"]["resize_type.shorter_size"], 1088)
-        ld = p["9104"]["inputs"]
-        self.assertEqual((ld["directory"], ld["skip_first_images"], ld["image_load_cap"]), ("//srv/shows/xyz/hi/", 3, 10))
+        self.assertEqual(p["9104"]["inputs"], {"path": "//srv/shows/xyz/hi/abc_0010.%04d.png", "frames": "1001-1010"})
         self.assertEqual(p["9109"]["inputs"]["output_path"], "//srv/out/abc_0010_alpha_v001")
         self.assertEqual(p["9109"]["inputs"]["filename_prefix"], "abc_0010_alpha_raw")
         self.assertEqual(p["9094"]["inputs"]["value"], "//srv/shows/xyz/hi/abc_0010.%04d.png 1001-1010")
@@ -141,8 +145,32 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any("not available for unet_name" in p for p in self.wf.check_object_info(broken)))
         # Missing node pack
         broken = copy.deepcopy(oi)
-        del broken["VHS_LoadImagesPath"]
-        self.assertTrue(any("VHS_LoadImagesPath is not installed" in p for p in self.wf.check_object_info(broken)))
+        del broken["LTXPadFrames"]
+        self.assertTrue(any("LTXPadFrames is not installed (missing custom node pack?)" in p
+                            for p in self.wf.check_object_info(broken)))
+        del broken["ComfyFarmLoadImages"]                    # the farm's own: comes with this repo
+        self.assertTrue(any("ComfyFarmLoadImages is not installed. It comes with this repo" in p
+                            for p in self.wf.check_object_info(broken)))
+
+    def test_loaders_the_farm_can_fill(self):
+        for name in ("ltx25_alpha_gen", "chord_pbr"):          # the farm's own loader
+            wf = Workflow(WF_DIR / name)
+            self.assertEqual((wf.loader.cls, wf.loader.lists_folder), ("ComfyFarmLoadImages", False))
+        with tempfile.TemporaryDirectory() as d:
+            wf = tiny_workflow(Path(d) / "tiny")                 # VHS: downloaded workflows still work
+            self.assertEqual((wf.problems, wf.loader.lists_folder), ([], True))
+            wf.sequence["loader"]["class"] = "LoadImage"
+            self.assertIn("sequence.loader: class 'LoadImage' isn't a loader the farm can fill "
+                          "(use ComfyFarmLoadImages, VHS_LoadImagesPath)", wf.static_check())
+
+    def test_movie_loaders_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf = tiny_workflow(Path(d) / "tiny")
+            wf.template["9"] = {"class_type": "VHS_LoadVideoPath", "inputs": {"video": "x.mov"},
+                                "_meta": {"title": "Load plate"}}
+            self.assertIn("node 9 'Load plate' loads a movie (VHS_LoadVideoPath): farm workflows only take images. "
+                          "Load frames with ComfyFarm Load Images; the farm extracts a movie's frames itself",
+                          wf.static_check())
 
     def test_output_folder_manifest_rules(self):
         wf = Workflow(WF_DIR / "ltx25_alpha_gen")

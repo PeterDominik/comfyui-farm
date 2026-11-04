@@ -5,12 +5,16 @@ no ComfyUI the launcher started is still running, it starts one: at once when th
 starts, else after `restart_after` seconds (longer after a start that died quickly). The
 ComfyUI it starts runs on its own (its own session/process group), logging to
 logs/comfyui-<name>.log, so stopping or restarting the agent leaves it and its jobs
-running; its pid is kept in logs/comfyui-<name>.pid for the next agent to find."""
+running; its pid is kept in logs/comfyui-<name>.pid for the next agent to find.
+
+restart() stops that ComfyUI and starts it again: the agent does it when ComfyUI runs
+older farm nodes than the checkout (ComfyUI loads nodes only at startup)."""
 
 from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -59,6 +63,24 @@ def pid_alive(pid: int) -> bool:
     except PermissionError:
         return True                                       # someone else's: it's running
     return True
+
+
+def stop_process(pid: int, force: bool = False) -> None:
+    """Stop a ComfyUI the launcher started, with whatever it started itself."""
+    try:
+        if os.name == "nt":
+            # A detached console process has no window to close: it can only be ended.
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30)
+            if force and pid_alive(pid):
+                os.kill(pid, signal.SIGTERM)              # TerminateProcess
+        else:
+            sig = signal.SIGKILL if force else signal.SIGTERM
+            try:
+                os.killpg(pid, sig)                       # its own session and group (start_new_session)
+            except (ProcessLookupError, PermissionError):
+                os.kill(pid, sig)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 class Launcher:
@@ -131,6 +153,34 @@ class Launcher:
         if t - self.dead_since >= wait:
             self.start()
 
+    def _alive(self, pid: int) -> bool:
+        if self.proc is not None and self.proc.pid == pid:
+            return self.proc.poll() is None               # poll() reaps it
+        return pid_alive(pid)
+
+    def restart(self, wait: float = 30.0) -> bool:
+        """Stop the ComfyUI this launcher (or the agent before it) started and start it
+        again. False, doing nothing, when there's none: it never stops one it didn't start."""
+        if not self.enabled:
+            return False
+        pid = self.running_pid()
+        if pid is None:
+            return False
+        log.info("restarting ComfyUI on %s (pid %s)", self.name, pid)
+        stop_process(pid)
+        end = time.time() + wait
+        while self._alive(pid) and time.time() < end:
+            time.sleep(0.2)
+        if self._alive(pid):
+            log.warning("ComfyUI on %s (pid %s) didn't stop in %.0f s: killing it", self.name, pid, wait)
+            stop_process(pid, force=True)
+            end = time.time() + 10
+            while self._alive(pid) and time.time() < end:
+                time.sleep(0.2)
+        self.proc = None
+        self.start()
+        return True
+
     def start(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         cwd = self.lc.cwd or None
@@ -161,4 +211,4 @@ class Launcher:
         log.info("started ComfyUI on %s (pid %s), output in %s", self.name, self.proc.pid, self.log_file)
 
 
-__all__ = ["Launcher", "pid_alive", "boot_time"]
+__all__ = ["Launcher", "pid_alive", "boot_time", "stop_process"]

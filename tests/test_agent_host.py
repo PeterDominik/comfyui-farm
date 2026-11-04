@@ -135,6 +135,34 @@ class LauncherTests(unittest.TestCase):
             time.sleep(0.1)
         self.assertIn("starting 42", la.log_file.read_text())        # not held back while it runs
 
+    def test_restart_stops_it_and_starts_it_again(self):
+        la = self.launcher()
+        self.tick(la, False)
+        first = la.proc
+        self.assertTrue(la.restart(wait=10))                # for new farm nodes
+        self.procs.append(la.proc)
+        self.assertIsNotNone(first.poll())                  # the old one is gone...
+        self.assertNotEqual(la.proc.pid, first.pid)         # ...and a new one runs
+        self.assertTrue(pid_alive(la.proc.pid))
+        self.assertEqual((la.starts, la.pid_file.read_text().strip()), (2, str(la.proc.pid)))
+
+    def test_restart_stops_the_comfyui_the_agent_before_started(self):
+        p = subprocess.Popen(SLEEPER, start_new_session=os.name != "nt")
+        self.procs.append(p)
+        la = self.launcher()
+        la.pid_file.parent.mkdir(parents=True)
+        la.pid_file.write_text(f"{p.pid}\n")
+        self.assertTrue(la.restart(wait=10))
+        self.procs.append(la.proc)
+        p.wait(10)                                          # stopped (the test's own child: reaped here)
+        self.assertNotEqual(la.proc.pid, p.pid)
+
+    def test_restart_never_stops_a_comfyui_it_didnt_start(self):
+        la = self.launcher()
+        self.assertFalse(la.restart())                      # none running that it started
+        self.assertEqual(la.starts, 0)
+        self.assertFalse(self.launcher(command=[]).restart())
+
     def test_nothing_without_a_command(self):
         la = self.launcher(command=[])
         self.tick(la, False)

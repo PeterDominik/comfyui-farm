@@ -202,8 +202,8 @@ def name_pattern(template: str, m: dict, tokens: dict, items: list) -> tuple[str
 
 def split_batches(sizes: list, batch: int | None) -> list[tuple[int, int]]:
     """[start, end) ranges of tiles, in order, each run through the workflow on its own:
-    at most `batch` tiles, all the same size. The loader resizes and crops every image to
-    the most common size of its batch, so tiles of another size would come back cropped.
+    at most `batch` tiles, all the same size: one run's images are one batch (ComfyFarm
+    Load Images refuses a mix; VHS would crop them to one size).
     `sizes` has one entry per tile (None when unknown: those go together)."""
     out, start = [], 0
     for i in range(1, len(sizes) + 1):

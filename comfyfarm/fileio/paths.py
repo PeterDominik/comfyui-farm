@@ -17,8 +17,8 @@ if TYPE_CHECKING:   # type hints only: fileio never imports pydantic
 from .errors import SequenceError
 
 __all__ = ["SequenceError", "normalize", "to_farm", "to_posix", "frame_pattern", "parse_input", "context_from_path",
-           "source_stem", "split_input_path", "check_writable", "template_fields", "render",
-           "LOADER_EXTENSIONS", "CONVERTED_SEQUENCE_EXTENSIONS"]
+           "source_stem", "split_input_path", "check_writable", "template_fields", "render", "frame_file",
+           "parse_frames", "frames_text", "LOADER_EXTENSIONS", "CONVERTED_SEQUENCE_EXTENSIONS"]
 
 
 # Extensions VHS "Load Images (Path)" reads (ComfyUI's FolderOfImages.IMG_EXTENSIONS).
@@ -93,6 +93,56 @@ def _pattern_regex(filename: str) -> re.Pattern | None:
     return re.compile(
         "^" + re.escape(filename[: t.start()]) + r"(-?\d+)" + re.escape(filename[t.end():]) + "$"
     )
+
+
+def frame_file(filename: str, frame: int) -> str:
+    """The file of one frame of a pattern: 'plate.%04d.png', 1001 -> 'plate.1001.png'
+    (also ####, @@@@, $F4; %d and $F unpadded). A name without a frame token is itself."""
+    t = _TOKEN_RE.search(filename)
+    if t is None:
+        return filename
+    tok = t.group(0)
+    if tok.startswith("%"):
+        width = int(t.group(1) or 0)
+    elif tok.startswith("$F"):
+        width = int(t.group(2) or 0)
+    else:
+        width = len(tok)
+    return filename[: t.start()] + f"{frame:0{width}d}" + filename[t.end():]
+
+
+_FRAMES_ITEM = re.compile(r"^(-?\d+)(?:-(-?\d+))?$")
+
+
+def parse_frames(text: str) -> list[int]:
+    """'1001-1003,1011' -> [1001, 1002, 1003, 1011]: frame numbers in the order given.
+    Items are separated by commas or spaces; each is a frame or a range first-last."""
+    frames: list[int] = []
+    for item in re.split(r"[,\s]+", (text or "").strip()):
+        if not item:
+            continue
+        m = _FRAMES_ITEM.match(item)
+        if not m:
+            raise SequenceError(f"'{item}' isn't a frame or a frame range (e.g. 1001, 1001-1158).")
+        first, last = int(m.group(1)), int(m.group(2) if m.group(2) is not None else m.group(1))
+        if last < first:
+            raise SequenceError(f"Frame range {first}-{last} is backwards.")
+        frames.extend(range(first, last + 1))
+    if len(set(frames)) != len(frames):
+        raise SequenceError("A frame is listed twice.")
+    return frames
+
+
+def frames_text(frames: list[int]) -> str:
+    """[1001, 1002, 1003, 1011] -> '1001-1003,1011' (parse_frames reads it back)."""
+    out, i = [], 0
+    while i < len(frames):
+        j = i
+        while j + 1 < len(frames) and frames[j + 1] == frames[j] + 1:
+            j += 1
+        out.append(str(frames[i]) if i == j else f"{frames[i]}-{frames[j]}")
+        i = j + 1
+    return ",".join(out)
 
 
 def _compile_context(pattern: str) -> re.Pattern:

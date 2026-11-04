@@ -17,7 +17,11 @@ at once, max_inflight, plus one). For each job it:
 Jobs arrive with studio paths and @scratch/ / @repo/ (fileio.wire); the agent sees them
 through its own paths.mappings, scratch folder and checkout. It keeps its jobs in memory:
 after a restart the manager hands them back and the agent picks them up again from
-ComfyUI."""
+ComfyUI.
+
+ComfyUI loads the farm's own nodes (comfyui_nodes/) only at startup. When it runs other
+ones than this checkout has (after a `git pull`), the agent takes no new jobs, and once
+it holds none it restarts ComfyUI, if it started it (comfyui_launch)."""
 
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ import websockets
 
 from ..config import AgentConfig, PathsConfig
 from ..fileio import convert as C
+from ..fileio import farmnodes as FN
 from ..fileio import outputs as O
 from ..fileio import paths as P
 from ..fileio import scratch as S
@@ -127,6 +132,12 @@ class Agent:
         self.problems: dict[str, list[str]] = {}
         self.queue_remaining: int | None = None
         self.error: str | None = None
+        # ComfyUI runs other farm nodes than this checkout has: {"state": waiting | restarting
+        # | manual, "message": why}; None while they're the checkout's.
+        self.farm_nodes: dict | None = None
+        self._restarted_for: str | None = None   # the checkout's node version ComfyUI was restarted for
+        self._restarting = False
+        self._cant_restart = False               # its ComfyUI wasn't started by this agent
         self.abandoned: set[str] = set()         # prompt ids given up on: cancelled if seen again
         # the manager
         self.registered = False
@@ -230,7 +241,7 @@ class Agent:
         for p in reply.get("adopt") or []:
             self._adopt(p)
         await self._send_status()
-        if self.object_info is not None:
+        if self.object_info is not None and not self.farm_nodes:
             await self._send_nodes()
         if not self._cleaned:
             self._cleaned = True
@@ -260,7 +271,7 @@ class Agent:
         try:
             reply = await self.link.status({
                 "name": self.name, "online": self.online, "connected": self.ws_connected, "stats": self.stats,
-                "queue_remaining": self.queue_remaining, "error": self.error})
+                "queue_remaining": self.queue_remaining, "error": self.error, "farm_nodes": self.farm_nodes})
             if reply.get("hello"):
                 self.registered = False
         except LinkError:
@@ -850,9 +861,67 @@ class Agent:
                 self.launcher.tick(reachable)   # starts ComfyUI if agent.yaml says how and it isn't running
             except Exception:  # noqa: BLE001
                 log.exception("starting ComfyUI on %s failed", self.name)
+            try:
+                await self._farm_nodes_tick(reachable)
+            except Exception:  # noqa: BLE001
+                log.exception("checking the farm nodes on %s failed", self.name)
             if self.registered:
                 await self._send_status()
             await asyncio.sleep(self.cfg.health_seconds)
+
+    async def _farm_nodes_tick(self, reachable: bool) -> None:
+        """After every health check: a `git pull` may have changed the farm nodes; once
+        ComfyUI runs older ones and this agent holds no jobs, restart it."""
+        if not (reachable and self.ws_connected and self.object_info is not None) or self._restarting:
+            return
+        was = self.farm_nodes
+        if self._check_farm_nodes():
+            if was and self.registered:     # the checkout's again (it went back): tell the manager
+                await self._send_nodes()
+        elif self.farm_nodes["state"] == "waiting" and not self.held and not self.queue_remaining:
+            await self._restart_comfyui()           # idle: no farm job, and nothing run by hand either
+
+    def _check_farm_nodes(self) -> bool:
+        """Whether ComfyUI runs this checkout's farm nodes (it has none at all counts too:
+        the workflow checks say what's missing). Sets self.farm_nodes when it doesn't."""
+        why = FN.stale(self.object_info or {}, REPO)
+        if why is None:
+            if self.farm_nodes:
+                log.info("ComfyUI on %s runs this checkout's farm nodes", self.name)
+            self.farm_nodes = None
+            return True
+        if self._restarted_for == FN.version(REPO):
+            state, msg = "manual", (why + " Restarting ComfyUI didn't change that: check that ComfyUI's "
+                                    "custom_nodes/comfyfarm_nodes links to this checkout (the setup script makes "
+                                    "the link), then restart ComfyUI.")
+        elif self.launcher.enabled and not self._cant_restart:
+            state, msg = "waiting", why + " ComfyUI will be restarted to load them once its jobs are done."
+        else:
+            state, msg = "manual", why + (" This agent didn't start ComfyUI, so it can't restart it:"
+                                          if self._cant_restart else "") + " Restart ComfyUI to load them."
+        if (self.farm_nodes or {}).get("message") != msg:
+            log.warning("agent %s takes no new jobs: %s", self.name, msg)
+        self.farm_nodes = {"state": state, "message": msg}
+        return False
+
+    async def _restart_comfyui(self) -> None:
+        """Restart ComfyUI for this checkout's farm nodes (the agent holds no jobs)."""
+        want = FN.version(REPO)
+        self._restarting, self._restarted_for = True, want
+        self.farm_nodes = {"state": "restarting",
+                           "message": f"Restarting ComfyUI to load this checkout's farm nodes (version {want})."}
+        if self.registered:
+            await self._send_status()
+        try:
+            ok = await asyncio.to_thread(self.launcher.restart)
+        finally:
+            self._restarting = False
+        if not ok:
+            self._restarted_for, self._cant_restart = None, True
+            self._check_farm_nodes()
+            return
+        self._cant_restart = False
+        self.object_info = None         # read again when it's back (its websocket reconnects)
 
     async def refresh_object_info(self) -> None:
         """Read ComfyUI's node definitions and send them to the manager, which checks the
@@ -865,7 +934,9 @@ class Agent:
             return
         self.object_info = oi
         self.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
-        if self.registered:
+        # Other farm nodes than the checkout's: the manager gets no node definitions, so it
+        # gives this agent no jobs until ComfyUI runs the checkout's (_farm_nodes_tick).
+        if self._check_farm_nodes() and self.registered:
             await self._send_nodes()
         self.checked = True
         if self.registered:

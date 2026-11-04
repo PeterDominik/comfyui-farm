@@ -4,10 +4,12 @@ import unittest
 
 from comfyfarm.config import PathMapping, PathsConfig
 from comfyfarm.fileio.errors import SequenceError
-from comfyfarm.fileio.inputs import resolve_sequence
+from comfyfarm.config import ConvertConfig
+from comfyfarm.fileio.inputs import folder_input, load_path, resolve_input, resolve_sequence
 from comfyfarm.fileio.naming import (default_output_dir_display, default_output_root_display, output_dir, output_root,
                                      resolve_output_folder, sequence_exists)
-from comfyfarm.fileio.paths import context_from_path, frame_pattern, parse_input, render, source_stem, to_farm, to_posix
+from comfyfarm.fileio.paths import (context_from_path, frame_file, frame_pattern, frames_text, parse_frames, parse_input,
+                                    render, source_stem, to_farm, to_posix)
 
 PATTERNS = ["/shows/{show}/.published/{seq}/{shot}/", "/shows/{show}/"]
 
@@ -70,6 +72,25 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(frame_pattern("{shot}_v{version:03d}.{frame:04d}.{ext}"), "{shot}_v{version:03d}.%04d.{ext}")
 
 
+class FrameListTests(unittest.TestCase):
+    def test_frame_lists_both_ways(self):
+        self.assertEqual(parse_frames("1001-1003,1011"), [1001, 1002, 1003, 1011])
+        self.assertEqual(parse_frames(" 1001-1002, 1011 1020 "), [1001, 1002, 1011, 1020])
+        self.assertEqual(parse_frames("-2--1,5"), [-2, -1, 5])
+        self.assertEqual(parse_frames(""), [])
+        for frames in ([1001, 1002, 1003, 1011], [5], [], [-2, -1, 5], [1003, 1001]):
+            self.assertEqual(parse_frames(frames_text(frames)), frames)
+        self.assertEqual(frames_text([1001, 1002, 1003, 1011]), "1001-1003,1011")
+        for bad, why in (("1003-1001", "backwards"), ("1,1", "twice"), ("10x", "isn't a frame")):
+            with self.assertRaisesRegex(SequenceError, why):
+                parse_frames(bad)
+
+    def test_frame_file(self):
+        self.assertEqual([frame_file(n, 7) for n in ("a.%04d.png", "a.####.png", "a.$F4.png", "a.%d.png", "a.$F.png")],
+                         ["a.0007.png", "a.0007.png", "a.0007.png", "a.7.png", "a.7.png"])
+        self.assertEqual(frame_file("a.png", 3), "a.png")
+
+
 class SequenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -113,6 +134,30 @@ class SequenceTests(unittest.TestCase):
         touch(self.shot_dir, "abc_0010.pre.v1.1002_alt.png")   # sorts between 1002 and 1003
         with self.assertRaisesRegex(SequenceError, "sort between"):
             resolve_sequence(f"{self.shot_dir}/abc_0010.pre.v1.%04d.png 1001-1005", self.cfg)
+
+    def test_the_farm_loader_reads_exact_files(self):
+        """ComfyFarm Load Images reads the pattern's files, so what else is in the folder
+        doesn't matter (VHS would load it too)."""
+        self.frames(1001, 1005)
+        touch(self.shot_dir, "abc_0010.pre.v1.1002_alt.png", "aaa_thumb.png")
+        s = resolve_sequence(f"{self.shot_dir}/abc_0010.pre.v1.%04d.png 1002-1004", self.cfg, listing=False)
+        self.assertEqual((s.kind, s.first, s.last, s.frame_count, s.skip, s.cap), ("frames", 1002, 1004, 3, 0, 0))
+        self.assertEqual(load_path(s), (f"{self.shot_dir}/abc_0010.pre.v1.%04d.png", [1002, 1003, 1004]))
+        os.remove(f"{self.shot_dir}/abc_0010.pre.v1.1003.png")
+        with self.assertRaisesRegex(SequenceError, "Missing frames.*1003"):
+            resolve_sequence(f"{self.shot_dir}/abc_0010.pre.v1.%04d.png 1002-1004", self.cfg, listing=False)
+        s = resolve_sequence(f"{self.shot_dir}/aaa_thumb.png", self.cfg, listing=False)      # one image
+        self.assertEqual(load_path(s), (f"{self.shot_dir}/aaa_thumb.png", None))
+
+    def test_a_folder_means_the_sequence_in_it(self):
+        self.frames(1001, 1003)
+        self.assertEqual(folder_input(self.shot_dir, self.cfg), f"{self.shot_dir}/abc_0010.pre.v1.%04d.png")
+        s = resolve_input("/rdo/shows/xyz/.published/abc/abc_0010/hi/", self.cfg, ConvertConfig(), listing=False)
+        self.assertEqual((s.filename, s.first, s.last), ("abc_0010.pre.v1.%04d.png", 1001, 1003))
+        touch(self.shot_dir, "thumb.jpg")              # another image: which one was meant?
+        with self.assertRaisesRegex(SequenceError, r"holds 2 different image sequences \(abc_0010.pre.v1 \(3 files\), "
+                                                   r"thumb.jpg\)\. Give the sequence's file pattern"):
+            folder_input(self.shot_dir, self.cfg)
 
     def test_unsupported_format_refused(self):
         with self.assertRaisesRegex(SequenceError, "Can't use '.dpx' files"):
