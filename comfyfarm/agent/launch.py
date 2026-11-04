@@ -136,7 +136,9 @@ class Launcher:
         cwd = self.lc.cwd or None
         if cwd and not os.path.isabs(cwd):
             cwd = str(self.base_dir / cwd)
-        env = dict(os.environ, **self.lc.env)
+        # Unbuffered: its output goes to a file, and Python would otherwise hold it back in
+        # 8 KB blocks, so the log would stay empty while ComfyUI starts (or hangs).
+        env = dict(os.environ, PYTHONUNBUFFERED="1", **self.lc.env)
         kw: dict = {"cwd": cwd, "env": env, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT}
         if os.name == "nt":
             kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
