@@ -243,11 +243,13 @@ class FarmNodeVersionTests(unittest.TestCase):
         for rel in [*farmnodes.DEPENDS, "comfyui_nodes/comfyfarm_nodes/__init__.py", "comfyfarm/fileio/convert.py"]:
             (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
             (tmp / rel).write_bytes((REPO / rel).read_bytes())
+        paths = tmp / "comfyfarm/fileio/paths.py"
+        lf = paths.read_bytes().replace(b"\r\n", b"\n")              # this checkout may have either
+        paths.write_bytes(lf)
         v = farmnodes.version(tmp)
         (tmp / "comfyfarm/fileio/convert.py").write_text("# not used by the nodes")
         self.assertEqual(farmnodes.version(tmp), v)
-        crlf = (tmp / "comfyfarm/fileio/paths.py").read_bytes().replace(b"\n", b"\r\n")
-        (tmp / "comfyfarm/fileio/paths.py").write_bytes(crlf)        # a Windows checkout: the same version
+        paths.write_bytes(lf.replace(b"\n", b"\r\n"))                 # a Windows checkout: the same version
         self.assertEqual(farmnodes.version(tmp), v)
         (tmp / "comfyui_nodes/comfyfarm_nodes/__init__.py").write_text("# changed")
         self.assertNotEqual(farmnodes.version(tmp), v)

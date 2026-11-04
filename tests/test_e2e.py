@@ -207,7 +207,7 @@ convert:
     def test_01_happy_path(self):
         job = self.submit("1003-1010")
         self.assertEqual(job["status"], "queued")
-        self.assertEqual((job["info"]["input"]["skip"], job["info"]["input"]["cap"]), (2, 8))
+        self.assertEqual((job["info"]["input"]["first"], job["info"]["input"]["last"]), (1003, 1010))
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
         out = done["outputs"]
@@ -219,6 +219,8 @@ convert:
         self.assertFalse([n for n in names if "_raw" in n], "raw frames should be renamed")
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 42)   # not on the form: as exported
+        self.assertEqual(prompt["9104"]["inputs"]["frames"], "1003-1010")    # ComfyFarm Load Images: exact frames
+        self.assertTrue(prompt["9104"]["inputs"]["path"].endswith("/abc_0010.pre.v1.%04d.png"))
         self.assertEqual(done["progress"], 1.0)
 
     def test_02_versions_and_cancel_waiting_jobs(self):
