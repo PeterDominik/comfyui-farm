@@ -25,7 +25,11 @@ try:
 except ImportError:   # pragma: no cover
     Launcher = None
 
-SLEEPER = [sys.executable, "-c", "import time; time.sleep(120)"]
+# The interpreter itself: in a venv on Windows, python.exe is a small launcher that starts
+# it as a child, and a launcher started without a console (as the agent starts ComfyUI)
+# gives that child a console window of its own.
+PYTHON = getattr(sys, "_base_executable", None) or sys.executable
+SLEEPER = [PYTHON, "-c", "import time; time.sleep(120)"]
 
 
 @unittest.skipIf(Launcher is None, "needs the agent's dependencies (httpx, websockets)")
@@ -83,7 +87,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(la.starts, 2)
 
     def test_a_start_that_keeps_dying_backs_off(self):
-        la = self.launcher(command=[sys.executable, "-c", "raise SystemExit(3)"])
+        la = self.launcher(command=[PYTHON, "-c", "raise SystemExit(3)"])
         self.tick(la, False)
         la.proc.wait(10)
         waits = []
@@ -127,7 +131,7 @@ class LauncherTests(unittest.TestCase):
         old = os.environ.pop("PYTHONUNBUFFERED", None)          # as under cron or a plain shell
         if old is not None:
             self.addCleanup(os.environ.__setitem__, "PYTHONUNBUFFERED", old)
-        la = self.launcher(command=[sys.executable, "-c", "import os, time; print('starting', os.environ.get('X')); "
+        la = self.launcher(command=[PYTHON, "-c", "import os, time; print('starting', os.environ.get('X')); "
                                                           "time.sleep(60)"], env={"X": "42"})
         self.tick(la, False)
         end = time.time() + 20
