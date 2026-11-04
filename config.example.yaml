@@ -36,11 +36,21 @@ agents:
                        # agent may check in: set one as soon as the manager is on the network
 
 paths:
-  # Show storage as Linux workstations see it (posix) and as this machine sees it. A Windows
-  # machine sees it as the UNC share; a Linux manager that sees /rdo/shows as it is lists
-  # just `- posix: /rdo/shows`.
+  # Show storage as Linux workstations see it (posix) and as this machine sees it (windows,
+  # or local). /shows is the same storage as /rdo/shows: list it after /rdo/shows, so inputs
+  # given as /shows/... work too and the farm writes and reports /rdo/shows/... paths.
+  #
+  # A Linux manager or agent, which sees /rdo/shows as it is:
+  #   mappings:
+  #     - posix: /rdo/shows
+  #     - posix: /shows
+  #       local: /rdo/shows
+  #
+  # A Windows machine, which sees it as the UNC share:
   mappings:
     - posix: /rdo/shows
+      windows: //rodeofx.com/smb/shows
+    - posix: /shows
       windows: //rodeofx.com/smb/shows
 
   # Where show / seq / shot sit in an input path. {name} = one folder, so any shot
