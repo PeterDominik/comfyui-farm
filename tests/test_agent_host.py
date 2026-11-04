@@ -123,6 +123,18 @@ class LauncherTests(unittest.TestCase):
         self.tick(la, False)
         self.assertEqual(la.starts, 1)
 
+    def test_its_output_reaches_the_log_as_it_runs(self):
+        old = os.environ.pop("PYTHONUNBUFFERED", None)          # as under cron or a plain shell
+        if old is not None:
+            self.addCleanup(os.environ.__setitem__, "PYTHONUNBUFFERED", old)
+        la = self.launcher(command=[sys.executable, "-c", "import os, time; print('starting', os.environ.get('X')); "
+                                                          "time.sleep(60)"], env={"X": "42"})
+        self.tick(la, False)
+        end = time.time() + 20
+        while time.time() < end and "starting 42" not in la.log_file.read_text():
+            time.sleep(0.1)
+        self.assertIn("starting 42", la.log_file.read_text())        # not held back while it runs
+
     def test_nothing_without_a_command(self):
         la = self.launcher(command=[])
         self.tick(la, False)
