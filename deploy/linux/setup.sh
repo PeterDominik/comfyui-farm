@@ -56,8 +56,8 @@ fi
 index=()
 [ -n "$index_url" ] && index=(--index-url "$index_url")
 echo "Installing requirements into $env_dir${index_url:+ from $index_url}..."
-"${clean[@]}" "$py" -m pip install -q ${index[@]+"${index[@]}"} --upgrade pip
-"${clean[@]}" "$py" -m pip install -q ${index[@]+"${index[@]}"} -r "$ROOT/requirements.txt"
+"${clean[@]}" "$py" -m pip install ${index[@]+"${index[@]}"} --upgrade pip
+"${clean[@]}" "$py" -m pip install --prefer-binary ${index[@]+"${index[@]}"} -r "$ROOT/requirements.txt"
 
 umask 022
 mkdir -p "$ROOT/data" "$ROOT/logs" "$ROOT/run"
