@@ -42,6 +42,7 @@ from ..fileio.errors import ConvertError, SequenceError
 from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, TERMINAL, LinkError, build, duration, now
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
+from .launch import Launcher
 
 log = logging.getLogger("comfyfarm")
 _DEFAULT_PATHS = PathsConfig()
@@ -109,6 +110,7 @@ class Agent:
         self.name = cfg.name
         self.client = client or ComfyClient(cfg.comfyui)
         self.client_id = "comfyfarm-" + uuid.uuid5(uuid.NAMESPACE_URL, cfg.comfyui + cfg.name).hex[:12]
+        self.launcher = Launcher(cfg.name, cfg.comfyui_launch, cfg.resolve(cfg.log_dir), cfg.base_dir)
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
         self.view = W.View(mappings=cfg.paths.mappings, scratch=self.scratch_root, repo=P.normalize(str(REPO)))
         self.held: dict[str, Held] = {}          # job id -> its run
@@ -150,7 +152,7 @@ class Agent:
                        asyncio.create_task(self._ws_loop(), name=f"ws-{self.name}"),
                        asyncio.create_task(self._reconcile_loop(), name=f"reconcile-{self.name}")]
         log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
-                 getattr(self.link, "url", "in this process"))
+                 getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process"))
 
     async def stop(self) -> None:
         """Stop following ComfyUI and the manager. Jobs in ComfyUI carry on; the next start
@@ -190,7 +192,7 @@ class Agent:
                 t0 = now()
                 reply = await self._heartbeat()
                 if self.manager_down:
-                    log.info("agent %s: the manager is back", self.name)
+                    log.info("agent %s: the manager is back (%s)", self.name, getattr(self.link, "url", ""))
                     self.manager_down = False
                 backoff = self.cfg.retry_seconds
                 await self._obey(reply)
@@ -349,7 +351,7 @@ class Agent:
             out_dir = info.get("output_dir")
             if out_dir:
                 try:
-                    await asyncio.to_thread(os.makedirs, out_dir, exist_ok=True)
+                    await asyncio.to_thread(O.makedirs_readable, out_dir)
                 except OSError as e:
                     await self._fail(h, f"Can't create the output folder {out_dir}: {e.strerror or e}")
                     return
@@ -823,9 +825,10 @@ class Agent:
     async def _health_loop(self) -> None:
         fails = 0
         while True:
+            reachable = False
             try:
                 self.stats = await self.client.system_stats()
-                fails = 0
+                reachable, fails = True, 0
                 if not self.online:
                     self.online, self.error = True, None
                     log.info("worker %s online", self.name)
@@ -841,6 +844,10 @@ class Agent:
                     for h in [h for h in self.held.values() if h.status in ON_WORKER]:
                         await self._lost(h, f"ComfyUI on {self.name} was unreachable for over "
                                             f"{duration(self.cfg.lost_after_seconds)}.")
+            try:
+                self.launcher.tick(reachable)   # starts ComfyUI if agent.yaml says how and it isn't running
+            except Exception:  # noqa: BLE001
+                log.exception("starting ComfyUI on %s failed", self.name)
             if self.registered:
                 await self._send_status()
             await asyncio.sleep(self.cfg.health_seconds)
@@ -935,6 +942,7 @@ class Agent:
                 dest = Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens)
                 try:
                     await self.client.download(e["filename"], e.get("subfolder", ""), e.get("type", "output"), dest)
+                    O.readable(str(dest))
                     outputs["preview"] = P.normalize(str(dest))
                     outputs["preview_posix"] = P.to_posix(outputs["preview"], mappings)
                 except Exception as ex:  # noqa: BLE001

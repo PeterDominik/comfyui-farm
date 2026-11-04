@@ -1,8 +1,8 @@
 """ComfyUI nodes that come with the ComfyUI farm gateway (comfyui-farm repo).
 
-scripts/setup.ps1 -ComfyUI <ComfyUI folder> links this folder into ComfyUI's
-custom_nodes, so `git pull` on the farm machine updates the nodes too (restart ComfyUI
-to load a change).
+The setup scripts link this folder into ComfyUI's custom_nodes (deploy/windows/setup.ps1
+-ComfyUIDir <ComfyUI folder>, deploy/linux/setup.sh agent --comfyui <ComfyUI folder>), so
+`git pull` on the worker updates the nodes too (restart ComfyUI to load a change).
 """
 from .save_image import ComfyFarmSaveImage
 

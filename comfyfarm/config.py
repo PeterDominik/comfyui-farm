@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ServerConfig(BaseModel):
@@ -25,9 +25,26 @@ class WorkerConfig(BaseModel):
 
 
 class PathMapping(BaseModel):
-    # The same storage as Linux workstations see it, and as the farm machine sees it.
+    """One storage area, as Linux workstations see it (`posix`, the studio path) and as this
+    machine sees it (`windows`, also accepted as `local`): a UNC path or drive on Windows, or
+    another mount point on Linux. Left out, this machine sees the studio path as it is."""
     posix: str
-    windows: str
+    windows: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _local_alias(cls, data):
+        if isinstance(data, dict) and "local" in data:
+            data = dict(data)
+            local = data.pop("local")
+            data.setdefault("windows", local)
+        return data
+
+    @model_validator(mode="after")
+    def _same_path(self):
+        if not self.windows:
+            self.windows = self.posix
+        return self
 
 
 class PathsConfig(BaseModel):
@@ -148,8 +165,18 @@ class FarmConfig(BaseModel):
     strict_preflight: bool = True
 
 
+class ShareConfig(BaseModel):
+    """A folder every artist and agent can read. At startup the manager writes its address
+    there (manager.json) and copies the repo's client/ into it, so artists' Nuke
+    (<dir>/client/nuke on NUKE_PATH) and the agents find the manager without a machine name
+    in any config, and the client always matches the manager."""
+    dir: str = ""        # e.g. /rdo/bank/comfy_farm; empty = no shared folder
+    url: str = ""        # the address written there; empty = http://<this machine's name>:<server.port>
+
+
 class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
+    share: ShareConfig = Field(default_factory=ShareConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     workflows_dir: str = "workflows"
@@ -176,14 +203,27 @@ class AgentPathsConfig(BaseModel):
     mappings: list[PathMapping] = Field(default_factory=list)
 
 
+class ComfyUILaunchConfig(BaseModel):
+    """How the agent starts this machine's ComfyUI when it isn't running (optional). ComfyUI
+    runs on its own once started: restarting the agent leaves it, and its jobs, running."""
+    command: list[str] = Field(default_factory=list)   # e.g. [<ComfyUI's python>, main.py, --port, "8188"]
+    cwd: str = ""                                      # ComfyUI's folder
+    env: dict[str, str] = Field(default_factory=dict)  # extra environment, e.g. CUDA_VISIBLE_DEVICES
+    restart_after: float = 30.0        # unreachable this long, and not running: started again
+    startup_seconds: float = 300.0     # a start gets this long to answer before it's tried again
+
+
 class AgentConfig(BaseModel):
     """One agent: runs the manager's jobs on one ComfyUI (agent.example.yaml). Everything
     here describes this machine; how jobs are run (colour, naming, versions) comes with
     each job from the manager."""
     name: str                                   # as the dashboard shows it, e.g. rtx5090-a
-    manager: str = "http://127.0.0.1:8000"      # the manager's address
+    # The manager's address, or the manager.json it writes in the farm's shared folder
+    # (share.dir), read again whenever the manager can't be reached.
+    manager: str = "http://127.0.0.1:8000"
     token: str = ""                             # the manager's agents.token, if it has one
     comfyui: str = "http://127.0.0.1:8188"      # this machine's ComfyUI (keep it on localhost)
+    comfyui_launch: ComfyUILaunchConfig = Field(default_factory=ComfyUILaunchConfig)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     log_dir: str = "logs"
     paths: AgentPathsConfig = Field(default_factory=AgentPathsConfig)

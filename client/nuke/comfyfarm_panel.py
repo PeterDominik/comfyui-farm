@@ -308,7 +308,7 @@ if QtWidgets is not None:
             self.status_label.setWordWrap(True)   # wraps into the pane's height when narrow
             self.url_edit = QtWidgets.QLineEdit(farm.base_url() or "")
             self.url_edit.setPlaceholderText("http://comfyfarm01:8000")
-            self.url_edit.setToolTip("Farm address (normally from $COMFYFARM_URL)")
+            self.url_edit.setToolTip("Farm address (normally from the shared folder's manager.json, or $COMFYFARM_URL)")
             self.url_edit.editingFinished.connect(self._url_changed)
             dash = QtWidgets.QPushButton("Dashboard")
             dash.setToolTip("Open the web dashboard")

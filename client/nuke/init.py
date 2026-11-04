@@ -5,5 +5,5 @@ import nuke
 
 nuke.pluginAddPath(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
-# Studio farm address. Anyone who sets COMFYFARM_URL themselves keeps their own.
-os.environ.setdefault("COMFYFARM_URL", "http://wrk59467w:8000")
+# The farm's address comes from manager.json in the shared folder this is installed in
+# (the manager writes it at every start). COMFYFARM_URL, if set, wins.

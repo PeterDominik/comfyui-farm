@@ -129,4 +129,4 @@ class ChordWorkflowTests(unittest.TestCase):
         del oi["ComfyFarmSaveImage"]
         probs = wf.check_object_info(oi)
         self.assertEqual(len(probs), 5)
-        self.assertIn("comes with this repo: run scripts\\setup.ps1 -ComfyUIDir <ComfyUI folder>", probs[0])
+        self.assertIn("comes with this repo: run deploy\\windows\\setup.ps1 -ComfyUIDir <ComfyUI folder>", probs[0])

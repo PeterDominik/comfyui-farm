@@ -3,8 +3,10 @@
   standalone   the manager and an agent for each ComfyUI in config.yaml's workers, in one
                process, as the farm has always run (serve is the same, under its old name)
   manager      the manager only: agents on other machines check in (comfyfarm agent)
-  agent        one agent: runs the manager's jobs on this machine's ComfyUI (agent.yaml)
-  check        preflight: workflows, tools, OCIO, storage, and config.yaml's workers"""
+  agent        one agent: runs the manager's jobs on this machine's ComfyUI (agent.yaml);
+               agent --check checks this worker and exits
+  check        preflight: workflows, tools, OCIO, storage, the shared folder, and config.yaml's
+               workers"""
 
 from __future__ import annotations
 
@@ -14,8 +16,10 @@ import logging
 import logging.handlers
 import os
 import re
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from . import __version__
 from .config import Config, load_config
@@ -77,7 +81,7 @@ def check_ocio(cfg: Config) -> int:
     cmd = find_tool("oiiotool", cfg.convert.tools.get("oiiotool"))
     if not cmd:
         print(f"  [WARN] OCIO config {shown_config} ({shown}): oiiotool not found, so EXR inputs and texture "
-              f"maps can't be converted (run scripts\\setup.ps1)")
+              f"maps can't be converted (install the requirements: this machine's setup script in deploy/)")
         return 0
     conv = dict(ocio, extra_args=list(cfg.convert.exr.extra_args))
     with tempfile.TemporaryDirectory() as d:
@@ -104,35 +108,38 @@ def check_ocio(cfg: Config) -> int:
     return 0
 
 
-async def run_check(cfg: Config) -> int:
-    """Preflight: workflows load, workers reachable, node packs/models present, storage visible."""
+def _line(status: str, text: str) -> None:
+    print(f"  [{status}] {text}")
+
+
+def check_workflows(reg: WorkflowRegistry) -> int:
     bad = 0
-    print(f"comfyfarm {__version__}  config: {cfg.base_dir}")
-    for note in cfg.obsolete_keys:
-        print(f"  [WARN] config.yaml: {note}")
-    reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
     for name, err in reg.load_errors.items():
-        print(f"  [FAIL] workflow {name}: {err}")
+        _line("FAIL", f"workflow {name}: {err}")
         bad += 1
     for wf in reg.workflows.values():
         if wf.problems:
             bad += 1
-            print(f"  [FAIL] workflow {wf.name}:")
+            _line("FAIL", f"workflow {wf.name}:")
             for p in wf.problems:
                 print(f"         - {p}")
         else:
-            print(f"  [ ok ] workflow {wf.name} ({len(wf.params)} params)")
+            _line(" ok ", f"workflow {wf.name} ({len(wf.params)} params)")
+    return bad
 
-    from .agent.comfy import ComfyClient   # here, so check_ocio and --help don't need httpx
+
+def check_tools(convert) -> int:
+    """oiiotool, ffmpeg and ffprobe, as conversions will run them (convert.tools)."""
     from .fileio.tools import find_tool
+    bad = 0
     for tool, args, use in (("oiiotool", ["--buildinfo"], "EXR inputs"), ("ffmpeg", ["-version"], "movie inputs"),
                             ("ffprobe", ["-version"], "movie inputs")):
-        cmd = find_tool(tool, cfg.convert.tools.get(tool))
+        cmd = find_tool(tool, convert.tools.get(tool))
         if not cmd and tool == "ffprobe":
-            print("  [ ok ] ffprobe: not installed; movie info is read with ffmpeg instead")
+            _line(" ok ", "ffprobe: not installed; movie info is read with ffmpeg instead")
             continue
         if not cmd:
-            print(f"  [WARN] {tool} not found: {use} will be refused (run scripts\\setup.ps1)")
+            _line("WARN", f"{tool} not found: {use} will be refused (install the requirements: this machine's setup script in deploy/)")
             continue
         try:
             out = subprocess.run([*cmd, *args], capture_output=True, text=True, timeout=30)
@@ -142,42 +149,129 @@ async def run_check(cfg: Config) -> int:
             if tool == "oiiotool":
                 m = re.search(r"OpenColorIO[^\n,;]*", text)
                 ocio = f"  ({m.group(0).strip()})" if m else "  (no OpenColorIO support found!)"
-            print(f"  [ ok ] {tool}: {first[:70]}{ocio}")
+            _line(" ok ", f"{tool}: {first[:70]}{ocio}")
         except Exception as e:  # noqa: BLE001
             bad += 1
-            print(f"  [FAIL] {tool} ({' '.join(cmd)}): {e}")
+            _line("FAIL", f"{tool} ({' '.join(cmd)}): {e}")
+    return bad
 
+
+async def check_comfyui(name: str, url: str, reg: WorkflowRegistry) -> int:
+    """A ComfyUI answers, and has every node, input and model each workflow needs."""
+    from .agent.comfy import ComfyClient   # here, so check_ocio and --help don't need httpx
+    bad = 0
+    c = ComfyClient(url)
+    try:
+        stats = await c.system_stats()
+        dev = (stats.get("devices") or [{}])[0]
+        ver = (stats.get("system") or {}).get("comfyui_version", "?")
+        vram = f" ({dev['vram_total'] / 2**30:.0f} GB)" if dev.get("vram_total") else ""
+        _line(" ok ", f"worker {name} {url}  ComfyUI {ver}  {dev.get('name', '')}{vram}")
+        oi = await c.object_info()
+        for wf in reg.workflows.values():
+            probs = wf.check_object_info(oi)
+            if probs:
+                bad += 1
+                _line("FAIL", f"{name} can't run {wf.name}:")
+                for p in probs:
+                    print(f"         - {p}")
+            else:
+                _line(" ok ", f"{name} has every node, input and model {wf.name} needs")
+    except Exception as e:  # noqa: BLE001
+        bad += 1
+        _line("FAIL", f"worker {name} {url}: {e}")
+    finally:
+        await c.close()
+    return bad
+
+
+def check_folder(label: str, path: str, min_free_gb: float = 0) -> int:
+    """A folder this machine writes into: there (or creatable), writable, with room."""
+    import shutil
+    import tempfile
+    try:
+        os.makedirs(path, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".comfyfarm-check-"):
+            pass
+        free = shutil.disk_usage(path).free / 2**30
+    except OSError as e:
+        _line("FAIL", f"{label} {path}: can't write there: {e.strerror or e}")
+        return 1
+    if min_free_gb and free < min_free_gb:
+        _line("WARN", f"{label} {path}: writable, but only {free:.0f} GB free")
+        return 0
+    _line(" ok ", f"{label} {path}: writable, {free:.0f} GB free")
+    return 0
+
+
+async def run_check(cfg: Config) -> int:
+    """Preflight: workflows load, workers reachable, node packs/models present, storage visible."""
+    print(f"comfyfarm {__version__}  config: {cfg.base_dir}")
+    for note in cfg.obsolete_keys:
+        _line("WARN", f"config.yaml: {note}")
+    reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
+    bad = check_workflows(reg)
+    bad += check_tools(cfg.convert)
     bad += check_ocio(cfg)
-
     for m in cfg.paths.mappings:
         ok = os.path.isdir(m.windows)
-        print(f"  [{' ok ' if ok else 'WARN'}] storage {m.posix} -> {m.windows}"
+        _line(" ok " if ok else "WARN", f"storage {m.posix} -> {m.windows}"
               + ("" if ok else "  (not reachable from this machine/account)"))
-
+    if cfg.share.dir:
+        from .manager.share import manager_url, share_dir
+        bad += check_folder("shared folder", share_dir(cfg))
+        print(f"         artists and agents will reach the manager at {manager_url(cfg)}")
     for w in cfg.workers:
-        if not w.enabled:
-            continue
-        c = ComfyClient(w.url)
-        try:
-            stats = await c.system_stats()
-            dev = (stats.get("devices") or [{}])[0]
-            ver = (stats.get("system") or {}).get("comfyui_version", "?")
-            print(f"  [ ok ] worker {w.name} {w.url}  ComfyUI {ver}  {dev.get('name', '')}")
-            oi = await c.object_info()
-            for wf in reg.workflows.values():
-                probs = wf.check_object_info(oi)
-                if probs:
-                    bad += 1
-                    print(f"  [FAIL] {w.name} can't run {wf.name}:")
-                    for p in probs:
-                        print(f"         - {p}")
-                else:
-                    print(f"  [ ok ] {w.name} has every node, input and model {wf.name} needs")
-        except Exception as e:  # noqa: BLE001
+        if w.enabled:
+            bad += await check_comfyui(w.name, w.url, reg)
+    print("All good." if not bad else f"{bad} problem(s).")
+    return 1 if bad else 0
+
+
+async def run_agent_check(cfg, path) -> int:
+    """`comfyfarm agent --check`: everything this worker needs, before it takes a job."""
+    from .agent.link import HttpLink
+    from .config import OcioConfig
+    from .fileio import paths as P
+    from .protocol import LinkError, build
+    print(f"comfyfarm agent {cfg.name} ({build()})  config: {path}")
+    bad = 0
+    link = HttpLink(cfg.manager, cfg.token)
+    storage: list[str] = []
+    try:
+        r = await link.ping({"name": cfg.name})
+        storage = list(r.get("storage") or [])
+        _line(" ok ", f"manager {link.shown}: reachable, token accepted")
+        if r.get("manager") != build():
+            _line("WARN", f"the manager runs {r.get('manager')}, this agent {build()}: run the same commit on both")
+    except LinkError as e:
+        bad += 1
+        _line("FAIL", f"manager {cfg.manager}: {e}")
+    finally:
+        await link.close()
+    reg = WorkflowRegistry(Path(__file__).resolve().parent.parent / "workflows")
+    bad += await check_comfyui(cfg.name, cfg.comfyui, reg)
+    lc = cfg.comfyui_launch
+    if lc.command:
+        exe = lc.command[0]
+        found = os.path.isfile(exe) or shutil.which(exe)
+        cwd_ok = not lc.cwd or os.path.isdir(cfg.resolve(lc.cwd))
+        if found and cwd_ok:
+            _line(" ok ", f"ComfyUI is started with: {' '.join(lc.command)}" + (f"  (in {lc.cwd})" if lc.cwd else ""))
+        else:
             bad += 1
-            print(f"  [FAIL] worker {w.name} {w.url}: {e}")
-        finally:
-            await c.close()
+            _line("FAIL", f"comfyui_launch: {'no ' + exe if not found else 'no folder ' + lc.cwd}")
+    for root in storage or [m.posix for m in cfg.paths.mappings]:
+        local = P.to_farm(root, cfg.paths.mappings)
+        ok = os.path.isdir(local)
+        bad += 0 if ok else 1
+        _line(" ok " if ok else "FAIL", f"storage {root}" + (f" -> {local}" if local != root else "")
+              + ("" if ok else "  (not reachable from this machine/account: add it to paths.mappings)"))
+    bad += check_folder("scratch", str(cfg.resolve(cfg.convert.scratch_dir)), min_free_gb=20)
+    bad += check_tools(cfg.convert)
+    bad += check_ocio(Config.model_validate({"workers": [], "ocio": OcioConfig().model_dump(),
+                                             "convert": cfg.convert.model_dump(),
+                                             "paths": {"mappings": [m.model_dump() for m in cfg.paths.mappings]}}))
     print("All good." if not bad else f"{bad} problem(s).")
     return 1 if bad else 0
 
@@ -193,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
     agent = sub.add_parser("agent", help="run an agent for this machine's ComfyUI")
     agent.add_argument("--config", dest="agent_config",
                        help="agent.yaml path (default: repo root, or $COMFYFARM_AGENT_CONFIG)")
+    agent.add_argument("--check", action="store_true",
+                       help="check this worker (manager, token, ComfyUI, nodes, storage, scratch, tools) and exit")
     sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
     args = ap.parse_args(argv)
 
@@ -205,6 +301,10 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     if args.cmd == "agent":
+        if args.check:
+            from .config import default_agent_config_path, load_agent_config
+            path = args.agent_config or args.config or default_agent_config_path()
+            return asyncio.run(run_agent_check(load_agent_config(path), path))
         return run_agent(args.agent_config or args.config, args.verbose)
 
     cfg = load_config(args.config)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import stat
 import uuid
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,35 @@ from . import paths as P
 from .errors import ConvertError
 from .textures import file_name, map_outputs
 from .tools import require_tool
+
+
+def readable(path: str) -> None:
+    """Read permission for everyone (and listing, for a folder), on top of what it has: the
+    farm's outputs are for the whole studio, whatever umask ComfyUI or the agent run with.
+    Nothing on Windows, where the share's permissions decide."""
+    if os.name == "nt":
+        return
+    try:
+        mode = os.stat(path).st_mode
+        add = 0o555 if stat.S_ISDIR(mode) else 0o444
+        if mode & add != add:
+            os.chmod(path, stat.S_IMODE(mode) | add)
+    except OSError:
+        pass                            # not ours to change: leave it as it is
+
+
+def makedirs_readable(path: str) -> None:
+    """os.makedirs(path, exist_ok=True), with every folder it creates readable by everyone."""
+    created, p = [], os.path.abspath(path)
+    while not os.path.isdir(p):
+        created.append(p)
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    os.makedirs(path, exist_ok=True)
+    for d in reversed(created):
+        readable(d)
 
 
 def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str, ch: str = "R,G,B") -> list[str]:
@@ -81,6 +111,7 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
             raise ConvertError(f"oiiotool failed writing {os.path.basename(dst)}: "
                                  f"{out.strip()[-600:] or f'exit {code}'}")
         await asyncio.to_thread(os.replace, tmp, dst)
+        readable(dst)
         done += 1
         progress(done, len(work))
 
@@ -110,10 +141,12 @@ def rename_frames(info: dict, ext: str, frame_name: str, mappings: list[PathMapp
     template = info.get("frame_name") or frame_name
     tokens = dict(info.get("name_tokens") or {}, ext=ext)
     for i, n in enumerate(names):
-        os.replace(os.path.join(out_dir, n), os.path.join(out_dir, template.format(frame=first + i, **tokens)))
+        dst = os.path.join(out_dir, template.format(frame=first + i, **tokens))
+        os.replace(os.path.join(out_dir, n), dst)
+        readable(dst)
     pattern = f"{out_dir}/{P.frame_pattern(template).format(**tokens)}"
     return {"frames": len(names), "first": first, "last": first + len(names) - 1,
             "frame_pattern": pattern, "frame_pattern_posix": P.to_posix(pattern, mappings)}
 
 
-__all__ = ["map_command", "write_maps", "rename_frames"]
+__all__ = ["readable", "makedirs_readable", "map_command", "write_maps", "rename_frames"]

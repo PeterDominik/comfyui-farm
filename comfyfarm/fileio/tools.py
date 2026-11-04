@@ -47,8 +47,8 @@ def find_tool(name: str, configured: str | list[str] | None = None) -> list[str]
 def require_tool(cc: ConvertConfig, name: str) -> list[str]:
     cmd = find_tool(name, cc.tools.get(name))
     if not cmd:
-        hint = {"oiiotool": "run scripts\\setup.ps1 (installs OpenImageIO into the gateway's venv)",
-                "ffmpeg": "run scripts\\setup.ps1 (installs imageio-ffmpeg into the gateway's venv)",
+        hint = {"oiiotool": "install the requirements (OpenImageIO) with this machine's setup script in deploy/",
+                "ffmpeg": "install the requirements (imageio-ffmpeg) with this machine's setup script in deploy/",
                 "ffprobe": "it is optional; set convert.tools.ffprobe to use one"}[name]
         raise SequenceError(f"{name} isn't available on the farm machine: {hint}.")
     return cmd

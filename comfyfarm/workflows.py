@@ -261,7 +261,9 @@ class Workflow:
             if info is None:
                 if (ct or "").startswith("ComfyFarm"):
                     problems.append(f"{label}: class {ct} is not installed. It comes with this repo: run "
-                                    f"scripts\\setup.ps1 -ComfyUIDir <ComfyUI folder>, then restart ComfyUI")
+                                    f"deploy\\windows\\setup.ps1 -ComfyUIDir <ComfyUI folder> (Windows) or "
+                                    f"deploy/linux/setup.sh agent --comfyui <ComfyUI folder> (Linux), "
+                                    f"then restart ComfyUI")
                 else:
                     problems.append(f"{label}: class {ct} is not installed (missing custom node pack?)")
                 continue

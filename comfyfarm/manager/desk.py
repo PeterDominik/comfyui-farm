@@ -170,6 +170,12 @@ class Desk:
         return bool(job and attempt and job["status"] in HELD and job["worker"] == name and job["prompt_id"] == attempt)
 
     # ================================================================ messages
+    def ping(self, msg: dict) -> dict:
+        """`comfyfarm agent --check`: the manager's version, and the storage an agent must see."""
+        return {"manager": build(), "lease_seconds": self.lease_seconds,
+                "storage": [m.posix for m in self.cfg.paths.mappings],
+                "known": (msg.get("name") or "") in self.agents}
+
     def hello(self, msg: dict) -> dict:
         name = str(msg.get("name") or "").strip()
         if not name:

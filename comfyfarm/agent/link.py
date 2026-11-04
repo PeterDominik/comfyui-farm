@@ -6,6 +6,7 @@ or refuses the call."""
 from __future__ import annotations
 
 import json
+import os
 
 import httpx
 
@@ -24,6 +25,9 @@ class LocalLink:
 
     def __init__(self, desk):
         self.desk = desk
+
+    async def ping(self, msg: dict) -> dict:
+        return _copy(self.desk.ping(_copy(msg)))
 
     async def hello(self, msg: dict) -> dict:
         return _copy(self.desk.hello(_copy(msg)))
@@ -45,16 +49,49 @@ class LocalLink:
 
 
 class HttpLink:
-    """The manager's /api/v1/agent/... endpoints."""
+    """The manager's /api/v1/agent/... endpoints. `address` is the manager's URL, or the
+    manager.json it writes in the farm's shared folder: read before each call (only when it
+    changed), so an agent follows the manager when it moves."""
 
-    def __init__(self, url: str, token: str = ""):
-        self.url = url.rstrip("/")
-        headers = {"X-Agent-Token": token} if token else {}
-        self.http = httpx.AsyncClient(base_url=self.url + "/api/v1/agent", timeout=30.0, headers=headers)
+    def __init__(self, address: str, token: str = ""):
+        self.address = address.strip()
+        self.token = token
+        self.from_file = not self.address.startswith(("http://", "https://"))
+        self.url = self.address.rstrip("/") if not self.from_file else ""
+        self.http: httpx.AsyncClient | None = None
+        self._mtime: float | None = None
+
+    @property
+    def shown(self) -> str:
+        return f"{self.url or '?'} (from {self.address})" if self.from_file else self.url
+
+    async def _client(self) -> httpx.AsyncClient:
+        if self.from_file:
+            try:
+                mtime = os.stat(self.address).st_mtime
+                if mtime != self._mtime:
+                    with open(self.address, encoding="utf-8") as fh:
+                        url = str(json.load(fh).get("url") or "").rstrip("/")
+                    if not url.startswith(("http://", "https://")):
+                        raise ValueError("it has no url")
+                    self._mtime = mtime
+                    if url != self.url:
+                        await self.close()
+                        self.url = url
+            except (OSError, ValueError, AttributeError) as e:
+                if not self.url:
+                    raise LinkError(f"can't read the manager's address from {self.address}: "
+                                    f"{getattr(e, 'strerror', None) or e}") from None
+                # Keep the address read last time (the share may be briefly unreachable).
+        if self.http is None:
+            headers = {"X-Agent-Token": self.token} if self.token else {}
+            self.http = httpx.AsyncClient(base_url=self.url + "/api/v1/agent", timeout=30.0, headers=headers)
+        return self.http
 
     async def _post(self, path: str, msg: dict, timeout: float = 30.0) -> dict:
+        http = await self._client()
         try:
-            r = await self.http.post(path, json=msg, timeout=timeout)
+            r = await http.post(path, json=msg, timeout=timeout)
         except httpx.HTTPError as e:
             raise LinkError(f"{self.url}: {type(e).__name__}: {e}") from None
         if r.status_code == 401:
@@ -66,6 +103,10 @@ class HttpLink:
             return r.json()
         except ValueError:
             raise LinkError(f"{self.url}{path}: not a JSON reply") from None
+
+    async def ping(self, msg: dict) -> dict:
+        """Reachable, and the token accepted? (`comfyfarm agent --check`; registers nothing.)"""
+        return await self._post("/ping", msg)
 
     async def hello(self, msg: dict) -> dict:
         return await self._post("/hello", msg)
@@ -83,7 +124,9 @@ class HttpLink:
         return await self._post("/report", msg)
 
     async def close(self) -> None:
-        await self.http.aclose()
+        if self.http is not None:
+            http, self.http = self.http, None
+            await http.aclose()
 
 
 __all__ = ["LocalLink", "HttpLink", "LinkError"]

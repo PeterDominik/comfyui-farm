@@ -1,20 +1,23 @@
 <#
 .SYNOPSIS
-  First-time install of the ComfyUI farm gateway (safe to re-run).
+  First-time install on a Windows machine (safe to re-run): a GPU machine's agent, or the
+  whole farm on one machine (standalone). No admin rights needed.
 
 .DESCRIPTION
-  Creates .venv, installs requirements, creates config.yaml from the example if
-  missing, links the farm's own ComfyUI nodes (comfyui_nodes\) into ComfyUI, and runs
-  the preflight check. Run from anywhere:
+  Creates .venv, installs requirements, creates agent.yaml (-Agent) or config.yaml from
+  the example if missing, links the farm's own ComfyUI nodes (comfyui_nodes\) into
+  ComfyUI, and runs the check. Run from anywhere:
 
-    powershell -ExecutionPolicy Bypass -File scripts\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
+    powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -Agent -ComfyUIDir "C:\ComfyUI_windows_portable"
+    powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
 #>
 param(
+    [switch]$Agent,            # a GPU machine for a manager elsewhere (agent.yaml), not standalone (config.yaml)
     [string]$Python = "",      # optional: full path to python.exe (3.10+)
     [string]$ComfyUIDir = ""   # ComfyUI's folder (portable install, the one holding custom_nodes, or custom_nodes)
 )
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
+$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # the repo
 Set-Location $Root
 
 function Find-Python {
@@ -47,9 +50,10 @@ Write-Host "Installing requirements..."
 & $venvPy -m pip install -r requirements.txt --quiet
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
-if (-not (Test-Path "config.yaml")) {
-    Copy-Item "config.example.yaml" "config.yaml"
-    Write-Host "Created config.yaml from config.example.yaml - review it before going live." -ForegroundColor Yellow
+$cfgFile = if ($Agent) { "agent.yaml" } else { "config.yaml" }
+if (-not (Test-Path $cfgFile)) {
+    Copy-Item ($cfgFile -replace '\.yaml$', '.example.yaml') $cfgFile
+    Write-Host "Created $cfgFile from its example - edit it before going live." -ForegroundColor Yellow
 }
 New-Item -ItemType Directory -Force -Path data, logs | Out-Null
 
@@ -83,13 +87,25 @@ if ($ComfyUIDir) {
 # EXR inputs use oiiotool (OpenImageIO) and movie inputs use ffmpeg (imageio-ffmpeg);
 # both were installed into .venv above with the requirements. The check below lists them.
 
-Write-Host "`nPreflight check (ComfyUI must be running for the worker checks):" -ForegroundColor Cyan
-& $venvPy -m comfyfarm check
-
-Write-Host @"
+if ($Agent) {
+    Write-Host "`nChecking this worker (ComfyUI must be running, or set comfyui_launch in agent.yaml):" -ForegroundColor Cyan
+    & $venvPy -m comfyfarm agent --check
+    Write-Host @"
 
 Next:
-  Try it now:        scripts\run_gateway.bat   then open http://localhost:8000
-  Run as services:   scripts\install_services.ps1   (as Administrator)
-  Open the port:     scripts\open_firewall.ps1      (as Administrator)
+  Edit agent.yaml (name, manager, token, paths), then check again:
+                     .venv\Scripts\python.exe -m comfyfarm agent --check
+  Try it now:        .venv\Scripts\python.exe -m comfyfarm agent     (Ctrl+C to stop)
+  Start at logon:    deploy\windows\install_startup.ps1 -StartNow  (no admin; restarts it if it exits)
 "@
+} else {
+    Write-Host "`nPreflight check (ComfyUI must be running for the worker checks):" -ForegroundColor Cyan
+    & $venvPy -m comfyfarm check
+    Write-Host @"
+
+Next:
+  Try it now:        deploy\windows\run_gateway.bat   then open http://localhost:8000
+  Run as services:   deploy\windows\install_services.ps1   (as Administrator)
+  Open the port:     deploy\windows\open_firewall.ps1      (as Administrator)
+"@
+}

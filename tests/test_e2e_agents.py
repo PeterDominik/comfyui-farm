@@ -3,9 +3,12 @@
 over HTTP with an agent token, driven through the artist client.
 
 gpu-b sees show storage under another folder (a junction on Windows, a symlink elsewhere),
-as a machine with another mount would, and each agent has its own scratch folder. Covers
-jobs spread over both, inputs converted on the agent that runs them, cancels, an agent
-restarting, an agent going away for good, and the manager restarting.
+as a machine with another mount would, finds the manager through the manager.json in the
+farm's shared folder, and starts its own ComfyUI (comfyui_launch). Each agent has its own
+scratch folder. Covers jobs spread over both, inputs converted on the agent that runs
+them, cancels, an agent restarting, an agent going away for good, the manager
+restarting, an agent keeping its ComfyUI running, `comfyfarm agent --check`, and the
+shared client finding the manager.
 
     python -m unittest tests.test_e2e_agents -v
 """
@@ -14,6 +17,7 @@ import importlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -65,6 +69,7 @@ log_dir: {root}/logs
 workflows_dir: {REPO.as_posix()}/workflows
 workers: []
 agents: {{token: {TOKEN}}}
+share: {{dir: "{root}/share"}}
 paths:
   mappings: [{{posix: /rdo/shows, windows: "{root}/shows"}}]
   output_root: "{root}/shows/{{show}}/_project_ref/_cg/comfyui/renders"
@@ -72,10 +77,18 @@ farm: {{lost_after_seconds: {LEASE}}}
 ocio: {{config: "{root}/ocio/config.ocio"}}
 convert: {{scratch_dir: {root}/manager/scratch, tools: {{oiiotool: {oiiotool}}}}}
 """)
+        mock = [Path(sys.executable).as_posix(), (REPO / "tools/mock_comfyui.py").as_posix()]
+        manager = {"gpu-a": f"http://127.0.0.1:{cls.port}", "gpu-b": f"{root}/share/manager.json"}
+        launch = {"gpu-a": "", "gpu-b": f"""
+comfyui_launch:
+  command: {json.dumps(mock + ["--port", str(cls.comfy_ports["gpu-b"]), "--output",
+                              f"{root}/comfy-output-gpu-b", "--delay", "0.06"])}
+  restart_after: 2
+  startup_seconds: 30"""}
         for name in AGENTS:
             (cls.tmp / f"{name}.yaml").write_text(f"""
 name: {name}
-manager: http://127.0.0.1:{cls.port}
+manager: "{manager[name]}"
 token: {TOKEN}
 comfyui: http://127.0.0.1:{cls.comfy_ports[name]}
 max_inflight: 1
@@ -87,13 +100,12 @@ heartbeat_wait: 2
 retry_seconds: 0.5
 health_seconds: 0.5
 reconcile_seconds: 1.5
-delete_comfy_history: false
+delete_comfy_history: false{launch[name]}
 """)
         os.environ["FAKE_OIIOTOOL_LOG"] = str(cls.tmp / "oiiotool.log")
         os.environ["COMFYFARM_URL"] = f"http://127.0.0.1:{cls.port}"
         cls.comfy, cls.agents, cls.manager = {}, {}, None
-        for name in AGENTS:
-            cls.start_comfy(name)
+        cls.start_comfy("gpu-a")            # gpu-b's agent starts its own
         cls.start_manager()
         for name in AGENTS:
             cls.start_agent(name)
@@ -106,6 +118,9 @@ delete_comfy_history: false
             if p and p.poll() is None:
                 p.terminate()
                 p.wait(10)
+        pid = cls.launched_comfy()
+        if pid:
+            os.kill(pid, signal.SIGTERM)
         if os.environ.get("KEEP_E2E"):
             print(f"\nkept {cls.tmp}")
         else:
@@ -135,6 +150,14 @@ delete_comfy_history: false
             cls.agents[name] = subprocess.Popen(
                 [sys.executable, "-m", "comfyfarm", "agent", "--config", str(cls.tmp / f"{name}.yaml")],
                 cwd=str(REPO), stdout=log, stderr=subprocess.STDOUT)
+
+    @classmethod
+    def launched_comfy(cls) -> int | None:
+        """The pid of the ComfyUI gpu-b's agent started."""
+        try:
+            return int((cls.tmp / "logs/comfyui-gpu-b.pid").read_text())
+        except (OSError, ValueError):
+            return None
 
     @classmethod
     def kill_agent(cls, name):
@@ -261,6 +284,53 @@ delete_comfy_history: false
         self.assertEqual((done["status"], done["attempts"]), ("done", 1), done.get("error"))
         self.assertEqual(done["outputs"]["frames"], 12)
         self.wait_agents_ready()
+
+    def test_08_the_agent_keeps_its_comfyui_running(self):
+        log = self.tmp / "logs/comfyui-gpu-b.log"
+        self.assertIn("started by agent gpu-b", log.read_text())
+        old = self.launched_comfy()
+        os.kill(old, getattr(signal, "SIGKILL", signal.SIGTERM))     # ComfyUI crashes
+        end = time.time() + 60
+        while time.time() < end and self.launched_comfy() == old:
+            time.sleep(0.2)
+        self.assertNotEqual(self.launched_comfy(), old, "gpu-b's agent didn't start ComfyUI again")
+        self.wait_agents_ready()
+        self.assertEqual(log.read_text().count("started by agent gpu-b"), 2)
+        jobs = [self.submit() for _ in range(4)]
+        done = [self.wait_for(j["id"], ("done", "failed")) for j in jobs]
+        self.assertEqual([d["status"] for d in done], ["done"] * 4)
+
+    def test_09_agent_check(self):
+        def check(name, *extra):
+            r = subprocess.run([sys.executable, "-m", "comfyfarm", "agent", "--config", str(self.tmp / f"{name}.yaml"),
+                                "--check", *extra], cwd=str(REPO), capture_output=True, text=True, timeout=120)
+            return r.returncode, {line.strip() for line in r.stdout.splitlines()}, r.stdout + r.stderr
+
+        for name in AGENTS:
+            _, lines, out = check(name)
+            ok = [ln for ln in lines if ln.startswith("[ ok ]")]
+            self.assertTrue(any("reachable, token accepted" in ln for ln in ok), out)
+            self.assertTrue(any(ln.startswith(f"[ ok ] worker {name} http://127.0.0.1:") for ln in ok), out)
+            self.assertTrue(any(f"{name} has every node, input and model ltx25_alpha_gen needs" in ln for ln in ok), out)
+            self.assertTrue(any(ln.startswith("[ ok ] storage /rdo/shows") for ln in ok), out)
+            self.assertTrue(any(ln.startswith("[ ok ] scratch ") for ln in ok), out)
+        self.assertTrue(any("manager.json" in ln and "token accepted" in ln for ln in check("gpu-b")[1]))
+        self.assertTrue(any(ln.startswith("[ ok ] ComfyUI is started with:") for ln in check("gpu-b")[1]))
+        bad = self.tmp / "bad-token.yaml"
+        bad.write_text((self.tmp / "gpu-a.yaml").read_text().replace(TOKEN, "wrong"))
+        code, lines, out = check("bad-token")
+        self.assertEqual(code, 1, out)
+        self.assertTrue(any(ln.startswith("[FAIL] manager") and "refused the agent token" in ln for ln in lines), out)
+
+    def test_10_the_shared_client_finds_the_manager(self):
+        share = self.tmp / "share"
+        self.assertEqual(json.loads((share / "manager.json").read_text())["url"], f"http://127.0.0.1:{self.port}")
+        env = {k: v for k, v in os.environ.items() if k not in ("COMFYFARM_URL", "COMFYFARM_ADDRESS_FILE")}
+        r = subprocess.run([sys.executable, str(share / "client/comfyfarm_client.py"), "workflows"], env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ltx25_alpha_gen", r.stdout)
+        self.assertTrue((share / "client/nuke/install_for_me.py").is_file())
 
     def test_07_agents_need_the_token(self):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/v1/agent/hello", method="POST",

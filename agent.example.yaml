@@ -7,18 +7,31 @@
 # output folders) comes with each job from the manager, so it's the same on every worker.
 
 name: rtx5090-a                  # as the dashboard shows it; unique on the farm
-manager: http://pipeline-ws42:8000   # the manager's address (its host name or IP, and port)
+# The manager's address, or the manager.json it writes in the farm's shared folder (followed
+# if the manager moves), e.g. /rdo/bank/comfy_farm/manager.json on Linux.
+manager: http://pipeline-ws42:8000
 token: ''                        # the manager's agents.token, if it has one
 comfyui: http://127.0.0.1:8188   # this machine's ComfyUI. Keep it on localhost (no --listen):
                                  # only this agent talks to it, and agents need no open port
 max_inflight: 2                  # jobs in ComfyUI at once: one running + one waiting. One more
                                  # is converted ahead, so the GPU never waits on a conversion
 
+# Optional: how to start ComfyUI. The agent then starts it when it isn't running, and again
+# if it dies (output in logs/comfyui-<name>.log). Stopping the agent leaves ComfyUI running.
+comfyui_launch:
+  command: []                    # e.g. [/local/ComfyUI/venv/bin/python, main.py, --port, '8188']
+                                 # or [C:/ComfyUI_windows_portable/python_embeded/python.exe, -s,
+                                 #     ComfyUI/main.py, --windows-standalone-build, --disable-auto-launch]
+  cwd: ''                        # ComfyUI's folder
+  env: {}                        # e.g. {CUDA_VISIBLE_DEVICES: '0'}
+  restart_after: 30              # seconds down before it's started again
+  startup_seconds: 300           # how long a start may take to answer
+
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 
 paths:
-  # How this machine sees show storage. Linux machines that see /rdo/shows need nothing
-  # here; Windows machines map it to the share:
+  # How this machine sees show storage. Linux machines that see /rdo/shows as it is need
+  # nothing here; Windows machines map it to the share:
   mappings:
     - posix: /rdo/shows
       windows: //rodeofx.com/smb/shows
