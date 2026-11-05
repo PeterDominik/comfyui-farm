@@ -11,6 +11,9 @@ Image":
     1001-1158), so the workflow also runs by hand in ComfyUI.
   - Alpha comes out as a MASK the way core Load Image gives it (1 - alpha; 64×64 zeros
     without alpha). The outputs match VHS Load Images (Path): IMAGE, MASK, frame_count.
+  - `optional` (set by the farm for an optional input left empty): an empty path gives
+    one 64×64 black image instead of an error, so the graph still validates when a
+    switch skips that branch. Off, an empty path is an error, as a forgotten input should be.
 The file handling is the farm's own (comfyfarm.fileio.farmnodes.input_files), so the
 manager checks an input exactly the way these nodes will read it.
 """
@@ -29,6 +32,17 @@ _PATH_TIP = ("A file, or a frame pattern (%04d, ####, $F4) with an optional rang
              "/shows/x/plate.%04d.png 1001-1158. The farm sets it per job.")
 _FRAMES_TIP = ("The exact frames to read, in order: 1001-1158, or 1001,1002,1011. Empty = the range in the "
                "path, or every frame of the pattern.")
+_OPTIONAL_TIP = ("On: an empty path gives one 64×64 black image instead of an error (an optional input left "
+                 "empty; the farm sets it).")
+
+
+def _empty(path, optional) -> bool:
+    """An optional input left empty: nothing to read."""
+    return bool(optional) and isinstance(path, str) and not path.strip()
+
+
+def _blank(count: int = 1):
+    return np.zeros((count, 64, 64, 3), dtype=np.float32), np.zeros((count, 64, 64), dtype=np.float32)
 
 
 def read_image(path: str) -> tuple[np.ndarray, np.ndarray | None]:
@@ -84,11 +98,13 @@ def load_batch(files: list[str], threads: int | None = None) -> tuple[np.ndarray
     return images, masks
 
 
-def _signature(path: str | None, frames: str):
+def _signature(path: str | None, frames: str, optional: bool = False):
     """Changes when any file read changes, so ComfyUI doesn't reuse an older load. A path
     from another node isn't known yet: read again every time."""
     if path is None:
         return float("nan")
+    if _empty(path, optional):
+        return "empty"
     try:
         files = input_files(path, frames)
     except SequenceError as e:
@@ -103,8 +119,8 @@ def _signature(path: str | None, frames: str):
     return "\n".join(parts)
 
 
-def _check(path: str | None, frames: str) -> bool | str:
-    if path is None:                    # from another node (a run by hand): checked when it runs
+def _check(path: str | None, frames: str, optional: bool = False) -> bool | str:
+    if path is None or _empty(path, optional):   # from another node (checked when it runs), or left empty
         return True
     try:
         input_files(path, frames)
@@ -125,7 +141,8 @@ class ComfyFarmLoadImages:
     def INPUT_TYPES(cls):
         return {
             "required": {"path": ("STRING", {"default": "", "tooltip": _PATH_TIP})},
-            "optional": {"frames": ("STRING", {"default": "", "tooltip": _FRAMES_TIP})},
+            "optional": {"frames": ("STRING", {"default": "", "tooltip": _FRAMES_TIP}),
+                         "optional": ("BOOLEAN", {"default": False, "tooltip": _OPTIONAL_TIP})},
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "INT")
@@ -137,14 +154,17 @@ class ComfyFarmLoadImages:
 
     # ComfyUI leaves out inputs that come from another node: path=None.
     @classmethod
-    def VALIDATE_INPUTS(cls, path=None, frames=""):
-        return _check(path, frames)
+    def VALIDATE_INPUTS(cls, path=None, frames="", optional=False):
+        return _check(path, frames, optional)
 
     @classmethod
-    def IS_CHANGED(cls, path=None, frames=""):
-        return _signature(path, frames)
+    def IS_CHANGED(cls, path=None, frames="", optional=False):
+        return _signature(path, frames, optional)
 
-    def load(self, path, frames=""):
+    def load(self, path, frames="", optional=False):
+        if _empty(path, optional):
+            image, mask = _tensors(*_blank())
+            return (image, mask, 1)
         files = [f for _, f in input_files(path, frames)]
         images, masks = load_batch(files)
         image, mask = _tensors(images, masks)
@@ -158,7 +178,8 @@ class ComfyFarmLoadImage:
     def INPUT_TYPES(cls):
         return {"required": {"path": ("STRING", {
             "default": "", "tooltip": "An image file, or a frame pattern and one frame: /shows/x/plate.%04d.png 1050. "
-                                      "The farm sets it per job."})}}
+                                      "The farm sets it per job."})},
+                "optional": {"optional": ("BOOLEAN", {"default": False, "tooltip": _OPTIONAL_TIP})}}
 
     RETURN_TYPES = ("IMAGE", "MASK")
     RETURN_NAMES = ("IMAGE", "MASK")
@@ -175,8 +196,8 @@ class ComfyFarmLoadImage:
         return files[0][1]
 
     @classmethod
-    def VALIDATE_INPUTS(cls, path=None):
-        if path is None:
+    def VALIDATE_INPUTS(cls, path=None, optional=False):
+        if path is None or _empty(path, optional):
             return True
         try:
             cls._one(path)
@@ -185,10 +206,13 @@ class ComfyFarmLoadImage:
         return True
 
     @classmethod
-    def IS_CHANGED(cls, path=None):
-        return _signature(path, "")
+    def IS_CHANGED(cls, path=None, optional=False):
+        return _signature(path, "", optional)
 
-    def load(self, path):
+    def load(self, path, optional=False):
+        if _empty(path, optional):
+            image, mask = _tensors(*_blank())
+            return (image, mask)
         images, masks = load_batch([self._one(path)])
         image, mask = _tensors(images, masks)
         return (image, mask)

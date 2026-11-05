@@ -45,7 +45,13 @@ class Port:
 
     takes: image (exactly one image: a sequence or movie must name its frame) or images
     (a batch of frames). per_run (texture workflows): the most tiles one run takes; more
-    make a set of runs into one folder."""
+    make a set of runs into one folder.
+
+    A workflow with several inputs names one `primary`: it names the outputs and numbers
+    their frames. Another input with `match: <primary>` is read at the primary's frames
+    (a matte for a plate). An optional input (required: false) left empty writes its
+    `empty` values into the graph (e.g. a switch that skips its branch); given, its
+    `given` values."""
     name: str                       # its param
     takes: str = "images"
     loader: dict = field(default_factory=dict)      # {node, class}
@@ -53,6 +59,11 @@ class Port:
     work_resolution: int | None = None
     max_frames: int | None = None
     per_run: int | None = None
+    primary: bool = False
+    match: str | None = None
+    required: bool = True
+    empty: list = field(default_factory=list)       # [{node, input, class, value}] when left empty
+    given: list = field(default_factory=list)       # [{node, input, class, value}] when given
 
     @property
     def adapter(self) -> L.Loader | None:
@@ -215,12 +226,17 @@ class Workflow:
             if p.get("type") == "input":
                 self.ports[pname] = Port(pname, takes=p.get("takes") or "images", loader=p.get("loader") or {},
                                          path_node=p.get("path_node"), work_resolution=p.get("work_resolution"),
-                                         max_frames=(p.get("frames") or {}).get("max"), per_run=p.get("per_run"))
+                                         max_frames=(p.get("frames") or {}).get("max"), per_run=p.get("per_run"),
+                                         primary=bool(p.get("primary", False)), match=p.get("match"),
+                                         required=bool(p.get("required", False)),
+                                         empty=list(p.get("empty") or []), given=list(p.get("given") or []))
             elif p.get("type") == "sequence":
-                self.ports[pname] = Port(pname, loader=legacy.get("loader") or {}, path_node=legacy.get("path_node"))
+                self.ports[pname] = Port(pname, loader=legacy.get("loader") or {}, path_node=legacy.get("path_node"),
+                                         required=bool(p.get("required", False)))
         # Inputs larger than this (pixels, longer side) are scaled down to it before the
         # workflow runs, keeping their aspect (convert.resolve_input). None = as they are.
-        self.work_resolution = m.get("work_resolution") or (self.port.work_resolution if self.port else None)
+        self.manifest_work_resolution = m.get("work_resolution") or None    # for every input without its own
+        self.work_resolution = self.manifest_work_resolution or (self.port.work_resolution if self.port else None)
         self.outputs: dict = m.get("outputs") or {}
         # Texture workflows: several map save nodes, written as EXRs named by the TEX
         # convention (see textures.py) instead of one renamed frame sequence.
@@ -238,8 +254,14 @@ class Workflow:
 
     @property
     def port(self) -> Port | None:
-        """The workflow's image input (one per workflow for now)."""
-        return next(iter(self.ports.values()), None)
+        """The primary image input: it names the outputs and numbers their frames (the only
+        one, or the one marked primary)."""
+        return next((p for p in self.ports.values() if p.primary), None) or next(iter(self.ports.values()), None)
+
+    @property
+    def other_ports(self) -> list[Port]:
+        """The inputs besides the primary, in the manifest's order."""
+        return [p for p in self.ports.values() if p is not self.port]
 
     @property
     def sequence_param(self) -> str | None:
@@ -287,10 +309,13 @@ class Workflow:
                     problems.append(f"param {p.name}: bad pattern ({e})")
             for t in p.targets:
                 problems += self._check_target(f"param {p.name}", t.node, t.cls, t.input)
-        for t in GATEWAY_TYPES:
+        for t in ("sequence", "output_folder"):         # several inputs are written `type: input`
             names = [n for n, p in self.params.items() if p.type == t]
             if len(names) > 1:
                 problems.append(f"only one param may have type {t} (found {', '.join(names)})")
+        kinds = {p.type for p in self.params.values() if p.type in INPUT_TYPES}
+        if len(kinds) > 1:
+            problems.append("inputs are written either `type: input` or the older `type: sequence`, not both")
         if self.output_folder_param and not (self.outputs.get("frames") or self.textures):
             problems.append(f"param {self.output_folder_param}: type output_folder needs outputs.frames "
                             f"or textures")
@@ -308,8 +333,14 @@ class Workflow:
                             f"e.g. 1024; leave it out to use inputs as they are")
         elif wr and not self.port:
             problems.append("work_resolution needs an input param (it scales the input)")
-        if len(self.ports) > 1:
-            problems.append(f"only one input param per workflow for now (found {', '.join(self.ports)})")
+        primaries = [n for n, p in self.ports.items() if p.primary]
+        if len(primaries) > 1:
+            problems.append(f"only one input can be primary (found {', '.join(primaries)})")
+        elif len(self.ports) > 1 and not primaries:
+            problems.append(f"several inputs ({', '.join(self.ports)}): mark the one that names and numbers the "
+                            f"outputs primary: true")
+        if len(self.ports) > 1 and self.textures:
+            problems.append("texture workflows take one input")
         for port in self.ports.values():
             problems += self._check_port(port)
         for nid, n in self.template.items():
@@ -364,6 +395,30 @@ class Workflow:
                 problems.append(f"{where}: per_run splits texture inputs into runs; frame inputs can't be split yet")
         if self._batch_twice:
             problems.append(f"{where}: per_run and textures.batch say the same thing; keep per_run")
+        main = self.port
+        if port is main:
+            if len(self.ports) > 1 and not port.required:
+                problems.append(f"{where}: the primary input names the outputs, so it must be required")
+            if port.match:
+                problems.append(f"{where}: the primary input can't match another")
+        else:
+            if port.per_run is not None:
+                problems.append(f"{where}: per_run is for the primary input")
+            if port.match is not None and port.match != main.name:
+                problems.append(f"{where}: match names the primary input ({main.name}), not {port.match!r}")
+            elif port.match and port.takes == "image" and main.takes == "images":
+                problems.append(f"{where}: takes one image, so it can't match {main.name}'s frames")
+        if not port.required and port is not main and ad.lists_folder:
+            problems.append(f"{where}: an optional input needs a ComfyFarm loader ({ad.cls} can't be left empty)")
+        for kind in ("empty", "given"):
+            sets = getattr(port, kind)
+            if sets and port.required:
+                problems.append(f"{where}.{kind}: only optional inputs (required: false) can be left empty")
+            for i, t in enumerate(sets):
+                if not isinstance(t, dict) or "node" not in t or "input" not in t or "value" not in t:
+                    problems.append(f"{where}.{kind}[{i}]: needs node, input and value")
+                    continue
+                problems += self._check_target(f"{where}.{kind}[{i}]", str(t["node"]), t.get("class"), t["input"])
         return problems
 
     def check_object_info(self, object_info: dict) -> list[str]:
@@ -437,7 +492,9 @@ class Workflow:
 
     def build(self, values: dict, seq=None, out_dir: str | None = None,
               frames_prefix: str | None = None, preview_prefix: str | None = None,
-              textures: dict | None = None) -> dict:
+              textures: dict | None = None, inputs: dict | None = None) -> dict:
+        """The prompt for one run. `seq` is the primary input as resolved, `inputs` the
+        others by name (missing or None: left empty)."""
         prompt = copy.deepcopy(self.template)
         for name, p in self.params.items():
             if p.type in INPUT_TYPES or p.naming or name not in values:
@@ -446,11 +503,9 @@ class Workflow:
                 prompt[t.node]["inputs"][t.input] = values[name]
         port = self.port
         if seq is not None and port:
-            pn = port.path_node
-            if pn:
-                rng = "" if seq.first is None else f" {seq.first}" if seq.first == seq.last else f" {seq.first}-{seq.last}"
-                prompt[str(pn["node"])]["inputs"][pn["input"]] = seq.farm_path + rng
-            port.adapter.fill(prompt[str(port.loader["node"])]["inputs"], seq)
+            self._fill_port(prompt, port, seq)
+            for other in self.other_ports:      # the other inputs: given, or left empty
+                self._fill_port(prompt, other, (inputs or {}).get(other.name))
         o = self.outputs
         if out_dir:
             if o.get("root_node"):
@@ -473,12 +528,34 @@ class Workflow:
                 inputs[self.textures.prefix_input] = mp["prefix"]
         return prompt
 
+    @staticmethod
+    def _fill_port(prompt: dict, port: Port, seq) -> None:
+        if seq is None:
+            port.adapter.fill_empty(prompt[str(port.loader["node"])]["inputs"])
+        else:
+            pn = port.path_node
+            if pn:
+                rng = "" if seq.first is None else f" {seq.first}" if seq.first == seq.last else f" {seq.first}-{seq.last}"
+                prompt[str(pn["node"])]["inputs"][pn["input"]] = seq.farm_path + rng
+            port.adapter.fill(prompt[str(port.loader["node"])]["inputs"], seq)
+        for t in port.empty if seq is None else port.given:
+            prompt[str(t["node"])]["inputs"][t["input"]] = t["value"]
+
     def schema(self) -> dict:
+        params = []
+        for name, p in self.params.items():
+            d = p.schema()
+            port = self.ports.get(name)
+            if port is not None:
+                d["primary"] = port is self.port        # names the outputs (the destination line)
+                if port.match:
+                    d["match"] = port.match             # read at that input's frames
+            params.append(d)
         return {
             "name": self.name, "label": self.label, "description": self.description,
             "tag": self.tag, "enabled": self.enabled, "problems": self.problems,
             "work_resolution": self.work_resolution,
-            "params": [p.schema() for p in self.params.values()],
+            "params": params,
             "maps": [mp.channel for mp in self.textures.maps] if self.textures else None,
         }
 

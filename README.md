@@ -342,7 +342,8 @@ installed: the client is standard library only.
    *Submit* tab, fill in the form: paste the input path, *Browse…*, or select the Read (or
    the Write that rendered it) and click *From selected*, which fills in `path first-last`
    from the node. For a workflow that takes one image (`wan22_i2i`), it fills in
-   `path <current frame>` instead: go to the frame first.
+   `path <current frame>` instead: go to the frame first. A workflow with several inputs
+   (a plate and its matte) has a field and a *From selected* for each.
 3. Check the line under the form. It shows the frame count, the exact output folder, and
    the first and last file names, or the problem (missing frames, no shot found in the
    path, and so on) before anything is queued.
@@ -713,7 +714,25 @@ outputs:                       # nodes the gateway points at each job's versione
     name its frame (`…/plate.%04d.png 1050`); without one it's refused with the frames it
     has. The output is numbered like that frame.
   - Older manifests write an `images` input as `type: sequence`, with `loader` and
-    `path_node` in a `sequence:` section. Both work; clients see either as the same field. An output folder is checked (parent exists, on show storage,
+    `path_node` in a `sequence:` section. Both work; clients see either as the same field.
+- **Several inputs** (a plate, its matte, a reference image): one `type: input` param each.
+  - One is `primary: true`. It must be required; it names the outputs and numbers their frames.
+  - `match: <primary>`: read at the primary's frames. Given as a pattern alone, the matte
+    gets the plate's range; with other frames it's refused.
+  - `required: false`: may be left empty. Left empty, its loader gets an empty path with
+    `optional` on (a small black image, so the graph still validates), and its `empty`
+    values are written into the graph: point them at whatever switches that branch off.
+    `given` values are written when it's given.
+  - Each input converts into its own scratch folder. Texture workflows take one input.
+
+  ```yaml
+  plate: {type: input, takes: images, primary: true, required: true,
+          loader: {node: "9104", class: ComfyFarmLoadImages}}
+  matte: {type: input, takes: images, match: plate, required: false,
+          loader: {node: "9120", class: ComfyFarmLoadImages},
+          empty: [{node: "9121", input: value, class: PrimitiveBoolean, value: false}],
+          given: [{node: "9121", input: value, class: PrimitiveBoolean, value: true}]}
+  ``` An output folder is checked (parent exists, on show storage,
   outside `.published`) and used as the root for `paths.output_dir` (`{root}/{shot}`);
   the version is the first one with no files there and no queued job claiming it.
   `POST /api/v1/plan` shows the result without queuing.

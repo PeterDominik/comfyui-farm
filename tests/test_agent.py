@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_textures import FAKE_OIIOTOOL, OCIO_CONFIG
-from test_workflows import fake_object_info
+from test_workflows import fake_object_info, plate_matte_workflow
 
 from comfyfarm.config import AgentConfig, Config
 from comfyfarm.fileio import farmnodes
@@ -718,6 +718,55 @@ class AgentTests(unittest.TestCase):
         Path(self.root, "shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/photo.png").write_bytes(b"x")
         plan = self.farm.plan("wan22_i2i", {"input": shown.rpartition("/")[0] + "/photo.png"})   # a still: as it is
         self.assertEqual((plan["seq"].frame_count, plan["first_file"].endswith(".0001.png")), (1, True))
+
+    # ------------------------------------------------------------ several inputs
+    def plate_matte(self):
+        """The sample three-input workflow, on the farm and on the agent's ComfyUI."""
+        wf = plate_matte_workflow(Path(self.tmp, "wf-pm"))
+        REGISTRY.workflows[wf.name] = wf
+        self.addCleanup(REGISTRY.workflows.pop, wf.name, None)
+        oi = dict(INSTALLED)
+        for cls, spec in fake_object_info(wf.template).items():
+            oi.setdefault(cls, spec)
+        return self.ready(self.agent(comfy=FakeComfy(oi)))
+
+    def test_several_inputs_each_converted_into_its_own_folder(self):
+        a = self.plate_matte()
+        # The matte as a pattern alone: read at the plate's frames. An EXR: converted.
+        job = self.farm.submit("plate_matte", {"plate": f"{SEQ} 1001-1003", "matte": EXR}, "ann")
+        info = job["info"]
+        self.assertEqual((info["inputs"]["matte"]["first"], info["inputs"]["matte"]["last"]), (1001, 1003))
+        self.assertIsNone(info["inputs"]["reference"])
+        self.assertEqual(info["inputs"]["matte"]["convert"]["dst_dir"], f"{self.root}/scratch/{job['id']}/matte/")
+        pid = self.dispatched(a, job)
+        prompt = a.client.prompts[pid]
+        scratch = f"{self.root}/scratch-gpu1/{job['id']}"
+        self.assertEqual(prompt["1"]["inputs"]["frames"], "1001-1003")             # the plate, read in place
+        self.assertTrue(prompt["1"]["inputs"]["path"].endswith("/hi/abc_0010.pre.v1.%04d.png"))
+        self.assertEqual(prompt["2"]["inputs"], {"path": f"{scratch}/matte/abc_0010.plate.v1.%04d.png",
+                                                 "frames": "1001-1003"})
+        self.assertEqual(sorted(os.listdir(f"{scratch}/matte")), [f"abc_0010.plate.v1.{f}.png" for f in (1001, 1002, 1003)])
+        self.assertEqual((prompt["4"]["inputs"]["value"], prompt["5"]["inputs"]["value"]), (True, False))
+        self.assertEqual(prompt["3"]["inputs"], {"path": "", "optional": True})   # the reference, left empty
+        done = self.finish(a, job["id"], pid)
+        self.assertEqual(done["status"], "done", done["error"])
+        self.assertEqual(sorted(os.listdir(done["output_dir"])),                  # named after the plate
+                         [f"abc_0010.pre.v1.pm_v001.{f}.png" for f in (1001, 1002, 1003)])
+        self.assertFalse(os.path.exists(scratch), "the matte's scratch folder is cleaned up too")
+
+    def test_a_matte_must_cover_the_plates_frames(self):
+        self.plate_matte()
+        with self.assertRaisesRegex(SequenceError, r"^Matte has frames 1001-1002, and Plate 1001-1003: they must be "
+                                                   r"the same frames\.$"):
+            self.farm.plan("plate_matte", {"plate": f"{SEQ} 1001-1003", "matte": f"{EXR} 1001-1002"})
+        with self.assertRaisesRegex(SequenceError, r"^Matte: Missing frames .*1004"):
+            self.farm.plan("plate_matte", {"plate": f"{SEQ} 1001-1003", "matte": f"{EXR} 1001-1004"})
+        with self.assertRaisesRegex(SequenceError, r"^Reference takes one image, and .* gives more \(a sequence of 3 "
+                                                   r"frames, 1001-1003\)"):
+            self.farm.plan("plate_matte", {"plate": f"{SEQ} 1001-1003", "reference": SEQ})
+        plan = self.farm.plan("plate_matte", {"plate": f"{SEQ} 1002", "reference": f"{SEQ} 1001"})
+        self.assertEqual(self.farm.plan_summary(plan)["inputs"]["reference"]["first"], 1001)
+        self.assertIsNone(self.farm.plan_summary(plan)["inputs"]["matte"])
 
     # ------------------------------------------------------------ farm nodes after a pull
     def test_old_farm_nodes_restart_comfyui_once_idle(self):

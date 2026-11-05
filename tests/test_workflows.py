@@ -61,6 +61,41 @@ def tiny_workflow(directory: Path) -> Workflow:
     return Workflow(directory)
 
 
+def plate_matte_workflow(directory: Path) -> Workflow:
+    """A workflow with three inputs: a plate (primary), a matte read at the plate's frames,
+    and a reference image. The matte and reference are optional: left empty, each flips
+    its switch (a boolean the graph reads) off."""
+    template = {
+        "1": {"class_type": "ComfyFarmLoadImages", "inputs": {"path": "", "frames": ""}, "_meta": {"title": "PLATE"}},
+        "2": {"class_type": "ComfyFarmLoadImages", "inputs": {"path": "", "frames": ""}, "_meta": {"title": "MATTE"}},
+        "3": {"class_type": "ComfyFarmLoadImage", "inputs": {"path": ""}, "_meta": {"title": "REFERENCE"}},
+        "4": {"class_type": "PrimitiveBoolean", "inputs": {"value": True}, "_meta": {"title": "USE MATTE"}},
+        "5": {"class_type": "PrimitiveBoolean", "inputs": {"value": True}, "_meta": {"title": "USE REFERENCE"}},
+        "6": {"class_type": "ComfyFarmSaveImage", "inputs": {"images": ["1", 0], "output_path": "", "filename_prefix": "x",
+                                                             "compress_level": 0}},
+    }
+    switch = lambda node, value: [{"node": node, "input": "value", "class": "PrimitiveBoolean", "value": value}]  # noqa: E731
+    manifest = {
+        "name": "plate_matte", "tag": "pm", "template": "workflow_api.json",
+        "params": {
+            "plate": {"type": "input", "takes": "images", "primary": True, "required": True, "label": "Plate",
+                      "loader": {"node": "1", "class": "ComfyFarmLoadImages"}},
+            "matte": {"type": "input", "takes": "images", "match": "plate", "label": "Matte",
+                      "loader": {"node": "2", "class": "ComfyFarmLoadImages"},
+                      "empty": switch("4", False), "given": switch("4", True)},
+            "reference": {"type": "input", "takes": "image", "label": "Reference",
+                          "loader": {"node": "3", "class": "ComfyFarmLoadImage"}, "empty": switch("5", False)},
+            "output_path": {"type": "output_folder"},
+        },
+        "outputs": {"frames": {"node": "6", "class": "ComfyFarmSaveImage", "path_input": "output_path",
+                               "prefix_input": "filename_prefix", "ext": "png"}},
+    }
+    directory.mkdir(parents=True)
+    (directory / "workflow_api.json").write_text(json.dumps(template))
+    (directory / "manifest.yaml").write_text(json.dumps(manifest))
+    return Workflow(directory)
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.wf = Workflow(WF_DIR / "ltx25_alpha_gen")
@@ -203,8 +238,55 @@ class WorkflowTests(unittest.TestCase):
                       problems(max_frames=10))
         self.assertIn("param input: per_run splits texture inputs into runs; frame inputs can't be split yet",
                       problems(takes="images", loader={"node": "254", "class": "ComfyFarmLoadImages"}, per_run=4))
+        wan.ports["input"] = Port("input", takes="image", loader={"node": "254", "class": "ComfyFarmLoadImage"})
         wan.ports["matte"] = Port("matte", loader={"node": "254", "class": "ComfyFarmLoadImage"}, takes="image")
-        self.assertIn("only one input param per workflow for now (found input, matte)", wan.static_check())
+        self.assertIn("several inputs (input, matte): mark the one that names and numbers the outputs primary: true",
+                      wan.static_check())
+
+    def test_several_inputs(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf = plate_matte_workflow(Path(d) / "pm")
+            self.assertEqual(wf.problems, [])
+            self.assertEqual((wf.port.name, [p.name for p in wf.other_ports]), ("plate", ["matte", "reference"]))
+            fields = {p["name"]: p for p in wf.schema()["params"]}
+            self.assertEqual([(fields[n]["primary"], fields[n].get("match")) for n in ("plate", "matte", "reference")],
+                             [(True, None), (False, "plate"), (False, None)])
+            plate = Sequence(raw="x", farm_path="//s/p.%04d.png", directory="//s/", filename="p.%04d.png", first=1001,
+                             last=1003, frame_count=3, skip=0, cap=0, show="x", shot="a")
+            matte = Sequence(raw="x", farm_path="//s/m.%04d.png", directory="//s/", filename="m.%04d.png", first=1001,
+                             last=1003, frame_count=3, skip=0, cap=0, show="x", shot="a")
+            p = wf.build(wf.validate({"plate": "x"}), plate, "//out", "raw", inputs={"matte": matte, "reference": None})
+            self.assertEqual(p["1"]["inputs"], {"path": "//s/p.%04d.png", "frames": "1001-1003"})
+            self.assertEqual((p["2"]["inputs"], p["4"]["inputs"]["value"]),
+                             ({"path": "//s/m.%04d.png", "frames": "1001-1003"}, True))      # given: its switch on
+            self.assertEqual((p["3"]["inputs"], p["5"]["inputs"]["value"]),
+                             ({"path": "", "optional": True}, False))                       # left empty: off
+            p = wf.build(wf.validate({"plate": "x"}), plate, "//out", "raw")                 # nothing but the plate
+            self.assertEqual((p["2"]["inputs"]["optional"], p["4"]["inputs"]["value"]), (True, False))
+
+    def test_several_inputs_rules(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf = plate_matte_workflow(Path(d) / "pm")
+            wf.ports["plate"].primary = False
+            self.assertIn("several inputs (plate, matte, reference): mark the one that names and numbers the outputs "
+                          "primary: true", wf.static_check())
+            wf.ports["plate"].primary = wf.ports["matte"].primary = True
+            self.assertIn("only one input can be primary (found plate, matte)", wf.static_check())
+            wf.ports["matte"].primary = False
+            wf.ports["reference"].match = "matte"
+            self.assertIn("param reference: match names the primary input (plate), not 'matte'", wf.static_check())
+            wf.ports["reference"].match = "plate"
+            self.assertIn("param reference: takes one image, so it can't match plate's frames", wf.static_check())
+            wf.ports["reference"].match = None
+            wf.ports["matte"].required = True
+            self.assertIn("param matte.empty: only optional inputs (required: false) can be left empty",
+                          wf.static_check())
+            wf.ports["matte"].required = False
+            wf.ports["reference"].empty = [{"node": "5", "input": "value"}]
+            self.assertIn("param reference.empty[0]: needs node, input and value", wf.static_check())
+            wf.ports["reference"].empty = [{"node": "99", "input": "value", "value": False}]
+            self.assertIn("param reference.empty[0]: node 99 is not in the workflow (re-exported? update the manifest)",
+                          wf.static_check())
 
     def test_build_one_image(self):
         wan = Workflow(WF_DIR / "wan22_i2i")

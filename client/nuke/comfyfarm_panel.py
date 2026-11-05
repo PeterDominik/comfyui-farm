@@ -94,13 +94,22 @@ class PanelModel:
         return next((w for w in self.workflows if w["name"] == name), None)
 
     @staticmethod
-    def sequence_param(wf: dict) -> str | None:
-        return next((p["name"] for p in wf["params"] if p["type"] == "sequence"), None)
+    def inputs(wf: dict) -> list[dict]:
+        """The workflow's image inputs, in form order."""
+        return [p for p in wf.get("params") or [] if p["type"] == "sequence"]
 
     @staticmethod
-    def takes_one(wf: dict) -> bool:
-        """The workflow takes one image: a sequence's frame is named (the current frame)."""
-        return any(p["type"] == "sequence" and p.get("takes") == "image" for p in wf.get("params") or [])
+    def sequence_param(wf: dict) -> str | None:
+        """The primary input: it names the outputs (an older farm says nothing: the first)."""
+        ins = PanelModel.inputs(wf)
+        return next((p["name"] for p in ins if p.get("primary")), None) or (ins[0]["name"] if ins else None)
+
+    @staticmethod
+    def takes_one(wf: dict, name: str | None = None) -> bool:
+        """The input (default: the primary) takes one image: a sequence's frame is named
+        (the current frame)."""
+        name = name or PanelModel.sequence_param(wf)
+        return any(p["name"] == name and p.get("takes") == "image" for p in PanelModel.inputs(wf))
 
     @staticmethod
     def output_param(wf: dict) -> str | None:
@@ -163,8 +172,9 @@ class PanelModel:
 
     # ------------------------------------------------------------ text for the view
     @staticmethod
-    def destination_html(plan: dict) -> str:
-        """The 'Will write …' preview, as the web dashboard shows it."""
+    def destination_html(plan: dict, labels: dict | None = None) -> str:
+        """The 'Will write …' preview, as the web dashboard shows it (`labels`: input
+        name -> its label, for the other inputs)."""
         e = html.escape
         files = f"<code>{e(plan['first_file'])}</code>"
         if plan.get("last_file") and plan["last_file"] != plan["first_file"]:
@@ -195,6 +205,15 @@ class PanelModel:
                     f"so this run is v{plan['version']:03d}.</span>")
         for note in plan.get("notes") or []:
             out += f"<br><span style='color:#e0a24a'>{e(note)}</span>"
+        for name, x in (plan.get("inputs") or {}).items():     # the other inputs
+            label = e((labels or {}).get(name) or name)
+            if not x:
+                out += f"<br>{label}: none"
+            elif x.get("first") is None:
+                out += f"<br>{label}: an image"
+            else:
+                out += f"<br>{label}: " + (f"frame {x['first']}" if x["first"] == x["last"]
+                                            else f"frames {x['first']}-{x['last']}")
         if not plan.get("picked") and plan.get("shot"):
             out += f"<br>Shot <code>{e(plan['shot'])}</code>, show <code>{e(plan.get('show') or '')}</code>."
         elif not plan.get("picked") and plan.get("asset"):
@@ -614,9 +633,12 @@ if QtWidgets is not None:
                 # Never pre-filled from last time: a path from another shot would send
                 # renders to the wrong place.
                 one = p.get("takes") == "image"
-                w.setPlaceholderText(p.get("placeholder") or ("" if t != "sequence" else
-                                                              "/rdo/shows/…/shot.step.%04d.png 1050" if one else
-                                                              "/rdo/shows/…/shot.step.%04d.png 1001-1100"))
+                matched = next((x for x in PanelModel.inputs(self._wf() or {}) if x["name"] == p.get("match")), None)
+                w.setPlaceholderText(p.get("placeholder") or (
+                    "" if t != "sequence" else
+                    f"/rdo/shows/…/shot.step.%04d.png (at the {matched.get('label') or matched['name']}'s frames)"
+                    if matched else "/rdo/shows/…/shot.step.%04d.png 1050" if one else
+                    "/rdo/shows/…/shot.step.%04d.png 1001-1100"))
                 w.textChanged.connect(self._schedule_plan)
                 row = QtWidgets.QHBoxLayout()
                 row.addWidget(w, 1)
@@ -625,7 +647,7 @@ if QtWidgets is not None:
                     sel.setToolTip("Use the selected Read or Write node's file at the current frame" if one else
                                    "Use the selected Read or Write node's file and frame range")
                     sel.setEnabled(nk is not None)
-                    sel.clicked.connect(lambda *_: self.fill_from_selection())
+                    sel.clicked.connect(lambda *_, n=p["name"]: self.fill_from_selection(n))
                     row.addWidget(sel)
                 browse = QtWidgets.QPushButton("Browse…")
                 browse.clicked.connect(lambda _c=False, w=w, t=t: self._browse(w, t))
@@ -647,19 +669,20 @@ if QtWidgets is not None:
             if value:
                 widget.setText(value)
 
-        def fill_from_selection(self):
-            """Fill the input field from the selected Read/Write node (the form is still
-            the artist's to check and submit)."""
+        def fill_from_selection(self, name: str | None = None):
+            """Fill an input field (default: the primary's) from the selected Read/Write node
+            (the form is still the artist's to check and submit)."""
             if nk is None:
                 return
             wf = self._wf() or {"params": []}
-            found = nk.selected_sequences(one_frame=PanelModel.takes_one(wf))   # one image: the current frame
-            seq = PanelModel.sequence_param(wf)
+            seq = name or PanelModel.sequence_param(wf)
+            found = nk.selected_sequences(one_frame=PanelModel.takes_one(wf, seq))   # one image: the current frame
             if not found or not seq:
                 self._message("Select a Read or Write node with a rendered PNG sequence (or a movhistory .mov).", True)
                 return
             self.fields[seq][1].setText(found[0][1])
-            self._selected_node = found[0]
+            if seq == PanelModel.sequence_param(wf):
+                self._selected_node = found[0]          # the result's Read goes next to the primary's node
             if len(found) > 1:
                 self._message(f"{len(found)} nodes selected: used {found[0][0]}.")
 
@@ -699,7 +722,8 @@ if QtWidgets is not None:
                 if error:
                     self.dest_label.setText(f"<span style='color:#e0675b'>{html.escape(str(error))}</span>")
                 else:
-                    self.dest_label.setText(PanelModel.destination_html(result))
+                    self.dest_label.setText(PanelModel.destination_html(
+                        result, {i["name"]: i.get("label") or i["name"] for i in PanelModel.inputs(wf)}))
             self._async(lambda: self.model.plan(wf["name"], raw), done)
 
         # -------------------------------------------------------- submit
