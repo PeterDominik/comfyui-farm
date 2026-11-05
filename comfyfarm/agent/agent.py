@@ -103,6 +103,7 @@ class Held:
     dropped: bool = False           # the manager moved on: stop, report nothing
     dispatched_at: float | None = None
     started_at: float | None = None
+    prepare_seconds: float = 0.0    # converting its inputs (for the manager's ETAs)
     outbox: list = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -388,7 +389,10 @@ class Agent:
             for what, seq_info in todo:
                 if seq_info.get("convert"):
                     async with self._convert_sem:
-                        if h.dropped or not await self._convert(h, seq_info, what):
+                        t0 = now()
+                        ok = not h.dropped and await self._convert(h, seq_info, what)
+                        h.prepare_seconds += now() - t0
+                        if not ok:
                             return
             if not h.dropped:
                 await self._submit(h)
@@ -977,7 +981,7 @@ class Agent:
             self._release(h)
             log.info("job %s done in %.0fs -> %s", h.id[:8], t - started, outputs.get("output_dir"))
             await self._report(h, "done", outputs=W.portable(outputs, self.view), warnings=warnings,
-                               seconds=t - started, nodes=nodes or None)
+                               seconds=t - started, nodes=nodes or None, prepare_seconds=round(h.prepare_seconds, 2))
         except Exception as e:  # noqa: BLE001
             log.exception("collecting outputs for %s failed", h.id[:8])
             await self._fail(h, f"Finished on the GPU but collecting outputs failed: {e}")

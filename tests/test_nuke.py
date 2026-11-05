@@ -291,7 +291,17 @@ class PanelLogic(unittest.TestCase):
                                        "workflow": "ltx25_alpha_gen", "queue_position": 2, "eta_seconds": 125,
                                        "created_at": now - 30, "info": {"version": 3}}, now, labels)
         self.assertEqual(q, ["abcdef12", "abc_0010  v003", "LTX 2.5 alpha generation", "", "jane", "queued", "",
-                             "#2 · ~2m 05s", "just now", ""])        # queued: no machine yet
+                             "#2 · done in ~2 min", "just now", ""])        # queued: no machine yet
+        q = self.panel.PanelModel.row({"id": "abcdef1234", "status": "queued", "user": "jane", "workflow": "x",
+                                       "queue_position": 1, "eta_seconds": 40, "next_worker": "wrk59467w-5090",
+                                       "created_at": now}, now)
+        self.assertEqual((q[3], q[7]), ("→ wrk59467w-5090", "#1 · done in ~40s"))    # the machine expected to take it
+        r = self.panel.PanelModel.row({"id": "r" * 10, "status": "running", "user": "j", "workflow": "x",
+                                       "worker": "wrk59467w-5090", "eta_seconds": 7300, "created_at": now}, now)
+        self.assertEqual((r[3], r[7]), ("wrk59467w-5090", "~2.0 h left"))
+        r = self.panel.PanelModel.row({"id": "r" * 10, "status": "running", "user": "j", "workflow": "x",
+                                       "eta_seconds": 2, "created_at": now}, now)
+        self.assertEqual(r[7], "soon")                               # overdue: no negative times
         f = self.panel.PanelModel.row({"id": "x" * 10, "short_id": "xxxxxxxx", "status": "failed", "user": "j",
                                        "workflow": "chord_pbr", "worker": "wrk1125l-3090",
                                        "error": "CUDA out of memory", "created_at": now - 7200,
@@ -356,6 +366,11 @@ class PanelLogic(unittest.TestCase):
                      "<code>scene_linear</code> → <code>color_picking</code> with <code>ocio/config.ocio</code>",
                      "Asset <code>rockA</code>"):
             self.assertIn(part, html)
+        self.assertNotIn("Takes about", html)                         # no runs yet: no estimate
+        eta = {"run": 130, "done_in": 520, "worker": "a-5090", "workers": ["a-5090"]}
+        html = self.panel.PanelModel.destination_html({"frames": 3, "first_file": "a.png", "eta": eta})
+        self.assertIn("Takes about 2 min on a-5090; done in about 9 min.", html)
+        self.assertEqual(self.panel.eta_text(dict(eta, done_in=140)), "Takes about 2 min on a-5090.")   # nothing ahead
 
 
 if __name__ == "__main__":

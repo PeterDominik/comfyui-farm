@@ -65,6 +65,26 @@ def _dur(s: float | None) -> str:
     return f"{m}m {s % 60:02d}s" if m < 60 else f"{m // 60}h {m % 60:02d}m"
 
 
+def _about(s: float | None) -> str:
+    """An estimate, as rough as it is: 45s, 4 min, 1.5 h."""
+    if s is None:
+        return ""
+    if s < 60:
+        return f"{max(5, int(round(s / 5)) * 5)}s"
+    return f"{round(s / 60)} min" if s < 5940 else f"{s / 3600:.1f} h"
+
+
+def eta_text(plan_eta: dict | None) -> str:
+    """The plan's estimate: about how long the job takes, where, and when it'll be done
+    behind the queue (from past runs of the workflow on those GPUs)."""
+    if not plan_eta or plan_eta.get("run") is None:
+        return ""
+    out = f"Takes about {_about(plan_eta['run'])} on {', '.join(plan_eta.get('workers') or [])}"
+    if abs((plan_eta.get("done_in") or 0) - plan_eta["run"]) > 30:
+        out += f"; done in about {_about(plan_eta['done_in'])}"
+    return out + "."
+
+
 def _gpu_name(worker: dict) -> str:
     """'cuda:0 NVIDIA GeForce RTX 3090 : cudaMallocAsync' -> 'NVIDIA GeForce RTX 3090'."""
     name = ((worker.get("gpu") or {}).get("name") or "").split(" : ")[0]
@@ -203,6 +223,8 @@ class PanelModel:
         if (plan.get("version") or 1) > 1:
             out += (f"<br><span style='color:#e0a24a'>Earlier versions already exist there (or are queued), "
                     f"so this run is v{plan['version']:03d}.</span>")
+        if eta_text(plan.get("eta")):
+            out += "<br>" + e(eta_text(plan.get("eta")))
         for note in plan.get("notes") or []:
             out += f"<br><span style='color:#e0a24a'>{e(note)}</span>"
         for name, x in (plan.get("inputs") or {}).items():     # the other inputs
@@ -229,6 +251,8 @@ class PanelModel:
         """Which machine runs (or ran) the job: a texture set's batches each have their own."""
         if job.get("kind") == "set":
             return "per batch"
+        if job.get("status") == "queued" and job.get("next_worker"):
+            return f"→ {job['next_worker']}"      # expected to take it
         return job.get("worker") or ""
 
     @staticmethod
@@ -238,14 +262,13 @@ class PanelModel:
         start = job.get("started_at") or job.get("dispatched_at")
         took = _dur(job["finished_at"] - start) if job.get("finished_at") and start else (
             _dur(now - job["started_at"]) if job.get("started_at") else "")
-        if status == "queued" and job.get("kind") == "set":   # a texture set: its batches queue
-            wait = f"~{_dur(job['eta_seconds'])}" if job.get("eta_seconds") else ""
-        elif status == "queued":
-            wait = f"#{job.get('queue_position') or '?'}" + (f" · ~{_dur(job['eta_seconds'])}" if job.get("eta_seconds") else "")
-        elif status in ("dispatched", "running") and job.get("eta_seconds"):
-            wait = f"~{_dur(job['eta_seconds'])} left"
+        eta = job.get("eta_seconds")
+        eta = None if eta is None or status not in ACTIVE else ("soon" if eta < 5 else f"~{_about(eta)}")
+        if status == "queued":      # a texture set has no place of its own: its batches queue
+            pos = f"#{job['queue_position']}" if job.get("queue_position") else ""
+            wait = " · ".join(x for x in (pos, eta and (eta if eta == "soon" else f"done in {eta}")) if x)
         else:
-            wait = ""
+            wait = (eta if eta == "soon" else f"{eta} left") if eta else ""
         if status == "failed":
             progress = job.get("error") or ""
         elif status in ("running", "postprocessing", "dispatched", "done"):

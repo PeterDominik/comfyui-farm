@@ -622,6 +622,31 @@ convert:
         with self.assertRaisesRegex(farm.FarmError, "No machine called nobody has checked in"):
             farm._request("POST", "/api/v1/workers/nobody/drain", {"drain": True})
 
+    def test_0499_run_times(self):
+        """Finished runs are timed per workflow and GPU type, and queued jobs get an ETA and
+        the machine expected to take them."""
+        rt = farm._request("GET", "/api/v1/run-times")["run_times"]
+        ltx = [r for r in rt if r["workflow"] == "ltx25_alpha_gen"]
+        self.assertEqual(len(ltx), 1, rt)
+        self.assertGreaterEqual(ltx[0]["runs"], 1)
+        self.assertGreater(ltx[0]["seconds"], 0)
+        farm._request("POST", "/api/v1/workers/mock/drain", {"drain": True})    # it stays queued
+        try:
+            job = farm.submit("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1002"})
+            self.assertEqual((job["next_worker"], job["eta_seconds"]), (None, None))   # no machine takes jobs
+            plan = farm._request("POST", "/api/v1/plan", {"workflow": "ltx25_alpha_gen",
+                                                           "params": {"input": f"{SEQ} 1001-1002"}})
+            self.assertIsNone(plan["eta"])
+        finally:
+            farm._request("POST", "/api/v1/workers/mock/drain", {"drain": False})
+        plan = farm._request("POST", "/api/v1/plan", {"workflow": "ltx25_alpha_gen",
+                                                       "params": {"input": f"{SEQ} 1001-1002"}})
+        self.assertEqual(plan["eta"]["workers"], ["mock"])
+        q = farm.get(job["id"])
+        if q["status"] == "queued":
+            self.assertEqual(q["next_worker"], "mock")
+        self.assertEqual(self.wait_for(job["id"], ("done", "failed"))["status"], "done")
+
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
             self.submit("1001-1014")

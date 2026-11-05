@@ -29,6 +29,7 @@ from ..fileio import paths as P
 from ..fileio import wire as W
 from ..fileio.ocio import REPO
 from ..protocol import HELD, ON_WORKER, build, duration, now
+from . import eta as E
 from .farm import Farm
 
 log = logging.getLogger("comfyfarm")
@@ -518,6 +519,84 @@ class Desk:
             out.append(self._payload(self.store.get(j["id"], with_prompt=True), a))
         return out
 
+    # ================================================================ ETAs
+    @staticmethod
+    def gpu_type(a: AgentState) -> str:
+        for dev in (a.stats or {}).get("devices") or []:
+            return E.gpu_type(dev.get("name"))
+        return E.gpu_type(None)
+
+    def forecast(self, extra: list[dict] | None = None) -> dict[str, dict]:
+        """When each queued or running job will be done, and on which machine:
+        {job id: {"done_in": seconds or None, "worker": name, "run": its own seconds}}.
+
+        Walks the queue the way _claim hands jobs out: each job to the best free machine
+        that may run it; once every GPU is busy, prepared ahead on the best one with room;
+        once those are full, to whichever frees first. A job's time comes from past runs of
+        its workflow on that machine's GPU type, for its size (manager.eta). `extra`: jobs
+        not queued yet (a plan), after the queue. Times unknown (no runs yet) are None, and
+        so is everything behind them on that machine."""
+        t = now()
+        stats = self.store.run_stats()
+        legacy: dict[str, float | None] = {}
+
+        def run_time(job: dict, a: AgentState) -> float | None:
+            wf, size = job["workflow"], E.units(job)
+            row = stats.get((wf, self.gpu_type(a))) or E.combine([r for (w, _), r in stats.items() if w == wf])
+            est = E.estimate(row, size)
+            if est is None:                     # runs from before GPU types were recorded
+                if wf not in legacy:
+                    legacy[wf] = self.store.stats(wf)["avg_seconds"]
+                est = legacy[wf]
+            return est
+
+        busy = [x for x in list(self.agents.values()) if self.usable(x)]    # drained ones finish their jobs
+        machines = sorted([x for x in busy if x.name not in self.drained], key=self._rank_key)
+        free_at: dict[str, float | None] = {}
+        count: dict[str, int] = {}
+        out: dict[str, dict] = {}
+        for x in busy:
+            at, n = t, 0
+            jobs = sorted(self.store.held_by(x.name), key=lambda j: ("running", "dispatched", "preparing").index(j["status"])
+                          if j["status"] in GPU_BUSY else 9)
+            for j in jobs:
+                if j["status"] not in GPU_BUSY:     # collecting outputs: done any moment, the GPU is free
+                    out[j["id"]] = {"done_in": 0.0, "worker": x.name, "run": None}
+                    continue
+                n += 1
+                est = run_time(j, x)
+                if est is None or at is None:
+                    at = None
+                elif j["status"] == "running" and j.get("started_at"):
+                    p = j.get("progress") or 0
+                    left = est * (1 - p) if p > 0.05 else est - (t - j["started_at"])
+                    at += max(left, 5.0)
+                else:
+                    at += est
+                out[j["id"]] = {"done_in": None if at is None else at - t, "worker": x.name, "run": est}
+            free_at[x.name], count[x.name] = at, n
+        strict = self.cfg.farm.strict_preflight
+        for job in self.store.queued() + list(extra or []):
+            wf = job["workflow"]
+            fit = [x for x in machines if self.unmet(x, wf) is None and not (strict and x.problems.get(wf))]
+            if not fit:
+                out[job["id"]] = {"done_in": None, "worker": None, "run": None}
+                continue
+            idle = [x for x in fit if count[x.name] == 0]
+            room = [x for x in fit if count[x.name] < PER_GPU]
+            if idle:
+                m = min(idle, key=lambda x: self._rank_key(x, workflow=wf))
+            elif room:
+                m = min(room, key=lambda x: self._rank_key(x, workflow=wf))   # prepared ahead on the best
+            else:                               # waits for whichever frees first
+                m = min(fit, key=lambda x: (free_at[x.name] is None, free_at[x.name] or 0, self._rank_key(x, workflow=wf)))
+            est = run_time(job, m)
+            at = free_at[m.name]
+            at = None if at is None or est is None else max(at, t) + est
+            free_at[m.name], count[m.name] = at, count[m.name] + 1
+            out[job["id"]] = {"done_in": None if at is None else at - t, "worker": m.name, "run": est}
+        return out
+
     def _payload(self, j: dict, a: AgentState) -> dict:
         """A job as an agent gets it: what it needs to run it, in portable form."""
         info = j["info"] or {}
@@ -579,6 +658,9 @@ class Desk:
             if j:
                 if j["kind"] != "batch" and d.get("seconds") is not None:   # a set's ETA comes from its batches
                     F.record_run(j["workflow"], float(d["seconds"]), d.get("nodes") or None)
+                if d.get("seconds") is not None:    # per GPU type and size, for ETAs (manager.eta)
+                    self.store.record_gpu_run(j["workflow"], self.gpu_type(a), E.units(j),
+                                              float(d["seconds"]) + float(d.get("prepare_seconds") or 0))
                 log.info("job %s done on %s in %.0fs -> %s", jid[:8], a.name, float(d.get("seconds") or 0),
                          outputs.get("output_dir"))
             F._emit(j)
