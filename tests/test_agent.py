@@ -30,7 +30,7 @@ from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm
 from comfyfarm.protocol import LinkError
-from comfyfarm.workflows import WorkflowRegistry
+from comfyfarm.workflows import ParamError, WorkflowRegistry
 
 try:   # the agent talks to ComfyUI with httpx and websockets
     from comfyfarm.agent.agent import Agent
@@ -753,6 +753,24 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(done["output_dir"])),                  # named after the plate
                          [f"abc_0010.pre.v1.pm_v001.{f}.png" for f in (1001, 1002, 1003)])
         self.assertFalse(os.path.exists(scratch), "the matte's scratch folder is cleaned up too")
+
+    def test_layout_to_render_with_its_reference_frame(self):
+        a = self.ready(self.agent())
+        with self.assertRaisesRegex(ParamError, "Reference frame is required"):
+            self.farm.submit("ltx25_layout_render", {"input": f"{SEQ} 1001-1003", "prompt": "a castle"}, "ann")
+        job = self.farm.submit("ltx25_layout_render", {"input": f"{SEQ} 1001-1003", "reference": f"{EXR} 1002",
+                                                       "prompt": "a castle at dusk"}, "ann")
+        pid = self.dispatched(a, job)
+        prompt = a.client.prompts[pid]
+        self.assertEqual(prompt["9061"]["inputs"]["frames"], "1001-1003")             # the layout
+        self.assertEqual(prompt["9060"]["inputs"]["path"],                           # the reference, converted
+                         f"{self.root}/scratch-gpu1/{job['id']}/reference/abc_0010.plate.v1.1002.png")
+        self.assertTrue(os.path.isfile(prompt["9060"]["inputs"]["path"]))
+        self.assertEqual((prompt["5508"]["inputs"]["value"], prompt["5509"]["inputs"]["value"]), ("a castle at dusk", ""))
+        done = self.finish(a, job["id"], pid)
+        self.assertEqual(done["status"], "done", done["error"])
+        self.assertEqual(sorted(os.listdir(done["output_dir"])),
+                         [f"abc_0010.pre.v1.render_v001.{f}.png" for f in (1001, 1002, 1003)])
 
     def test_a_matte_must_cover_the_plates_frames(self):
         self.plate_matte()

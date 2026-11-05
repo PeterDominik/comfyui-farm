@@ -51,6 +51,8 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 - **One-image workflows.** `wan22_i2i` reworks one image with Wan 2.2 (image to image,
   steered by a prompt). It takes a still, or one frame of a sequence or movie, named after
   the path (`…/plate.%04d.exr 1050`); the result is numbered like that frame.
+- **Several inputs.** `ltx25_layout_render` renders a layout sequence with LTX 2.5's
+  layout-to-render IC-LoRA, taking its look from a reference frame and a prompt.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -66,7 +68,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent` and `check` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i` |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -396,6 +398,20 @@ python comfyfarm_client.py submit wan22_i2i \
     "input=/rdo/shows/<show>/.published/<seq>/<shot>/plate/v1/<shot>.plate.v1.%04d.exr 1050" \
     "prompt=wet street at night" noise=0.25 --wait
 ```
+
+### Parameters for `ltx25_layout_render`
+
+| Param | Default | Notes |
+|---|---|---|
+| `input` | required | The layout: a sequence with an optional `first-last` range, or a `.mov`/`.mp4` (timecode frame numbers). Names and numbers the outputs |
+| `reference` | required | One image for the look: a file, or a sequence or movie with the frame after it (`…/comp.%04d.exr 1050`) |
+| `prompt` | required | What the shot should look like |
+| `negative` | empty | The negative prompt |
+| `output_path` | show default | Root folder: frames go to `<this>/<shot>/<source>.render_vNNN.<frame>.png`. Same rules as above |
+
+Fixed in the workflow: 544 on the shorter side then upscaled 2×, 24 fps, seed 42. LTX
+keeps lengths of 8×n + 1 frames (97, 121, …): with another length the job may come back
+with fewer frames than the layout, and says so in its warnings.
 
 ### Parameters for `chord_pbr`
 
