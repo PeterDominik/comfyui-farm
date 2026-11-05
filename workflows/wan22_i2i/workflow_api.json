@@ -1,0 +1,226 @@
+{
+  "110": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "112": {
+    "inputs": {
+      "text": [
+        "255",
+        0
+      ],
+      "clip": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "115": {
+    "inputs": {
+      "samples": [
+        "170",
+        0
+      ],
+      "vae": [
+        "223",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "117": {
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, censored,  bad anatomy, comics, cropped, cross-eyed, worst quality, low quality, painting, 3D render, drawing, crayon, sketch, graphite, impressionist, cartoon, anime, noisy, blurry, soft, deformed, ugly, lowres, low details, JPEG artifacts, airbrushed, semi-realistic, CGI, render, Blender, digital art, manga, amateur, mutilated, distorted\n",
+      "clip": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "126": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "144",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModelSamplingSD3"
+    }
+  },
+  "144": {
+    "inputs": {
+      "nag_scale": 11,
+      "nag_alpha": 0.25,
+      "nag_tau": 2.5,
+      "input_type": "default",
+      "inplace": false,
+      "model": [
+        "222",
+        0
+      ],
+      "conditioning": [
+        "117",
+        0
+      ]
+    },
+    "class_type": "WanVideoNAG",
+    "_meta": {
+      "title": "WanVideoNAG"
+    }
+  },
+  "170": {
+    "inputs": {
+      "seed": 957289197446569,
+      "steps": [
+        "208",
+        0
+      ],
+      "cfg": [
+        "257",
+        0
+      ],
+      "sampler_name": "res_2s",
+      "scheduler": "beta57",
+      "denoise": [
+        "210",
+        0
+      ],
+      "model": [
+        "126",
+        0
+      ],
+      "positive": [
+        "112",
+        0
+      ],
+      "negative": [
+        "117",
+        0
+      ],
+      "latent_image": [
+        "173",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "173": {
+    "inputs": {
+      "pixels": [
+        "254",
+        0
+      ],
+      "vae": [
+        "223",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "208": {
+    "inputs": {
+      "value": 12
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "INPUT STEPS"
+    }
+  },
+  "210": {
+    "inputs": {
+      "value": 0.18
+    },
+    "class_type": "easy float",
+    "_meta": {
+      "title": "INPUT NOISE"
+    }
+  },
+  "222": {
+    "inputs": {
+      "unet_name": "WAN/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "fp8_e4m3fn"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "223": {
+    "inputs": {
+      "vae_name": "WAN/wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "254": {
+    "inputs": {
+      "path": ""
+    },
+    "class_type": "ComfyFarmLoadImage",
+    "_meta": {
+      "title": "INPUT IMAGE"
+    }
+  },
+  "255": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "INPUT PROMPT"
+    }
+  },
+  "256": {
+    "inputs": {
+      "output_path": "",
+      "filename_prefix": "map",
+      "compress_level": 0,
+      "images": [
+        "115",
+        0
+      ]
+    },
+    "class_type": "ComfyFarmSaveImage",
+    "_meta": {
+      "title": "ComfyFarm Save Image"
+    }
+  },
+  "257": {
+    "inputs": {
+      "value": 3
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "INPUT CFG"
+    }
+  }
+}

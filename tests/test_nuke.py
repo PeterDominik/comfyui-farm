@@ -67,6 +67,7 @@ def fake_nuke(nodes, first=1001, last=1100):
     n.messages = []
     root = types.SimpleNamespace(firstFrame=lambda: first, lastFrame=lambda: last)
     n.root = lambda: root
+    n.frame = lambda: 1050.0                   # the viewer's current frame
     n.selectedNodes = lambda: [x for x in nodes if x.selected]
     n.allNodes = lambda cls=None, recurseGroups=False: [x for x in nodes if cls is None or x.Class() == cls]
     n.toNode = lambda name: next((x for x in nodes if x.name() == name), None)
@@ -125,6 +126,19 @@ class NukeHelpers(unittest.TestCase):
             ("WriteAll", "/rdo/shows/xyz/work/pre.%04d.png 1001-1100"),   # script range
             ("WriteLimit", "/rdo/shows/xyz/work/pre.%04d.png 1010-1020"),
             ("Read1", f"{SEQ} 1003-1010"),
+            ("Still", "/rdo/shows/xyz/work/still.png"),
+        ])
+
+    def test_one_image_workflows_take_the_current_frame(self):
+        nodes = [Node("Read", "Plate", file=SEQ, first=1003, last=1100),
+                 Node("Read", "Mov", y=20, file="/rdo/shows/xyz/abc/0010/movhistory/a.v2.mov", first=1, last=40),
+                 Node("Read", "Still", y=60, file="/rdo/shows/xyz/work/still.png", first=1, last=1)]
+        nk, _ = self.load(nodes)
+        for n in nodes:
+            n.selected = True
+        self.assertEqual(nk.selected_sequences(one_frame=True), [
+            ("Plate", f"{SEQ} 1050"),
+            ("Mov", "/rdo/shows/xyz/abc/0010/movhistory/a.v2.mov"),   # timecode numbering: the farm asks for it
             ("Still", "/rdo/shows/xyz/work/still.png"),
         ])
 
@@ -230,6 +244,12 @@ class PanelLogic(unittest.TestCase):
         self.client = FakeFarm()
         self.m = self.panel.PanelModel(client=self.client, user="peter")
         self.m.workflows = [WF]
+
+    def test_one_image_workflows(self):
+        PM = self.panel.PanelModel
+        self.assertTrue(PM.takes_one({"params": [{"name": "input", "type": "sequence", "takes": "image"}]}))
+        self.assertFalse(PM.takes_one({"params": [{"name": "input", "type": "sequence", "takes": "images"}]}))
+        self.assertFalse(PM.takes_one({"params": [{"name": "input", "type": "sequence"}]}))   # an older farm
 
     def test_form_to_params(self):
         params = self.m.params_from_form(WF, {"input": " /a.%04d.png 1-2 ", "output_path": "   ", "seed": " 7 ",

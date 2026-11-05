@@ -29,9 +29,34 @@ class ParamError(ValueError):
 
 
 # Param types the gateway wires in itself (no `targets` in the manifest):
-#   sequence       -> input image sequence: path mapping, frame range, the loader's inputs (loaders.py)
+#   input          -> the images the workflow takes (a Port): path mapping, frames, the
+#                     loader's inputs (loaders.py)
+#   sequence       -> the same, written the older way: an `images` input whose loader is in
+#                     the manifest's `sequence:` section
 #   output_folder  -> where results go; the gateway still adds <shot>/<shot>_<tag>_vNNN
-GATEWAY_TYPES = ("sequence", "output_folder")
+GATEWAY_TYPES = ("input", "sequence", "output_folder")
+INPUT_TYPES = ("input", "sequence")
+TAKES = ("image", "images")
+
+
+@dataclass
+class Port:
+    """A workflow's image input: what it takes, and the node that loads it.
+
+    takes: image (exactly one image: a sequence or movie must name its frame) or images
+    (a batch of frames). per_run (texture workflows): the most tiles one run takes; more
+    make a set of runs into one folder."""
+    name: str                       # its param
+    takes: str = "images"
+    loader: dict = field(default_factory=dict)      # {node, class}
+    path_node: dict | None = None   # informational: gets the input as resolved
+    work_resolution: int | None = None
+    max_frames: int | None = None
+    per_run: int | None = None
+
+    @property
+    def adapter(self) -> L.Loader | None:
+        return L.get(self.loader.get("class"))
 
 
 @dataclass
@@ -58,9 +83,16 @@ class Param:
     invalid: str = ""             # shown when the pattern doesn't match
     naming: bool = False          # only used in output file names (texture workflows): no targets
 
+    takes: str | None = None      # input params: image | images
+
     def schema(self) -> dict:
-        d = {"name": self.name, "type": self.type, "label": self.label or self.name,
+        # Inputs show as "sequence" (a field for a path to images) whichever way the manifest
+        # writes them, so clients that predate `input` keep working; `takes` says how many.
+        kind = "sequence" if self.type in INPUT_TYPES else self.type
+        d = {"name": self.name, "type": kind, "label": self.label or self.name,
              "required": self.required, "default": self.default, "help": self.help}
+        if self.takes:
+            d["takes"] = self.takes
         for k in ("min", "max", "multiple_of", "choices"):
             if getattr(self, k) is not None:
                 d[k] = getattr(self, k)
@@ -70,7 +102,7 @@ class Param:
 
     def coerce(self, value: Any) -> Any:
         n = self.label or self.name
-        if self.type in ("text", "string", "sequence", "output_folder"):
+        if self.type in ("text", "string", "input", "sequence", "output_folder"):
             if not isinstance(value, str):
                 raise ParamError(f"{n} must be text.")
             if len(value) > 20000:
@@ -173,15 +205,30 @@ class Workflow:
                 targets=[_target(t) for t in p.get("targets", [])],
                 pattern=p.get("pattern"), invalid=(p.get("invalid") or "").strip(),
                 naming=bool(p.get("naming", False)),
+                takes=(p.get("takes") or "images") if p.get("type") in INPUT_TYPES else None,
             )
-        self.sequence: dict = m.get("sequence") or {}
+        # The image inputs. `type: sequence` is the older way to write an `images` input,
+        # with its loader in the manifest's `sequence:` section.
+        legacy = m.get("sequence") or {}
+        self.ports: dict[str, Port] = {}
+        for pname, p in (m.get("params") or {}).items():
+            if p.get("type") == "input":
+                self.ports[pname] = Port(pname, takes=p.get("takes") or "images", loader=p.get("loader") or {},
+                                         path_node=p.get("path_node"), work_resolution=p.get("work_resolution"),
+                                         max_frames=(p.get("frames") or {}).get("max"), per_run=p.get("per_run"))
+            elif p.get("type") == "sequence":
+                self.ports[pname] = Port(pname, loader=legacy.get("loader") or {}, path_node=legacy.get("path_node"))
         # Inputs larger than this (pixels, longer side) are scaled down to it before the
         # workflow runs, keeping their aspect (convert.resolve_input). None = as they are.
-        self.work_resolution = m.get("work_resolution") or None
+        self.work_resolution = m.get("work_resolution") or (self.port.work_resolution if self.port else None)
         self.outputs: dict = m.get("outputs") or {}
         # Texture workflows: several map save nodes, written as EXRs named by the TEX
         # convention (see textures.py) instead of one renamed frame sequence.
         self.textures: T.TextureSpec | None = T.TextureSpec.from_manifest(m["textures"]) if m.get("textures") else None
+        self._batch_twice = bool(self.textures and self.textures.batch is not None and self.port and self.port.per_run)
+        pr = self.port.per_run if self.port else None
+        if self.textures and isinstance(pr, int) and not isinstance(pr, bool) and pr >= 1:
+            self.textures.batch = pr                    # textures.batch: the older name
         self.problems: list[str] = self.static_check()
 
     # ------------------------------------------------------------------ checks
@@ -190,14 +237,19 @@ class Workflow:
         return not self.problems
 
     @property
+    def port(self) -> Port | None:
+        """The workflow's image input (one per workflow for now)."""
+        return next(iter(self.ports.values()), None)
+
+    @property
     def sequence_param(self) -> str | None:
-        return next((n for n, p in self.params.items() if p.type == "sequence"), None)
+        """The name of the image input's param."""
+        return self.port.name if self.port else None
 
     @property
     def loader(self) -> L.Loader | None:
-        """The adapter for the sequence param's loader node (None if it has none)."""
-        ld = self.sequence.get("loader") if self.sequence_param else None
-        return L.get(ld.get("class")) if ld else None
+        """The adapter for the input's loader node (None if it has none)."""
+        return self.port.adapter if self.port else None
 
     @property
     def output_folder_param(self) -> str | None:
@@ -254,21 +306,12 @@ class Workflow:
         if wr is not None and (isinstance(wr, bool) or not isinstance(wr, int) or wr < 64):
             problems.append(f"work_resolution: {wr!r} isn't a size in pixels (64 or more), "
                             f"e.g. 1024; leave it out to use inputs as they are")
-        elif wr and not self.sequence_param:
-            problems.append("work_resolution needs a sequence param (it scales the input)")
-        if self.sequence_param:
-            pn = self.sequence.get("path_node")
-            if pn:
-                problems += self._check_target("sequence.path_node", str(pn["node"]), pn.get("class"), pn.get("input"))
-            ld = self.sequence.get("loader")
-            if not ld:
-                problems.append("sequence.loader missing")
-            elif L.get(ld.get("class")) is None:
-                problems.append(f"sequence.loader: class {ld.get('class')!r} isn't a loader the farm can fill "
-                                f"(use {', '.join(L.LOADERS)})")
-            else:
-                for inp in L.get(ld["class"]).inputs:
-                    problems += self._check_target("sequence.loader", str(ld["node"]), ld.get("class"), inp)
+        elif wr and not self.port:
+            problems.append("work_resolution needs an input param (it scales the input)")
+        if len(self.ports) > 1:
+            problems.append(f"only one input param per workflow for now (found {', '.join(self.ports)})")
+        for port in self.ports.values():
+            problems += self._check_port(port)
         for nid, n in self.template.items():
             if n.get("class_type") in L.VIDEO_LOADERS:
                 problems.append(f"node {nid} '{self.title(nid)}' loads a movie ({n['class_type']}): farm workflows "
@@ -286,6 +329,42 @@ class Workflow:
             pv = o["preview"]
             problems += self._check_target("outputs.preview", str(pv["node"]), pv.get("class"), pv.get("prefix_input"))
         return sorted(set(problems))
+
+    def _check_port(self, port: Port) -> list[str]:
+        legacy = getattr(self.params.get(port.name), "type", None) == "sequence"
+        where = "sequence" if legacy else f"param {port.name}"
+        problems = []
+        if port.takes not in TAKES:
+            return [f"{where}: takes must be image or images, not {port.takes!r}"]
+        pn = port.path_node
+        if pn:
+            problems += self._check_target(f"{where}.path_node", str(pn["node"]), pn.get("class"), pn.get("input"))
+        ld = port.loader
+        if not ld:
+            return problems + [f"{where}.loader missing"]
+        ad = port.adapter
+        if ad is None:
+            return problems + [f"{where}.loader: class {ld.get('class')!r} isn't a loader the farm can fill "
+                               f"(use {', '.join(L.LOADERS)})"]
+        if ad.takes != port.takes:
+            problems.append(f"{where}.loader: {ad.cls} loads {'one image' if ad.takes == 'image' else 'frames'}, so "
+                            f"the input takes {ad.takes}, not {port.takes}")
+        for inp in ad.inputs:
+            problems += self._check_target(f"{where}.loader", str(ld["node"]), ld.get("class"), inp)
+        mx = port.max_frames
+        if mx is not None and (isinstance(mx, bool) or not isinstance(mx, int) or mx < 1):
+            problems.append(f"{where}: frames.max {mx!r} isn't a number of frames (1 or more)")
+        elif mx is not None and port.takes == "image":
+            problems.append(f"{where}: frames.max is for inputs that take images; this one takes one image")
+        pr = port.per_run
+        if pr is not None:
+            if isinstance(pr, bool) or not isinstance(pr, int) or pr < 1:
+                problems.append(f"{where}: per_run {pr!r} isn't a number of tiles (1 or more)")
+            elif not self.textures:
+                problems.append(f"{where}: per_run splits texture inputs into runs; frame inputs can't be split yet")
+        if self._batch_twice:
+            problems.append(f"{where}: per_run and textures.batch say the same thing; keep per_run")
+        return problems
 
     def check_object_info(self, object_info: dict) -> list[str]:
         """Compare the template with what a worker actually has installed: missing node
@@ -361,16 +440,17 @@ class Workflow:
               textures: dict | None = None) -> dict:
         prompt = copy.deepcopy(self.template)
         for name, p in self.params.items():
-            if p.type == "sequence" or p.naming or name not in values:
+            if p.type in INPUT_TYPES or p.naming or name not in values:
                 continue
             for t in p.targets:
                 prompt[t.node]["inputs"][t.input] = values[name]
-        if seq is not None and self.sequence:
-            pn = self.sequence.get("path_node")
+        port = self.port
+        if seq is not None and port:
+            pn = port.path_node
             if pn:
-                rng = f" {seq.first}-{seq.last}" if seq.first is not None else ""
+                rng = "" if seq.first is None else f" {seq.first}" if seq.first == seq.last else f" {seq.first}-{seq.last}"
                 prompt[str(pn["node"])]["inputs"][pn["input"]] = seq.farm_path + rng
-            self.loader.fill(prompt[str(self.sequence["loader"]["node"])]["inputs"], seq)
+            port.adapter.fill(prompt[str(port.loader["node"])]["inputs"], seq)
         o = self.outputs
         if out_dir:
             if o.get("root_node"):

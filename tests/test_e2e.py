@@ -295,6 +295,29 @@ convert:
         p = {x["name"]: x for x in wfs["ltx25_alpha_gen"]["params"]}
         self.assertTrue(p["output_path"]["placeholder"].endswith("/comfyui/renders/{shot}"))
 
+    def test_0455_one_image_workflow(self):
+        """Wan I2I: one frame of a sequence, through ComfyFarm Load Image, numbered like it."""
+        with self.assertRaisesRegex(farm.FarmError, "takes one image.*Put the frame to use after it"):
+            farm.submit("wan22_i2i", {"input": SEQ})
+        job = farm.submit("wan22_i2i", {"input": f"{SEQ} 1007", "prompt": "fog", "noise": 0.25})
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        # The shot's folder also holds the LTX tests' frames: just this workflow's.
+        self.assertEqual([n for n in self.outputs(done) if ".i2i_" in n], ["abc_0010.pre.v1.i2i_v001.1007.png"])
+        prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
+        self.assertTrue(prompt["254"]["inputs"]["path"].endswith("/abc_0010.pre.v1.%04d.png 1007"))
+        self.assertEqual((prompt["255"]["inputs"]["value"], prompt["210"]["inputs"]["value"]), ("fog", 0.25))
+        wan = {w["name"]: w for w in farm.workflows()}["wan22_i2i"]
+        self.assertEqual(next(p for p in wan["params"] if p["name"] == "input")["takes"], "image")
+        # One frame of a movie, numbered from its timecode (00:00:41:17 at 24 fps = 1001).
+        mov = "/rdo/shows/xyz/.published/abc/abc_0010/edit/abc_0010_ref.mov"
+        with self.assertRaisesRegex(farm.FarmError, r"a movie of 12 frames, 1001-1012"):
+            farm.submit("wan22_i2i", {"input": mov})
+        job = farm.submit("wan22_i2i", {"input": f"{mov} 1005"})
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertIn("abc_0010_ref.i2i_v001.1005.png", self.outputs(done))
+
     def test_046_numeric_shot_default_destination(self):
         job = farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/ply/.published/15454/15454_656551/render.comp/"
                                                        "pre/v1/main/hi/15454_656551.pre.v1.%d.png"})

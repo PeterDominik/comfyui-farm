@@ -14,10 +14,16 @@ tag: alpha                      # used in output folder and file names
 template: workflow_api.json
 
 params:
+  # The images the workflow takes: a batch of frames (takes: images), read by the
+  # ComfyFarm Load Images node with the exact frames. INPUT_PATH (path_node) gets the
+  # input as resolved, for whoever reads the graph.
   input:
-    type: sequence
+    type: input
+    takes: images
     label: Input sequence
     required: true
+    loader: {node: "9104", class: ComfyFarmLoadImages}
+    path_node: {node: "9094", input: value, class: PrimitiveString}
     help: >
       Image sequence with frame pattern and range, as copied from the pipeline, e.g.
       /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158, or a .mov/.mp4. Without a
@@ -35,11 +41,6 @@ params:
       Frames go into a folder named after the shot inside this one, as
       <source>.alpha_vNNN.<frame>.png. Each run takes the next free version. Its parent
       folder must exist. Leave empty for the show's renders folder. Never inside .published.
-
-# How the 'sequence' parameter is wired in.
-sequence:
-  path_node: {node: "9094", input: value, class: PrimitiveString}   # informational
-  loader: {node: "9104", class: ComfyFarmLoadImages}                # path and frames set directly
 
 outputs:
   # OUTPUT_PATH: gets the job's final folder (informational; the graph shows it).

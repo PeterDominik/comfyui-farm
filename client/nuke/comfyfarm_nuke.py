@@ -33,8 +33,9 @@ _panel = None
 
 
 # ---------------------------------------------------------------- selection -> input
-def node_sequence(node) -> str | None:
-    """The farm input for a Read/Write node: 'path first-last' (whole file for movies)."""
+def node_sequence(node, frame: int | None = None) -> str | None:
+    """The farm input for a Read/Write node: 'path first-last' (whole file for movies).
+    With `frame` (workflows that take one image): 'path frame' for a sequence."""
     if node.Class() not in SOURCE_CLASSES or "file" not in node.knobs():
         return None
     path = nuke.filename(node)
@@ -54,15 +55,19 @@ def node_sequence(node) -> str | None:
         first, last = int(node["first"].value()), int(node["last"].value())
     if not re.search(r"%0?\d*d|#+", path):   # a single still
         return path
+    if frame is not None:
+        return f"{path} {int(frame)}"
     return f"{path} {int(first)}-{int(last)}"
 
 
-def selected_sequences() -> list[tuple[str, str]]:
-    """(node name, farm input) for each selected Read/Write node, top to bottom in the DAG."""
+def selected_sequences(one_frame: bool = False) -> list[tuple[str, str]]:
+    """(node name, farm input) for each selected Read/Write node, top to bottom in the DAG.
+    `one_frame`: at the current frame, for workflows that take one image."""
     nodes = sorted(nuke.selectedNodes(), key=lambda n: (n.ypos(), n.xpos()))
+    frame = int(nuke.frame()) if one_frame else None
     out = []
     for n in nodes:
-        value = node_sequence(n)
+        value = node_sequence(n, frame)
         if value:
             out.append((n.name(), value))
     return out

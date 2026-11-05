@@ -6,7 +6,7 @@ from pathlib import Path
 
 from comfyfarm.fileio import farmnodes
 from comfyfarm.fileio.inputs import Sequence
-from comfyfarm.workflows import ParamError, Target, Workflow, WorkflowRegistry, fit_to_options
+from comfyfarm.workflows import ParamError, Port, Target, Workflow, WorkflowRegistry, fit_to_options
 
 REPO = Path(__file__).resolve().parent.parent
 WF_DIR = REPO / "workflows"
@@ -159,9 +159,9 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             wf = tiny_workflow(Path(d) / "tiny")                 # VHS: downloaded workflows still work
             self.assertEqual((wf.problems, wf.loader.lists_folder), ([], True))
-            wf.sequence["loader"]["class"] = "LoadImage"
+            wf.port.loader["class"] = "LoadImage"
             self.assertIn("sequence.loader: class 'LoadImage' isn't a loader the farm can fill "
-                          "(use ComfyFarmLoadImages, VHS_LoadImagesPath)", wf.static_check())
+                          "(use ComfyFarmLoadImages, ComfyFarmLoadImage, VHS_LoadImagesPath)", wf.static_check())
 
     def test_movie_loaders_refused(self):
         with tempfile.TemporaryDirectory() as d:
@@ -171,6 +171,57 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("node 9 'Load plate' loads a movie (VHS_LoadVideoPath): farm workflows only take images. "
                           "Load frames with ComfyFarm Load Images; the farm extracts a movie's frames itself",
                           wf.static_check())
+
+    def test_input_ports(self):
+        """`type: input` says what the workflow takes; `type: sequence` (with its loader in a
+        `sequence:` section) is the older way to write an `images` input."""
+        wan = Workflow(WF_DIR / "wan22_i2i")
+        self.assertEqual(wan.problems, [])
+        self.assertEqual((wan.port.takes, wan.loader.cls, wan.sequence_param), ("image", "ComfyFarmLoadImage", "input"))
+        chord = Workflow(WF_DIR / "chord_pbr")
+        self.assertEqual((chord.port.takes, chord.port.per_run, chord.textures.batch), ("images", 4, 4))
+        with tempfile.TemporaryDirectory() as d:
+            tiny = tiny_workflow(Path(d) / "tiny")
+            self.assertEqual((tiny.port.takes, tiny.port.loader["class"]), ("images", "VHS_LoadImagesPath"))
+        # Clients see every input as a "sequence" field (as before `input`), and how many it takes.
+        field = next(p for p in wan.schema()["params"] if p["name"] == "input")
+        self.assertEqual((field["type"], field["takes"]), ("sequence", "image"))
+        self.assertEqual(next(p for p in self.wf.schema()["params"] if p["name"] == "input")["takes"], "images")
+
+    def test_input_port_rules(self):
+        wan = Workflow(WF_DIR / "wan22_i2i")
+
+        def problems(**change):
+            wan.ports["input"] = Port("input", **{"takes": "image", "loader": {"node": "254", "class": "ComfyFarmLoadImage"},
+                                                  **change})
+            return wan.static_check()
+        self.assertEqual(problems(), [])
+        self.assertIn("param input.loader: ComfyFarmLoadImage loads one image, so the input takes image, not images",
+                      problems(takes="images"))
+        self.assertIn("param input: takes must be image or images, not 'video'", problems(takes="video"))
+        self.assertIn("param input: frames.max is for inputs that take images; this one takes one image",
+                      problems(max_frames=10))
+        self.assertIn("param input: per_run splits texture inputs into runs; frame inputs can't be split yet",
+                      problems(takes="images", loader={"node": "254", "class": "ComfyFarmLoadImages"}, per_run=4))
+        wan.ports["matte"] = Port("matte", loader={"node": "254", "class": "ComfyFarmLoadImage"}, takes="image")
+        self.assertIn("only one input param per workflow for now (found input, matte)", wan.static_check())
+
+    def test_build_one_image(self):
+        wan = Workflow(WF_DIR / "wan22_i2i")
+        v = wan.validate({"input": "x", "prompt": "a foggy street", "steps": 20, "noise": 0.3})
+        self.assertEqual((v["cfg"], v["steps"]), (3, 20))       # defaults as exported
+        seq = Sequence(raw="x", farm_path="//srv/shows/xyz/hi/abc_0010.%04d.png", directory="//srv/shows/xyz/hi/",
+                       filename="abc_0010.%04d.png", first=1050, last=1050, frame_count=1, skip=0, cap=0,
+                       show="xyz", shot="abc_0010")
+        p = wan.build(v, seq, "//srv/out/abc_0010", "_comfyfarm_j1_raw")
+        self.assertEqual(p["254"]["inputs"]["path"], "//srv/shows/xyz/hi/abc_0010.%04d.png 1050")   # the loader finds it
+        self.assertEqual((p["255"]["inputs"]["value"], p["208"]["inputs"]["value"], p["210"]["inputs"]["value"]),
+                         ("a foggy street", 20, 0.3))
+        self.assertEqual((p["256"]["inputs"]["output_path"], p["256"]["inputs"]["filename_prefix"]),
+                         ("//srv/out/abc_0010", "_comfyfarm_j1_raw"))
+        seq.convert = {"kind": "exr", "dst_dir": "C:/scratch/j1/", "dst_pattern": "abc_0010.plate.%04d.png"}
+        p = wan.build(v, seq, "//srv/out/abc_0010", "_comfyfarm_j1_raw")
+        self.assertEqual(p["254"]["inputs"]["path"], "C:/scratch/j1/abc_0010.plate.1050.png")   # converted: the file
 
     def test_output_folder_manifest_rules(self):
         wf = Workflow(WF_DIR / "ltx25_alpha_gen")

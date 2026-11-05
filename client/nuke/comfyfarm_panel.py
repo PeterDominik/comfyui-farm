@@ -98,6 +98,11 @@ class PanelModel:
         return next((p["name"] for p in wf["params"] if p["type"] == "sequence"), None)
 
     @staticmethod
+    def takes_one(wf: dict) -> bool:
+        """The workflow takes one image: a sequence's frame is named (the current frame)."""
+        return any(p["type"] == "sequence" and p.get("takes") == "image" for p in wf.get("params") or [])
+
+    @staticmethod
     def output_param(wf: dict) -> str | None:
         return next((p["name"] for p in wf["params"] if p["type"] == "output_folder"), None)
 
@@ -608,14 +613,17 @@ if QtWidgets is not None:
             if t in ("sequence", "output_folder"):
                 # Never pre-filled from last time: a path from another shot would send
                 # renders to the wrong place.
-                w.setPlaceholderText(p.get("placeholder") or ("/rdo/shows/…/shot.step.%04d.png 1001-1100"
-                                                              if t == "sequence" else ""))
+                one = p.get("takes") == "image"
+                w.setPlaceholderText(p.get("placeholder") or ("" if t != "sequence" else
+                                                              "/rdo/shows/…/shot.step.%04d.png 1050" if one else
+                                                              "/rdo/shows/…/shot.step.%04d.png 1001-1100"))
                 w.textChanged.connect(self._schedule_plan)
                 row = QtWidgets.QHBoxLayout()
                 row.addWidget(w, 1)
                 if t == "sequence":
                     sel = QtWidgets.QPushButton("From selected")
-                    sel.setToolTip("Use the selected Read or Write node's file and frame range")
+                    sel.setToolTip("Use the selected Read or Write node's file at the current frame" if one else
+                                   "Use the selected Read or Write node's file and frame range")
                     sel.setEnabled(nk is not None)
                     sel.clicked.connect(lambda *_: self.fill_from_selection())
                     row.addWidget(sel)
@@ -644,8 +652,9 @@ if QtWidgets is not None:
             the artist's to check and submit)."""
             if nk is None:
                 return
-            found = nk.selected_sequences()
-            seq = PanelModel.sequence_param(self._wf() or {"params": []})
+            wf = self._wf() or {"params": []}
+            found = nk.selected_sequences(one_frame=PanelModel.takes_one(wf))   # one image: the current frame
+            seq = PanelModel.sequence_param(wf)
             if not found or not seq:
                 self._message("Select a Read or Write node with a rendered PNG sequence (or a movhistory .mov).", True)
                 return

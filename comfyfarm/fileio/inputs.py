@@ -20,13 +20,13 @@ if TYPE_CHECKING:   # type hints only: fileio never imports pydantic
 from .errors import SequenceError
 from .media import fit_size, image_size, read_movie_info, timecode_to_frame
 from .ocio import _config_display, ocio_setup
-from .paths import (CONVERTED_SEQUENCE_EXTENSIONS, LOADER_EXTENSIONS, _pattern_regex, context_from_path, normalize,
-                    parse_input, source_stem, split_input_path, to_farm, to_posix)
+from .paths import (CONVERTED_SEQUENCE_EXTENSIONS, LOADER_EXTENSIONS, MOVIE_EXTENSIONS, _pattern_regex, context_from_path,
+                    frame_file, normalize, parse_input, source_stem, split_input_path, to_farm, to_posix)
 from .tools import require_tool
 
 __all__ = ["Sequence", "MOVIE_EXTENSIONS", "TEXTURE_EXTENSIONS", "resolve_sequence", "loaded_names", "texture_numbers",
            "folder_input", "texture_input", "resolve_movie", "has_slate", "scaled_text", "resolve_input", "work_sizes",
-           "batch_sequence", "load_path", "summary"]
+           "batch_sequence", "load_path", "load_file", "one_image", "frame_limit", "summary"]
 
 
 @dataclass
@@ -315,9 +315,6 @@ def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path
     """For texture workflows: a folder means the one texture inside it (folder_input)."""
     return folder_input(raw, cfg, listdir, isfile, texture=True)
 
-MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf"}
-
-
 def resolve_movie(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
                   shot: str | None = None) -> Sequence:
     path, first, last = parse_input(raw)
@@ -507,6 +504,42 @@ def load_path(seq: Sequence) -> tuple[str, list[int] | None]:
     if _pattern_regex(seq.filename) is None:
         return seq.directory + seq.filename, None
     return seq.directory + seq.filename, _numbers(seq)
+
+
+def load_file(seq: Sequence) -> str:
+    """The one image a loader that takes one image (ComfyFarm Load Image) reads: a file,
+    or a pattern with the frame after it (the loader finds that frame's file)."""
+    path, frames = load_path(seq)
+    if not frames:
+        return path
+    if (seq.convert or {}).get("dst_dir"):
+        return frame_file(path, frames[0])          # converted: named by the farm, exactly
+    return f"{path} {frames[0]}"
+
+
+def one_image(seq: Sequence, pc: PathsConfig) -> None:
+    """For inputs that take one image: a still, or one frame of a sequence or movie.
+    Anything more is refused, saying how to name the frame."""
+    if seq.frame_count == 1 and (seq.first is None or seq.first == seq.last):
+        return
+    shown = to_posix(seq.farm_path, pc.mappings) or seq.farm_path
+    if seq.first is not None and seq.last is not None:
+        what = "a movie" if seq.kind == "movie" else "a sequence"
+        has = f" ({what} of {seq.last - seq.first + 1} frames, {seq.first}-{seq.last})"
+        example = seq.first
+    else:
+        has, example = " (a sequence)", 1001
+    raise SequenceError(f"This workflow takes one image, and {shown} gives more{has}. Put the frame to use after "
+                        f"it, e.g. {shown} {example}.")
+
+
+def frame_limit(seq: Sequence, most: int | None) -> None:
+    """Inputs with a frame limit (frames.max in the manifest): longer ones are refused."""
+    if not most or not seq.frame_count or seq.frame_count <= most:
+        return
+    first = seq.first if seq.first is not None else 1001
+    raise SequenceError(f"This workflow takes at most {most} frames, and the input has {seq.frame_count}. "
+                        f"Give a shorter range, e.g. {first}-{first + most - 1}.")
 
 
 def summary(seq: Sequence | None, pc: PathsConfig) -> dict | None:
