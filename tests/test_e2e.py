@@ -302,7 +302,8 @@ convert:
         job = farm.submit("wan22_i2i", {"input": f"{SEQ} 1007", "prompt": "fog", "noise": 0.25})
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
-        self.assertEqual(self.outputs(done), ["abc_0010.pre.v1.i2i_v001.1007.png"])
+        # The shot's folder also holds the LTX tests' frames: just this workflow's.
+        self.assertEqual([n for n in self.outputs(done) if ".i2i_" in n], ["abc_0010.pre.v1.i2i_v001.1007.png"])
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertTrue(prompt["254"]["inputs"]["path"].endswith("/abc_0010.pre.v1.%04d.png 1007"))
         self.assertEqual((prompt["255"]["inputs"]["value"], prompt["210"]["inputs"]["value"]), ("fog", 0.25))
