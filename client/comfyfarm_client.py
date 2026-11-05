@@ -213,8 +213,10 @@ def describe(job: dict) -> str:
     s = f"{job['short_id']}  {job['status']:<14} {pct:>3}%  {job.get('name') or ''}  ({job['user']})"
     if job["status"] == "queued" and job.get("queue_position"):
         s += f"  #{job['queue_position']} in queue"
-    if job.get("eta_seconds") and job["status"] not in FINISHED:
-        s += f"  ~{job['eta_seconds'] // 60}m{job['eta_seconds'] % 60:02d}s"
+    if job["status"] == "queued" and job.get("next_worker"):
+        s += f"  -> {job['next_worker']}"
+    if job.get("eta_seconds") is not None and job["status"] not in FINISHED:
+        s += f"  done in ~{job['eta_seconds'] // 60}m{job['eta_seconds'] % 60:02d}s"
     if job.get("error"):
         s += f"\n    error: {job['error']}"
     for w in job.get("warnings") or []:

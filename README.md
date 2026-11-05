@@ -22,7 +22,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
   fewest jobs running, then age. Each ComfyUI only ever holds one running job plus one
   waiting.
 - **Live monitoring** over ComfyUI's websocket shows status, the current node, sampler
-  steps, progress, and queue position with an ETA learned from past runs. A periodic
+  steps, progress, and queue position with an ETA learned from past runs on each GPU type. A periodic
   check against ComfyUI's queue and history catches anything the websocket missed.
 - **Pipeline-aware inputs.** Paste `/rdo/shows/.../shot.step.%04d.png 1001-1158` and the
   gateway maps it to the farm path. It checks for missing frames and works out exactly
@@ -286,6 +286,15 @@ The Machines tab shows *new farm nodes: restarting ComfyUI when idle* meanwhile.
 - **Drain:** *Drain* on the dashboard's Machines tab lets a machine finish what it holds
   and take no new jobs (before working on it, or restarting it) until *Resume*. It lasts
   across manager restarts.
+- **ETAs:** every finished run is timed per workflow and GPU type (an RTX 5090, whichever
+  machine it's in), with its size: the frames it read, or a texture batch's tiles. Its
+  time includes converting its inputs. From the recent runs the manager fits an overhead
+  plus a time per frame, so a 200-frame job is expected to take longer than a 50-frame
+  one, and the 3090 longer than a 5090. It then walks the queue the way jobs are handed
+  out (best free GPU, then one prepared ahead, then whichever frees first) to say when
+  each job will be done and which machine should take it. A workflow that hasn't run on a
+  GPU type yet goes by its runs on the others; one that has never run has no ETA. The
+  Machines tab lists the run times (*Run times*).
 - **Paths travel as studio paths** (`/rdo/shows/...`) and each machine maps them its own
   way (`paths.mappings` in its config), so Linux and Windows workers mix. Inputs are
   converted on the agent that runs the job, in its own scratch folder.
@@ -301,12 +310,15 @@ The Machines tab shows *new farm nodes: restarting ComfyUI when idle* meanwhile.
 **Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Three tabs:
 
 - **Submit:** pick the workflow, fill in the form, check the destination line, submit.
-- **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on. Click a
+- **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
+  queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
+  should be done, or the time left once running. Click a
   row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
   (if any), *Run again* and *API JSON*.
 - **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model, or
-  too little VRAM) and why. *Drain* / *Resume* per machine.
+  too little VRAM) and why. *Drain* / *Resume* per machine. Below, *Run times*: how long each
+  workflow takes on each GPU type, what the ETAs come from.
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
@@ -354,12 +366,14 @@ installed: the client is standard library only.
    from the node. For a workflow that takes one image (`wan22_i2i`), it fills in
    `path <current frame>` instead: go to the frame first. A workflow with several inputs
    (a plate and its matte) has a field and a *From selected* for each.
-3. Check the line under the form. It shows the frame count, the exact output folder, and
-   the first and last file names, or the problem (missing frames, no shot found in the
-   path, and so on) before anything is queued.
+3. Check the line under the form. It shows the frame count, the exact output folder, the
+   first and last file names and about how long the job will take on which machine (and
+   when it'll be done, with the queue ahead of it), or the problem (missing frames, no shot
+   found in the path, and so on) before anything is queued.
 4. Click *Submit*.
-5. Follow the job on the *Queue* tab: everyone's jobs, like the dashboard, with the workflow
-   and the machine running it; tick *Only mine* or *Only active* to narrow it. When a job
+5. Follow the job on the *Queue* tab: everyone's jobs, like the dashboard, with the workflow,
+   the machine running it (→ the one expected to take it, while queued) and when it should be
+   done; tick *Only mine* or *Only active* to narrow it. When a job
    finishes, a Read appears next to the source node (turn this off on the *Submit* tab).
    Right-click a job to create its Read, copy the output path, reuse its input, cancel it,
    run it again, or see the error. Double-click a finished job to create its Read.
@@ -452,8 +466,8 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/health` | Liveness, auth on/off, queue size |
 | GET | `/api/v1/workflows` | Workflows and parameter schemas, plus any preflight problems |
 | POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?}` → job |
-| POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing |
-| GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs and texture sets, with `queue_position` and `eta_seconds` |
+| POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing, and `eta` (`run`: its seconds, `done_in`: behind the queue, `workers`) |
+| GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs and texture sets, with `queue_position`, `eta_seconds` (until done) and, while queued, `next_worker` |
 | GET | `/api/v1/jobs?parent={set id}` | A texture set's batches, in order |
 | GET | `/api/v1/jobs/{id}` | One job (full id or 8-char prefix) |
 | DELETE | `/api/v1/jobs/{id}` | Cancel (queued, waiting in ComfyUI, or running) |
@@ -462,6 +476,7 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/jobs/{id}/prompt` | The exact API JSON sent to ComfyUI |
 | GET | `/api/v1/jobs/{id}/preview` | MP4 preview |
 | GET | `/api/v1/workers` | Online state, GPU, free VRAM, slots, preflight problems |
+| GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`

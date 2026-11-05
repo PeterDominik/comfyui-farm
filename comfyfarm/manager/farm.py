@@ -26,6 +26,7 @@ from ..fileio import textures as T
 from ..fileio.errors import SequenceError
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
+from . import eta as E
 from .db import JobStore
 from .events import EventBus
 
@@ -149,7 +150,8 @@ class Farm:
         return j
 
     def set_eta(self, set_id: str) -> float | None:
-        """Seconds left for a set: its unfinished batches at the pace of its finished ones."""
+        """Seconds left for a set: its unfinished batches at the pace of its finished ones
+        (when the forecast doesn't know)."""
         rows = self.store.batch_states(set_id)
         took = [r["finished_at"] - (r["started_at"] or r["dispatched_at"]) for r in rows
                 if r["status"] == "done" and r["finished_at"] and (r["started_at"] or r["dispatched_at"])]
@@ -160,39 +162,56 @@ class Farm:
         return avg * left / max(1, self.online_workers())
 
     def annotate(self, jobs: list[dict]) -> list[dict]:
-        """Add queue_position and a rough eta_seconds (from past run times)."""
-        n_workers = max(1, self.online_workers())
-        avg = {}
-
-        def avg_for(wf: str) -> float | None:
-            if wf not in avg:
-                avg[wf] = self.store.stats(wf)["avg_seconds"]
-            return avg[wf]
-
-        ahead = 0.0
-        for j in self.store.list(statuses=("running",), limit=1000, top_level=False, work_only=True):
-            a = avg_for(j["workflow"])
-            ahead += a * (1 - (j["progress"] or 0)) if a else 0
-        for j in self.store.list(statuses=("dispatched",), limit=1000, top_level=False, work_only=True):
-            ahead += avg_for(j["workflow"]) or 0
-        position, eta = {}, {}
-        for i, j in enumerate(self.store.queued(with_prompt=False)):
-            position[j["id"]] = i + 1
-            eta[j["id"]] = ahead / n_workers
-            ahead += avg_for(j["workflow"]) or 0
+        """Add queue_position, eta_seconds (until it's done) and, for queued jobs,
+        next_worker (the machine expected to take it). Times come from past runs of each
+        workflow on each GPU type, for the job's size (desk.forecast)."""
+        fc = self.desk.forecast() if self.desk else {}
+        position = {j["id"]: i + 1 for i, j in enumerate(self.store.queued(with_prompt=False))}
         for j in jobs:
             j["queue_position"] = position.get(j["id"])
-            a = avg_for(j["workflow"])
+            j["next_worker"] = None
+            j["eta_seconds"] = None
+            if j["status"] not in ACTIVE:
+                continue
             if j.get("kind") == "set":
-                eta = self.set_eta(j["id"]) if j["status"] in ACTIVE else None
-                j["eta_seconds"] = round(eta) if eta is not None else None
-            elif j["status"] == "queued":
-                j["eta_seconds"] = round(eta.get(j["id"], 0) + (a or 0)) if a else None
-            elif j["status"] in ("dispatched", "running"):
-                j["eta_seconds"] = round(a * (1 - (j["progress"] or 0))) if a else None
+                left = [fc.get(r["id"], {}).get("done_in") for r in self.store.batch_states(j["id"])
+                        if r["status"] in ACTIVE]
+                eta = max(left) if left and None not in left else self.set_eta(j["id"])
             else:
-                j["eta_seconds"] = None
+                f = fc.get(j["id"]) or {}
+                eta = f.get("done_in")
+                if j["status"] == "queued":
+                    j["next_worker"] = f.get("worker")
+            j["eta_seconds"] = round(eta) if eta is not None else None
         return jobs
+
+    def plan_eta(self, plan: dict) -> dict | None:
+        """For the plan line: about how long the job will take, where, and when it'll be
+        done behind the queue."""
+        if not self.desk:
+            return None
+        wf = plan["wf"]
+        if plan.get("batches"):
+            jobs = [{"id": f"plan-{i}", "workflow": wf.name, "info": {"batch": {"tiles": b - a}}}
+                    for i, (a, b) in enumerate(plan["batches"])]
+        else:
+            seq = plan["seq"]
+            size = len(plan["textures"]["items"]) if plan.get("textures") else (seq.frame_count if seq else 1)
+            jobs = [{"id": "plan-0", "workflow": wf.name, "info": {"expected_frames": size or 1}}]
+        fc = self.desk.forecast(extra=jobs)
+        got = [fc.get(j["id"]) or {} for j in jobs]
+        if not got or any(g.get("done_in") is None for g in got):
+            return None
+        runs = [g["run"] for g in got if g.get("run") is not None]
+        return {"done_in": round(max(g["done_in"] for g in got)), "run": round(sum(runs)) if runs else None,
+                "worker": got[0].get("worker"), "workers": sorted({g["worker"] for g in got if g.get("worker")})}
+
+    def run_times(self) -> list[dict]:
+        """How long each workflow takes on each GPU type, from its recent runs (the
+        Machines tab)."""
+        out = [{"workflow": wf, "label": (self.registry.workflows[wf].label if wf in self.registry.workflows else wf),
+                "gpu": gpu, **E.describe(row)} for (wf, gpu), row in self.store.run_stats().items()]
+        return sorted(out, key=lambda r: (r["label"].lower(), r["gpu"]))
 
     # ================================================================ submit / cancel
     def plan(self, workflow: str, params: dict, show: str | None = None, shot: str | None = None,
@@ -378,6 +397,7 @@ class Farm:
             "output_dir": out, "output_dir_posix": P.to_posix(out, pc.mappings) if out else None,
             "picked": plan["picked"], "version": plan["version"],
             "notes": plan["notes"] + ([plan["waits"]] if plan.get("waits") else []),
+            "eta": self.plan_eta(plan),
             "input_kind": seq.kind if seq else None, "convert": I.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
             "what": plan.get("what"), "asset": plan.get("asset"),

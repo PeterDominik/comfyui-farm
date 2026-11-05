@@ -221,6 +221,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def workers(ident: Identity = Depends(identity)):
         return {"workers": desk.summaries()}
 
+    @app.get("/api/v1/run-times")
+    def run_times(ident: Identity = Depends(identity)):
+        """How long each workflow takes on each GPU type (what the ETAs come from)."""
+        return {"run_times": farm.run_times()}
+
     @app.post("/api/v1/workers/{name}/drain")
     def drain_worker(name: str, req: DrainRequest, ident: Identity = Depends(identity)):
         """Drain a machine (it finishes what it holds and takes nothing new), or resume it

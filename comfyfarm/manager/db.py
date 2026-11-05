@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
+from .eta import fold
 
 __all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "now"]
 
@@ -54,6 +55,13 @@ CREATE TABLE IF NOT EXISTS drained (
     worker TEXT PRIMARY KEY,
     by TEXT,
     since REAL
+);
+CREATE TABLE IF NOT EXISTS run_stats (
+    workflow TEXT NOT NULL,
+    gpu TEXT NOT NULL,
+    runs INTEGER NOT NULL DEFAULT 0,
+    w REAL, wx REAL, wy REAL, wxx REAL, wxy REAL,
+    PRIMARY KEY (workflow, gpu)
 );
 CREATE TABLE IF NOT EXISTS workflow_stats (
     workflow TEXT PRIMARY KEY,
@@ -290,6 +298,18 @@ class JobStore:
                 self._db.execute("DELETE FROM drained WHERE worker=?", (worker,))
 
     # ---------------------------------------------------------------- stats
+    def run_stats(self) -> dict[tuple[str, str], dict]:
+        """Run times per (workflow, GPU type), as manager.eta fits them."""
+        return {(r["workflow"], r["gpu"]): dict(r) for r in self._q("SELECT * FROM run_stats")}
+
+    def record_gpu_run(self, workflow: str, gpu: str, size: float, seconds: float) -> None:
+        with self._lock:
+            rows = self._q("SELECT * FROM run_stats WHERE workflow=? AND gpu=?", (workflow, gpu))
+            r = fold(dict(rows[0]) if rows else None, size, seconds)
+            self._db.execute(
+                "INSERT OR REPLACE INTO run_stats (workflow, gpu, runs, w, wx, wy, wxx, wxy) VALUES (?,?,?,?,?,?,?,?)",
+                (workflow, gpu, r["runs"], r["w"], r["wx"], r["wy"], r["wxx"], r["wxy"]))
+
     def stats(self, workflow: str) -> dict:
         rows = self._q("SELECT * FROM workflow_stats WHERE workflow=?", (workflow,))
         return dict(rows[0]) if rows else {"workflow": workflow, "runs": 0, "avg_seconds": None, "node_count": None}

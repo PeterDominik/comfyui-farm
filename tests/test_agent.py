@@ -57,9 +57,10 @@ class FakeComfy:
     """ComfyUI's HTTP API as the agent uses it, in memory. Tests move prompts along by
     hand: running/pending, history, websocket messages."""
 
-    def __init__(self, object_info: dict | None = None, vram: int = 32 * 2**30):   # a 5090
+    def __init__(self, object_info: dict | None = None, vram: int = 32 * 2**30, card: str = "fake"):   # a 5090
         self.oi = dict(object_info or INSTALLED)
         self.vram = vram
+        self.card = card
         self.prompts: dict[str, dict] = {}
         self.running: set[str] = set()
         self.pending: set[str] = set()
@@ -69,7 +70,7 @@ class FakeComfy:
 
     async def system_stats(self):
         return {"system": {"comfyui_version": "test"},
-                "devices": [{"name": "cuda:0 fake", "vram_total": self.vram, "vram_free": self.vram}]}
+                "devices": [{"name": f"cuda:0 {self.card}", "vram_total": self.vram, "vram_free": self.vram}]}
 
     async def object_info(self):
         return self.oi
@@ -248,9 +249,9 @@ class AgentTests(unittest.TestCase):
         self.addCleanup(setattr, wf, "requires", wf.requires)
         wf.requires = {"vram_gb": None, "tags": []}
 
-    def gpu(self, name, gb, object_info=None):
+    def gpu(self, name, gb, object_info=None, card="fake"):
         """An agent taking jobs, on a GPU with this much VRAM."""
-        return self.ready(self.agent(name, comfy=FakeComfy(object_info, vram=gb * 2**30)))
+        return self.ready(self.agent(name, comfy=FakeComfy(object_info, vram=gb * 2**30, card=card)))
 
     def ready(self, a):
         """Checked in, its ComfyUI up and its node definitions checked."""
@@ -758,6 +759,70 @@ class AgentTests(unittest.TestCase):
         self.beat(small)
         self.assertEqual(self.job(job["id"])["worker"], "small")
         self.assertNotIn(job["id"], self.desk._passed)
+
+    # ------------------------------------------------------------ ETAs
+    def test_etas_walk_the_queue_per_gpu_type(self):
+        self.any_gpu()
+        big = self.gpu("big", 32, card="NVIDIA GeForce RTX 5090")
+        small = self.gpu("small", 24, card="NVIDIA GeForce RTX 3090")
+        jobs = [self.submit() for _ in range(5)]                  # 3 frames each
+        got = self.farm.annotate([dict(j) for j in jobs])
+        self.assertEqual([j["next_worker"] for j in got], ["big", "small", "big", "small", "big"])
+        self.assertEqual({j["eta_seconds"] for j in got}, {None})   # no runs yet: no times
+        self.assertEqual([j["queue_position"] for j in got], [1, 2, 3, 4, 5])
+
+        ltx = "ltx25_alpha_gen"
+        self.store.record_gpu_run(ltx, "NVIDIA GeForce RTX 5090", 3, 30)     # 10 s a frame
+        self.store.record_gpu_run(ltx, "NVIDIA GeForce RTX 3090", 3, 60)     # 20 s a frame
+        got = self.farm.annotate([dict(j) for j in jobs])
+        # Each free GPU, best first; then one prepared ahead on each; then whichever frees first.
+        self.assertEqual([(j["next_worker"], j["eta_seconds"]) for j in got],
+                         [("big", 30), ("small", 60), ("big", 60), ("small", 120), ("big", 90)])
+        plan = self.farm.plan_summary(self.farm.plan(ltx, {"input": f"{SEQ} 1001-1002"}))
+        self.assertEqual(plan["eta"], {"done_in": 110, "run": 20, "worker": "big", "workers": ["big"]})
+
+        for a in (small, big):                                          # the desk hands them out the same way
+            self.beat(a)
+        self.assertEqual([self.job(j["id"])["worker"] for j in jobs], ["big", "small", "big", "small", None])
+        # big's first is half done after 10 s: 15 s left, then the one prepared ahead.
+        self.until(lambda: self.job(jobs[2]["id"])["status"] in ("dispatched", "preparing") and
+                   self.job(jobs[0]["id"])["status"] == "dispatched", what="dispatched")
+        self.store.update(jobs[0]["id"], status="running", started_at=time.time() - 10, progress=0.5)
+        fc = self.desk.forecast()
+        self.assertAlmostEqual(fc[jobs[0]["id"]]["done_in"], 15, delta=1)
+        self.assertAlmostEqual(fc[jobs[2]["id"]]["done_in"], 45, delta=1)
+        self.assertEqual(fc[jobs[4]["id"]]["worker"], "big")           # frees at 45, small at 120
+        self.assertAlmostEqual(fc[jobs[4]["id"]]["done_in"], 75, delta=1)
+
+        self.desk.set_drained("big", True)                              # finishes its own, takes no more
+        fc = self.desk.forecast()
+        self.assertAlmostEqual(fc[jobs[2]["id"]]["done_in"], 45, delta=1)
+        self.assertEqual(fc[jobs[4]["id"]]["worker"], "small")
+        self.store.update(jobs[0]["id"], status="postprocessing")       # collecting its outputs: done any moment
+        self.assertEqual(self.desk.forecast()[jobs[0]["id"]]["done_in"], 0)
+
+    def test_a_gpu_without_runs_of_its_own_goes_by_the_others(self):
+        self.any_gpu()
+        self.gpu("big", 32, card="NVIDIA GeForce RTX 5090")
+        job = self.submit()
+        self.store.record_gpu_run("ltx25_alpha_gen", "NVIDIA GeForce RTX 3090", 3, 60)
+        self.assertEqual(self.farm.annotate([job])[0]["eta_seconds"], 60)
+        wan = self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1001"}, "ann")
+        self.store.update(wan["id"], priority=5)                            # first in the queue
+        self.store.record_run("wan22_i2i", 12, None)                        # only the per-workflow average
+        got = self.farm.annotate([self.job(job["id"]), self.job(wan["id"])])
+        self.assertEqual([(j["queue_position"], j["eta_seconds"]) for j in got], [(2, 72), (1, 12)])   # behind Wan
+
+    def test_finished_runs_are_recorded_per_gpu_type(self):
+        a = self.ready(self.agent(comfy=FakeComfy(card="NVIDIA GeForce RTX 5090")))
+        job = self.submit()
+        pid = self.dispatched(a, job)
+        self.assertEqual(self.finish(a, job["id"], pid)["status"], "done")
+        [(key, row)] = self.store.run_stats().items()
+        self.assertEqual((key, row["runs"], row["wx"]), (("ltx25_alpha_gen", "NVIDIA GeForce RTX 5090"), 1, 3))
+        [rt] = self.farm.run_times()
+        self.assertEqual((rt["label"], rt["gpu"], rt["runs"], rt["size"]),
+                         (REGISTRY.workflows["ltx25_alpha_gen"].label, "NVIDIA GeForce RTX 5090", 1, 3))
 
     def test_jobs_go_only_to_agents_that_can_run_them(self):
         missing = {k: v for k, v in INSTALLED.items() if k != "LTXPadFrames"}
