@@ -81,9 +81,9 @@ commit. ComfyUI needs the custom node packs the workflows use: VideoHelperSuite,
 Suite, Easy-Use and ComfyUI-LTXVideo, plus
 [ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord) with `chord_v1.safetensors` in
 `ComfyUI/models/checkpoints` for `chord_pbr`. CHORD's weights are under Ubisoft's
-research-only licence. The farm's own nodes (`comfyui_nodes/`, e.g. *ComfyFarm Save
-Image*) come with this repo; the setup scripts link them into ComfyUI (`--comfyui` on
-Linux, `-ComfyUIDir` on Windows). The tools for EXR and movie inputs come with the Python
+research-only licence. The farm's own nodes (`comfyui_nodes/`: *ComfyFarm Load Images*,
+*ComfyFarm Load Image*, *ComfyFarm Save Image*) come with this repo; the setup scripts link
+them into ComfyUI (`--comfyui` on Linux, `-ComfyUIDir` on Windows). The tools for EXR and movie inputs come with the Python
 requirements: `oiiotool` (OpenImageIO, with OpenColorIO) and `ffmpeg` (imageio-ffmpeg).
 
 | Script | What |
@@ -255,8 +255,12 @@ git pull && deploy/linux/setup.sh manager|agent && deploy/linux/farmctl.sh resta
 git pull; deploy\windows\setup.ps1 -Agent; deploy\windows\install_startup.ps1 -Stop -StartNow
 ```
 
-Queued and running jobs carry on across restarts of either. Restart ComfyUI after an
-update that changed `comfyui_nodes/`. (`standalone` with services: `deploy\windows\update.ps1`.)
+Queued and running jobs carry on across restarts of either. ComfyUI loads the farm's own
+nodes only at startup, so after a pull that changed them its agent takes no new jobs and,
+once it holds none, restarts ComfyUI itself (when it starts ComfyUI, `comfyui_launch`).
+The Machines tab shows *new farm nodes: restarting ComfyUI when idle* meanwhile. Without
+`comfyui_launch`, restart ComfyUI by hand. (`standalone` with services:
+`deploy\windows\update.ps1`.)
 
 ### How the manager and agents work together
 
@@ -521,8 +525,8 @@ tiles than the manifest's `textures.batch` (4 for `chord_pbr`) is submitted as a
 - **Cancel** cancels every batch that hasn't finished. The maps already written stay, and
   Retry failed can finish the set later.
 - **Tiles of different sizes go in different batches**, even in a set smaller than the
-  batch size. The loader resizes and crops every image of a run to the most common size,
-  so a 1024×512 tile among 1024² ones would otherwise come back cropped.
+  batch size: one run's images go through the model as one batch, so they must all be the
+  same size (ComfyFarm Load Images refuses a mix; VHS would crop them to one size).
 - **Timing on the farm machine** (4K EXR tiles at `work_resolution` 1024): 1 tile 5 s,
   2 tiles 8 s, 3 tiles 11 s, 4 tiles 15 s, 5 tiles 18 s. That's about 2 s per run plus
   3.3 s per tile, so batches of 4 cost 3.75 s a tile. 591 tiles take roughly 35 minutes.
@@ -656,8 +660,8 @@ params:                        # becomes the form in the dashboard, in this orde
                                # scaled down to it before the workflow, aspect kept
 
 sequence:                      # nodes the `sequence` param drives
-  path_node: {node: "9094", input: value, class: PrimitiveString}
-  loader: {node: "9104", class: VHS_LoadImagesPath}
+  path_node: {node: "9094", input: value, class: PrimitiveString}   # optional, informational
+  loader: {node: "9104", class: ComfyFarmLoadImages}               # or VHS_LoadImagesPath
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}
@@ -670,14 +674,27 @@ outputs:                       # nodes the gateway points at each job's versione
   input name, and the class as a guard. Validation (min/max/required) happens before
   anything reaches ComfyUI.
 - **`sequence` and `output_folder`** take no `targets`; the gateway wires them in.
-  A sequence is mapped to the farm path, frame-checked and turned into the loader's
-  directory/skip/cap. An output folder is checked (parent exists, on show storage,
+  A sequence is mapped to the farm path, frame-checked and given to the loader. A folder
+  means the one sequence (or texture) in it; a folder holding several is refused. An output folder is checked (parent exists, on show storage,
   outside `.published`) and used as the root for `paths.output_dir` (`{root}/{shot}`);
   the version is the first one with no files there and no queued job claiming it.
   `POST /api/v1/plan` shows the result without queuing.
 - **Nodes in `sequence` and `outputs` belong to the gateway.** A plain param targeting
   them would be overwritten on every job, which is why the output folder is its own type
   rather than a param pointed at `OUTPUT_PATH`.
+- **The loader** (`sequence.loader`) is the node that reads the input:
+  - `ComfyFarmLoadImages` (*ComfyFarm Load Images*, from `comfyui_nodes/`): gets the exact
+    files, a frame pattern plus a frame list (`1001-1158`, `1001,1002,1011`). Nothing else in
+    the folder matters, a missing frame stops the run, and images of different sizes are
+    refused rather than cropped. Its `path` also takes a range as copied from Nuke
+    (`…/plate.%04d.png 1001-1158`), so the workflow runs by hand in ComfyUI too. Same
+    outputs as VHS: IMAGE, MASK (from alpha), frame_count.
+  - `VHS_LoadImagesPath`, for downloaded workflows: it reads the whole folder in name
+    order, so the farm works out `skip_first_images`/`image_load_cap` and refuses a range
+    that other images in the folder sort into.
+  - Workflows never load movies: one with a video loader node (`VHS_LoadVideo`,
+    `VHS_LoadVideoPath`, core `LoadVideo`) is refused. The farm extracts a movie's frames
+    first, numbered from its timecode.
 - **Text checks:** `pattern` (a regex the value must match; empty is always allowed) and
   `invalid` (the message when it doesn't).
 - **`work_resolution`** (pixels, 64 or more): for workflows that work at a fixed size

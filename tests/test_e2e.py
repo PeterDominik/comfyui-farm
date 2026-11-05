@@ -207,7 +207,7 @@ convert:
     def test_01_happy_path(self):
         job = self.submit("1003-1010")
         self.assertEqual(job["status"], "queued")
-        self.assertEqual((job["info"]["input"]["skip"], job["info"]["input"]["cap"]), (2, 8))
+        self.assertEqual((job["info"]["input"]["first"], job["info"]["input"]["last"]), (1003, 1010))
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
         out = done["outputs"]
@@ -219,6 +219,8 @@ convert:
         self.assertFalse([n for n in names if "_raw" in n], "raw frames should be renamed")
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 42)   # not on the form: as exported
+        self.assertEqual(prompt["9104"]["inputs"]["frames"], "1003-1010")    # ComfyFarm Load Images: exact frames
+        self.assertTrue(prompt["9104"]["inputs"]["path"].endswith("/abc_0010.pre.v1.%04d.png"))
         self.assertEqual(done["progress"], 1.0)
 
     def test_02_versions_and_cancel_waiting_jobs(self):
@@ -509,7 +511,7 @@ convert:
         conv = [c["args"] for c in self.oiiotool_calls() if c["args"][-1].endswith(f"/{big['id']}/rockA_big.0001.png")]
         self.assertEqual(conv[0][conv[0].index("--resize") + 1], "1024x0")
         prompt = farm._request("GET", f"/api/v1/jobs/{big['id']}/prompt")
-        self.assertTrue(prompt["17"]["inputs"]["directory"].endswith(f"/scratch/{big['id']}/"))
+        self.assertIn(f"/scratch/{big['id']}/", prompt["17"]["inputs"]["path"])
 
         with self.assertRaisesRegex(farm.FarmError, "one 1001 tile"):
             farm.submit("chord_pbr", {"input": f"{tex}/src", "tile": "tile"})
@@ -543,7 +545,8 @@ convert:
         batches = farm.batches(s["id"])
         self.assertEqual([b["status"] for b in batches], ["done"] * 3)
         prompt = farm._request("GET", f"/api/v1/jobs/{batches[2]['id']}/prompt")
-        self.assertTrue(prompt["17"]["inputs"]["directory"].endswith(f"/scratch/{batches[2]['id']}/"))
+        self.assertIn(f"/scratch/{batches[2]['id']}/", prompt["17"]["inputs"]["path"])
+        self.assertEqual(prompt["17"]["inputs"]["frames"], "1009-1010")
         scaled = [c["args"] for c in self.oiiotool_calls() if "/set/rockB_diffuse." in " ".join(c["args"])]
         self.assertEqual(len(scaled), 10)
         self.assertFalse((self.tmp / "scratch" / batches[0]["id"]).exists())
@@ -598,7 +601,7 @@ convert:
 
     def test_08_missing_node_pack_fails_fast(self):
         self.stop_comfy()
-        self.start_comfy("--drop-class", "VHS_LoadImagesPath")
+        self.start_comfy("--drop-class", "LTXPadFrames")
         try:
             time.sleep(2.5)   # gateway notices the restart and re-reads node definitions
             worker = self.wait_worker_ready()
@@ -606,7 +609,7 @@ convert:
             job = self.submit()
             failed = self.wait_for(job["id"], ("failed", "done"))
             self.assertEqual(failed["status"], "failed")
-            self.assertIn("VHS_LoadImagesPath is not installed", failed["error"])
+            self.assertIn("LTXPadFrames is not installed", failed["error"])
         finally:
             self.stop_comfy()
             self.start_comfy()

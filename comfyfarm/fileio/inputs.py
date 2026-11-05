@@ -25,8 +25,8 @@ from .paths import (CONVERTED_SEQUENCE_EXTENSIONS, LOADER_EXTENSIONS, _pattern_r
 from .tools import require_tool
 
 __all__ = ["Sequence", "MOVIE_EXTENSIONS", "TEXTURE_EXTENSIONS", "resolve_sequence", "loaded_names", "texture_numbers",
-           "texture_input", "resolve_movie", "has_slate", "scaled_text", "resolve_input", "work_sizes",
-           "batch_sequence", "summary"]
+           "folder_input", "texture_input", "resolve_movie", "has_slate", "scaled_text", "resolve_input", "work_sizes",
+           "batch_sequence", "load_path", "summary"]
 
 
 @dataclass
@@ -118,13 +118,16 @@ def resolve_sequence(
     listdir=os.listdir,
     isfile=os.path.isfile,
     allow_gaps: bool = False,
+    listing: bool = True,
 ) -> Sequence:
     """Turn what an artist typed into exactly what the loader node will read.
 
-    VHS "Load Images (Path)" loads *every* image in a folder, sorted by name, then
-    applies skip_first_images / image_load_cap. So for a frame range we list the
-    folder the same way and work out skip/cap, refusing anything that would quietly
-    load the wrong frames (gaps, foreign images interleaved, unreadable formats).
+    `listing`: the loader lists the folder, as VHS "Load Images (Path)" does: it loads
+    *every* image in it, sorted by name, then applies skip_first_images / image_load_cap.
+    So for a frame range we list the folder the same way and work out skip/cap, refusing
+    anything that would quietly load the wrong frames (gaps, foreign images interleaved,
+    unreadable formats). Without it (ComfyFarm Load Images, which reads the exact files of
+    a pattern and frame list), every wanted frame must simply be there.
     `allow_gaps` is for UDIM tiles, which skip numbers (1001, 1002, 1011, ...).
     """
     if not raw or not raw.strip():
@@ -150,6 +153,8 @@ def resolve_sequence(
                    seq_name=ctx.get("seq"), source=source_stem(filename, directory))
     if ext in CONVERTED_SEQUENCE_EXTENSIONS:
         seq.kind = "exr"
+        return _resolve_converted_sequence(seq, regex, cfg, listdir, allow_gaps)
+    if not listing and filename:        # the exact files: no folder listing to fit
         return _resolve_converted_sequence(seq, regex, cfg, listdir, allow_gaps)
     if not cfg.validate_inputs:
         if first is not None:
@@ -214,6 +219,13 @@ def loaded_names(seq: Sequence, listdir=os.listdir, isfile=os.path.isfile) -> li
         return [by_frame[f] for f in frames if f in by_frame]
     if seq.kind != "frames":
         return []
+    regex = _pattern_regex(seq.filename) if seq.filename else None
+    if regex is not None:               # a pattern: its frames (VHS was checked to read exactly those)
+        by_frame = {int(m.group(1)): n for n, m in ((n, regex.match(n)) for n in listdir(seq.directory)) if m}
+        frames = seq.frames or range(seq.first, seq.last + 1)
+        return [by_frame[f] for f in frames if f in by_frame]
+    if seq.filename and not seq.cap:    # one image, read as it is
+        return [seq.filename]
     loadable = _loader_listing(seq.directory, listdir, isfile)
     return loadable[seq.skip: seq.skip + seq.cap] if seq.cap else loadable[seq.skip:]
 
@@ -248,22 +260,24 @@ def texture_numbers(name: str, numbering: str = "udim") -> tuple[int, int, bool]
     return 1001, 0, False
 
 
-def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path.isfile) -> str:
-    """For texture workflows: a folder means the one texture inside it. Returns the input
-    with the folder replaced by that texture's file or pattern (rock_diffuse.%04d.png),
-    so its UDIM tiles are read and checked like any sequence. Anything else is returned
-    unchanged."""
+def folder_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path.isfile,
+                 texture: bool = False) -> str:
+    """A folder means the one sequence (or texture, with its UDIM tiles) inside it. Returns
+    the input with the folder replaced by that sequence's file or pattern
+    (rock_diffuse.%04d.png), so it is read and checked like any sequence; a folder holding
+    several is refused with their names. Anything else is returned unchanged."""
     path, first, last = parse_input(raw)
     directory, filename = split_input_path(to_farm(path, cfg.mappings))
     if filename:
         return raw
+    what = "texture" if texture else "image sequence"
     try:
         names = sorted(n for n in listdir(directory)
                        if os.path.splitext(n)[1].lower() in TEXTURE_EXTENSIONS and isfile(directory + n))
     except OSError as e:
         raise SequenceError(f"The farm machine can't open the input folder {directory} ({e.strerror or e}).")
     if not names:
-        raise SequenceError(f"No texture images (png, jpg, tif, exr…) in {directory}.")
+        raise SequenceError(f"No {'texture ' if texture else ''}images (png, jpg, tif, exr…) in {directory}.")
     groups: dict[tuple, list] = {}
     for n in names:
         m = _TEXTURE_NAME.match(n)
@@ -273,9 +287,10 @@ def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path
         shown = sorted({ms[0].group(0) if len(ms) == 1 else f"{ms[0]['stem']} ({len(ms)} files)"
                         for ms in groups.values()})
         raise SequenceError(
-            f"{directory} holds {len(groups)} different textures ({', '.join(shown[:6])}"
-            f"{', …' if len(shown) > 6 else ''}). Give the diffuse texture's file or sequence instead of "
-            f"the folder, one job per texture.")
+            f"{directory} holds {len(groups)} different {what}s ({', '.join(shown[:6])}"
+            f"{', …' if len(shown) > 6 else ''}). Give the "
+            + ("diffuse texture's file or sequence instead of the folder, one job per texture."
+               if texture else "sequence's file pattern instead of the folder, e.g. …/plate.%04d.png."))
     (stem, sa, la, sb, lb, _), ms = next(iter(groups.items()))
     ext = ms[0]["ext"]
     if len(ms) == 1:
@@ -283,6 +298,9 @@ def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path
     else:
         a_vary, b_vary = len({m["a"] for m in ms}) > 1, len({m["b"] for m in ms}) > 1
         if a_vary and b_vary:
+            if not texture:
+                raise SequenceError(f"{directory} holds files numbered two ways ({stem}.<n>.<n>). Give the "
+                                    f"sequence's file pattern instead of the folder.")
             raise SequenceError(f"{directory} holds UDIM tiles of several frames ({stem}.<UDIM>.<frame>). "
                                 f"Give one frame's tiles, e.g. {stem}{sa}%0{la}d{sb}{ms[0]['b']}.{ext}.")
         if b_vary:
@@ -291,6 +309,11 @@ def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path
             name = f"{stem}{sa}%0{la}d" + (f"{sb}{ms[0]['b']}" if sb else "") + f".{ext}"
     rng = f" {first}-{last}" if first is not None else ""
     return f"{path.rstrip('/')}/{name}{rng}"
+
+
+def texture_input(raw: str, cfg: PathsConfig, listdir=os.listdir, isfile=os.path.isfile) -> str:
+    """For texture workflows: a folder means the one texture inside it (folder_input)."""
+    return folder_input(raw, cfg, listdir, isfile, texture=True)
 
 MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf"}
 
@@ -366,8 +389,12 @@ def scaled_text(sizes: list[tuple[int, int] | None], limit: int | None) -> str |
 
 def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None = None,
                   shot: str | None = None, texture: bool = False, ocio: OcioConfig | None = None,
-                  work_resolution: int | None = None, preview: bool = False) -> Sequence:
+                  work_resolution: int | None = None, preview: bool = False, listing: bool = True) -> Sequence:
     """Any supported input -> a Sequence. Converted kinds carry `convert` details.
+
+    A folder means the one sequence or texture inside it (folder_input). `listing`: the
+    workflow's loader lists the folder (VHS Load Images (Path)) rather than reading the
+    exact files (ComfyFarm Load Images); see resolve_sequence.
 
     With `texture` (texture workflows such as CHORD): a folder means the texture in it,
     UDIM tiles may skip numbers, and movies are refused. EXRs are converted the same way
@@ -388,9 +415,9 @@ def resolve_input(raw: str, pc: PathsConfig, cc: ConvertConfig, show: str | None
         if texture:
             raise SequenceError("This workflow takes texture images (png, jpg, tif or exr), not movies.")
         return resolve_movie(raw, pc, cc, show, shot)
-    if texture and pc.validate_inputs:
-        raw = texture_input(raw, pc)
-    seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture)
+    if pc.validate_inputs:
+        raw = folder_input(raw, pc, texture=texture)
+    seq = resolve_sequence(raw, pc, show=show, shot=shot, allow_gaps=texture, listing=listing)
     limit = work_resolution or None
     every = texture and not preview
     if seq.kind == "exr":
@@ -468,6 +495,18 @@ def batch_sequence(seq: Sequence, start: int, end: int) -> Sequence:
     elif c and c["kind"] == "image":
         c.update(names=c["names"][start:end], frames=c["frames"][start:end])
     return b
+
+
+def load_path(seq: Sequence) -> tuple[str, list[int] | None]:
+    """What a loader that reads exact files (ComfyFarm Load Images) gets for this input:
+    the file or frame pattern, and its frames in order (None for one image read as it is).
+    Converted inputs are read from the scratch folder they're converted into."""
+    c = seq.convert
+    if c and c.get("dst_dir"):
+        return c["dst_dir"] + c["dst_pattern"], _numbers(seq) or [1]
+    if _pattern_regex(seq.filename) is None:
+        return seq.directory + seq.filename, None
+    return seq.directory + seq.filename, _numbers(seq)
 
 
 def summary(seq: Sequence | None, pc: PathsConfig) -> dict | None:

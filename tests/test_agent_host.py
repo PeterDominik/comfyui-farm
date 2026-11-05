@@ -25,7 +25,11 @@ try:
 except ImportError:   # pragma: no cover
     Launcher = None
 
-SLEEPER = [sys.executable, "-c", "import time; time.sleep(120)"]
+# The interpreter itself: in a venv on Windows, python.exe is a small launcher that starts
+# it as a child, and a launcher started without a console (as the agent starts ComfyUI)
+# gives that child a console window of its own.
+PYTHON = getattr(sys, "_base_executable", None) or sys.executable
+SLEEPER = [PYTHON, "-c", "import time; time.sleep(120)"]
 
 
 @unittest.skipIf(Launcher is None, "needs the agent's dependencies (httpx, websockets)")
@@ -83,7 +87,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(la.starts, 2)
 
     def test_a_start_that_keeps_dying_backs_off(self):
-        la = self.launcher(command=[sys.executable, "-c", "raise SystemExit(3)"])
+        la = self.launcher(command=[PYTHON, "-c", "raise SystemExit(3)"])
         self.tick(la, False)
         la.proc.wait(10)
         waits = []
@@ -127,13 +131,41 @@ class LauncherTests(unittest.TestCase):
         old = os.environ.pop("PYTHONUNBUFFERED", None)          # as under cron or a plain shell
         if old is not None:
             self.addCleanup(os.environ.__setitem__, "PYTHONUNBUFFERED", old)
-        la = self.launcher(command=[sys.executable, "-c", "import os, time; print('starting', os.environ.get('X')); "
+        la = self.launcher(command=[PYTHON, "-c", "import os, time; print('starting', os.environ.get('X')); "
                                                           "time.sleep(60)"], env={"X": "42"})
         self.tick(la, False)
         end = time.time() + 20
         while time.time() < end and "starting 42" not in la.log_file.read_text():
             time.sleep(0.1)
         self.assertIn("starting 42", la.log_file.read_text())        # not held back while it runs
+
+    def test_restart_stops_it_and_starts_it_again(self):
+        la = self.launcher()
+        self.tick(la, False)
+        first = la.proc
+        self.assertTrue(la.restart(wait=10))                # for new farm nodes
+        self.procs.append(la.proc)
+        self.assertIsNotNone(first.poll())                  # the old one is gone...
+        self.assertNotEqual(la.proc.pid, first.pid)         # ...and a new one runs
+        self.assertTrue(pid_alive(la.proc.pid))
+        self.assertEqual((la.starts, la.pid_file.read_text().strip()), (2, str(la.proc.pid)))
+
+    def test_restart_stops_the_comfyui_the_agent_before_started(self):
+        p = subprocess.Popen(SLEEPER, start_new_session=os.name != "nt")
+        self.procs.append(p)
+        la = self.launcher()
+        la.pid_file.parent.mkdir(parents=True)
+        la.pid_file.write_text(f"{p.pid}\n")
+        self.assertTrue(la.restart(wait=10))
+        self.procs.append(la.proc)
+        p.wait(10)                                          # stopped (the test's own child: reaped here)
+        self.assertNotEqual(la.proc.pid, p.pid)
+
+    def test_restart_never_stops_a_comfyui_it_didnt_start(self):
+        la = self.launcher()
+        self.assertFalse(la.restart())                      # none running that it started
+        self.assertEqual(la.starts, 0)
+        self.assertFalse(self.launcher(command=[]).restart())
 
     def test_nothing_without_a_command(self):
         la = self.launcher(command=[])

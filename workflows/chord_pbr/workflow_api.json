@@ -59,37 +59,17 @@
       "title": "INPIUT_PATH_WIN"
     }
   },
-  "16": {
+  "17": {
     "inputs": {
-      "string": [
+      "path": [
         "15",
         0
       ],
-      "regex_pattern": "[^/\\\\]+$",
-      "replace": "",
-      "case_insensitive": true,
-      "multiline": false,
-      "dotall": false,
-      "count": 0
+      "frames": ""
     },
-    "class_type": "RegexReplace",
+    "class_type": "ComfyFarmLoadImages",
     "_meta": {
-      "title": "Replace Text (Regex)"
-    }
-  },
-  "17": {
-    "inputs": {
-      "directory": [
-        "16",
-        0
-      ],
-      "image_load_cap": 0,
-      "skip_first_images": 0,
-      "select_every_nth": 1
-    },
-    "class_type": "VHS_LoadImagesPath",
-    "_meta": {
-      "title": "Load Images (Path) 🎥🅥🅗🅢"
+      "title": "ComfyFarm Load Images"
     }
   },
   "19": {

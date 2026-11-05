@@ -23,7 +23,8 @@ from pathlib import Path
 
 from . import __version__
 from .config import Config, load_config
-from .fileio.ocio import nuke_ramp, ocio_roles
+from .fileio import farmnodes
+from .fileio.ocio import REPO, nuke_ramp, ocio_roles
 from .workflows import WorkflowRegistry
 
 
@@ -168,6 +169,13 @@ async def check_comfyui(name: str, url: str, reg: WorkflowRegistry) -> int:
         vram = f" ({dev['vram_total'] / 2**30:.0f} GB)" if dev.get("vram_total") else ""
         _line(" ok ", f"worker {name} {url}  ComfyUI {ver}  {dev.get('name', '')}{vram}")
         oi = await c.object_info()
+        why = farmnodes.stale(oi, REPO)
+        if why:
+            bad += 1
+            _line("FAIL", f"{name}: {why} Restart ComfyUI (an agent that starts ComfyUI restarts it itself once "
+                          f"it holds no jobs).")
+        elif farmnodes.loaded(oi):
+            _line(" ok ", f"{name} runs this checkout's farm nodes ({farmnodes.version(REPO)})")
         for wf in reg.workflows.values():
             probs = wf.check_object_info(oi)
             if probs:

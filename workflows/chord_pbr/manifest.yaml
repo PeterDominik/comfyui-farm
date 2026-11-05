@@ -82,7 +82,7 @@ params:
 # How the 'sequence' parameter is wired in.
 sequence:
   path_node: {node: "14", input: value, class: PrimitiveString}    # INPUT_PATH, informational
-  loader: {node: "17", class: VHS_LoadImagesPath}                  # directory/skip/cap set directly
+  loader: {node: "17", class: ComfyFarmLoadImages}                # path and frames set directly
 
 outputs:
   root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational

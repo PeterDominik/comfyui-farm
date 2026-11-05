@@ -39,7 +39,7 @@ params:
 # How the 'sequence' parameter is wired in.
 sequence:
   path_node: {node: "9094", input: value, class: PrimitiveString}   # informational
-  loader: {node: "9104", class: VHS_LoadImagesPath}                 # directory/skip/cap set directly
+  loader: {node: "9104", class: ComfyFarmLoadImages}                # path and frames set directly
 
 outputs:
   # OUTPUT_PATH: gets the job's final folder (informational; the graph shows it).

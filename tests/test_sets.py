@@ -16,6 +16,7 @@ from pathlib import Path
 
 from comfyfarm.config import Config
 from comfyfarm.fileio import convert as C
+from comfyfarm.fileio.paths import frames_text
 from comfyfarm.fileio import media as M
 from comfyfarm.fileio import textures as T
 from comfyfarm.manager.db import JobStore, now
@@ -184,7 +185,8 @@ class FarmSetTests(unittest.TestCase):
             self.assertEqual((b["kind"], b["status"], b["output_dir"], b["output_key"]),
                              ("batch", "queued", out, None))
             self.assertEqual(c["dst_dir"], f"{self.root}/scratch/{b['id']}/")   # its own scratch folder
-            self.assertEqual(full["prompt"]["17"]["inputs"]["directory"], c["dst_dir"])
+            self.assertEqual(full["prompt"]["17"]["inputs"]["path"], c["dst_dir"] + c["dst_pattern"])
+            self.assertEqual(full["prompt"]["17"]["inputs"]["frames"], frames_text(c["frames"]))
             self.assertEqual(full["prompt"]["28"]["inputs"]["output_path"], f"{self.root}/scratch/{b['id']}/maps")
             self.assertEqual(len(b["info"]["textures"]["items"]), len(c["names"]))
         self.assertEqual(batches[2]["info"]["input"]["convert"]["names"],
@@ -251,8 +253,9 @@ class FarmSetTests(unittest.TestCase):
         s = self.farm.submit("chord_pbr", {"input": src}, "ann")
         batches = [self.store.get(b["id"], with_prompt=True) for b in self.store.list(parent=s["id"])]
         loaders = [b["prompt"]["17"]["inputs"] for b in batches]
-        self.assertEqual([(x["directory"], x["skip_first_images"], x["image_load_cap"]) for x in loaders],
-                         [(f"{self.asset}/small/", 0, 4), (f"{self.asset}/small/", 4, 2)])
+        self.assertEqual([(x["path"], x["frames"]) for x in loaders],
+                         [(f"{self.asset}/small/rockA_diffuse.%04d.png", "1001-1004"),
+                          (f"{self.asset}/small/rockA_diffuse.%04d.png", "1005-1006")])
         self.assertEqual([b["status"] for b in batches], ["queued", "queued"])   # nothing to convert
 
     def test_exr_set(self):

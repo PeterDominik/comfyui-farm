@@ -240,10 +240,16 @@ class PanelModel:
     @staticmethod
     def machine_state(w: dict) -> tuple[str, str]:
         """(what the machine is doing, a colour) for the Machines tab."""
+        nodes = w.get("farm_nodes") or {}       # its ComfyUI runs other farm nodes than its checkout
+        if nodes.get("state") == "restarting":
+            return ("restarting ComfyUI (new farm nodes)", "#e0a24a")
         if not w.get("online"):
             return ("offline", "#e0675b")
         if not w.get("connected"):
             return ("ComfyUI connecting", "#e0a24a")
+        if nodes:
+            return ({"waiting": "new farm nodes: restarting ComfyUI when idle"}.get(nodes.get("state"),
+                                                                                    "farm nodes out of date"), "#e0a24a")
         if w.get("checked") is False:
             return ("checking nodes", "#e0a24a")
         if w.get("problems"):
@@ -271,7 +277,8 @@ class PanelModel:
     @staticmethod
     def online(workers: list[dict]) -> int:
         """Machines taking jobs (some may lack a workflow's nodes: see the Machines tab)."""
-        return sum(1 for w in workers if w.get("online") and w.get("connected") and w.get("checked") is not False)
+        return sum(1 for w in workers if w.get("online") and w.get("connected") and w.get("checked") is not False
+                   and not w.get("farm_nodes"))
 
     @staticmethod
     def summary(health: dict, workers: list[dict], user: str) -> str:
@@ -511,11 +518,14 @@ if QtWidgets is not None:
                 item = QtWidgets.QTreeWidgetItem(PanelModel.machine_row(w, jobs, now))
                 state, color = PanelModel.machine_state(w)
                 item.setForeground(MACHINE_STATUS_COL, QtGui.QBrush(QtGui.QColor(color)))
-                tip = w.get("error") or "; ".join(f"{wf}: {'; '.join(p)}" for wf, p in (w.get("problems") or {}).items())
+                tip = (w.get("farm_nodes") or {}).get("message") or w.get("error") or \
+                    "; ".join(f"{wf}: {'; '.join(p)}" for wf, p in (w.get("problems") or {}).items())
                 item.setToolTip(MACHINE_STATUS_COL, tip)
                 item.setToolTip(0, "The order machines get jobs in: a job goes to the first free one that can run it")
                 self.machines.addTopLevelItem(item)
-                if w.get("problems"):
+                if w.get("farm_nodes"):
+                    notes.append(f"<b>{html.escape(w['name'])}</b>: {html.escape(w['farm_nodes'].get('message') or '')}")
+                elif w.get("problems"):
                     notes.append(f"<b>{html.escape(w['name'])}</b> can't run "
                                  + "; ".join(f"{html.escape(wf)} ({html.escape(p[0])})" for wf, p in w["problems"].items()))
                 elif w.get("error") and not w.get("online"):

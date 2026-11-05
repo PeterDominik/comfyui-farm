@@ -63,6 +63,7 @@ class AgentState:
     problems: dict[str, list[str]] = field(default_factory=dict)
     output_classes: set[str] | None = None
     want_nodes: bool = False            # ask it for its node definitions again
+    farm_nodes: dict | None = None      # its ComfyUI runs other farm nodes than its checkout (agent.py)
     was_alive: bool = False
     last_claimed: float = 0.0           # identical cards take turns
 
@@ -147,8 +148,9 @@ class Desk:
         return bool(a and a.last_seen and now() - a.last_seen < ALIVE_SECONDS)
 
     def accepting(self, a: AgentState) -> bool:
-        """Alive, with its ComfyUI up and its node definitions checked: it may take jobs."""
-        return self.alive(a.name) and a.online and a.connected and a.checked
+        """Alive, with its ComfyUI up, running its checkout's farm nodes, and its node
+        definitions checked: it may take jobs."""
+        return self.alive(a.name) and a.online and a.connected and a.checked and not a.farm_nodes
 
     def online_count(self) -> int:
         return sum(1 for a in self.agents.values() if self.accepting(a))
@@ -185,6 +187,7 @@ class Desk:
             "comfyui_version": ((a.stats or {}).get("system") or {}).get("comfyui_version"),
             "problems": a.problems, "agent_version": a.version,
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
+            "farm_nodes": a.farm_nodes if alive else None,
             "rank": (ranks or self.ranks()).get(a.name),   # the order machines get jobs in
         }
 
@@ -273,6 +276,9 @@ class Desk:
         before = self.accepting(a), a.online, a.connected, a.error
         a.online, a.connected = bool(msg.get("online")), bool(msg.get("connected"))
         a.stats, a.queue_remaining, a.error = msg.get("stats"), msg.get("queue_remaining"), msg.get("error")
+        nodes_were, a.farm_nodes = a.farm_nodes, msg.get("farm_nodes") or None
+        if a.farm_nodes and (nodes_were or {}).get("state") != a.farm_nodes.get("state"):
+            log.warning("worker %s takes no new jobs: %s", a.name, a.farm_nodes.get("message"))
         if not a.connected:
             a.checked = False           # checked again when it reconnects: ComfyUI may have changed
         if not a.online and before[1]:

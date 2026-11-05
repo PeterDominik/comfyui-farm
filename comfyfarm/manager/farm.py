@@ -204,7 +204,8 @@ class Farm:
         pc = self.cfg.paths
         seq = I.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
                               texture=bool(wf.textures), ocio=self.cfg.ocio,
-                              work_resolution=wf.work_resolution, preview=job_id == "preview") \
+                              work_resolution=wf.work_resolution, preview=job_id == "preview",
+                              listing=wf.loader.lists_folder) \
             if wf.sequence_param else None
         if seq is not None and seq.convert:
             S.point_loader_at_scratch(seq, self.scratch_root, job_id)
@@ -302,8 +303,8 @@ class Farm:
                     "ocio": OC.ocio_setup(self.cfg.ocio, pc)}
         shown = next((m for m in maps if m["color"]), maps[0])
         what = T.describe(len(maps), items, has_udim, numbering)
-        # More tiles than fit in one run (textures.batch), or tiles of different sizes (the
-        # loader would crop them to one size): a set of batches, filling one folder.
+        # More tiles than fit in one run (textures.batch), or tiles of different sizes (one
+        # run's images are one batch, all one size): a set of batches, filling one folder.
         batches = None
         if len(items) > 1 and (spec.batch or pc.validate_inputs):
             sizes = I.work_sizes(seq, names, wf.work_resolution) \

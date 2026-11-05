@@ -23,6 +23,7 @@ from test_textures import FAKE_OIIOTOOL, OCIO_CONFIG
 from test_workflows import fake_object_info
 
 from comfyfarm.config import AgentConfig, Config
+from comfyfarm.fileio import farmnodes
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
@@ -42,7 +43,8 @@ EXR = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010.plate.v1.%04d.ex
 REGISTRY = WorkflowRegistry(REPO / "workflows")
 INSTALLED = {}   # every node pack and model the workflows use
 for _wf in REGISTRY.workflows.values():
-    INSTALLED.update(fake_object_info(_wf.template))
+    for _cls, _spec in fake_object_info(_wf.template).items():
+        INSTALLED.setdefault(_cls, _spec)["input"]["required"].update(_spec["input"]["required"])
 
 
 class FakeComfy:
@@ -96,6 +98,32 @@ class FakeComfy:
 
     async def close(self):
         pass
+
+
+def old_farm_nodes(object_info: dict) -> dict:
+    """The same ComfyUI as it runs after a `git pull` changed the farm nodes: the old ones."""
+    oi = {k: dict(v) for k, v in object_info.items()}
+    for c in farmnodes.CLASSES:
+        oi[c]["description"] = farmnodes.marker("0123456789ab", "/old/checkout")
+    return oi
+
+
+class FakeLauncher:
+    """Starts nothing; a restart gives the agent's ComfyUI the node definitions `then`."""
+
+    def __init__(self, comfy: "FakeComfy", then: dict | None, enabled: bool = True):
+        self.comfy, self.then, self.enabled, self.restarts = comfy, then, enabled, 0
+
+    def tick(self, reachable):
+        pass
+
+    def restart(self):
+        self.restarts += 1
+        if self.then == "not ours":
+            return False                  # a ComfyUI this agent didn't start
+        if self.then is not None:
+            self.comfy.oi = dict(self.then)
+        return True
 
 
 class FlakyLink(LocalLink if Agent else object):
@@ -280,8 +308,9 @@ class AgentTests(unittest.TestCase):
         pid = j["prompt_id"]
         self.assertEqual(j["attempts"], 1)
         prompt = a.client.prompts[pid]
-        self.assertEqual(prompt["9104"]["inputs"]["directory"],
-                         f"{self.root}/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/")
+        self.assertEqual(prompt["9104"]["inputs"],     # ComfyFarm Load Images: the exact frames
+                         {"path": f"{self.root}/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/"
+                                  f"abc_0010.pre.v1.%04d.png", "frames": "1001-1003"})
         self.msg(a, "execution_start", prompt_id=pid)
         self.until(lambda: self.job(job["id"])["status"] == "running")
         done = self.finish(a, job["id"], pid)
@@ -322,7 +351,7 @@ class AgentTests(unittest.TestCase):
         job = self.submit()
         pid = self.dispatched(a, job)
         prompt = a.client.prompts[pid]
-        self.assertTrue(prompt["9104"]["inputs"]["directory"].startswith(f"{self.root}/other/mount/shows/"))
+        self.assertTrue(prompt["9104"]["inputs"]["path"].startswith(f"{self.root}/other/mount/shows/"))
         self.assertTrue(prompt["9109"]["inputs"]["output_path"].startswith(f"{self.root}/other/mount/shows/"))
         done = self.finish(a, job["id"], pid)
         self.assertEqual(done["status"], "done", done["error"])
@@ -337,12 +366,14 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((job["status"], job["info"]["input"]["convert"]["dst_dir"]),
                          ("queued", f"{self.root}/scratch/{job['id']}/"))   # as the manager planned it
         pid = self.dispatched(a, job)
-        loader = a.client.prompts[pid]["9104"]["inputs"]["directory"]
-        self.assertEqual(loader, f"{self.root}/agent-scratch/{job['id']}/")
-        self.assertEqual(sorted(os.listdir(loader)), [f"abc_0010.plate.v1.{f}.png" for f in (1001, 1002, 1003)])
+        loader = a.client.prompts[pid]["9104"]["inputs"]
+        self.assertEqual(loader, {"path": f"{self.root}/agent-scratch/{job['id']}/abc_0010.plate.v1.%04d.png",
+                                  "frames": "1001-1003"})
+        self.assertEqual(sorted(os.listdir(loader["path"].rpartition("/")[0])),
+                         [f"abc_0010.plate.v1.{f}.png" for f in (1001, 1002, 1003)])
         done = self.finish(a, job["id"], pid)
         self.assertEqual(done["status"], "done", done["error"])
-        self.assertFalse(os.path.exists(loader))               # scratch cleaned up
+        self.assertFalse(os.path.exists(loader["path"].rpartition("/")[0]))   # scratch cleaned up
         self.assertFalse(os.path.exists(f"{self.root}/scratch/{job['id']}"))
 
     def test_cancel_queued_and_preparing_at_once(self):
@@ -387,11 +418,11 @@ class AgentTests(unittest.TestCase):
         job = self.submit()
         pid = self.dispatched(a, job)
         self.msg(a, "execution_start", prompt_id=pid)
-        self.msg(a, "execution_error", prompt_id=pid, node_id="9104", node_type="VHS_LoadImagesPath",
+        self.msg(a, "execution_error", prompt_id=pid, node_id="9104", node_type="ComfyFarmLoadImages",
                  exception_message="No images", traceback=["Traceback: boom\n"])
         self.until(lambda: self.job(job["id"])["status"] == "failed")
         failed = self.job(job["id"])
-        self.assertIn("VHS_LoadImagesPath (node 9104", failed["error"])
+        self.assertIn("ComfyFarmLoadImages (node 9104", failed["error"])
         self.assertEqual(failed["info"]["traceback"], "Traceback: boom\n")
 
     def test_a_run_comfyui_lost_is_requeued_then_given_up(self):
@@ -607,7 +638,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(got, ["gpu-a", "gpu-b"])
 
     def test_a_better_gpu_that_cant_run_the_workflow_doesnt_hold_it_up(self):
-        missing = {k: v for k, v in INSTALLED.items() if k != "VHS_LoadImagesPath"}
+        missing = {k: v for k, v in INSTALLED.items() if k != "LTXPadFrames"}
         self.gpu("big", 96, missing)
         small = self.gpu("small", 24)
         job = self.submit()
@@ -629,20 +660,89 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn(job["id"], self.desk._passed)
 
     def test_jobs_go_only_to_agents_that_can_run_them(self):
-        missing = {k: v for k, v in INSTALLED.items() if k != "VHS_LoadImagesPath"}
+        missing = {k: v for k, v in INSTALLED.items() if k != "LTXPadFrames"}
         a = self.ready(self.agent("gpu1", comfy=FakeComfy(missing)))
         self.assertIn("ltx25_alpha_gen", self.desk.summaries()[0]["problems"])
         job = self.submit()
         self.beat(a)
         failed = self.job(job["id"])                           # no worker can: failed, saying why
         self.assertEqual(failed["status"], "failed")
-        self.assertIn("VHS_LoadImagesPath is not installed", failed["error"])
+        self.assertIn("LTXPadFrames is not installed", failed["error"])
         b = self.ready(self.agent("gpu2"))
         job = self.submit()
         self.beat(a)
         self.assertEqual(self.job(job["id"])["status"], "queued")   # gpu2 can: it waits for gpu2
         self.beat(b)
         self.assertEqual(self.job(job["id"])["worker"], "gpu2")
+
+    # ------------------------------------------------------------ farm nodes after a pull
+    def test_old_farm_nodes_restart_comfyui_once_idle(self):
+        a = self.ready(self.agent())
+        job = self.submit()
+        pid = self.dispatched(a, job)
+        # A `git pull` changed the farm nodes; ComfyUI still runs the old ones.
+        a.client.oi = old_farm_nodes(INSTALLED)
+        a.launcher = FakeLauncher(a.client, then=INSTALLED)
+        with self.assertLogs("comfyfarm", "WARNING"):
+            self.wait(a.refresh_object_info())
+        w = self.desk.summaries()[0]
+        self.assertEqual(w["farm_nodes"]["state"], "waiting")
+        self.assertIn("runs version 0123456789ab from /old/checkout", w["farm_nodes"]["message"])
+        self.assertFalse(self.desk.accepting(self.desk.agents["gpu1"]))      # no new jobs
+        nxt = self.submit()
+        self.beat(a)
+        self.assertEqual(self.job(nxt["id"])["status"], "queued")
+        self.wait(a._farm_nodes_tick(True))
+        self.assertEqual(a.launcher.restarts, 0)                          # it still runs a job
+        self.assertEqual(self.finish(a, job["id"], pid)["status"], "done")
+        self.wait(a._farm_nodes_tick(True))
+        self.assertEqual(a.launcher.restarts, 1)                          # idle: restarted
+        self.assertEqual(self.desk.summaries()[0]["farm_nodes"]["state"], "restarting")
+        self.wait(a.refresh_object_info())                                # back, with the new nodes
+        self.assertIsNone(a.farm_nodes)
+        self.assertIsNone(self.desk.summaries()[0]["farm_nodes"])
+        self.beat(a)
+        self.assertEqual(self.job(nxt["id"])["worker"], "gpu1")           # taking jobs again
+
+    def test_old_farm_nodes_without_comfyui_launch_wait_for_a_restart_by_hand(self):
+        comfy = FakeComfy(old_farm_nodes(INSTALLED))
+        a = self.agent(comfy=comfy)
+        a.launcher = FakeLauncher(comfy, then=INSTALLED, enabled=False)
+        with self.assertLogs("comfyfarm", "WARNING"):
+            self.ready(a)
+        self.wait(a._farm_nodes_tick(True))
+        self.assertEqual(a.launcher.restarts, 0)
+        w = self.desk.summaries()[0]
+        self.assertEqual(w["farm_nodes"]["state"], "manual")
+        self.assertTrue(w["farm_nodes"]["message"].endswith("Restart ComfyUI to load them."))
+        self.assertEqual(self.farm.online_workers(), 0)
+
+    def test_a_comfyui_the_agent_didnt_start_is_left_to_restart_by_hand(self):
+        comfy = FakeComfy(old_farm_nodes(INSTALLED))
+        a = self.agent(comfy=comfy)
+        a.launcher = FakeLauncher(comfy, then="not ours")
+        with self.assertLogs("comfyfarm", "WARNING"):
+            self.ready(a)
+            self.wait(a._farm_nodes_tick(True))
+            self.wait(a._farm_nodes_tick(True))
+        self.assertEqual(a.launcher.restarts, 1)
+        self.assertEqual(a.farm_nodes["state"], "manual")
+        self.assertIn("This agent didn't start ComfyUI, so it can't restart it: Restart ComfyUI to load them.",
+                      a.farm_nodes["message"])
+
+    def test_a_restart_that_doesnt_bring_the_checkouts_nodes_says_so(self):
+        comfy = FakeComfy(old_farm_nodes(INSTALLED))
+        a = self.agent(comfy=comfy)
+        a.launcher = FakeLauncher(comfy, then=None)                       # ComfyUI loads them from elsewhere
+        with self.assertLogs("comfyfarm", "WARNING"):
+            self.ready(a)
+            self.wait(a._farm_nodes_tick(True))
+            self.wait(a.refresh_object_info())
+            self.wait(a._farm_nodes_tick(True))
+        self.assertEqual(a.launcher.restarts, 1)                          # once, not in a loop
+        self.assertEqual(a.farm_nodes["state"], "manual")
+        self.assertIn("Restarting ComfyUI didn't change that: check that ComfyUI's custom_nodes/comfyfarm_nodes "
+                      "links to this checkout", a.farm_nodes["message"])
 
     def test_the_agent_on_its_own(self):
         """Its loops as `comfyfarm agent` runs them: it checks in, takes and runs a job, and

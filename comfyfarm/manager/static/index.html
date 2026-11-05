@@ -183,9 +183,14 @@ window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 // ------------------------------------------------------------- machines
 const ON_MACHINE = ["preparing", "dispatched", "running", "postprocessing"];
 const gpuName = w => ((w.gpu?.name || "").split(" : ")[0]).replace(/^cuda:\d+\s+/, "");
+// Its ComfyUI runs other farm nodes than its checkout (after a git pull): no new jobs.
+const FARM_NODES = {waiting: "new farm nodes: restarting ComfyUI when idle", restarting: "restarting ComfyUI (new farm nodes)",
+                    manual: "farm nodes out of date"};
 function machineState(w) {
+  if (w.farm_nodes?.state === "restarting") return [FARM_NODES.restarting, "warn"];
   if (!w.online) return ["offline", "err"];
   if (!w.connected) return ["ComfyUI connecting", "warn"];
+  if (w.farm_nodes) return [FARM_NODES[w.farm_nodes.state] || FARM_NODES.manual, "warn"];
   if (w.checked === false) return ["checking nodes", "warn"];
   const probs = Object.keys(w.problems || {});
   if (probs.length) return ["can't run " + probs.sort().join(", "), "warn"];
@@ -194,7 +199,7 @@ function machineState(w) {
 function renderWorkers() {
   // In the order they get jobs: a job goes to the first free machine that can run it.
   const ws = [...state.workers.values()].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.name.localeCompare(b.name));
-  const up = ws.filter(w => w.online && w.connected && w.checked !== false).length;   // taking jobs
+  const up = ws.filter(w => w.online && w.connected && w.checked !== false && !w.farm_nodes).length;   // taking jobs
   $("#machineCount").textContent = ws.length ? ` ${up}/${ws.length} online` : "";
   $("#machines").innerHTML = ws.length ? ws.map(w => {
     const [st, cls] = machineState(w);
@@ -215,7 +220,8 @@ function renderWorkers() {
       <td class="muted mono">${esc((w.agent_version || "").split("+").pop())}</td>
       <td class="muted">${ago(w.last_seen)}</td>
     </tr>${probs.length ? `<tr><td></td><td></td><td colspan="8" class="problems">${probs.map(([wf, p]) => `<b>${esc(wf)}</b>: ${esc(p.join("; "))}`).join("<br>")}</td></tr>` : ""}
-    ${!w.online && w.error ? `<tr><td></td><td></td><td colspan="8" class="err">${esc(w.error)}</td></tr>` : ""}`;
+    ${w.farm_nodes ? `<tr><td></td><td></td><td colspan="8" class="problems">${esc(w.farm_nodes.message)}</td></tr>` : ""}
+    ${!w.online && w.error && !w.farm_nodes ? `<tr><td></td><td></td><td colspan="8" class="err">${esc(w.error)}</td></tr>` : ""}`;
   }).join("") : '<tr><td colspan="10" class="empty">No machines have checked in.</td></tr>';
 }
 

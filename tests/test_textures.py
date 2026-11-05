@@ -185,7 +185,7 @@ class ManifestTests(unittest.TestCase):
         for m in self.wf.textures.maps:
             self.assertEqual(p[m.node]["inputs"]["output_path"], "C:/farm/scratch/j1/maps")
             self.assertEqual(p[m.node]["inputs"]["filename_prefix"], f"_cfj1_{m.channel}")
-        self.assertEqual(p["17"]["inputs"]["directory"], "//srv/t/")
+        self.assertEqual(p["17"]["inputs"], {"path": "//srv/t/rock.%04d.png", "frames": "1001-1002"})
         self.assertEqual(p["23"]["inputs"]["value"], "//srv/out/rock.chord_v001")
         self.assertNotIn("uvset", json.dumps(p))   # naming params never reach ComfyUI
 

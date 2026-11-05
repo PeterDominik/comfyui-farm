@@ -204,7 +204,7 @@ delete_comfy_history: false{launch[name]}
             prompt, _ = self.comfy_prompt(d)
             # The agent's own view of show storage in what it gave its ComfyUI (gpu-b's is
             # under mnt/)...
-            for path in (prompt["9104"]["inputs"]["directory"], prompt["9109"]["inputs"]["output_path"]):
+            for path in (prompt["9104"]["inputs"]["path"], prompt["9109"]["inputs"]["output_path"]):
                 self.assertIn("/shows/xyz/", path)
                 self.assertEqual("/mnt/shows/" in path, d["worker"] == "gpu-b", path)
             # ...and the manager's in what the artist gets back.
@@ -223,7 +223,7 @@ delete_comfy_history: false{launch[name]}
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
         prompt, _ = self.comfy_prompt(done)
-        scratch = prompt["9104"]["inputs"]["directory"]
+        scratch = prompt["9104"]["inputs"]["path"].rpartition("/")[0] + "/"
         self.assertTrue(scratch.endswith(f"/{done['worker']}/scratch/{job['id']}/"), scratch)   # its own
         calls = [json.loads(line) for line in (self.tmp / "oiiotool.log").read_text().splitlines()]
         written = [c["args"][-1] for c in calls if job["id"] in c["args"][-1]]
