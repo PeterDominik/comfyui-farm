@@ -678,7 +678,8 @@ if QtWidgets is not None:
             seq = name or PanelModel.sequence_param(wf)
             found = nk.selected_sequences(one_frame=PanelModel.takes_one(wf, seq))   # one image: the current frame
             if not found or not seq:
-                self._message("Select a Read or Write node with a rendered PNG sequence (or a movhistory .mov).", True)
+                label = next((i.get("label") or i["name"] for i in PanelModel.inputs(wf) if i["name"] == seq), "the input")
+                self._message(nk.selection_hint(label), True)
                 return
             self.fields[seq][1].setText(found[0][1])
             if seq == PanelModel.sequence_param(wf):
@@ -701,6 +702,9 @@ if QtWidgets is not None:
 
         # -------------------------------------------------------- destination preview
         def _schedule_plan(self, *_):
+            if getattr(self, "_msg_error", False):   # the artist is changing the form: an old error no longer applies
+                self.msg_label.setText("")
+                self._msg_error = False
             self.plan_timer.start(450)
 
         def _update_plan(self):
@@ -730,6 +734,7 @@ if QtWidgets is not None:
         def _message(self, text, error=False):
             color = "#e0675b" if error else "#93d6a6"
             self.msg_label.setText(f"<span style='color:{color}'>{html.escape(text)}</span>")
+            self._msg_error = error
 
         def _submit(self):
             wf = self._wf()

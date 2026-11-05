@@ -6,9 +6,10 @@ manager.json next to it, or $COMFYFARM_URL. menu.py adds a ComfyFarm menu
 and the ComfyFarm panel (also under Windows > Custom, and it can be saved in a
 workspace layout like any other panel).
 
-Artist workflow: prerender the plate to a PNG sequence, open the panel (ComfyFarm >
-Open panel) and fill in the form on its Submit tab: the input path (typed, browsed, or
-"From selected" for a Read/Write node), check where the frames will go, Submit. Jobs
+Artist workflow: open the panel (ComfyFarm > Open panel) and fill in the form on its
+Submit tab: each input's path (typed, browsed, or "From selected" for a Read/Write node:
+an image sequence, EXRs included, a still or a movie), check where the frames will go,
+Submit. Jobs
 are always submitted from the form. A Read node for the result appears next to the
 source when the job is done. Nuke stays usable while jobs run.
 """
@@ -73,9 +74,19 @@ def selected_sequences(one_frame: bool = False) -> list[tuple[str, str]]:
     return out
 
 
+def selection_hint(label: str) -> str:
+    """Why "From selected" found nothing to use, for the panel's message."""
+    names = [n.name() for n in nuke.selectedNodes()]
+    if not names:
+        return f"Nothing is selected: select the Read or Write node for {label}, then click From selected."
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    return (f"{shown} {'is' if len(names) == 1 else 'are'} not a Read or Write node with a file: select the one "
+            f"for {label}, then click From selected.")
+
+
 def browse_sequence() -> str | None:
     """Nuke's file browser (shows sequences as 'name.####.png 1001-1100')."""
-    value = nuke.getClipname("ComfyFarm input (PNG sequence or movhistory .mov)", multiple=False)
+    value = nuke.getClipname("ComfyFarm input (image sequence, image or movie)", multiple=False)
     return value.replace("\\", "/") if value else None
 
 

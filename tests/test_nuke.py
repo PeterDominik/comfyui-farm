@@ -142,6 +142,21 @@ class NukeHelpers(unittest.TestCase):
             ("Still", "/rdo/shows/xyz/work/still.png"),
         ])
 
+    def test_from_selected_says_what_it_found(self):
+        exr = SEQ.replace(".png", ".exr")
+        dot, plate = Node("Dot", "Dot1"), Node("Read", "Plate", y=20, file=exr, first=1003, last=1100)
+        nk, _ = self.load([dot, plate])
+        self.assertEqual(nk.selected_sequences(), [])
+        self.assertEqual(nk.selection_hint("Reference frame"),
+                         "Nothing is selected: select the Read or Write node for Reference frame, then click "
+                         "From selected.")
+        dot.selected = True
+        self.assertEqual(nk.selection_hint("Reference frame"),
+                         "Dot1 is not a Read or Write node with a file: select the one for Reference frame, then "
+                         "click From selected.")
+        plate.selected = True                               # an EXR sequence is fine
+        self.assertEqual(nk.selected_sequences(), [("Plate", f"{exr} 1003-1100")])
+
     def test_create_read_next_to_its_source_once(self):
         src = Node("Read", "Plate", x=100, y=200, file=SEQ.replace("%04d", "####"), first=1001, last=1012)
         nodes = [src]
