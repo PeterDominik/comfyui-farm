@@ -247,7 +247,8 @@ function renderForm() {
       return `<label class="wide">${esc(p.label)}<textarea id="${id}">${esc(val)}</textarea>${help}</label>`;
     if (p.type === "int" || p.type === "float")
       return `<label>${esc(p.label)}<input type="number" id="${id}" value="${esc(val)}" ${p.min != null ? `min="${p.min}"` : ""} ${p.max != null ? `max="${p.max}"` : ""} step="${p.multiple_of || (p.type === "int" ? 1 : "any")}">${help}</label>`;
-    const ph = p.placeholder || (p.type === "sequence" ? "/rdo/shows/…/shot.step.%04d.png 1001-1100" : "");
+    const ph = p.placeholder || (p.type !== "sequence" ? "" : p.takes === "image"     // one image: name the frame
+      ? "/rdo/shows/…/shot.step.%04d.png 1050" : "/rdo/shows/…/shot.step.%04d.png 1001-1100");
     return `<label class="wide">${esc(p.label)}${p.required ? " *" : ""}<input id="${id}" class="mono" value="${esc(val)}" placeholder="${esc(ph)}">${help}</label>`;
   };
   f.innerHTML = (wf.enabled ? "" : `<div class="msg err" style="grid-column:1/-1">Workflow disabled: ${esc(wf.problems.join("; "))}</div>`)

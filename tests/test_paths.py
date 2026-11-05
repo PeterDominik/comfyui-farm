@@ -85,6 +85,14 @@ class FrameListTests(unittest.TestCase):
             with self.assertRaisesRegex(SequenceError, why):
                 parse_frames(bad)
 
+    def test_one_frame_after_a_pattern_or_movie(self):
+        self.assertEqual(parse_input("/s/plate.%04d.png 1050"), ("/s/plate.%04d.png", 1050, 1050))
+        self.assertEqual(parse_input("/s/plate.####.exr  1050 "), ("/s/plate.####.exr", 1050, 1050))
+        self.assertEqual(parse_input("/s/review.mov 1012"), ("/s/review.mov", 1012, 1012))
+        self.assertEqual(parse_input("/s/plate.%04d.png 1001-1003"), ("/s/plate.%04d.png", 1001, 1003))
+        self.assertEqual(parse_input("/s/take 2"), ("/s/take 2", None, None))      # a folder named so
+        self.assertEqual(parse_input("/s/photo.png"), ("/s/photo.png", None, None))
+
     def test_frame_file(self):
         self.assertEqual([frame_file(n, 7) for n in ("a.%04d.png", "a.####.png", "a.$F4.png", "a.%d.png", "a.$F.png")],
                          ["a.0007.png", "a.0007.png", "a.0007.png", "a.7.png", "a.7.png"])

@@ -18,8 +18,10 @@ from .errors import SequenceError
 
 __all__ = ["SequenceError", "normalize", "to_farm", "to_posix", "frame_pattern", "parse_input", "context_from_path",
            "source_stem", "split_input_path", "check_writable", "template_fields", "render", "frame_file",
-           "parse_frames", "frames_text", "LOADER_EXTENSIONS", "CONVERTED_SEQUENCE_EXTENSIONS"]
+           "parse_frames", "frames_text", "LOADER_EXTENSIONS", "CONVERTED_SEQUENCE_EXTENSIONS", "MOVIE_EXTENSIONS"]
 
+
+MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v", ".mxf"}
 
 # Extensions VHS "Load Images (Path)" reads (ComfyUI's FolderOfImages.IMG_EXTENSIONS).
 LOADER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".ppm", ".bmp", ".pgm", ".tif", ".tiff", ".webp"}
@@ -29,6 +31,8 @@ _TOKEN_RE = re.compile(r"%0?(\d*)d|#+|@+|\$F(\d*)")
 
 # "<path> 1001-1158" (Nuke/pipeline style, range at the end)
 _RANGE_RE = re.compile(r"^(?P<path>.*?\S)\s+(?P<first>-?\d+)\s*-\s*(?P<last>-?\d+)\s*$")
+# "<pattern or movie> 1050": one frame of it
+_ONE_FRAME_RE = re.compile(r"^(?P<path>.*?\S)\s+(?P<frame>-?\d+)\s*$")
 
 
 def normalize(path: str) -> str:
@@ -73,6 +77,8 @@ def frame_pattern(template: str) -> str:
 
 
 def parse_input(raw: str) -> tuple[str, int | None, int | None]:
+    """'<path> 1001-1158' -> (path, 1001, 1158). A frame pattern or a movie may name one
+    frame instead: '<path> 1050' -> (path, 1050, 1050). No range: (path, None, None)."""
     raw = raw.strip()
     m = _RANGE_RE.match(raw)
     if m:
@@ -80,6 +86,13 @@ def parse_input(raw: str) -> tuple[str, int | None, int | None]:
         if last < first:
             raise SequenceError(f"Frame range {first}-{last} is backwards.")
         return normalize(m.group("path")), first, last
+    m = _ONE_FRAME_RE.match(raw)
+    if m:
+        path = normalize(m.group("path"))
+        name = path.rpartition("/")[2]
+        if _TOKEN_RE.search(name) or os.path.splitext(name)[1].lower() in MOVIE_EXTENSIONS:
+            frame = int(m.group("frame"))
+            return path, frame, frame
     return normalize(raw), None, None
 
 

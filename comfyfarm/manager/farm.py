@@ -207,6 +207,10 @@ class Farm:
                               work_resolution=wf.work_resolution, preview=job_id == "preview",
                               listing=wf.loader.lists_folder) \
             if wf.sequence_param else None
+        if seq is not None and wf.port.takes == "image":
+            I.one_image(seq, pc)        # one frame of a sequence or movie, named by the artist
+        elif seq is not None:
+            I.frame_limit(seq, wf.port.max_frames)
         if seq is not None and seq.convert:
             S.point_loader_at_scratch(seq, self.scratch_root, job_id)
         show_ = seq.show if seq else show

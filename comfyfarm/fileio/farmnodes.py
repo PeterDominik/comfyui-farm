@@ -24,7 +24,6 @@ CLASSES = ("ComfyFarmLoadImage", "ComfyFarmLoadImages", "ComfyFarmSaveImage")
 # The fileio modules the nodes import: a change to one of them is a change to the nodes
 # (tests/test_comfyui_nodes.py checks the list is complete).
 DEPENDS = ("comfyfarm/fileio/errors.py", "comfyfarm/fileio/paths.py", "comfyfarm/fileio/farmnodes.py")
-_ONE_FRAME = re.compile(r"^(?P<path>.*?\S)\s+(?P<frame>-?\d+)$")
 _MARK = re.compile(r"\[comfyfarm nodes (?P<version>[0-9a-f]+) from (?P<where>[^\]]*)\]")
 
 
@@ -89,9 +88,6 @@ def input_files(path: str, frames: str = "") -> list[tuple[int | None, str]]:
     1001-1158, /shows/x/plate.%04d.png 1050. `frames` lists the exact frames (1001-1158,
     1001,1002,1011) and wins over those. A pattern with neither reads every frame of it in
     its folder. Missing frames are an error, never skipped."""
-    one = _ONE_FRAME.match((path or "").strip())
-    if one and _pattern_regex(normalize(one["path"]).rpartition("/")[2]) is not None:
-        path = f"{one['path']} {one['frame']}-{one['frame']}"
     p, first, last = parse_input(path or "")
     if not p:
         raise SequenceError("No image path given.")

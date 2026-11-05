@@ -48,6 +48,9 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 - **Texture workflows.** `chord_pbr` turns a diffuse texture (or its UDIM tiles) into
   PBR maps with Ubisoft's CHORD, written as linear EXRs named by the TEX naming
   convention: `acescg_map1_noTile_defState_color01.1001.0000.exr`. See *Texture workflows*.
+- **One-image workflows.** `wan22_i2i` reworks one image with Wan 2.2 (image to image,
+  steered by a prompt). It takes a still, or one frame of a sequence or movie, named after
+  the path (`…/plate.%04d.exr 1050`); the result is numbered like that frame.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -63,7 +66,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent` and `check` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr` |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -338,7 +341,8 @@ installed: the client is standard library only.
 2. Open the panel (*ComfyFarm → Open panel*, or *Windows → Custom → ComfyFarm*). On the
    *Submit* tab, fill in the form: paste the input path, *Browse…*, or select the Read (or
    the Write that rendered it) and click *From selected*, which fills in `path first-last`
-   from the node.
+   from the node. For a workflow that takes one image (`wan22_i2i`), it fills in
+   `path <current frame>` instead: go to the frame first.
 3. Check the line under the form. It shows the frame count, the exact output folder, and
    the first and last file names, or the problem (missing frames, no shot found in the
    path, and so on) before anything is queued.
@@ -369,6 +373,28 @@ refused as an unknown parameter.
 
 Optional job fields: `name`, `priority` (−10…10; above 0 is admin only when keys are on),
 and `show` / `shot` overrides for inputs outside the publish layout.
+
+### Parameters for `wan22_i2i`
+
+| Param | Default | Notes |
+|---|---|---|
+| `input` | required | One image: a file, or a sequence or movie with the frame after it (`…/plate.%04d.exr 1050`; a movie's frames are numbered from its timecode). A sequence or movie without its frame is refused, saying which frames it has. Used at its own size |
+| `prompt` | empty | What the image should become. Empty runs with the negative prompt only |
+| `steps` | 12 | 1–100 |
+| `cfg` | 3 | 0–30 |
+| `noise` | 0.18 | The sampler's denoise, 0–1: low values keep the result close to the input |
+| `output_path` | show default | Root folder: the image goes to `<this>/<shot>/<source>.i2i_vNNN.<frame>.png`. Same rules as above |
+
+The seed and the negative prompt are fixed in the workflow. It needs Wan 2.2's low-noise
+14B model (fp8) and Wan 2.1's VAE in `models/…/WAN/`, `umt5_xxl_fp8_e4m3fn_scaled` as its
+text encoder, and the node packs for `WanVideoNAG`, `easy float` and the `res_2s` sampler
+with the `beta57` scheduler; the Machines tab lists what a machine is missing.
+
+```bash
+python comfyfarm_client.py submit wan22_i2i \
+    "input=/rdo/shows/<show>/.published/<seq>/<shot>/plate/v1/<shot>.plate.v1.%04d.exr 1050" \
+    "prompt=wet street at night" noise=0.25 --wait
+```
 
 ### Parameters for `chord_pbr`
 
@@ -505,7 +531,7 @@ acescg_map1_noTile_defState_color01.1001.0000.exr
 
 CHORD estimates every tile of a run in one pass on the GPU, so its memory grows with
 the number of tiles: 5 tiles used about 29 GB of the 5090's 32 GB. So a texture with more
-tiles than the manifest's `textures.batch` (4 for `chord_pbr`) is submitted as a **set**:
+tiles than its input's `per_run` (4 for `chord_pbr`) is submitted as a **set**:
 
 - **You submit it once** and it shows as one job: *rockA_diffuse v001 · 148 batches*, with
   progress in tiles (*230/591 UDIMs*) and a time left from its finished batches.
@@ -653,15 +679,18 @@ params:                        # becomes the form in the dashboard, in this orde
     targets:                   # where the value is written; one param can drive several nodes
       - {node: "5516:4832", input: noise_seed, class: RandomNoise}
 
-  input:  {type: sequence, label: Input sequence, required: true}
+  input:                       # the images the workflow takes
+    type: input
+    takes: images              # images: a batch of frames | image: exactly one
+    label: Input sequence
+    required: true
+    loader: {node: "9104", class: ComfyFarmLoadImages}               # the node that reads it
+    path_node: {node: "9094", input: value, class: PrimitiveString}  # optional, informational
+    # frames: {max: 257}       # optional: longer inputs are refused
   output_path: {type: output_folder, label: Output folder}
 
 # work_resolution: 1024        # optional: inputs larger than this (px, longer side) are
                                # scaled down to it before the workflow, aspect kept
-
-sequence:                      # nodes the `sequence` param drives
-  path_node: {node: "9094", input: value, class: PrimitiveString}   # optional, informational
-  loader: {node: "9104", class: ComfyFarmLoadImages}               # or VHS_LoadImagesPath
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}
@@ -673,9 +702,18 @@ outputs:                       # nodes the gateway points at each job's versione
   it appears in the API JSON (`"5516:4832"` for nodes inside groups/subgraphs), the
   input name, and the class as a guard. Validation (min/max/required) happens before
   anything reaches ComfyUI.
-- **`sequence` and `output_folder`** take no `targets`; the gateway wires them in.
-  A sequence is mapped to the farm path, frame-checked and given to the loader. A folder
-  means the one sequence (or texture) in it; a folder holding several is refused. An output folder is checked (parent exists, on show storage,
+- **`input` and `output_folder`** take no `targets`; the gateway wires them in.
+  An input is mapped to the farm path, frame-checked and given to its `loader`. A folder
+  means the one sequence (or texture) in it; a folder holding several is refused. One
+  input per workflow for now.
+  - `takes: images`: a batch of frames (a sequence, a movie's frames, a still as a batch
+    of one). `frames: {max: N}` refuses longer inputs. In texture workflows, `per_run`
+    is the most tiles one run takes (more make a set; see *Large textures*).
+  - `takes: image`: exactly one image, for ComfyFarm Load Image. A sequence or movie must
+    name its frame (`…/plate.%04d.png 1050`); without one it's refused with the frames it
+    has. The output is numbered like that frame.
+  - Older manifests write an `images` input as `type: sequence`, with `loader` and
+    `path_node` in a `sequence:` section. Both work; clients see either as the same field. An output folder is checked (parent exists, on show storage,
   outside `.published`) and used as the root for `paths.output_dir` (`{root}/{shot}`);
   the version is the first one with no files there and no queued job claiming it.
   `POST /api/v1/plan` shows the result without queuing.
@@ -683,6 +721,8 @@ outputs:                       # nodes the gateway points at each job's versione
   them would be overwritten on every job, which is why the output folder is its own type
   rather than a param pointed at `OUTPUT_PATH`.
 - **The loader** (`sequence.loader`) is the node that reads the input:
+  - `ComfyFarmLoadImage` (*ComfyFarm Load Image*): one image, for `takes: image`. It gets
+    a file, or a pattern and its frame.
   - `ComfyFarmLoadImages` (*ComfyFarm Load Images*, from `comfyui_nodes/`): gets the exact
     files, a frame pattern plus a frame list (`1001-1158`, `1001,1002,1011`). Nothing else in
     the folder matters, a missing frame stops the run, and images of different sizes are
@@ -709,8 +749,9 @@ outputs:                       # nodes the gateway points at each job's versione
   input gives wins (default `{root}/{shot}/…`, then `{root}/{asset}/…`, then
   `{root}/{source}.{tag}_v{version:03d}`). Params with `naming: true` (`uvset`, `tile`,
   `state`, `description`, `numbering`) go into the file names and take no `targets`.
-  Optional `batch`: the most tiles per run; a texture with more is a set of batches (see
-  *Large textures*). Set it from the GPU memory one run of that many tiles needs.
+  The most tiles per run is the input's `per_run` (older manifests: `textures.batch`); a
+  texture with more is a set of batches (see *Large textures*). Set it from the GPU memory
+  one run of that many tiles needs.
   See `workflows/chord_pbr/manifest.yaml`.
 - Removing a param from the manifest changes the API: clients still sending it get
   "Unknown parameter". The Nuke panel and dashboard read the parameters from the farm,

@@ -24,6 +24,7 @@ from test_workflows import fake_object_info
 
 from comfyfarm.config import AgentConfig, Config
 from comfyfarm.fileio import farmnodes
+from comfyfarm.fileio.errors import SequenceError
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
@@ -44,7 +45,12 @@ REGISTRY = WorkflowRegistry(REPO / "workflows")
 INSTALLED = {}   # every node pack and model the workflows use
 for _wf in REGISTRY.workflows.values():
     for _cls, _spec in fake_object_info(_wf.template).items():
-        INSTALLED.setdefault(_cls, _spec)["input"]["required"].update(_spec["input"]["required"])
+        _have = INSTALLED.setdefault(_cls, _spec)["input"]["required"]
+        for _key, _val in _spec["input"]["required"].items():
+            if _key in _have and _have[_key] is not _val and isinstance(_val[0], list):   # models: both lists
+                _have[_key][0].extend(o for o in _val[0] if o not in _have[_key][0])
+            else:
+                _have.setdefault(_key, _val)
 
 
 class FakeComfy:
@@ -674,6 +680,44 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.job(job["id"])["status"], "queued")   # gpu2 can: it waits for gpu2
         self.beat(b)
         self.assertEqual(self.job(job["id"])["worker"], "gpu2")
+
+    # ------------------------------------------------------------ one image (Wan I2I)
+    def test_one_frame_of_a_sequence(self):
+        a = self.ready(self.agent())
+        job = self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1002", "prompt": "fog"}, "ann")
+        self.assertEqual((job["info"]["first_frame"], job["info"]["expected_frames"]), (1002, 1))
+        pid = self.dispatched(a, job)
+        prompt = a.client.prompts[pid]
+        self.assertEqual(prompt["254"]["inputs"]["path"],         # ComfyFarm Load Image finds the frame's file
+                         f"{self.root}/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/"
+                         f"abc_0010.pre.v1.%04d.png 1002")
+        self.assertEqual(prompt["255"]["inputs"]["value"], "fog")
+        done = self.finish(a, job["id"], pid)
+        self.assertEqual(done["status"], "done", done["error"])
+        self.assertEqual(os.listdir(done["output_dir"]), ["abc_0010.pre.v1.i2i_v001.1002.png"])   # numbered like it
+
+    def test_one_frame_of_an_exr_sequence_is_converted(self):
+        a = self.ready(self.agent())
+        job = self.farm.submit("wan22_i2i", {"input": f"{EXR} 1003"}, "ann")
+        pid = self.dispatched(a, job)
+        path = a.client.prompts[pid]["254"]["inputs"]["path"]
+        self.assertEqual(path, f"{self.root}/scratch-gpu1/{job['id']}/abc_0010.plate.v1.1003.png")   # the converted file
+        self.assertTrue(os.path.isfile(path))
+        done = self.finish(a, job["id"], pid)
+        self.assertEqual(os.listdir(done["output_dir"]), ["abc_0010.plate.v1.i2i_v001.1003.png"])
+
+    def test_one_image_workflows_want_the_frame_named(self):
+        shown = "/rdo/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/abc_0010.pre.v1.%04d.png"
+        for given in (SEQ, f"{SEQ} 1001-1002", SEQ.rpartition("/")[0]):     # the whole sequence, a range, its folder
+            with self.assertRaises(SequenceError) as e:
+                self.farm.plan("wan22_i2i", {"input": given})
+            self.assertIn(f"This workflow takes one image, and {shown} gives more (a sequence of", str(e.exception))
+            self.assertIn(f"Put the frame to use after it, e.g. {shown} 1001.", str(e.exception))
+        with self.assertRaisesRegex(SequenceError, r"Missing frames .*1004"):
+            self.farm.plan("wan22_i2i", {"input": f"{SEQ} 1004"})
+        Path(self.root, "shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/photo.png").write_bytes(b"x")
+        plan = self.farm.plan("wan22_i2i", {"input": shown.rpartition("/")[0] + "/photo.png"})   # a still: as it is
+        self.assertEqual((plan["seq"].frame_count, plan["first_file"].endswith(".0001.png")), (1, True))
 
     # ------------------------------------------------------------ farm nodes after a pull
     def test_old_farm_nodes_restart_comfyui_once_idle(self):

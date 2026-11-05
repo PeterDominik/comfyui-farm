@@ -21,9 +21,19 @@ work_resolution: 1024
 
 params:
   input:
-    type: sequence
+    type: input
+    takes: images
     label: Diffuse texture
     required: true
+    loader: {node: "17", class: ComfyFarmLoadImages}
+    path_node: {node: "14", input: value, class: PrimitiveString}    # INPUT_PATH, informational
+    # Tiles per run. A texture with more tiles is a set: one output folder, filled by runs
+    # of up to this many tiles. CHORD estimates a whole batch in one pass, so GPU memory
+    # grows with it: 5 tiles used about 29 GB of the 5090's 32. Measured on the farm (4K
+    # EXR tiles at work_resolution 1024): 1 tile 5 s, 2 tiles 8 s, 3 tiles 11 s, 4 tiles
+    # 15 s, 5 tiles 18 s. About 2 s per run plus 3.3 s per tile, so 4 is 3.75 s a tile
+    # with room to spare.
+    per_run: 4
     help: >
       A texture file, its UDIM tiles (/rdo/shows/<show>/.../rock_diffuse.%04d.png, gaps are
       fine), or a folder holding one texture. png, jpg, tif, or exr (converted to
@@ -79,11 +89,6 @@ params:
     naming: true
     help: What the number in the input file names is. frame = an animated texture (UDIM 1001, frame from the name).
 
-# How the 'sequence' parameter is wired in.
-sequence:
-  path_node: {node: "14", input: value, class: PrimitiveString}    # INPUT_PATH, informational
-  loader: {node: "17", class: ComfyFarmLoadImages}                # path and frames set directly
-
 outputs:
   root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational
 
@@ -99,13 +104,6 @@ textures:
   path_input: output_path
   prefix_input: filename_prefix
   ext: png
-  # Tiles per run. A texture with more tiles is a set: one output folder, filled by runs of
-  # up to this many tiles. CHORD estimates a whole batch in one pass, so GPU memory grows
-  # with it: 5 tiles used about 29 GB of the 5090's 32. Measured on the farm (4K EXR
-  # tiles at work_resolution 1024): 1 tile 5 s, 2 tiles 8 s, 3 tiles 11 s, 4 tiles 15 s,
-  # 5 tiles 18 s. About 2 s per run plus 3.3 s per tile, so 4 is 3.75 s a tile with room
-  # to spare.
-  batch: 4
   maps:
     - {name: basecolor, node: "19", class: ComfyFarmSaveImage, channel: color01, color: true, bits: half}
     - {name: normal,    node: "24", class: ComfyFarmSaveImage, channel: nrm02,   bits: half}
