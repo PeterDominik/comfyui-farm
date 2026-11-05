@@ -154,11 +154,13 @@ class Mock:
                         await asyncio.sleep(self.delay)
                         await self.send("progress", {"value": step, "max": 8, "prompt_id": pid, "node": node_id}, cid)
                 elif ct == "ComfyFarmLoadImages":
-                    values["frames"] = len(farmnodes.input_files(inp["path"], inp.get("frames") or ""))
-                elif ct == "ComfyFarmLoadImage":
-                    if len(farmnodes.input_files(inp["path"])) != 1:
-                        raise ValueError(f"{inp['path']} isn't one image")
-                    values["frames"] = 1
+                    if not (inp.get("optional") and not inp["path"].strip()):
+                        values["frames"] = len(farmnodes.input_files(inp["path"], inp.get("frames") or ""))
+                elif ct == "ComfyFarmLoadImage":            # a reference image: the frames come from a sequence
+                    if not (inp.get("optional") and not inp["path"].strip()):
+                        if len(farmnodes.input_files(inp["path"])) != 1:
+                            raise ValueError(f"{inp['path']} isn't one image")
+                    values.setdefault("frames", 1)
                 elif ct == "VHS_LoadImagesPath":
                     d = inp["directory"].strip()
                     names = [n for n in sorted(os.listdir(d))

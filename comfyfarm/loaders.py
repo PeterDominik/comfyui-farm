@@ -51,6 +51,16 @@ class Loader:
         inputs["path"] = path
         inputs["frames"] = frames_text(frames) if frames else ""
 
+    def fill_empty(self, inputs: dict) -> None:
+        """An optional input left empty: the farm loaders give a small black image
+        instead of an error, so the graph validates even when a switch skips them."""
+        if self.cls == "VHS_LoadImagesPath":
+            raise ValueError("VHS_LoadImagesPath can't be left empty; load optional inputs with ComfyFarm Load Image(s)")
+        inputs["path"] = ""
+        inputs["optional"] = True
+        if self.takes == "images":
+            inputs["frames"] = ""
+
 
 LOADERS = {
     "ComfyFarmLoadImages": Loader("ComfyFarmLoadImages", ("path",), lists_folder=False),

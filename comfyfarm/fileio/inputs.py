@@ -26,7 +26,7 @@ from .tools import require_tool
 
 __all__ = ["Sequence", "MOVIE_EXTENSIONS", "TEXTURE_EXTENSIONS", "resolve_sequence", "loaded_names", "texture_numbers",
            "folder_input", "texture_input", "resolve_movie", "has_slate", "scaled_text", "resolve_input", "work_sizes",
-           "batch_sequence", "load_path", "load_file", "one_image", "frame_limit", "summary"]
+           "batch_sequence", "frame_numbers", "load_path", "load_file", "one_image", "frame_limit", "summary"]
 
 
 @dataclass
@@ -494,6 +494,11 @@ def batch_sequence(seq: Sequence, start: int, end: int) -> Sequence:
     return b
 
 
+def frame_numbers(seq: Sequence) -> list[int] | None:
+    """The frame (or UDIM) number of each image the loader gets, in order (None: a still)."""
+    return _numbers(seq)
+
+
 def load_path(seq: Sequence) -> tuple[str, list[int] | None]:
     """What a loader that reads exact files (ComfyFarm Load Images) gets for this input:
     the file or frame pattern, and its frames in order (None for one image read as it is).
@@ -517,9 +522,9 @@ def load_file(seq: Sequence) -> str:
     return f"{path} {frames[0]}"
 
 
-def one_image(seq: Sequence, pc: PathsConfig) -> None:
+def one_image(seq: Sequence, pc: PathsConfig, who: str = "This workflow") -> None:
     """For inputs that take one image: a still, or one frame of a sequence or movie.
-    Anything more is refused, saying how to name the frame."""
+    Anything more is refused, saying how to name the frame (`who`: what takes it)."""
     if seq.frame_count == 1 and (seq.first is None or seq.first == seq.last):
         return
     shown = to_posix(seq.farm_path, pc.mappings) or seq.farm_path
@@ -529,7 +534,7 @@ def one_image(seq: Sequence, pc: PathsConfig) -> None:
         example = seq.first
     else:
         has, example = " (a sequence)", 1001
-    raise SequenceError(f"This workflow takes one image, and {shown} gives more{has}. Put the frame to use after "
+    raise SequenceError(f"{who} takes one image, and {shown} gives more{has}. Put the frame to use after "
                         f"it, e.g. {shown} {example}.")
 
 

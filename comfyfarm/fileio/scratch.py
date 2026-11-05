@@ -1,8 +1,9 @@
 """Scratch space: a folder per job on the local disk of the machine that runs it.
 
-<scratch>/<job id>/ holds the job's converted input frames (what the loader reads), and
-in its maps/ subfolder the raw images of texture maps before they become EXRs. It's
-deleted when the job finishes."""
+<scratch>/<job id>/ holds the job's converted input frames (what the loader reads), the
+other inputs' converted frames in a subfolder each (<input>/), and in its maps/ subfolder
+the raw images of texture maps before they become EXRs. It's deleted when the job
+finishes."""
 
 from __future__ import annotations
 
@@ -31,12 +32,16 @@ def point_loader_at_scratch(seq: Sequence, scratch_root: str, job_id: str) -> No
 
 
 def job_dir(job: dict) -> str | None:
-    """<scratch>/<job id>/: converted input frames, and the raw images of texture maps
-    (in its maps/ subfolder)."""
+    """<scratch>/<job id>/: converted input frames, the other inputs' in their own
+    subfolders (<input>/), and the raw images of texture maps (in its maps/ subfolder)."""
     info = job.get("info") or {}
     conv = (info.get("input") or {}).get("convert")
     if conv:
         return conv.get("dst_dir")
+    for other in (info.get("inputs") or {}).values():
+        dst = ((other or {}).get("convert") or {}).get("dst_dir")
+        if dst:
+            return normalize(dst).rstrip("/").rpartition("/")[0] + "/"
     tex = info.get("textures")
     return normalize(tex["raw_dir"]).rstrip("/").rpartition("/")[0] + "/" if tex else None
 

@@ -318,6 +318,21 @@ convert:
         self.assertEqual(done["status"], "done", done.get("error"))
         self.assertIn("abc_0010_ref.i2i_v001.1005.png", self.outputs(done))
 
+    def test_0456_two_inputs(self):
+        """LTX layout to render: the layout sequence (primary) and a reference frame."""
+        with self.assertRaisesRegex(farm.FarmError, "Reference frame takes one image, and .* gives more"):
+            farm.submit("ltx25_layout_render", {"input": f"{SEQ} 1001-1004", "reference": SEQ, "prompt": "x"})
+        job = farm.submit("ltx25_layout_render", {"input": f"{SEQ} 1001-1004", "reference": f"{SEQ} 1009",
+                                                  "prompt": "a castle"})
+        done = self.wait_for(job["id"], ("done", "failed"))
+        self.assertEqual(done["status"], "done", done.get("error"))
+        self.assertEqual([n for n in self.outputs(done) if ".render_" in n],
+                         [f"abc_0010.pre.v1.render_v001.{f}.png" for f in (1001, 1002, 1003, 1004)])
+        self.assertFalse([w for w in done["warnings"] if "output frames" in w])   # as many as the layout
+        prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
+        self.assertTrue(prompt["9060"]["inputs"]["path"].endswith("/abc_0010.pre.v1.%04d.png 1009"))
+        self.assertEqual(prompt["9061"]["inputs"]["frames"], "1001-1004")
+
     def test_046_numeric_shot_default_destination(self):
         job = farm.submit("ltx25_alpha_gen", {"input": "/rdo/shows/ply/.published/15454/15454_656551/render.comp/"
                                                        "pre/v1/main/hi/15454_656551.pre.v1.%d.png"})

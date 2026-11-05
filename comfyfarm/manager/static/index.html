@@ -230,7 +230,9 @@ function renderForm() {
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value) || state.workflows[0];
   const f = $("#form");
   if (!wf) { f.innerHTML = '<div class="empty">No workflows loaded.</div>'; return; }
-  const seqP = wf.params.find(p => p.type === "sequence"), outP = wf.params.find(p => p.type === "output_folder");
+  // The primary input names the outputs (older farms send no `primary`: the first input).
+  const inputs = wf.params.filter(p => p.type === "sequence");
+  const seqP = inputs.find(p => p.primary) || inputs[0], outP = wf.params.find(p => p.type === "output_folder");
   const destAfter = (outP || seqP || {}).name;
   const field = p => {
     const id = "p_" + p.name, help = p.help ? `<span class="help">${esc(p.help)}</span>` : "";
@@ -247,8 +249,10 @@ function renderForm() {
       return `<label class="wide">${esc(p.label)}<textarea id="${id}">${esc(val)}</textarea>${help}</label>`;
     if (p.type === "int" || p.type === "float")
       return `<label>${esc(p.label)}<input type="number" id="${id}" value="${esc(val)}" ${p.min != null ? `min="${p.min}"` : ""} ${p.max != null ? `max="${p.max}"` : ""} step="${p.multiple_of || (p.type === "int" ? 1 : "any")}">${help}</label>`;
-    const ph = p.placeholder || (p.type !== "sequence" ? "" : p.takes === "image"     // one image: name the frame
-      ? "/rdo/shows/…/shot.step.%04d.png 1050" : "/rdo/shows/…/shot.step.%04d.png 1001-1100");
+    const matched = p.match && wf.params.find(x => x.name === p.match);   // read at that input's frames
+    const ph = p.placeholder || (p.type !== "sequence" ? "" : matched
+      ? `/rdo/shows/…/shot.step.%04d.png (at the ${matched.label || matched.name}'s frames)` : p.takes === "image"
+      ? "/rdo/shows/…/shot.step.%04d.png 1050" : "/rdo/shows/…/shot.step.%04d.png 1001-1100");   // one image: name the frame
     return `<label class="wide">${esc(p.label)}${p.required ? " *" : ""}<input id="${id}" class="mono" value="${esc(val)}" placeholder="${esc(ph)}">${help}</label>`;
   };
   f.innerHTML = (wf.enabled ? "" : `<div class="msg err" style="grid-column:1/-1">Workflow disabled: ${esc(wf.problems.join("; "))}</div>`)
@@ -257,7 +261,7 @@ function renderForm() {
     + wf.params.map(p => field(p) + (p.name === destAfter ? '<div class="dest" id="dest" aria-live="polite"></div>' : "")).join("")
     + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>
        <div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
-  for (const p of [seqP, outP, ...wf.params.filter(p => p.naming)])
+  for (const p of [...inputs, outP, ...wf.params.filter(p => p.naming)])
     if (p) $("#p_" + p.name).addEventListener(p.type === "choice" ? "change" : "input", () => scheduleDest(wf, seqP, outP));
   f.onclick = e => { if (e.target.dataset.showjob) { state.open.add(e.target.dataset.showjob); showTab("queue"); render(); } };
   f.onsubmit = async e => {
@@ -280,7 +284,7 @@ function renderForm() {
       msg.className = "msg ok";
       msg.innerHTML = `Queued ${esc(job.short_id)} → ${esc(job.info.output_dir_posix || job.info.output_dir)} `
         + `<button class="small" type="button" data-showjob="${esc(job.id)}">show in queue</button>`;
-      $("#p_" + wf.params.find(p => p.type === "sequence")?.name)?.select();
+      $("#p_" + seqP?.name)?.select();
       scheduleDest(wf, seqP, outP, 0);   // that folder is now taken; show where the next run would go
     } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
     finally { f.querySelector("button[type=submit]").disabled = false; }
@@ -311,7 +315,10 @@ async function updateDest(wf, seqP, outP) {
   const el = $("#dest");
   if (!el) return;
   const params = {};
-  if (seqP) params[seqP.name] = $("#p_" + seqP.name).value.trim();
+  for (const p of wf.params.filter(p => p.type === "sequence")) {   // every input: the others are checked too
+    const v = $("#p_" + p.name).value.trim();
+    if (v || p === seqP) params[p.name] = v;
+  }
   if (outP && $("#p_" + outP.name).value.trim()) params[outP.name] = $("#p_" + outP.name).value.trim();
   for (const p of wf.params.filter(p => p.naming)) {   // these are in the file names
     const v = $("#p_" + p.name).value.trim();
@@ -331,6 +338,12 @@ async function updateDest(wf, seqP, outP) {
       + (r.maps ? `<br>Maps: ${r.maps.map(m => `<code>${esc(m)}</code>`).join(" ")}` : "")
       + (r.version > 1 ? `<br><span class="warn">Earlier versions already exist there (or are queued), so this run is v${String(r.version).padStart(3, "0")}.</span>` : "")
       + convertLine(r.convert)
+      + Object.entries(r.inputs || {}).map(([name, x]) => {   // the other inputs
+        const label = esc(wf.params.find(p => p.name === name)?.label || name);
+        if (!x) return `<br>${label}: <span class="muted">none</span>`;
+        const frames = x.first == null ? "an image" : x.first === x.last ? `frame ${x.first}` : `frames ${x.first}-${x.last}`;
+        return `<br>${label}: ${frames}` + convertLine(x.convert).replace("<br>", ", ");
+      }).join("")
       + (r.notes || []).map(n => `<br><span class="warn">${esc(n)}</span>`).join("")
       + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "")
       + (!r.picked && !r.shot && r.asset ? `<br>Asset <code>${esc(r.asset)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "");

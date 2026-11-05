@@ -212,7 +212,21 @@ class LoadImagesTests(unittest.TestCase):
         """The farm's workflows swapped VHS Load Images (Path) for it: the same output slots."""
         self.assertEqual(ComfyFarmLoadImages.RETURN_TYPES, ("IMAGE", "MASK", "INT"))
         self.assertEqual(list(ComfyFarmLoadImages.INPUT_TYPES()["required"]), ["path"])
-        self.assertEqual(list(ComfyFarmLoadImages.INPUT_TYPES()["optional"]), ["frames"])
+        self.assertEqual(list(ComfyFarmLoadImages.INPUT_TYPES()["optional"]), ["frames", "optional"])
+
+    def test_an_optional_input_left_empty(self):
+        """The farm sets optional on an input left empty: a small black image, no error, so
+        the graph validates while a switch skips that branch."""
+        self.assertIs(ComfyFarmLoadImages.VALIDATE_INPUTS("", "", True), True)
+        self.assertIn("No image path given", ComfyFarmLoadImages.VALIDATE_INPUTS("", ""))   # a forgotten input
+        images, masks, count = ComfyFarmLoadImages().load("", "", optional=True)
+        self.assertEqual((images.shape, float(images.max()), masks.shape, count), ((1, 64, 64, 3), 0.0, (1, 64, 64), 1))
+        image, mask = ComfyFarmLoadImage().load(" ", optional=True)
+        self.assertEqual(image.shape, (1, 64, 64, 3))
+        self.assertIs(ComfyFarmLoadImage.VALIDATE_INPUTS("", optional=True), True)
+        self.assertEqual(ComfyFarmLoadImages.IS_CHANGED("", "", True), "empty")
+        image, _ = ComfyFarmLoadImage().load(self.pattern + " 1001", optional=True)    # given: read as usual
+        self.assertEqual(image[0, 0, 0].tolist(), [1, 0, 0])
 
 
 class FarmNodeVersionTests(unittest.TestCase):

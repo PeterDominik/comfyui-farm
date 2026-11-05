@@ -1,0 +1,69 @@
+# What the farm exposes for this workflow, and which nodes each parameter drives.
+# Full reference: "Workflow manifests" in README.md.
+#
+# Every target names the node id AND its class_type, so a re-export that renumbers nodes
+# fails `python -m comfyfarm check` instead of writing into the wrong node.
+
+name: ltx25_layout_render
+label: LTX 2.5 layout to render
+description: >
+  Renders a layout (or blockout) sequence with the LTX 2.5 IC-LoRA layout-to-render
+  model in two stages (544 on the shorter side, then upscaled 2×), guided by the prompt
+  and a reference frame for the look. Outputs a PNG sequence numbered like the layout.
+tag: render                     # in the output file names: <source>.render_vNNN.<frame>.png
+template: workflow_api.json
+# Inputs are used at their own size: the workflow scales the layout to 544 on its shorter
+# side itself. 24 fps, seed 42 and the sampler settings are fixed in the workflow.
+
+params:
+  # Two inputs. The layout is primary: it names the outputs and numbers their frames.
+  input:
+    type: input
+    takes: images
+    primary: true
+    label: Layout sequence
+    required: true
+    loader: {node: "9061", class: ComfyFarmLoadImages}               # INPUT IMAGE SEQUENCE
+    help: >
+      The layout to render: an image sequence with frame pattern and range, e.g.
+      /rdo/shows/<show>/.../<shot>.layout.%04d.png 1001-1097, or a .mov/.mp4 (numbered from
+      its timecode). EXRs are converted with the shot's OCIO look first.
+
+  reference:
+    type: input
+    takes: image
+    label: Reference frame
+    required: true
+    loader: {node: "9060", class: ComfyFarmLoadImage}                # INPUT Reference Frame
+    help: >
+      One image for the look: a file, or a sequence or movie with the frame to use after
+      it, e.g. /rdo/shows/<show>/.../<shot>.comp.%04d.exr 1050. In Nuke, "From selected"
+      takes the selected Read node at the current frame.
+
+  prompt:
+    type: text
+    label: Prompt
+    required: true
+    help: What the shot should look like.
+    targets:
+      - {node: "5508", input: value, class: PrimitiveStringMultiline}  # Prompt (positive)
+
+  negative:
+    type: text
+    label: Negative prompt
+    default: ''
+    targets:
+      - {node: "5509", input: value, class: PrimitiveStringMultiline}  # Prompt (negative)
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      Frames go into a folder named after the shot inside this one, as
+      <source>.render_vNNN.<frame>.png. Each run takes the next free version. Its parent
+      folder must exist. Leave empty for the show's renders folder. Never inside .published.
+
+outputs:
+  # Writes the frames. The farm points it at the job's folder, then renames them to
+  # paths.frame_name with the layout's frame numbers.
+  frames: {node: "9065", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix, ext: png}

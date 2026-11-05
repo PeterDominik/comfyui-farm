@@ -51,6 +51,8 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 - **One-image workflows.** `wan22_i2i` reworks one image with Wan 2.2 (image to image,
   steered by a prompt). It takes a still, or one frame of a sequence or movie, named after
   the path (`…/plate.%04d.exr 1050`); the result is numbered like that frame.
+- **Several inputs.** `ltx25_layout_render` renders a layout sequence with LTX 2.5's
+  layout-to-render IC-LoRA, taking its look from a reference frame and a prompt.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -66,7 +68,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent` and `check` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i` |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -342,7 +344,8 @@ installed: the client is standard library only.
    *Submit* tab, fill in the form: paste the input path, *Browse…*, or select the Read (or
    the Write that rendered it) and click *From selected*, which fills in `path first-last`
    from the node. For a workflow that takes one image (`wan22_i2i`), it fills in
-   `path <current frame>` instead: go to the frame first.
+   `path <current frame>` instead: go to the frame first. A workflow with several inputs
+   (a plate and its matte) has a field and a *From selected* for each.
 3. Check the line under the form. It shows the frame count, the exact output folder, and
    the first and last file names, or the problem (missing frames, no shot found in the
    path, and so on) before anything is queued.
@@ -395,6 +398,20 @@ python comfyfarm_client.py submit wan22_i2i \
     "input=/rdo/shows/<show>/.published/<seq>/<shot>/plate/v1/<shot>.plate.v1.%04d.exr 1050" \
     "prompt=wet street at night" noise=0.25 --wait
 ```
+
+### Parameters for `ltx25_layout_render`
+
+| Param | Default | Notes |
+|---|---|---|
+| `input` | required | The layout: a sequence with an optional `first-last` range, or a `.mov`/`.mp4` (timecode frame numbers). Names and numbers the outputs |
+| `reference` | required | One image for the look: a file, or a sequence or movie with the frame after it (`…/comp.%04d.exr 1050`) |
+| `prompt` | required | What the shot should look like |
+| `negative` | empty | The negative prompt |
+| `output_path` | show default | Root folder: frames go to `<this>/<shot>/<source>.render_vNNN.<frame>.png`. Same rules as above |
+
+Fixed in the workflow: 544 on the shorter side then upscaled 2×, 24 fps, seed 42. LTX
+keeps lengths of 8×n + 1 frames (97, 121, …): with another length the job may come back
+with fewer frames than the layout, and says so in its warnings.
 
 ### Parameters for `chord_pbr`
 
@@ -713,7 +730,25 @@ outputs:                       # nodes the gateway points at each job's versione
     name its frame (`…/plate.%04d.png 1050`); without one it's refused with the frames it
     has. The output is numbered like that frame.
   - Older manifests write an `images` input as `type: sequence`, with `loader` and
-    `path_node` in a `sequence:` section. Both work; clients see either as the same field. An output folder is checked (parent exists, on show storage,
+    `path_node` in a `sequence:` section. Both work; clients see either as the same field.
+- **Several inputs** (a plate, its matte, a reference image): one `type: input` param each.
+  - One is `primary: true`. It must be required; it names the outputs and numbers their frames.
+  - `match: <primary>`: read at the primary's frames. Given as a pattern alone, the matte
+    gets the plate's range; with other frames it's refused.
+  - `required: false`: may be left empty. Left empty, its loader gets an empty path with
+    `optional` on (a small black image, so the graph still validates), and its `empty`
+    values are written into the graph: point them at whatever switches that branch off.
+    `given` values are written when it's given.
+  - Each input converts into its own scratch folder. Texture workflows take one input.
+
+  ```yaml
+  plate: {type: input, takes: images, primary: true, required: true,
+          loader: {node: "9104", class: ComfyFarmLoadImages}}
+  matte: {type: input, takes: images, match: plate, required: false,
+          loader: {node: "9120", class: ComfyFarmLoadImages},
+          empty: [{node: "9121", input: value, class: PrimitiveBoolean, value: false}],
+          given: [{node: "9121", input: value, class: PrimitiveBoolean, value: true}]}
+  ``` An output folder is checked (parent exists, on show storage,
   outside `.published`) and used as the root for `paths.output_dir` (`{root}/{shot}`);
   the version is the first one with no files there and no queued job claiming it.
   `POST /api/v1/plan` shows the result without queuing.

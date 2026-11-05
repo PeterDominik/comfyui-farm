@@ -377,11 +377,14 @@ class Agent:
                 except OSError as e:
                     await self._fail(h, f"Can't create the scratch folder {tex['raw_dir']}: {e.strerror or e}")
                     return
-            seq_info = info.get("input") or {}
-            if seq_info.get("convert"):
-                async with self._convert_sem:
-                    if h.dropped or not await self._convert(h, seq_info):
-                        return
+            # The primary input first: converting it empties <scratch>/<job id>/, where the
+            # other inputs convert into their own subfolders.
+            todo = [(None, info.get("input") or {})] + [(n, x) for n, x in (info.get("inputs") or {}).items() if x]
+            for what, seq_info in todo:
+                if seq_info.get("convert"):
+                    async with self._convert_sem:
+                        if h.dropped or not await self._convert(h, seq_info, what):
+                            return
             if not h.dropped:
                 await self._submit(h)
         except asyncio.CancelledError:
@@ -390,12 +393,15 @@ class Agent:
             log.exception("agent %s: job %s failed", self.name, h.id[:8])
             await self._fail(h, f"{type(e).__name__}: {e}")
 
-    async def _convert(self, h: Held, seq_info: dict) -> bool:
+    async def _convert(self, h: Held, seq_info: dict, what: str | None = None) -> bool:
+        """Convert one input (`what`: the name of an input besides the primary)."""
         conv = seq_info["convert"]
         kind, to = conv.get("kind", "?"), conv.get("to") or "PNG"
         at = f" at {conv['work_resolution']} px" if conv.get("scaled") else ""
         label = {"exr": f"converting EXR to {to}{at}", "movie": "extracting movie frames",
                  "image": f"scaling the input to {conv.get('work_resolution')} px"}.get(kind, kind)
+        if what:
+            label = f"{what}: {label}"
         t0, last = now(), [0.0]
 
         def progress(done: int, total: int) -> None:
@@ -412,7 +418,7 @@ class Agent:
             raise
         except Exception as e:  # noqa: BLE001
             msg = str(e) if isinstance(e, (ConvertError, SequenceError)) else f"{type(e).__name__}: {e}"
-            await self._fail(h, f"Converting the input failed: {msg}")
+            await self._fail(h, f"Converting {what or 'the input'} failed: {msg}")
             return False
         log.info("job %s: input ready in %.0fs", h.id[:8], now() - t0)
         return True

@@ -23,6 +23,7 @@ from ..fileio import ocio as OC
 from ..fileio import paths as P
 from ..fileio import scratch as S
 from ..fileio import textures as T
+from ..fileio.errors import SequenceError
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
 from .db import JobStore
@@ -213,12 +214,14 @@ class Farm:
             I.frame_limit(seq, wf.port.max_frames)
         if seq is not None and seq.convert:
             S.point_loader_at_scratch(seq, self.scratch_root, job_id)
+        others = self._plan_other_inputs(wf, values, seq, show, shot, job_id) if seq is not None else {}
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
         seq_name = seq.seq_name if seq else None
         source = seq.source if seq else wf.tag
         plan = {"notes": list((seq.convert or {}).get("notes", [])) if seq else [],
-                "wf": wf, "values": values, "seq": seq, "show": show_, "shot": shot_, "seq_name": seq_name,
+                "wf": wf, "values": values, "seq": seq, "inputs": others,
+                "show": show_, "shot": shot_, "seq_name": seq_name,
                 "source": source, "out_dir": None, "version": None, "picked": None,
                 "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
                 "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
@@ -259,6 +262,42 @@ class Farm:
         plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
         plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
         return plan
+
+    def _plan_other_inputs(self, wf, values: dict, main, show, shot, job_id: str) -> dict:
+        """The inputs besides the primary, resolved: {name: Sequence, or None when left
+        empty}. One that matches the primary is read at its frames: a matte given as a
+        pattern alone gets the plate's range, and a matte with other frames is refused.
+        Each converts into its own scratch folder, <scratch>/<job id>/<input>/."""
+        pc, out = self.cfg.paths, {}
+        main_label = wf.params[wf.port.name].label or wf.port.name
+        for port in wf.other_ports:
+            raw = values.get(port.name)
+            if not raw:
+                out[port.name] = None
+                continue
+            label = wf.params[port.name].label or port.name
+            path, first, _ = P.parse_input(raw)
+            if port.match and first is None and main.first is not None:
+                raw = f"{path} {main.first}" + (f"-{main.last}" if main.last != main.first else "")
+            try:
+                seq = I.resolve_input(raw, pc, self.cfg.convert, show=show, shot=shot, ocio=self.cfg.ocio,
+                                      work_resolution=port.work_resolution or wf.manifest_work_resolution,
+                                      preview=job_id == "preview", listing=port.adapter.lists_folder)
+                if port.takes != "image":
+                    I.frame_limit(seq, port.max_frames)
+            except SequenceError as e:
+                raise SequenceError(f"{label}: {e}") from None
+            if port.takes == "image":
+                I.one_image(seq, pc, who=label)
+            if port.match:
+                want, got = I.frame_numbers(main), I.frame_numbers(seq)
+                if want != got:
+                    raise SequenceError(f"{label} has frames {P.frames_text(got or [])}, and {main_label} "
+                                        f"{P.frames_text(want or [])}: they must be the same frames.")
+            if seq.convert:
+                S.point_loader_at_scratch(seq, self.scratch_root, f"{job_id}/{port.name}")
+            out[port.name] = seq
+        return out
 
     def _plan_textures(self, plan: dict, job_id: str) -> dict:
         """Texture workflows: which UDIM/frame each input texture is, the TEX file names of
@@ -340,6 +379,9 @@ class Farm:
             "what": plan.get("what"), "asset": plan.get("asset"),
             "maps": [m["channel"] for m in plan["textures"]["maps"]] if plan.get("textures") else None,
             "batches": len(plan["batches"]) if plan.get("batches") else None,
+            "inputs": {n: ({"frames": x.frame_count, "first": x.first, "last": x.last, "kind": x.kind,
+                            "convert": I.summary(x, pc)} if x else None)
+                       for n, x in (plan.get("inputs") or {}).items()},
         }
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
@@ -357,7 +399,7 @@ class Farm:
                 self.wake()
                 return job
             prompt = wf.build(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
-                              textures=plan.get("textures"))
+                              textures=plan.get("textures"), inputs=plan["inputs"])
             info = self._info(plan, seq, plan.get("textures"), plan.get("what"))
             job = self.store.insert({
                 "id": job_id, "workflow": wf.name, "user": user,
@@ -381,6 +423,10 @@ class Farm:
             "tag": wf.tag, "version": plan["version"],
             "input": seq.as_dict() if seq else None,
             "input_posix": P.to_posix(seq.farm_path, pc.mappings) if seq else None,
+            # The other inputs, by name (None: left empty). The agent converts each.
+            "inputs": {n: (x.as_dict() if x else None) for n, x in (plan.get("inputs") or {}).items()},
+            "inputs_posix": {n: (P.to_posix(x.farm_path, pc.mappings) if x else None)
+                             for n, x in (plan.get("inputs") or {}).items()},
             "first_frame": plan.get("first_frame"),
             "expected_frames": seq.frame_count if seq else None,
             "output_dir": out_dir, "output_dir_picked": plan["picked"],
