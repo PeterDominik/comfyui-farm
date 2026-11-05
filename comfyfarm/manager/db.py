@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS jobs_user ON jobs(user);
 CREATE INDEX IF NOT EXISTS jobs_output_dir ON jobs(output_dir);
+CREATE TABLE IF NOT EXISTS drained (
+    worker TEXT PRIMARY KEY,
+    by TEXT,
+    since REAL
+);
 CREATE TABLE IF NOT EXISTS workflow_stats (
     workflow TEXT PRIMARY KEY,
     runs INTEGER NOT NULL DEFAULT 0,
@@ -270,6 +275,19 @@ class JobStore:
             cur = self._db.execute(
                 "DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND finished_at < ?", (ts,))
             return cur.rowcount
+
+    # ---------------------------------------------------------------- drained machines
+    def drained(self) -> dict[str, dict]:
+        """Machines taking no new jobs (drained from the dashboard): name -> {by, since}."""
+        return {r["worker"]: {"by": r["by"], "since": r["since"]} for r in self._q("SELECT * FROM drained")}
+
+    def set_drained(self, worker: str, by: str | None, on: bool) -> None:
+        with self._lock:
+            if on:
+                self._db.execute("INSERT OR REPLACE INTO drained (worker, by, since) VALUES (?,?,?)",
+                                 (worker, by, now()))
+            else:
+                self._db.execute("DELETE FROM drained WHERE worker=?", (worker,))
 
     # ---------------------------------------------------------------- stats
     def stats(self, workflow: str) -> dict:

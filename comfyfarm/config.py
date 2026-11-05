@@ -228,6 +228,8 @@ class AgentConfig(BaseModel):
     comfyui: str = "http://127.0.0.1:8188"      # this machine's ComfyUI (keep it on localhost)
     comfyui_launch: ComfyUILaunchConfig = Field(default_factory=ComfyUILaunchConfig)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
+    # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
+    tags: list[str] = []
     log_dir: str = "logs"
     paths: AgentPathsConfig = Field(default_factory=AgentPathsConfig)
     convert: ConvertConfig = Field(default_factory=ConvertConfig)   # scratch_dir, tools, frame_workers

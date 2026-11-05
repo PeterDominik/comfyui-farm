@@ -278,7 +278,14 @@ The Machines tab shows *new farm nodes: restarting ComfyUI when idle* meanwhile.
   can run its workflow; the next job to the next machine. Only when every GPU is busy does
   a machine get a second job, prepared ahead of its current one (the best machine first).
   The Machines tab shows the order (#). Machines whose ComfyUI lacks a workflow's nodes or
-  models don't get it.
+  models don't get it, nor do machines its manifest's `requires` keeps it off (too little
+  VRAM: the LTX workflows need 32 GB, so the 3090 never gets them; missing tags). A job
+  no machine may take now waits in the queue, saying why, and runs once one checks in.
+- **Warm models:** between equal cards (two 5090s), the one that last ran the workflow,
+  with its models still loaded, gets the job. A bigger free card still comes first.
+- **Drain:** *Drain* on the dashboard's Machines tab lets a machine finish what it holds
+  and take no new jobs (before working on it, or restarting it) until *Resume*. It lasts
+  across manager restarts.
 - **Paths travel as studio paths** (`/rdo/shows/...`) and each machine maps them its own
   way (`paths.mappings` in its config), so Linux and Windows workers mix. Inputs are
   converted on the agent that runs the job, in its own scratch folder.
@@ -298,7 +305,8 @@ The Machines tab shows *new farm nodes: restarting ComfyUI when idle* meanwhile.
   row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
   (if any), *Run again* and *API JSON*.
 - **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
-  free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model) and why.
+  free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model, or
+  too little VRAM) and why. *Drain* / *Resume* per machine.
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
@@ -708,6 +716,9 @@ params:                        # becomes the form in the dashboard, in this orde
 
 # work_resolution: 1024        # optional: inputs larger than this (px, longer side) are
                                # scaled down to it before the workflow, aspect kept
+# requires: {vram_gb: 32, tags: [nightly]}   # optional: the machines that may run it: the
+                               # least GPU memory (GB, as the card is sold: a 5090 is 32) and
+                               # labels from their agent.yaml `tags` (linux / windows always set)
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}

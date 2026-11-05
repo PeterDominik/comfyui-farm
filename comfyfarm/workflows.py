@@ -205,6 +205,11 @@ class Workflow:
         self.label: str = m.get("label") or self.name
         self.description: str = (m.get("description") or "").strip()
         self.tag: str = m.get("tag") or self.name
+        # Which machines may run it: the least GPU memory (GB, as the card is sold: a 5090 is
+        # 32) and labels its agent.yaml must have (tags; linux / windows always set).
+        req = m.get("requires") or {}
+        self.requires: dict = {"vram_gb": req.get("vram_gb"), "tags": [str(t).lower() for t in req.get("tags") or []]} \
+            if isinstance(req, dict) else {"bad": req}
         self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
@@ -333,6 +338,13 @@ class Workflow:
                             f"e.g. 1024; leave it out to use inputs as they are")
         elif wr and not self.port:
             problems.append("work_resolution needs an input param (it scales the input)")
+        req = self.requires
+        if "bad" in req:
+            problems.append(f"requires must be a mapping ({{vram_gb: 32, tags: [...]}}), not {req['bad']!r}")
+        else:
+            vg = req.get("vram_gb")
+            if vg is not None and (isinstance(vg, bool) or not isinstance(vg, (int, float)) or vg <= 0):
+                problems.append(f"requires.vram_gb {vg!r} isn't a number of GB")
         primaries = [n for n, p in self.ports.items() if p.primary]
         if len(primaries) > 1:
             problems.append(f"only one input can be primary (found {', '.join(primaries)})")
@@ -555,6 +567,7 @@ class Workflow:
             "name": self.name, "label": self.label, "description": self.description,
             "tag": self.tag, "enabled": self.enabled, "problems": self.problems,
             "work_resolution": self.work_resolution,
+            "requires": self.requires if "bad" not in self.requires else None,
             "params": params,
             "maps": [mp.channel for mp in self.textures.maps] if self.textures else None,
         }

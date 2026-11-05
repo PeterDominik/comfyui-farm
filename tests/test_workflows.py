@@ -223,6 +223,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual((field["type"], field["takes"]), ("sequence", "image"))
         self.assertEqual(next(p for p in self.wf.schema()["params"] if p["name"] == "input")["takes"], "images")
 
+    def test_requires(self):
+        ltx = Workflow(WF_DIR / "ltx25_alpha_gen")
+        self.assertEqual(ltx.requires, {"vram_gb": 32, "tags": []})
+        self.assertEqual(ltx.schema()["requires"], {"vram_gb": 32, "tags": []})
+        self.assertEqual(Workflow(WF_DIR / "wan22_i2i").requires, {"vram_gb": None, "tags": []})   # any machine
+        for bad, why in (({"vram_gb": "lots"}, "requires.vram_gb 'lots' isn't a number of GB"),
+                         ("big", "requires must be a mapping")):
+            ltx.requires = {"bad": bad} if not isinstance(bad, dict) else {"vram_gb": bad["vram_gb"], "tags": []}
+            self.assertTrue(any(why in p for p in ltx.static_check()), ltx.static_check())
+
     def test_input_port_rules(self):
         wan = Workflow(WF_DIR / "wan22_i2i")
 

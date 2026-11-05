@@ -606,6 +606,22 @@ convert:
         self.assertEqual((ed["status"], ed["outputs"]["files"]), ("done", 30), ed.get("error"))
         self.assertEqual(len(os.listdir(ed["output_dir"])), 30)               # the same folder
 
+    def test_0498_drain_and_resume(self):
+        """Drained from the dashboard (its HTTP call): no new jobs until resumed."""
+        r = farm._request("POST", "/api/v1/workers/mock/drain", {"drain": True})
+        self.assertEqual(r, {"worker": "mock", "drained": True})
+        try:
+            w = {x["name"]: x for x in farm._request("GET", "/api/v1/workers")["workers"]}["mock"]
+            self.assertIsNotNone(w["drained"])
+            job = farm.submit("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1002"})
+            time.sleep(1.5)
+            self.assertEqual(farm.get(job["id"])["status"], "queued")
+        finally:
+            farm._request("POST", "/api/v1/workers/mock/drain", {"drain": False})
+        self.assertEqual(self.wait_for(job["id"], ("done", "failed"))["status"], "done")
+        with self.assertRaisesRegex(farm.FarmError, "No machine called nobody has checked in"):
+            farm._request("POST", "/api/v1/workers/nobody/drain", {"drain": True})
+
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
             self.submit("1001-1014")

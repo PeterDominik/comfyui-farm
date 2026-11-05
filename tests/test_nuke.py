@@ -327,6 +327,9 @@ class PanelLogic(unittest.TestCase):
         for state, shown in (("waiting", "new farm nodes: restarting ComfyUI when idle"),
                              ("manual", "farm nodes out of date")):
             self.assertEqual(PM.machine_state(dict(w, farm_nodes={"state": state, "message": "m"}))[0], shown)
+        self.assertEqual(PM.machine_state(dict(w, drained={"by": "peter"}, held=2))[0], "draining (2 jobs left)")
+        self.assertEqual(PM.machine_state(dict(w, drained={"by": "peter"}, held=0))[0], "drained: no new jobs")
+        self.assertEqual(PM.online([w, dict(w, drained={"by": "peter"})]), 1)
         restarting = dict(w, online=False, farm_nodes={"state": "restarting", "message": "m"})
         self.assertEqual(PM.machine_state(restarting)[0], "restarting ComfyUI (new farm nodes)")
         self.assertEqual(PM.online([w, dict(w, farm_nodes={"state": "waiting"})]), 1)
