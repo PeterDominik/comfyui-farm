@@ -44,6 +44,10 @@ class JobRequest(BaseModel):
     user: str | None = None   # ignored when API keys are configured
 
 
+class DrainRequest(BaseModel):
+    drain: bool = True        # false: resume
+
+
 def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     """The manager. With local_agents (standalone), an agent for each of config.yaml's
     workers runs in this process too; agents on other machines can check in either way."""
@@ -216,6 +220,16 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     @app.get("/api/v1/workers")
     def workers(ident: Identity = Depends(identity)):
         return {"workers": desk.summaries()}
+
+    @app.post("/api/v1/workers/{name}/drain")
+    def drain_worker(name: str, req: DrainRequest, ident: Identity = Depends(identity)):
+        """Drain a machine (it finishes what it holds and takes nothing new), or resume it
+        (drain: false). Lasts across manager restarts."""
+        if cfg.auth.api_keys and not ident.admin:
+            raise HTTPException(403, "Admins only.")
+        if name not in desk.agents and name not in desk.drained:
+            raise HTTPException(404, f"No machine called {name} has checked in.")
+        return desk.set_drained(name, req.drain, by=ident.user)
 
     @app.post("/api/v1/workers/check")
     async def check_workers(ident: Identity = Depends(identity)):

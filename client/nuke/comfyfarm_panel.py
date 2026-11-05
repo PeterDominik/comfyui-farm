@@ -274,6 +274,10 @@ class PanelModel:
         if nodes:
             return ({"waiting": "new farm nodes: restarting ComfyUI when idle"}.get(nodes.get("state"),
                                                                                     "farm nodes out of date"), "#e0a24a")
+        if w.get("drained"):                     # from the dashboard: finishes what it holds
+            held = w.get("held") or 0
+            return (f"draining ({held} job{'s' if held > 1 else ''} left)" if held else "drained: no new jobs",
+                    "#e0a24a")
         if w.get("checked") is False:
             return ("checking nodes", "#e0a24a")
         if w.get("problems"):
@@ -302,7 +306,7 @@ class PanelModel:
     def online(workers: list[dict]) -> int:
         """Machines taking jobs (some may lack a workflow's nodes: see the Machines tab)."""
         return sum(1 for w in workers if w.get("online") and w.get("connected") and w.get("checked") is not False
-                   and not w.get("farm_nodes"))
+                   and not w.get("farm_nodes") and not w.get("drained"))
 
     @staticmethod
     def summary(health: dict, workers: list[dict], user: str) -> str:
@@ -544,6 +548,8 @@ if QtWidgets is not None:
                 item.setForeground(MACHINE_STATUS_COL, QtGui.QBrush(QtGui.QColor(color)))
                 tip = (w.get("farm_nodes") or {}).get("message") or w.get("error") or \
                     "; ".join(f"{wf}: {'; '.join(p)}" for wf, p in (w.get("problems") or {}).items())
+                skips = "; ".join(f"not for {wf} ({why})" for wf, why in (w.get("skips") or {}).items())
+                tip = "\n".join(t for t in (tip, skips) if t)
                 item.setToolTip(MACHINE_STATUS_COL, tip)
                 item.setToolTip(0, "The order machines get jobs in: a job goes to the first free one that can run it")
                 self.machines.addTopLevelItem(item)

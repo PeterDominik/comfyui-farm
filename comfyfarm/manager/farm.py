@@ -225,6 +225,9 @@ class Farm:
                 "source": source, "out_dir": None, "version": None, "picked": None,
                 "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
                 "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
+        # No machine may take it now (requires, drained, offline): shown before submitting
+        # and as a queued job's stage, but not kept as a warning (it passes).
+        plan["waits"] = self.desk.requires_note(wf.name) if self.desk else None
         if wf.textures:
             return self._plan_textures(plan, job_id)
         if not wf.outputs.get("frames"):
@@ -373,7 +376,8 @@ class Farm:
             "frames": seq.frame_count if seq else None,
             "first": seq.first if seq else None, "last": seq.last if seq else None,
             "output_dir": out, "output_dir_posix": P.to_posix(out, pc.mappings) if out else None,
-            "picked": plan["picked"], "version": plan["version"], "notes": plan["notes"],
+            "picked": plan["picked"], "version": plan["version"],
+            "notes": plan["notes"] + ([plan["waits"]] if plan.get("waits") else []),
             "input_kind": seq.kind if seq else None, "convert": I.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
             "what": plan.get("what"), "asset": plan.get("asset"),
@@ -407,7 +411,7 @@ class Farm:
                 "status": "queued",
                 "priority": priority, "params": values, "info": info,
                 "prompt": prompt, "output_dir": out_dir, "output_key": plan.get("output_key"),
-                "created_at": now(), "stage": "queued",
+                "created_at": now(), "stage": plan.get("waits") or "queued",
                 "warnings": list(plan["notes"]),
             })
         log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, plan["source"], out_dir)

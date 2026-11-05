@@ -7,8 +7,11 @@ renews the lease, and jobs whose lease runs out (farm.lost_after_seconds) are qu
 
 Which machine runs a job (_claim): the best free GPU. Machines rank by agents.order in the
 manager's config, then by VRAM, so a job goes to the biggest card that is free and can run
-its workflow; the next job to the next one. A machine gets a second job, prepared ahead of
-its current one, only when every GPU is busy.
+its workflow (its nodes and models, and its manifest's `requires`: least VRAM, tags); the
+next job to the next one. Between equal cards, the one that last ran the workflow (its
+models still loaded) goes first. A machine gets a second job, prepared ahead of its
+current one, only when every GPU is busy. A machine drained from the dashboard takes no
+new jobs until it's resumed.
 
 The desk keeps what agents tell it about their ComfyUI in memory (a manager restart
 forgets it; agents check in again). Jobs live in the database as before, with their
@@ -66,6 +69,8 @@ class AgentState:
     farm_nodes: dict | None = None      # its ComfyUI runs other farm nodes than its checkout (agent.py)
     was_alive: bool = False
     last_claimed: float = 0.0           # identical cards take turns
+    last_workflow: str | None = None    # its models are probably still loaded
+    tags: list[str] = field(default_factory=list)   # agent.yaml's tags and its OS (requires.tags)
 
 
 def vram(a: AgentState) -> int:
@@ -76,6 +81,11 @@ def vram(a: AgentState) -> int:
         except (TypeError, ValueError):
             return 0
     return 0
+
+
+def vram_gb(a: AgentState) -> int:
+    """Its GPU's memory as the card is sold: a 5090 reports 31.8 GiB, and is 32."""
+    return round(vram(a) / 2**30)
 
 
 class Desk:
@@ -92,6 +102,8 @@ class Desk:
         # after STEAL_SECONDS.
         self._passed: dict[str, tuple[str, float]] = {}
         self._order: tuple[str, ...] = ()
+        # Machines drained from the dashboard (kept in the database): name -> {by, since}.
+        self.drained: dict[str, dict] = self.store.drained()
         self._changed: asyncio.Event | None = None
         self._tasks: list[asyncio.Task] = []
         self.view = W.View(mappings=self.cfg.paths.mappings, scratch=farm.scratch_root, repo=P.normalize(str(REPO)))
@@ -147,21 +159,75 @@ class Desk:
         a = self.agents.get(name or "")
         return bool(a and a.last_seen and now() - a.last_seen < ALIVE_SECONDS)
 
-    def accepting(self, a: AgentState) -> bool:
+    def usable(self, a: AgentState) -> bool:
         """Alive, with its ComfyUI up, running its checkout's farm nodes, and its node
-        definitions checked: it may take jobs."""
+        definitions checked."""
         return self.alive(a.name) and a.online and a.connected and a.checked and not a.farm_nodes
+
+    def accepting(self, a: AgentState) -> bool:
+        """Usable and not drained: it may take jobs."""
+        return self.usable(a) and a.name not in self.drained
+
+    def unmet(self, a: AgentState, workflow: str) -> str | None:
+        """Why the workflow's manifest keeps it off this machine (requires), or None."""
+        try:
+            req = self.farm.registry.get(workflow).requires
+        except Exception:  # noqa: BLE001 - an unknown workflow is the plan's to refuse
+            return None
+        need = req.get("vram_gb")
+        if need:
+            if not vram(a):
+                return f"needs a GPU with {need:g} GB of VRAM (this machine hasn't reported its GPU yet)"
+            if vram_gb(a) < need:
+                return f"needs a GPU with {need:g} GB of VRAM (this one has {vram_gb(a)})"
+        missing = [t for t in req.get("tags") or [] if t not in a.tags]
+        if missing:
+            return f"needs the tag{'s' if len(missing) > 1 else ''} {', '.join(missing)} (agent.yaml tags)"
+        return None
+
+    def requires_note(self, workflow: str) -> str | None:
+        """For the plan: when no machine the farm knows may run the workflow now (requires,
+        drained, offline), the job will wait; say so."""
+        if not self.agents:
+            return None
+        fit = [a for a in self.agents.values() if self.unmet(a, workflow) is None]
+        if not fit:
+            why = self.unmet(next(iter(self.agents.values())), workflow)
+            return f"No machine on the farm can take it now: it {why}. The job waits until one checks in."
+        if not any(self.accepting(a) for a in fit):
+            names = ", ".join(a.name for a in fit)
+            state = "drained" if all(a.name in self.drained for a in fit) else "offline or drained"
+            return f"The machines that can run it ({names}) are {state}: the job waits until one takes jobs."
+        return None
+
+    def set_drained(self, name: str, on: bool, by: str | None = None) -> dict:
+        """Drain a machine (it finishes what it holds and takes nothing new) or resume it.
+        Kept in the database, so it lasts across manager restarts."""
+        self.store.set_drained(name, by, on)
+        if on:
+            self.drained[name] = {"by": by, "since": now()}
+            log.info("worker %s drained by %s: no new jobs", name, by or "?")
+        else:
+            self.drained.pop(name, None)
+            log.info("worker %s resumed by %s", name, by or "?")
+            self.wake()
+        a = self.agents.get(name)
+        if a is not None:
+            self._publish(a)
+        return {"worker": name, "drained": on}
 
     def online_count(self) -> int:
         return sum(1 for a in self.agents.values() if self.accepting(a))
 
-    def _rank_key(self, a: AgentState, turns: bool = True) -> tuple:
-        """Better machines first: those in agents.order, in its order, then by VRAM. Equal
-        ones take turns (the one that took a job longest ago first)."""
+    def _rank_key(self, a: AgentState, turns: bool = True, workflow: str | None = None) -> tuple:
+        """Better machines first: those in agents.order, in its order, then by VRAM. Between
+        equal ones, the one that last ran `workflow` (its models still loaded), then turns
+        (the one that took a job longest ago first)."""
         order = [n.lower() for n in self.cfg.agents.order]
         name = a.name.lower()
         listed = order.index(name) if name in order else len(order)
-        return listed, -vram(a), a.last_claimed if turns else 0.0, name
+        cold = 0 if workflow and a.last_workflow == workflow else 1
+        return listed, -vram_gb(a), cold, a.last_claimed if turns else 0.0, name
 
     def ranks(self) -> dict[str, int]:
         """Each machine's place in the order it gets jobs in (1 = first), all free."""
@@ -189,6 +255,14 @@ class Desk:
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
             "farm_nodes": a.farm_nodes if alive else None,
             "rank": (ranks or self.ranks()).get(a.name),   # the order machines get jobs in
+            "tags": a.tags,
+            # Drained from the dashboard: finishes what it holds, takes nothing new.
+            "drained": self.drained.get(a.name),
+            "held": len(self.store.held_by(a.name)),
+            # Workflows its manifests keep off this machine (requires), and why.
+            "skips": {n: why for n in list(self.farm.registry.workflows)
+                      if (why := self.unmet(a, n)) is not None},
+            "last_workflow": a.last_workflow,
         }
 
     def summaries(self) -> list[dict]:
@@ -247,6 +321,7 @@ class Desk:
         self.agents[name] = a
         a.version, a.url = msg.get("version"), msg.get("comfyui")
         a.max_inflight = int(msg.get("max_inflight") or 2)
+        a.tags = sorted({str(t).lower() for t in msg.get("tags") or []})
         a.capacity = int(msg.get("capacity") or a.max_inflight + 1)
         a.last_seen, a.seq = now(), int(msg.get("seq") or 0)
         a.checked = False               # its node definitions follow
@@ -359,56 +434,74 @@ class Desk:
         """The queued jobs this agent takes now.
 
         Every machine taking jobs has slots: first its free GPU, if it has one; then, after
-        every machine's free GPU, one job prepared ahead. Both in rank order (_rank_key).
-        Queued jobs fill the slots in queue order, each the first slot on a machine that can
-        run its workflow, and this agent takes the jobs that land on its slots. So a job
-        goes to the best free GPU, whichever agent checks in first; and a machine gets a
-        second job only when every GPU is busy (or can't run it)."""
+        every machine's free GPU, one job prepared ahead. Queued jobs fill the slots in queue
+        order, each the best slot on a machine that can run its workflow (its nodes and
+        models, and the manifest's `requires`): a free GPU before one ahead, then by rank
+        (_rank_key: between equal cards, the one that last ran the workflow first). This
+        agent takes the jobs that land on its slots. So a job goes to the best free GPU,
+        whichever agent checks in first; and a machine gets a second job only when every GPU
+        is busy (or can't run it).
+
+        A job no machine may run (requires) waits: a bigger machine may check in later. One
+        that every machine allowed to run it lacks the nodes or models for fails now,
+        saying why (strict_preflight)."""
         t = now()
-        accepting = [x for x in self.agents.values() if self.accepting(x)]
-        free, ahead = [], []
-        for x in sorted(accepting, key=self._rank_key):
+        usable = [x for x in self.agents.values() if self.usable(x)]          # drained included
+        accepting = [x for x in usable if x.name not in self.drained]
+        slots: list[tuple[int, AgentState]] = []                             # (0 free GPU | 1 ahead, machine)
+        for x in accepting:
             held = self.store.held_by(x.name)
             busy = sum(1 for j in held if j["status"] in GPU_BUSY)
             room = min(PER_GPU - busy, x.capacity - len(held))
             if room > 0 and busy == 0:
-                free.append(x)
+                slots.append((0, x))
                 room -= 1
             if room > 0:
-                ahead.append(x)
-        slots = free + ahead
+                slots.append((1, x))
         used = [False] * len(slots)
         strict = self.cfg.farm.strict_preflight
         mine = []
+        unmet: dict[tuple[str, str], bool] = {}
+
+        def allowed(x: AgentState, wf: str) -> bool:
+            key = (x.name, wf)
+            if key not in unmet:
+                unmet[key] = self.unmet(x, wf) is not None
+            return not unmet[key]
 
         def able(x: AgentState, wf: str) -> bool:
-            return not (strict and x.problems.get(wf))
+            return allowed(x, wf) and not (strict and x.problems.get(wf))
+
+        def best(wf: str, among) -> int | None:
+            ks = [k for k in among if not used[k] and able(slots[k][1], wf)]
+            return min(ks, key=lambda k: (slots[k][0], self._rank_key(slots[k][1], workflow=wf)), default=None)
 
         for job in self.store.queued():
             wf = job["workflow"]
-            if not any(able(x, wf) for x in accepting):     # no worker can run it: say why now
-                probs = a.problems[wf]
+            fit = [x for x in usable if allowed(x, wf)]
+            if fit and not any(able(x, wf) for x in fit):     # every machine it may go to lacks something
+                probs = next(x.problems[wf] for x in fit if x.problems.get(wf))
                 self._passed.pop(job["id"], None)
                 self.farm._fail(job["id"], "The farm machine can't run this workflow: " + "; ".join(probs[:4])
                                 + (f" (+{len(probs) - 4} more)" if len(probs) > 4 else "")
                                 + ". Run `python -m comfyfarm check` on the farm machine.", ("queued",))
                 continue
-            i = next((k for k, x in enumerate(slots) if not used[k] and able(x, wf)), None)
+            i = best(wf, range(len(slots)))
             if i is None:
-                continue                # no room on a machine that can run it: it waits
-            target = slots[i]
+                continue                # no room on a machine that can run it (or none may): it waits
+            target = slots[i][1]
             if target is not a:
                 since = self._passed.get(job["id"])
                 if since is None or since[0] != target.name:
                     since = self._passed[job["id"]] = (target.name, t)
                 if t - since[1] >= STEAL_SECONDS and able(a, wf):
-                    k = next((k for k, x in enumerate(slots) if not used[k] and x is a), None)
+                    k = best(wf, [k for k in range(len(slots)) if slots[k][1] is a])
                     if k is not None:
                         log.info("job %s waited %.0f s for %s: %s takes it", job["id"][:8], t - since[1],
                                  target.name, a.name)
                         i = k
             used[i] = True
-            if slots[i] is a:
+            if slots[i][1] is a:
                 mine.append(job)
         out = []
         for job in mine:
@@ -419,7 +512,7 @@ class Desk:
             self._passed.pop(job["id"], None)
             if j is None:
                 continue                # cancelled meanwhile
-            a.last_claimed = t
+            a.last_claimed, a.last_workflow = t, j["workflow"]
             self._offered[j["id"]] = (a.name, attempt, a.seq)
             self.farm._emit(j)
             out.append(self._payload(self.store.get(j["id"], with_prompt=True), a))

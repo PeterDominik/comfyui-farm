@@ -12,6 +12,9 @@ description: >
   LTX 2.5 IC-LoRA alpha model. Outputs a numbered PNG sequence, numbered like the input.
 tag: alpha                      # used in output folder and file names
 template: workflow_api.json
+# The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
+# 32 GB 5090 and up, so the 24 GB 3090 never gets it.
+requires: {vram_gb: 32}
 
 params:
   # The images the workflow takes: a batch of frames (takes: images), read by the

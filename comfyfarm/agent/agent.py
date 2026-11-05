@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -135,6 +136,9 @@ class Agent:
         # ComfyUI runs other farm nodes than this checkout has: {"state": waiting | restarting
         # | manual, "message": why}; None while they're the checkout's.
         self.farm_nodes: dict | None = None
+        # What workflows can ask for (requires.tags): agent.yaml's tags, and this OS.
+        osname = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else sys.platform
+        self.tags = sorted({str(t).strip().lower() for t in cfg.tags if str(t).strip()} | {osname})
         self._restarted_for: str | None = None   # the checkout's node version ComfyUI was restarted for
         self._restarting = False
         self._cant_restart = False               # its ComfyUI wasn't started by this agent
@@ -231,7 +235,8 @@ class Agent:
         self._seq += 1
         reply = await self.link.hello({
             "name": self.name, "version": build(), "comfyui": self.cfg.comfyui, "seq": self._seq,
-            "max_inflight": self.cfg.max_inflight, "capacity": self.cfg.max_inflight + 1, "held": self._held_list()})
+            "max_inflight": self.cfg.max_inflight, "capacity": self.cfg.max_inflight + 1, "held": self._held_list(),
+            "tags": self.tags})
         if reply.get("error"):
             raise LinkError(reply["error"])
         self.registered = True

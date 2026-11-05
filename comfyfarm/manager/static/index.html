@@ -125,7 +125,7 @@
   <section id="tab-machines" hidden>
     <div class="sechead"><h2>Machines</h2></div>
     <table>
-      <thead><tr><th title="The order machines get jobs in: a job goes to the first free one that can run it">#</th><th>Machine</th><th>Status</th><th>GPU</th><th>VRAM free</th><th>Jobs</th><th>Running</th><th>ComfyUI</th><th>Agent</th><th>Last seen</th></tr></thead>
+      <thead><tr><th title="The order machines get jobs in: a job goes to the first free one that can run it">#</th><th>Machine</th><th>Status</th><th>GPU</th><th>VRAM free</th><th>Jobs</th><th>Running</th><th>ComfyUI</th><th>Agent</th><th>Last seen</th><th></th></tr></thead>
       <tbody id="machines"></tbody>
     </table>
   </section>
@@ -192,6 +192,7 @@ function machineState(w) {
   if (!w.connected) return ["ComfyUI connecting", "warn"];
   if (w.farm_nodes) return [FARM_NODES[w.farm_nodes.state] || FARM_NODES.manual, "warn"];
   if (w.checked === false) return ["checking nodes", "warn"];
+  if (w.drained) return [w.held ? `draining (${w.held} job${w.held > 1 ? "s" : ""} left)` : "drained: no new jobs", "warn"];
   const probs = Object.keys(w.problems || {});
   if (probs.length) return ["can't run " + probs.sort().join(", "), "warn"];
   return [w.inflight ? "busy" : "ready", "ok"];
@@ -199,7 +200,7 @@ function machineState(w) {
 function renderWorkers() {
   // In the order they get jobs: a job goes to the first free machine that can run it.
   const ws = [...state.workers.values()].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.name.localeCompare(b.name));
-  const up = ws.filter(w => w.online && w.connected && w.checked !== false && !w.farm_nodes).length;   // taking jobs
+  const up = ws.filter(w => w.online && w.connected && w.checked !== false && !w.farm_nodes && !w.drained).length;   // taking jobs
   $("#machineCount").textContent = ws.length ? ` ${up}/${ws.length} online` : "";
   $("#machines").innerHTML = ws.length ? ws.map(w => {
     const [st, cls] = machineState(w);
@@ -219,13 +220,34 @@ function renderWorkers() {
       <td class="muted">${esc(w.comfyui_version || "")}</td>
       <td class="muted mono">${esc((w.agent_version || "").split("+").pop())}</td>
       <td class="muted">${ago(w.last_seen)}</td>
-    </tr>${probs.length ? `<tr><td></td><td></td><td colspan="8" class="problems">${probs.map(([wf, p]) => `<b>${esc(wf)}</b>: ${esc(p.join("; "))}`).join("<br>")}</td></tr>` : ""}
-    ${w.farm_nodes ? `<tr><td></td><td></td><td colspan="8" class="problems">${esc(w.farm_nodes.message)}</td></tr>` : ""}
-    ${!w.online && w.error && !w.farm_nodes ? `<tr><td></td><td></td><td colspan="8" class="err">${esc(w.error)}</td></tr>` : ""}`;
-  }).join("") : '<tr><td colspan="10" class="empty">No machines have checked in.</td></tr>';
+      <td>${w.drained
+        ? `<button class="small" type="button" data-resume="${esc(w.name)}" title="Take jobs again">Resume</button>`
+        : `<button class="small" type="button" data-drain="${esc(w.name)}" title="Finish what it holds, then take no new jobs (e.g. before working on that machine)">Drain</button>`}</td>
+    </tr>${probs.length ? `<tr><td></td><td></td><td colspan="9" class="problems">${probs.map(([wf, p]) => `<b>${esc(wf)}</b>: ${esc(p.join("; "))}`).join("<br>")}</td></tr>` : ""}
+    ${w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="problems">${esc(w.farm_nodes.message)}</td></tr>` : ""}
+    ${w.drained ? `<tr><td></td><td></td><td colspan="9" class="muted">Drained by ${esc(w.drained.by || "?")} ${ago(w.drained.since)}: it finishes what it holds and takes no new jobs until resumed.</td></tr>` : ""}
+    ${Object.keys(w.skips || {}).length ? `<tr><td></td><td></td><td colspan="9" class="muted">Not for ${Object.entries(w.skips).map(([wf, why]) => `<b>${esc(wf)}</b> (${esc(why)})`).join(", ")}</td></tr>` : ""}
+    ${!w.online && w.error && !w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="err">${esc(w.error)}</td></tr>` : ""}`;
+  }).join("") : '<tr><td colspan="11" class="empty">No machines have checked in.</td></tr>';
 }
 
+// Drain / Resume (Machines tab): a drained machine finishes what it holds, takes nothing new.
+$("#machines").addEventListener("click", async e => {
+  const name = e.target.dataset.drain || e.target.dataset.resume;
+  if (!name) return;
+  e.target.disabled = true;
+  try {
+    await api(`/api/v1/workers/${encodeURIComponent(name)}/drain`, { method: "POST", body: JSON.stringify({ drain: !!e.target.dataset.drain }) });
+  } catch (err) { alert(err.message); e.target.disabled = false; }
+});
+
 // ------------------------------------------------------------- submit form
+// Which machines may run it (the manifest's requires).
+function requiresText(r) {
+  if (!r || (!r.vram_gb && !(r.tags || []).length)) return "";
+  const parts = [r.vram_gb ? `at least ${r.vram_gb} GB of VRAM` : "", (r.tags || []).length ? `the tag${r.tags.length > 1 ? "s" : ""} ${r.tags.join(", ")}` : ""];
+  return ` Runs on machines with ${parts.filter(Boolean).join(" and ")}.`;
+}
 function renderForm() {
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value) || state.workflows[0];
   const f = $("#form");
@@ -257,7 +279,7 @@ function renderForm() {
   };
   f.innerHTML = (wf.enabled ? "" : `<div class="msg err" style="grid-column:1/-1">Workflow disabled: ${esc(wf.problems.join("; "))}</div>`)
     + (Object.keys(wf.worker_problems || {}).length ? `<div class="msg err" style="grid-column:1/-1">Preflight: ${esc(Object.entries(wf.worker_problems).map(([w, p]) => w + ": " + p.join("; ")).join(" | "))}</div>` : "")
-    + `<div class="help" style="grid-column:1/-1">${esc(wf.description)}</div>`
+    + `<div class="help" style="grid-column:1/-1">${esc(wf.description)}${requiresText(wf.requires)}</div>`
     + wf.params.map(p => field(p) + (p.name === destAfter ? '<div class="dest" id="dest" aria-live="polite"></div>' : "")).join("")
     + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>
        <div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;

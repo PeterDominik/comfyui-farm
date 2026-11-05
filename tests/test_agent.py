@@ -57,7 +57,7 @@ class FakeComfy:
     """ComfyUI's HTTP API as the agent uses it, in memory. Tests move prompts along by
     hand: running/pending, history, websocket messages."""
 
-    def __init__(self, object_info: dict | None = None, vram: int = 1):
+    def __init__(self, object_info: dict | None = None, vram: int = 32 * 2**30):   # a 5090
         self.oi = dict(object_info or INSTALLED)
         self.vram = vram
         self.prompts: dict[str, dict] = {}
@@ -241,6 +241,12 @@ class AgentTests(unittest.TestCase):
         a = Agent(cfg, FlakyLink(self.desk), client=comfy or FakeComfy())
         self.agents.append(a)
         return a
+
+    def any_gpu(self):
+        """LTX without its least VRAM (requires), for tests of the order machines get jobs in."""
+        wf = REGISTRY.workflows["ltx25_alpha_gen"]
+        self.addCleanup(setattr, wf, "requires", wf.requires)
+        wf.requires = {"vram_gb": None, "tags": []}
 
     def gpu(self, name, gb, object_info=None):
         """An agent taking jobs, on a GPU with this much VRAM."""
@@ -559,6 +565,7 @@ class AgentTests(unittest.TestCase):
         j = self.job(job["id"])
         self.assertEqual((j["status"], j["worker"]), ("queued", None))
         self.assertIn("stopped checking in", j["warnings"][-1])
+        self.desk.agents["gpu1"].last_seen -= 60                # and still hasn't
         b = self.ready(self.agent("gpu2"))
         self.beat(b)                                           # another agent takes it
         self.assertEqual(self.job(job["id"])["worker"], "gpu2")
@@ -597,6 +604,7 @@ class AgentTests(unittest.TestCase):
 
     # ------------------------------------------------------------ which machine gets a job
     def test_the_best_free_gpu_takes_the_job(self):
+        self.any_gpu()
         small, mid, big = self.gpu("small", 24), self.gpu("mid", 32), self.gpu("big", 96)
         self.assertEqual({w["name"]: w["rank"] for w in self.desk.summaries()}, {"big": 1, "mid": 2, "small": 3})
         got = []
@@ -613,6 +621,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.job(job["id"])["status"], "queued")   # no room: it waits
 
     def test_collecting_outputs_leaves_the_gpu_free(self):
+        self.any_gpu()
         big, small = self.gpu("big", 96), self.gpu("small", 24)
         first = self.submit()
         self.dispatched(big, first)
@@ -623,6 +632,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.job(job["id"])["worker"], "big")
 
     def test_agents_order_puts_machines_first(self):
+        self.any_gpu()
         self.cfg.agents.order = ["Small"]
         small, big = self.gpu("small", 24), self.gpu("big", 96)
         self.gpu("mid", 32)
@@ -632,18 +642,101 @@ class AgentTests(unittest.TestCase):
         self.beat(small)
         self.assertEqual(self.job(job["id"])["worker"], "small")
 
-    def test_identical_gpus_take_turns(self):
+    def test_identical_gpus_warm_first_then_take_turns(self):
         a, b = self.gpu("gpu-a", 32), self.gpu("gpu-b", 32)
         got = []
-        for _ in range(2):
-            job = self.submit()
-            self.beat(a)
+        for submit in (self.submit,                                                   # LTX: gpu-a (name)
+                       lambda: self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1001"}, "ann"),   # cold on both: turns
+                       self.submit,                                                   # LTX again: still loaded on gpu-a
+                       lambda: self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1002"}, "ann")):  # and Wan on gpu-b
+            job = submit()
             self.beat(b)
+            self.beat(a)
             got.append(self.job(job["id"])["worker"])
-            self.store.transition(job["id"], ("preparing", "dispatched"), status="postprocessing")   # its GPU free again
-        self.assertEqual(got, ["gpu-a", "gpu-b"])
+            self.store.transition(job["id"], ("preparing", "dispatched"), status="done")   # its GPU free again
+        self.assertEqual(got, ["gpu-a", "gpu-b", "gpu-a", "gpu-b"])
+        self.assertEqual({w["name"]: w["last_workflow"] for w in self.desk.summaries()},
+                         {"gpu-a": "ltx25_alpha_gen", "gpu-b": "wan22_i2i"})
+
+    # ------------------------------------------------------------ requires and drain
+    def test_ltx_needs_32_gb(self):
+        small = self.gpu("small", 24)
+        self.assertEqual(self.desk.summaries()[0]["skips"]["ltx25_alpha_gen"],
+                         "needs a GPU with 32 GB of VRAM (this one has 24)")
+        plan = self.farm.plan_summary(self.farm.plan("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1003"}))
+        self.assertIn("No machine on the farm can take it now: it needs a GPU with 32 GB of VRAM (this one has 24). "
+                      "The job waits until one checks in.", plan["notes"])
+        job = self.submit()
+        self.assertTrue(job["stage"].startswith("No machine on the farm can take it now"))
+        self.beat(small)
+        self.assertEqual(self.job(job["id"])["status"], "queued")       # waits: never failed for it
+        wan = self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1001"}, "ann")
+        self.beat(small)
+        self.assertEqual(self.job(wan["id"])["worker"], "small")        # other workflows still run there
+        big = self.gpu("big", 32)                                       # 31.8 GiB reported counts as 32
+        self.desk.agents["big"].stats["devices"][0]["vram_total"] = int(31.84 * 2**30)
+        self.beat(small)
+        self.beat(big)
+        self.assertEqual(self.job(job["id"])["worker"], "big")
+        self.assertEqual(self.job(job["id"])["warnings"], [])           # the wait wasn't a warning
+
+    def test_tags(self):
+        osname = "windows" if os.name == "nt" else "linux"
+        wf = REGISTRY.workflows["wan22_i2i"]
+        self.addCleanup(setattr, wf, "requires", wf.requires)
+        wf.requires = {"vram_gb": None, "tags": [osname, "nightly"]}
+        a = self.ready(self.agent("tagged", tags=["Nightly"]))
+        plain = self.ready(self.agent("plain"))
+        self.assertEqual(self.desk.agents["tagged"].tags, sorted({"nightly", osname}))   # its OS added
+        self.assertEqual({w["name"]: w["skips"].get("wan22_i2i") for w in self.desk.summaries()},
+                         {"tagged": None, "plain": "needs the tag nightly (agent.yaml tags)"})
+        job = self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1001"}, "ann")
+        self.beat(plain)
+        self.beat(a)
+        self.assertEqual(self.job(job["id"])["worker"], "tagged")
+
+    def test_drain_and_resume(self):
+        a = self.ready(self.agent())
+        first = self.submit()
+        pid = self.dispatched(a, first)
+        self.assertEqual(self.desk.set_drained("gpu1", True, by="peter"), {"worker": "gpu1", "drained": True})
+        w = self.desk.summaries()[0]
+        self.assertEqual((w["drained"]["by"], w["held"]), ("peter", 1))
+        nxt = self.submit()
+        self.assertIn("The machines that can run it (gpu1) are drained", nxt["stage"])
+        self.beat(a)
+        self.assertEqual(self.job(nxt["id"])["status"], "queued")        # no new jobs...
+        self.assertEqual(self.finish(a, first["id"], pid)["status"], "done")   # ...but it finishes its own
+        self.assertEqual(self.farm.online_workers(), 0)
+        self.assertEqual(Desk(self.farm).drained.keys(), {"gpu1"})       # kept across manager restarts
+        self.desk.set_drained("gpu1", False, by="peter")
+        self.beat(a)
+        self.assertEqual(self.job(nxt["id"])["worker"], "gpu1")
+
+    def test_a_drained_machine_doesnt_make_jobs_fail(self):
+        """Drained is a pause: jobs only it can run wait for it."""
+        missing = {k: v for k, v in INSTALLED.items() if k != "LTXPadFrames"}
+        can = self.ready(self.agent("can"))
+        cant = self.ready(self.agent("cant", comfy=FakeComfy(missing)))
+        self.desk.set_drained("can", True)
+        job = self.submit()
+        self.beat(cant)
+        self.assertEqual(self.job(job["id"])["status"], "queued")
+        self.desk.set_drained("can", False)
+        self.beat(can)
+        self.assertEqual(self.job(job["id"])["worker"], "can")
+
+    def test_warm_models_never_beat_a_bigger_free_gpu(self):
+        self.any_gpu()
+        big, small = self.gpu("big", 96), self.gpu("small", 32)
+        self.desk.agents["small"].last_workflow = "ltx25_alpha_gen"     # loaded on the smaller card
+        job = self.submit()
+        self.beat(small)
+        self.beat(big)
+        self.assertEqual(self.job(job["id"])["worker"], "big")
 
     def test_a_better_gpu_that_cant_run_the_workflow_doesnt_hold_it_up(self):
+        self.any_gpu()
         missing = {k: v for k, v in INSTALLED.items() if k != "LTXPadFrames"}
         self.gpu("big", 96, missing)
         small = self.gpu("small", 24)
@@ -653,6 +746,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.desk._passed, {})
 
     def test_a_job_the_best_gpu_doesnt_come_for_goes_to_the_next(self):
+        self.any_gpu()
         self.gpu("big", 96)                    # checked in, but never comes for jobs
         small = self.gpu("small", 24)
         job = self.submit()
