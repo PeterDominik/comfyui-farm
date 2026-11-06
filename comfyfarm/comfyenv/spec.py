@@ -361,6 +361,17 @@ def compare(spec: dict | None, state: dict, farm_paths: list[dict] | None = None
     return {"differs": out, "notes": notes}
 
 
+def _library(path: str, libraries: list[dict]) -> str:
+    """The library a base path names, as libraries list it (its studio path), whichever
+    form it's written in (/rdo/bank/comfyui/, B:\\comfyui)."""
+    def key(p):
+        return str(p).replace("\\", "/").rstrip("/").casefold()
+    for lib in libraries:
+        if any(form and key(form) == key(path) for form in (lib["path"], lib.get("windows"))):
+            return lib["path"]
+    return path
+
+
 def model_paths_differ(mp: dict, farm: list[dict], libraries: list[dict], os_name: str = M.OS) -> list[dict]:
     """How a machine's extra_model_paths.yaml differs from the farm's: the same libraries,
     with the same folders. Which library a section points at was found on the machine
@@ -387,7 +398,7 @@ def model_paths_differ(mp: dict, farm: list[dict], libraries: list[dict], os_nam
         for k, v in sec["given"].items():
             got["given"].setdefault(k, []).extend(v)
     for f in farm:
-        lib = f["library"]
+        lib = _library(f["library"], libraries)
         got = mine.get(lib)
         if got is None:
             diff(f"extra_model_paths.yaml doesn't list the farm library {lib}")

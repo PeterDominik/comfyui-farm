@@ -85,10 +85,7 @@ class Farm:
                   "    models/unet\n  loras: models/loras/\n  vae: models/vae/\n"
                   f"comfyfarm:\n  base_path: {self.farmlib.as_posix()}/\n  is_default: false\n"
                   "  custom_nodes: custom_nodes/\n  checkpoints: models/checkpoints/\n  loras: models/loras/\n")
-        out = S.farm_model_paths(f)
-        for sec in out:          # library_of() reports libraries by their `path`, as written here
-            sec["library"] = str(Path(sec["library"]))
-        return out
+        return S.farm_model_paths(f)            # C:/… on Windows, where libraries list C:\…: still the same
 
 
 STATS = {"system": {"comfyui_version": "0.33.0", "pytorch_version": "2.7.1+cu128",
@@ -287,7 +284,7 @@ class SpecTests(unittest.TestCase):
                                  "triton-windows": {"windows": "3.3.1"}, "triton": {"linux": "3.3.1"}}
         st = self.state()                   # reads the packages the file pins
         st["comfyui"].update(version="0.32.0", commit=COMMIT_B, flags=["--use-sage-attention"])
-        st["python"]["python"] = "3.11.9"
+        st["python"]["python"] = "2.7.18"          # not the Python running the tests
         st["python"]["packages"].update({"torch": "2.7.1+cu126", "sageattention": "2.2.0+cu128torch2.7.1",
                                          "triton-windows": None, "triton": None})
         st["os"] = "linux"
@@ -295,7 +292,7 @@ class SpecTests(unittest.TestCase):
         self.assertIn(f"ComfyUI 0.32.0 / {COMMIT_B[:7]}; the farm's is 0.33.0 / {COMMIT_A[:7]}", got)
         self.assertIn("ComfyUI runs with --use-sage-attention; the farm's with --fast fp16_accumulation, "
                       "--use-sage-attention", got)
-        self.assertIn(f"Python 3.11.9; the farm's is {self.spec['python']}", got)
+        self.assertIn(f"Python 2.7.18; the farm's is {self.spec['python']}", got)
         self.assertIn("torch 2.7.1+cu126; the farm's is 2.7.1+cu128", got)           # the CUDA build counts
         self.assertFalse([g for g in got if g.startswith("sageattention")])           # the same release
         self.assertIn("triton isn't installed; the farm's is 3.3.1", got)              # Linux's pin
@@ -383,6 +380,12 @@ class SpecTests(unittest.TestCase):
                               "  checkpoints: models/checkpoints/\n  diffusion_models: |\n    models/diffusion_models\n"
                               "    models/unet\n  loras: models/loras/\n  vae: models/vae/\n")
         self.assertEqual(self.differs(farm_paths=self.farm.farm_file()), [])
+
+    def test_a_library_in_any_form(self):
+        self.assertEqual(S._library("/rdo/bank/comfyui/", S.LIBRARIES), "/rdo/bank/comfyui")
+        self.assertEqual(S._library("B:\\comfy_farm\\comfyui\\", S.LIBRARIES), "/rdo/bank/comfy_farm/comfyui")
+        self.assertEqual(S._library("b:/comfyui", S.LIBRARIES), "/rdo/bank/comfyui")
+        self.assertEqual(S._library("/elsewhere", S.LIBRARIES), "/elsewhere")
 
     def test_the_farm_file_in_the_repo(self):
         secs = S.farm_model_paths()
