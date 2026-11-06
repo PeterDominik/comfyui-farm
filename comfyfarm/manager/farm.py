@@ -26,6 +26,7 @@ from ..fileio import textures as T
 from ..fileio.errors import SequenceError
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
+from ..publish.publisher import Publisher, summary as publish_summary
 from . import eta as E
 from .db import JobStore
 from .events import EventBus
@@ -57,6 +58,8 @@ class Farm:
         # Where inputs are converted, as the jobs are planned. It's sent to the agents as
         # @scratch/ (fileio.wire), so each converts into its own scratch folder.
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
+        # Publishing finished jobs through the studio's pipeline (comfyfarm.publish).
+        self.publisher = Publisher(self)
 
     # ================================================================ lifecycle
     async def start(self) -> None:
@@ -72,9 +75,11 @@ class Farm:
                 self._refresh_set(s_["id"])
         if self.desk:
             await self.desk.start()
+        await self.publisher.start()
         log.info("manager started")
 
     async def stop(self) -> None:
+        await self.publisher.stop()
         if self.desk:
             await self.desk.stop()
 
@@ -167,7 +172,9 @@ class Farm:
         workflow on each GPU type, for the job's size (desk.forecast)."""
         fc = self.desk.forecast() if self.desk else {}
         position = {j["id"]: i + 1 for i, j in enumerate(self.store.queued(with_prompt=False))}
+        published = self.store.latest_publishes([j["id"] for j in jobs if j["status"] == "done"])
         for j in jobs:
+            j["publish"] = publish_summary(published.get(j["id"]))     # the latest publish of it
             j["queue_position"] = position.get(j["id"])
             j["next_worker"] = None
             j["eta_seconds"] = None
@@ -409,12 +416,21 @@ class Farm:
         }
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
-               priority: int = 0, show: str | None = None, shot: str | None = None) -> dict:
-        """Validate and queue a job. Runs in a thread (touches network storage)."""
+               priority: int = 0, show: str | None = None, shot: str | None = None,
+               publish: dict | None = None) -> dict:
+        """Validate and queue a job. Runs in a thread (touches network storage). `publish`:
+        publish it when it's done ({show, shot, step, template, description}, checked now)."""
         job_id = str(uuid.uuid4())
         with self._submit_lock:   # output folders are reserved by inserting the job
             plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id)
             wf, values, seq, out_dir = plan["wf"], plan["values"], plan["seq"], plan["out_dir"]
+            pub = None
+            if publish is not None:
+                if plan.get("batches"):
+                    raise ParamError("Texture sets aren't published from the farm.")
+                pub = {**self.publisher.check(wf.name, publish, show=plan["show"], shot=plan["shot"]), "user": user}
+                if publish.get("dry_run"):
+                    pub["dry_run"] = True       # dispatchGraph --dry-run: Daiquiri checks it, sends nothing
             if plan.get("batches"):
                 job = self._insert_set(plan, job_id, user, name, priority)
                 log.info("set %s queued by %s: %s %s, %d batches -> %s", job_id[:8], user, wf.name,
@@ -425,6 +441,8 @@ class Farm:
             prompt = wf.build(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
                               textures=plan.get("textures"), inputs=plan["inputs"])
             info = self._info(plan, seq, plan.get("textures"), plan.get("what"))
+            if pub:
+                info["publish_request"] = pub
             job = self.store.insert({
                 "id": job_id, "workflow": wf.name, "user": user,
                 "name": name or plan["shot"] or plan["source"],
@@ -540,8 +558,15 @@ class Farm:
             raise FarmError("That's one batch of a set: Retry failed on the set reruns it in place, Run again "
                             "on the set runs the whole set again.", 409)
         info = old["info"] or {}
-        return self.submit(old["workflow"], old["params"], user, name=old["name"],
-                           priority=old["priority"], show=info.get("show"), shot=info.get("shot"))
+        again = dict(workflow=old["workflow"], params=old["params"], user=user, name=old["name"],
+                     priority=old["priority"], show=info.get("show"), shot=info.get("shot"))
+        asked = {k: v for k, v in (info.get("publish_request") or {}).items() if k != "user"}
+        if asked:                           # published when done, as the first run was
+            try:
+                return self.submit(**again, publish=asked)
+            except ParamError as e:         # publishing has changed since (a template gone…): run it anyway
+                log.warning("job %s run again without publishing it when done: %s", job_id[:8], e)
+        return self.submit(**again)
 
     async def cancel(self, job_id: str) -> dict:
         job = self.store.get(job_id)

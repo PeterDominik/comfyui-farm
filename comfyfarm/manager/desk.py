@@ -706,6 +706,8 @@ class Desk:
                                               float(d["seconds"]) + float(d.get("prepare_seconds") or 0))
                 log.info("job %s done on %s in %.0fs -> %s", jid[:8], a.name, float(d.get("seconds") or 0),
                          outputs.get("output_dir"))
+                if (j.get("info") or {}).get("publish_request"):
+                    F.publisher.wake()              # published, as asked at submit
             F._emit(j)
         elif ev == "failed":
             j = F._fail(jid, d.get("error") or f"Failed on {a.name}.", HELD, traceback=d.get("traceback"),

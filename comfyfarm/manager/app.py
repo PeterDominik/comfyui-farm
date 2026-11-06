@@ -17,6 +17,7 @@ from .. import __version__
 from ..config import Config
 from ..fileio.errors import SequenceError
 from ..fileio.naming import default_output_dir_display
+from ..publish.publisher import PublishError
 from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
 from .desk import Desk
@@ -41,6 +42,20 @@ class JobRequest(BaseModel):
     priority: int = Field(0, ge=-10, le=10)
     show: str | None = None   # override when it can't be read from the input path
     shot: str | None = None
+    user: str | None = None   # ignored when API keys are configured
+    # Publish it when it's done: {show, shot, step, template, description}, all optional
+    # (the manifest's step, the first template, the show and shot read from the input path).
+    publish: dict | None = None
+
+
+class PublishRequest(BaseModel):
+    show: str | None = None
+    shot: str | None = None
+    step: str | None = None
+    template: str | None = None
+    description: str | None = None
+    dry_run: bool = False     # dispatchGraph --dry-run: Daiquiri checks it, nothing goes to Tractor
+    wait: bool = False        # answer once it's dispatched (or failed), not as soon as it's queued
     user: str | None = None   # ignored when API keys are configured
 
 
@@ -90,7 +105,8 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
     @app.exception_handler(FarmError)
-    async def farm_error(_req: Request, exc: FarmError):
+    @app.exception_handler(PublishError)
+    async def farm_error(_req: Request, exc: Exception):
         return JSONResponse({"detail": str(exc)}, status_code=exc.status)
 
     # ------------------------------------------------------------ auth
@@ -146,6 +162,8 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
                     p["placeholder"] = "Empty = " + default_output_dir_display(cfg.paths, wf.tag, tpl)
             s["worker_problems"] = {a.name: a.problems[wf.name] for a in list(desk.agents.values())
                                     if wf.name in a.problems}
+            if not cfg.publish.enabled:     # no Publish buttons while publishing is off
+                s["publish"] = None
             out.append(s)
         return {"workflows": out, "load_errors": registry.load_errors}
 
@@ -156,7 +174,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         if req.priority > 0 and cfg.auth.api_keys and not ident.admin:
             raise HTTPException(403, "Only admins can submit with priority above 0.")
         job = farm.submit(req.workflow, req.params, user, name=req.name, priority=req.priority,
-                          show=req.show, shot=req.shot)
+                          show=req.show, shot=req.shot, publish=req.publish)
         return farm.annotate([job])[0]
 
     @app.post("/api/v1/plan")
@@ -189,6 +207,26 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         job = _job_or_404(job_id)
         _may_touch(ident, job)
         return farm.annotate([farm.retry(job["id"], ident.user if cfg.auth.api_keys else job["user"])])[0]
+
+    # ------------------------------------------------------------ publishing (comfyfarm.publish)
+    @app.get("/api/v1/workflows/{name}/publish")
+    def publish_options(name: str, ident: Identity = Depends(identity)):
+        """What a workflow can be published with: templates, steps, defaults, or why not."""
+        return farm.publisher.options(name)
+
+    @app.post("/api/v1/jobs/{job_id}/publish", status_code=201)
+    def publish_job(job_id: str, req: PublishRequest, ident: Identity = Depends(identity)):
+        """Publish a finished job through Daiquiri (update_and_render_nuke)."""
+        job = _job_or_404(job_id)
+        _may_touch(ident, job)
+        user = ident.user if cfg.auth.api_keys else ((req.user or ident.user).strip()[:64] or job["user"])
+        body = req.model_dump(exclude={"dry_run", "wait", "user"})
+        return farm.publisher.start_publish(job["id"], body, user, dry_run=req.dry_run, wait=req.wait)
+
+    @app.get("/api/v1/jobs/{job_id}/publishes")
+    def job_publishes(job_id: str, ident: Identity = Depends(identity)):
+        """A job's publishes, the latest first, with the command run and its output."""
+        return {"publishes": store.publishes(_job_or_404(job_id)["id"])}
 
     @app.post("/api/v1/jobs/{job_id}/retry-failed")
     def retry_failed(job_id: str, ident: Identity = Depends(identity)):

@@ -82,6 +82,23 @@
   .ok { color: var(--ok); }
   td.problems { color: var(--accent); font-size: 12px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  /* Publishing (Daiquiri): the submit form's "Publish when done" fields, the Publish dialog */
+  form label.check.flat { padding-top: 0; }
+  form .help { overflow-wrap: anywhere; }
+  .pubbox { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 16px;
+            border-left: 2px solid var(--accent); padding: 4px 0 4px 12px; margin-top: 8px; align-items: start; }
+  .pubbox[hidden] { display: none; }
+  .kv pre { margin: 0; }
+  dialog .kv { grid-template-columns: 120px minmax(0, 1fr); }
+  dialog pre { overflow-wrap: anywhere; }
+  @media (max-width: 600px) { dialog .kv { grid-template-columns: 84px minmax(0, 1fr); } }
+  .pubmark { font-size: 11px; font-weight: 600; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0;
+           width: min(780px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  dialog .sechead h2 { text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--text); }
+  dialog hr { border: 0; border-top: 1px solid var(--line); margin: 0; }
+  .publog { padding: 14px; display: grid; gap: 14px; }
 </style>
 </head>
 <body>
@@ -140,6 +157,11 @@
     </table>
   </section>
 </main>
+
+<dialog id="pubDialog">
+  <div class="sechead"><h2 id="pubTitle">Publish</h2><button class="small" type="button" data-close>Close</button></div>
+  <div id="pubBody"></div>
+</dialog>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -318,11 +340,13 @@ function renderForm() {
     + (Object.keys(wf.worker_problems || {}).length ? `<div class="msg err" style="grid-column:1/-1">Preflight: ${esc(Object.entries(wf.worker_problems).map(([w, p]) => w + ": " + p.join("; ")).join(" | "))}</div>` : "")
     + `<div class="help" style="grid-column:1/-1">${esc(wf.description)}${requiresText(wf.requires)}</div>`
     + wf.params.map(p => field(p) + (p.name === destAfter ? '<div class="dest" id="dest" aria-live="polite"></div>' : "")).join("")
-    + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>
-       <div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
+    + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>`
+    + (wf.publish ? '<div id="pubSlot" style="grid-column:1/-1"></div>' : "")
+    + `<div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
   for (const p of [...inputs, outP, ...wf.params.filter(p => p.naming)])
     if (p) $("#p_" + p.name).addEventListener(p.type === "choice" ? "change" : "input", () => scheduleDest(wf, seqP, outP));
   f.onclick = e => { if (e.target.dataset.showjob) { state.open.add(e.target.dataset.showjob); showTab("queue"); render(); } };
+  if (wf.publish) loadPublishForm(wf);
   f.onsubmit = async e => {
     e.preventDefault();
     const params = {};
@@ -338,10 +362,14 @@ function renderForm() {
     msg.className = "msg"; msg.textContent = "Checking input…";
     f.querySelector("button[type=submit]").disabled = true;
     try {
-      const job = await api("/api/v1/jobs", { method: "POST", body: JSON.stringify({ workflow: wf.name, params, name: $("#jobname").value.trim() || null }) });
+      const body = { workflow: wf.name, params, name: $("#jobname").value.trim() || null };
+      if ($("#pubToggle")?.checked) body.publish = publishValues("sp_");   // checked with the job
+      const job = await api("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) });
       upsert(job); state.open.add(job.id); render();
+      const pub = job.info.publish_request;
       msg.className = "msg ok";
       msg.innerHTML = `Queued ${esc(job.short_id)} → ${esc(job.info.output_dir_posix || job.info.output_dir)} `
+        + (pub ? `· publishes to ${esc(pub.shot)} ${esc(pub.step)} when done${pub.dry_run ? " (dry run)" : ""} ` : "")
         + `<button class="small" type="button" data-showjob="${esc(job.id)}">show in queue</button>`;
       $("#p_" + seqP?.name)?.select();
       scheduleDest(wf, seqP, outP, 0);   // that folder is now taken; show where the next run would go
@@ -388,6 +416,8 @@ async function updateDest(wf, seqP, outP) {
   try {
     const r = await api("/api/v1/plan", { method: "POST", body: JSON.stringify({ workflow: wf.name, params }) });
     if (n !== destSeq) return;   // a newer request is on its way
+    state.planHint = { show: r.show, shot: r.shot };   // what a publish goes to unless entered
+    for (const k of ["show", "shot"]) { const el = $("#sp_" + k); if (el) el.placeholder = fromPath(r[k]); }
     const dir = r.output_dir_posix || r.output_dir;
     const files = r.last_file && r.last_file !== r.first_file
       ? `<code>${esc(r.first_file)}</code> … <code>${esc(r.last_file)}</code>` : `<code>${esc(r.first_file)}</code>`;
@@ -496,6 +526,7 @@ function detail(j) {
     ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
     ${j.kind === "set" ? setDetail(j) : ""}
     ${pathRow("Output (Windows)", windows)}
+    ${publishRows(j)}
     ${j.params?.positive_prompt ? `<div>Prompt</div><div>${esc(j.params.positive_prompt)}</div>` : ""}
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
     ${j.error ? `<div>Error</div><div class="err">${esc(j.error)}</div>` : ""}
@@ -507,6 +538,8 @@ function detail(j) {
         ? `<button class="small" data-retryfailed="${j.id}" title="Run the failed batches again, into the same folder">Retry failed</button>` : ""}
       ${["done", "failed", "cancelled"].includes(j.status) ? `<button class="small" data-retry="${j.id}">Run again</button>` : ""}
       ${j.kind === "set" ? "" : `<button class="small" data-prompt="${j.id}">API JSON</button>`}
+      ${j.status === "done" && j.kind !== "set" && wfPublish(j.workflow) ? `<button class="small" data-publish="${j.id}" title="Render a Nuke template with these frames on Tractor (Daiquiri), with a daily in Artist Review">Publish…</button>` : ""}
+      ${j.publish ? `<button class="small" data-publog="${j.id}" title="Each publish of this job: the command run and Daiquiri's output">Publish log</button>` : ""}
     </div></div></td></tr>`;
 }
 
@@ -535,7 +568,7 @@ function render() {
       <td class="muted" style="white-space:nowrap" title="${left != null ? "When it should be done, from past runs of this workflow on that machine's GPU type" : ""}">${esc(wait)}</td>
       <td class="muted" title="${new Date(j.created_at * 1000).toLocaleString()}">${ago(j.created_at)}</td>
       <td class="muted">${took}</td>
-      <td>${(j.warnings || []).length ? '<span class="warn" title="has warnings">!</span>' : ""}</td>
+      <td style="white-space:nowrap">${(j.warnings || []).length ? '<span class="warn" title="has warnings">!</span>' : ""}${pubMark(j)}</td>
     </tr>${state.open.has(j.id) ? detail(j) : ""}`;
   }).join("") : `<tr><td colspan="11" class="empty">No ${state.filter === "all" ? "" : state.filter} jobs.</td></tr>`;
   const active = [...state.jobs.values()].filter(j => !["done", "failed", "cancelled"].includes(j.status)).length;
@@ -560,6 +593,8 @@ $("#jobs").addEventListener("click", async e => {
     if (t.dataset.cancel) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.cancel}`, { method: "DELETE" })); render(); return; }
     if (t.dataset.retry) { const j = await api(`/api/v1/jobs/${t.dataset.retry}/retry`, { method: "POST" }); upsert(j); state.open.add(j.id); render(); return; }
     if (t.dataset.retryfailed) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.retryfailed}/retry-failed`, { method: "POST" })); await loadBatches(t.dataset.retryfailed); return; }
+    if (t.dataset.publish) { await openPublish(state.jobs.get(t.dataset.publish)); return; }
+    if (t.dataset.publog) { await openPublishLog(t.dataset.publog); return; }
     if (t.dataset.prompt) {
       const data = await api(`/api/v1/jobs/${t.dataset.prompt}/prompt`);
       const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })), download: t.dataset.prompt.slice(0, 8) + "_api.json" });
@@ -583,6 +618,131 @@ for (const [id, key] of [["#scope", "scope"], ["#filter", "filter"]]) {
     if (key === "filter" && state.filter !== "active") refreshJobs();
     render();
   });
+}
+
+// ------------------------------------------------------------- publishing (Daiquiri)
+// A workflow's templates, steps and defaults, or why it can't be published.
+const pubOptions = name => api(`/api/v1/workflows/${encodeURIComponent(name)}/publish`);
+const wfPublish = name => state.workflows.find(w => w.name === name)?.publish;
+const fromPath = v => v ? `${v} (from the input path)` : "from the input path";
+const PUB_STATE = { queued: ["publish queued", "muted"], dispatching: ["dispatching to Tractor…", "warn"],
+                    dispatched: ["sent to Tractor", "ok"], dry_run: ["dry run passed", "ok"], failed: ["publish failed", "err"] };
+
+// The fields of a publish, their ids prefixed: show and shot (empty = read from the input
+// path), step, template, description, dry run. `v`: values to start from.
+function publishFields(o, px, v = {}, hint = {}) {
+  const opts = (list, cur) => list.map(x => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
+  const unusable = Object.entries(o.unusable || {});
+  // Templates that can't be used: named, why in the tooltip.
+  const tplHelp = unusable.length ? `Not usable: ${unusable.map(([n]) => n).join(", ")} (hover for why)` : `in ${o.folder}/`;
+  const tplTip = unusable.length ? unusable.map(([n, w]) => `${n}.nk: ${w}`).join("\n") : "";
+  return `<label>Show<input id="${px}show" value="${esc(v.show || "")}" placeholder="${esc(fromPath(hint.show))}"></label>
+    <label>Shot<input id="${px}shot" value="${esc(v.shot || "")}" placeholder="${esc(fromPath(hint.shot))}"></label>
+    <label>Step<select id="${px}step">${opts(o.steps, v.step || o.step)}</select></label>
+    <label>Nuke template<select id="${px}template">${opts(o.templates, v.template || o.templates[0])}</select><span class="help ${unusable.length ? "warn" : ""}" title="${esc(tplTip)}">${esc(tplHelp)}</span></label>
+    <label class="wide">Description<input id="${px}description" value="${esc(v.description || "")}" placeholder="${esc(o.description)}" maxlength="500"></label>
+    <label class="check flat wide"><input type="checkbox" id="${px}dry"${o.dry_run || v.dry_run ? " checked" : ""}${o.dry_run ? " disabled" : ""}> Dry run
+      <span class="help">${o.dry_run ? "publish.dry_run is on in the manager's config" : "Daiquiri checks it, nothing goes to Tractor"}</span></label>`;
+}
+function publishValues(px) {
+  const v = id => $("#" + px + id)?.value.trim() || null;
+  return { show: v("show"), shot: v("shot"), step: v("step"), template: v("template"), description: v("description"),
+           dry_run: !!$("#" + px + "dry")?.checked };
+}
+
+// Submit form: "Publish when done", for workflows that publish.
+async function loadPublishForm(wf) {
+  const slot = $("#pubSlot");
+  let o;
+  try { o = await pubOptions(wf.name); } catch (err) { o = { why: err.message }; }
+  if (!slot || $("#pubSlot") !== slot) return;   // the form was redrawn meanwhile
+  if (o.why) { slot.innerHTML = `<div class="help">Publishing: ${esc(o.why)}</div>`; return; }
+  slot.innerHTML = `<label class="check flat"><input type="checkbox" id="pubToggle"> Publish when done
+      <span class="help">a Nuke template rendered with the frames on Tractor (Daiquiri), with a daily in Artist Review</span></label>
+    <div class="pubbox" id="pubBox" hidden>${publishFields(o, "sp_", {}, state.planHint || {})}</div>`;
+  $("#pubToggle").onchange = e => { $("#pubBox").hidden = !e.target.checked; };
+}
+
+// Job details: the latest publish (or the one asked for at submit).
+function publishRows(j) {
+  const p = j.publish, ask = j.info?.publish_request;
+  if (!p && !ask) return "";
+  const to = x => esc([x.show, x.shot, x.step].filter(Boolean).join(" · ")) + (x.template ? ` with ${esc(x.template)}.nk` : "");
+  if (!p) return `<div>Publish</div><div class="muted">When it's done: ${to(ask)}${ask.dry_run ? " (dry run)" : ""}</div>`;
+  const [label, cls] = PUB_STATE[p.state] || [p.state, "muted"];
+  const notes = (p.notes || []).filter(n => !(p.state === "dry_run" && n.startsWith("dry run")));
+  return `<div>Publish</div><div><span class="${cls}">${esc(label)}</span>`
+    + (p.state === "dispatched" && p.tractor_id ? ` · Tractor job <code>${esc(p.tractor_id)}</code>` : "")
+    + (p.state === "dry_run" ? ": Daiquiri checked it, nothing was sent" : "")
+    + (p.title ? `<br><span class="mono">${esc(p.title)}</span>` : "")
+    + `<br><span class="muted">${to(p)}${p.user ? ` · ${esc(p.user)}` : ""} · ${ago(p.finished_at || p.created_at)}</span>`
+    + (p.error ? `<br><span class="err">${esc(p.error)}</span>` : "")
+    + notes.map(n => `<br><span class="warn">${esc(n)}</span>`).join("") + `</div>`
+    + pathRow("Publish script", p.workfile);
+}
+// Queue row: the publish's state at a glance.
+function pubMark(j) {
+  const p = j.publish;
+  if (!p) return j.info?.publish_request && j.status !== "done" ? ' <span class="pubmark muted" title="Publishes when done">pub</span>' : "";
+  const [label, cls] = PUB_STATE[p.state] || [p.state, "muted"];
+  return ` <span class="pubmark ${cls}" title="${esc(label + (p.tractor_id ? ": Tractor job " + p.tractor_id : ""))}">pub</span>`;
+}
+
+const dlg = $("#pubDialog");
+dlg.addEventListener("click", async e => {
+  const t = e.target;
+  if (t === dlg || t.dataset.close != null) { dlg.close(); return; }
+  if (t.dataset.copy && await copyText(t.dataset.copy)) { t.textContent = "copied"; setTimeout(() => t.textContent = "copy", 1200); }
+});
+
+// Publish a finished job: the template, step, show, shot and description, then dispatch.
+async function openPublish(j) {
+  if (!j) return;
+  const o = await pubOptions(j.workflow), i = j.info || {}, out = j.outputs || {};
+  const last = j.publish || i.publish_request || {};
+  $("#pubTitle").textContent = `Publish ${j.short_id} · ${j.name || ""}`;
+  $("#pubBody").innerHTML = o.why ? `<div class="empty">${esc(o.why)}</div>` : `<form id="pubForm" autocomplete="off">
+      <div class="help" style="grid-column:1/-1">The template is copied to the staging folder with its
+        <code>Placeholder_Output_Comfyui</code> Read on this job's frames${out.first != null ? ` (${out.first}-${out.last})` : ""},
+        then Daiquiri's ${esc(wfPublish(j.workflow)?.graph || "update_and_render_nuke")} renders its Writes on Tractor and makes a daily in Artist Review.</div>
+      ${publishFields(o, "dp_", { show: last.show || i.show, shot: last.shot || i.shot, step: last.step, template: last.template,
+                                  description: last.description !== o.description ? last.description : "" }, i)}
+      <div class="actions"><button class="primary" type="submit">Publish</button><button type="button" data-close>Cancel</button>
+        <span class="msg" id="pubMsg"></span></div></form>`;
+  const f = $("#pubForm");
+  if (f) f.onsubmit = async e => {
+    e.preventDefault();
+    const msg = $("#pubMsg"), btn = f.querySelector("button[type=submit]");
+    btn.disabled = true; msg.className = "msg"; msg.textContent = "Staging the template…";
+    try {
+      const rec = await api(`/api/v1/jobs/${j.id}/publish`, { method: "POST", body: JSON.stringify(publishValues("dp_")) });
+      const cur = state.jobs.get(j.id);
+      if (cur) cur.publish = rec;      // live updates follow as it's dispatched
+      state.open.add(j.id); render(); dlg.close();
+    } catch (err) { msg.className = "msg err"; msg.textContent = err.message; btn.disabled = false; }
+  };
+  dlg.showModal();
+}
+
+// Every publish of a job: what was run and what Daiquiri answered.
+async function openPublishLog(id) {
+  const j = state.jobs.get(id) || {};
+  const ps = (await api(`/api/v1/jobs/${id}/publishes`)).publishes;
+  $("#pubTitle").textContent = `Publishes of ${j.short_id || id.slice(0, 8)} · ${j.name || ""}`;
+  $("#pubBody").innerHTML = `<div class="publog">${ps.map(p => {
+    const [label, cls] = PUB_STATE[p.state] || [p.state, "muted"];
+    return `<div class="kv">
+      <div>When</div><div>${new Date(p.created_at * 1000).toLocaleString()}${p.user ? ` · ${esc(p.user)}` : ""}</div>
+      <div>State</div><div><span class="${cls}">${esc(label)}</span>${p.tractor_id ? ` · Tractor job <code>${esc(p.tractor_id)}</code>` : ""}${p.title ? `<br><span class="mono">${esc(p.title)}</span>` : ""}</div>
+      <div>To</div><div>${esc([p.show, p.shot, p.step].filter(Boolean).join(" · "))}${p.template ? ` with ${esc(p.template)}.nk` : ""} · frames ${esc(p.frames || "forceInput")}</div>
+      ${p.description ? `<div>Description</div><div>${esc(p.description)}</div>` : ""}
+      ${p.error ? `<div>Error</div><div class="err">${esc(p.error)}</div>` : ""}
+      ${(p.notes || []).map(n => `<div>Note</div><div class="warn">${esc(n)}</div>`).join("")}
+      ${pathRow("Script", p.workfile)}
+      ${p.command ? `<div>Command</div><div><pre>${esc(p.command)}</pre></div>` : ""}
+      ${p.output ? `<div>Output</div><div><pre>${esc(p.output)}</pre></div>` : ""}
+    </div>`; }).join("<hr>") || '<div class="empty">Not published yet.</div>'}</div>`;
+  dlg.showModal();
 }
 
 // ------------------------------------------------------------- live updates

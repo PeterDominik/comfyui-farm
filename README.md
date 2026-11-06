@@ -66,6 +66,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
+| `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
@@ -380,14 +381,14 @@ it, as before. `agent --check` lists the differences as warnings.
 
 ## Using it
 
-**Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Three tabs:
+**Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Four tabs:
 
 - **Submit:** pick the workflow, fill in the form, check the destination line, submit.
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
   queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
   should be done, or the time left once running. Click a
   row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
-  (if any), *Run again* and *API JSON*.
+  (if any), *Run again* and *API JSON*, and on a finished job *Publish…* (see *Publishing*).
 - **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
   and why. *Drain* / *Resume* per machine.
@@ -403,6 +404,7 @@ python comfyfarm_client.py submit ltx25_alpha_gen \
     "input=/rdo/shows/<show>/.../<shot>.preprocess.%04d.png 1001-1158" --wait
 python comfyfarm_client.py list --mine
 python comfyfarm_client.py cancel 3f2a9c1e
+python comfyfarm_client.py publish 3f2a9c1e step=lay --dry-run
 ```
 
 ```python
@@ -538,7 +540,7 @@ Changing it only affects jobs submitted afterwards.
 |---|---|---|
 | GET | `/api/v1/health` | Liveness, auth on/off, queue size |
 | GET | `/api/v1/workflows` | Workflows and parameter schemas, plus any preflight problems |
-| POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?}` → job |
+| POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?, publish?}` → job (`publish`: publish it when done, the fields below) |
 | POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing, and `eta` (`run`: its seconds, `done_in`: behind the queue, `workers`) |
 | GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs and texture sets, with `queue_position`, `eta_seconds` (until done) and, while queued, `next_worker` |
 | GET | `/api/v1/jobs?parent={set id}` | A texture set's batches, in order |
@@ -549,11 +551,17 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/jobs/{id}/prompt` | The exact API JSON sent to ComfyUI |
 | GET | `/api/v1/jobs/{id}/preview` | MP4 preview |
 | GET | `/api/v1/workers` | Online state, GPU, free VRAM, slots, preflight problems |
+| GET | `/api/v1/workflows/{name}/publish` | What it can be published with: `templates` (and `unusable` ones, with why), `steps`, the default `step` and `description`; `why` when it can't be |
+| POST | `/api/v1/jobs/{id}/publish` | Publish a finished job `{step?, show?, shot?, template?, description?, dry_run?, wait?}` → the publish (`state`: `queued`, `dispatching`, `dispatched` with `tractor_id`, `dry_run`, `failed` with `error`) |
+| GET | `/api/v1/jobs/{id}/publishes` | Its publishes, the latest first, with the command run and dispatchGraph's output |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`
 when `auth.api_keys` is set in `config.yaml`.
+
+Jobs in lists carry `publish`: their latest publish (or null), and `info.publish_request` when
+one was asked for at submit.
 
 Job statuses: `preparing` (EXR/movie inputs being converted) → `queued` → `dispatched`
 (waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, copying preview,
@@ -566,6 +574,87 @@ progress and outputs come from its batches) and `batch` (one run of a set, with
 A finished texture job's `outputs.maps` has one entry per channel: its `pattern` (a
 `%04d` over the UDIMs, or the file itself for one tile), `pattern_posix`, `first`/`last`
 and `files`. `outputs.frame_pattern` is the base colour's.
+
+## Publishing (Tractor, through Daiquiri)
+
+A finished job of a workflow whose manifest has a `publish:` section (`ltx25_alpha_gen`,
+`ltx25_layout_render`) can be published through the pipeline: the manager copies a Nuke
+template with the job's frames in it to a staging folder and dispatches Daiquiri's
+`update_and_render_nuke` on it. That renders the template's WriteNukleus nodes on Tractor and
+makes a daily for each in Artist Review.
+
+Two ways to ask for it:
+
+- **Publish when done**, at submit (the dashboard's form; client `submit(..., publish={})`, CLI
+  `submit … --publish`). It's checked with the job: a step, template or shot that won't work
+  refuses the submit. It runs once the job is done, and again for *Run again*.
+- **Publish…** on a finished job, in its details (client `publish(job_id, …)`, CLI
+  `publish <job id> [step=…] [shot=…] [show=…] [template=…] [description=…] [--dry-run]`).
+
+| Field | |
+|---|---|
+| Show, shot | Empty: the ones read from the input path. The shot is Daiquiri's `--entities` |
+| Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step` |
+| Nuke template | One of the workflow's templates, `default` first |
+| Description | Default `Auto Publish`; ` (ComfyFarm <job>, <user>)` is added to it |
+| Dry run | dispatchGraph `--dry-run`: Daiquiri checks the context and the script, nothing goes to Tractor |
+
+The frame range is the job's (`--frameRange 1001-1084`). The job's details show its latest
+publish: *sent to Tractor* with the Tractor job id and title, *dry run passed*, or *failed* with
+dispatchGraph's last line. *Publish log* has every publish of the job with the command run and
+dispatchGraph's output. The Queue marks published jobs with **pub**.
+
+### Publish templates
+
+`<publish.templates>/<workflow>/<name>.nk`, e.g.
+`/rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/default.nk`. An ordinary Nuke
+script, built around nodes with set names:
+
+- a Read named **`Placeholder_Output_Comfyui`**: the job's frames go into it (file, frame range,
+  file type, and the colorspace by extension: PNG `color_picking`, EXR `rdo`, from
+  `publish.read_colorspace`), with a label naming the job;
+- optionally, Reads named **`Placeholder_Input_<input>`**, e.g. `Placeholder_Input_input`: that
+  input of the job, at its studio path and frames (a movie keeps the template's frame
+  numbering; an input left empty keeps the template's file);
+- at least one **WriteNukleus** (a Write with the pipeline's rdo knobs): what's rendered and
+  published, with its own profile and tokens (step, variant, name, part).
+
+Whatever is in between (a Clamp, a grade, a merge with the plate) stays as it is, and the
+script's frame range becomes the job's. A template without the output Read or a Write isn't
+offered; the form lists it as not usable, with why. The staged copy is
+`<publish.staging>/<job id>/<name>.nk` (readable by everyone, removed after
+`publish.keep_days`), so what Tractor rendered can be opened afterwards.
+
+To make one: build the comp in Nuke on a real ComfyFarm output, name the Read
+`Placeholder_Output_Comfyui`, set up the WriteNukleus, and save it in the workflow's folder.
+
+### Turning it on
+
+Off until it's switched on in the manager's `config.yaml` (see `config.example.yaml`):
+
+```yaml
+publish:
+  enabled: true
+  dry_run: true      # first: every publish is a dispatchGraph --dry-run
+```
+
+Restart the manager (`deploy/linux/farmctl.sh restart manager`), publish a finished job (a dry
+run), then set `dry_run: false` and publish one for real.
+
+dispatchGraph runs as the manager's user, so the dailies are published as that account for
+now. It runs in a clean login shell with the show's context (`publish.shell`,
+`publish.command`), because `ctxl` and `dispatchGraph` are aliases a non-interactive shell
+doesn't have:
+
+```bash
+env -i HOME=$HOME USER=$USER LOGNAME=$USER /bin/bash -lc \
+  'source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh <show> &&
+   /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph \
+     update_and_render_nuke --description "…" --step lay --entities <shot> \
+     --workfile <staging>/<job id>/default.nk --frameRange 1001-1084'
+```
+
+The Tractor job id comes from its output (`Dispatched engine, #ID: …`, `publish.job_id_pattern`).
 
 ## Texture workflows
 
@@ -807,6 +896,8 @@ params:                        # becomes the form in the dashboard, in this orde
 # requires: {vram_gb: 32, tags: [nightly]}   # optional: the machines that may run it: the
                                # least GPU memory (GB, as the card is sold: a 5090 is 32) and
                                # labels from their agent.yaml `tags` (linux / windows always set)
+# publish: {step: lay}         # optional: its outputs can be published (see Publishing); the
+                               # step offered first
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}

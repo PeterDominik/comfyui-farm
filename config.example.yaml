@@ -146,3 +146,21 @@ farm:
   reconcile_seconds: 20    # jobs cross-checked against ComfyUI's queue and history this often
   health_seconds: 5        # ComfyUI checked this often
   delete_comfy_history: true
+
+# Publishing finished jobs through the pipeline (README, Publishing): a Nuke template staged
+# with the job's frames, then Daiquiri's update_and_render_nuke dispatched to Tractor.
+publish:
+  enabled: false           # true: Publish buttons and "Publish when done" for workflows with publish: in their manifest
+  dry_run: true            # every publish is a dispatchGraph --dry-run (checked, nothing sent): start with this
+  templates: /rdo/bank/comfy_farm/publishTemplates/Nuke            # <templates>/<workflow>/<name>.nk
+  staging: /rdo/bank/comfy_farm/publishTemplates/Nuke/.staging     # <staging>/<job id>/<name>.nk
+  keep_days: 14            # staged scripts are removed after this long
+  description: Auto Publish            # when the artist leaves it empty
+  description_suffix: " (ComfyFarm {job}, {user})"
+  read_colorspace: {png: color_picking, exr: rdo}   # the placeholder Reads' colorspace, by extension
+  timeout: 600             # seconds dispatchGraph may take
+  workers: 2               # publishes dispatched at once
+  # steps: [ani, bmm, ..., uv]          # the studio's steps (the default list is built in)
+  # The command, in a clean login shell (shell: env -i … /bin/bash -lc). {graph} {show} {shot}
+  # {step} {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted:
+  # command: "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} && /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph {graph} --description {description} --step {step} --entities {shot} --workfile {workfile} --frameRange {frames}"
