@@ -177,6 +177,42 @@ class ShareConfig(BaseModel):
     url: str = ""        # the address written there; empty = http://<this machine's name>:<server.port>
 
 
+# The studio's steps, as Daiquiri takes them (--step).
+PUBLISH_STEPS = ["ani", "bmm", "cfx", "cmm", "comp", "crw", "env", "flo", "fx", "hair", "lay", "lig", "lin", "md",
+                 "mcp", "mod", "mp", "mptd", "paint", "pnt", "prep", "pre", "pub", "qcenv", "rig", "roto", "std",
+                 "shd", "tex", "uv"]
+_LAUNCHER = "/rdo/rodeo/setup/rdo_rez_launcher/current"
+
+
+class PublishConfig(BaseModel):
+    """Publishing jobs through Daiquiri's update_and_render_nuke (comfyfarm.publish). Off
+    until enabled; with dry_run, a publish stages its .nk and records the command without
+    running it."""
+    enabled: bool = False
+    dry_run: bool = True
+    templates: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke"        # <templates>/<workflow>/<name>.nk
+    staging: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke/.staging"  # <staging>/<job id>/<name>.nk
+    keep_days: float = 14.0             # staged scripts are removed after this long
+    steps: list[str] = Field(default_factory=lambda: list(PUBLISH_STEPS))
+    description: str = "Auto Publish"
+    # Added to every description: the dailies are made by the manager's account, so they
+    # say who asked and which job it was. {job} {user} {workflow}
+    description_suffix: str = " (ComfyFarm {job}, {user})"
+    # The colorspace each placeholder Read gets, by file extension.
+    read_colorspace: dict[str, str] = Field(default_factory=lambda: {"png": "color_picking", "exr": "rdo"})
+    # A clean login shell: the pipeline's environment, not the farm's. {home} {user}
+    shell: list[str] = Field(default_factory=lambda: ["env", "-i", "HOME={home}", "USER={user}", "LOGNAME={user}",
+                                                      "/bin/bash", "-lc"])
+    # {graph} (the manifest's publish.graph, update_and_render_nuke) {show} {shot} {step}
+    # {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted
+    command: str = (f"source {_LAUNCHER}/env/set_context.sh {{show}} && {_LAUNCHER}/rdo_rez_launcher.bash -a graph "
+                    f"-c dispatchGraph {{graph}} --description {{description}} --step {{step}} "
+                    f"--entities {{shot}} --workfile {{workfile}} --frameRange {{frames}}")
+    job_id_pattern: str = r"#ID:\s*(\d+)"    # the Tractor job in dispatchGraph's output
+    timeout: float = 600.0
+    workers: int = 2                    # publishes dispatched at once
+
+
 class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     share: ShareConfig = Field(default_factory=ShareConfig)
@@ -191,6 +227,7 @@ class Config(BaseModel):
     textures: TexturesConfig = Field(default_factory=TexturesConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    publish: PublishConfig = Field(default_factory=PublishConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)
     obsolete_keys: list[str] = Field(default_factory=list, exclude=True)

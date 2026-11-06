@@ -24,6 +24,13 @@ From a shell:
     python comfyfarm_client.py list [--mine]
     python comfyfarm_client.py cancel <job id>
     python comfyfarm_client.py retry-failed <set id>   # a texture set's failed batches, same folder
+
+Publishing a finished job through Daiquiri (update_and_render_nuke: the workflow's Nuke
+template rendered on Tractor, a daily in Artist Review):
+    python comfyfarm_client.py publish <job id> [step=lay] [shot=305046_0010] [show=bri3]
+                                       [template=default] [description="..."] [--dry-run]
+    python comfyfarm_client.py publishes <job id>      # each one: Tractor job, command, output
+    python comfyfarm_client.py submit ltx25_alpha_gen input=... --publish   # when it's done
 """
 
 from __future__ import annotations
@@ -144,11 +151,13 @@ def plan(workflow: str, params: dict, show: str | None = None, shot: str | None 
 
 
 def submit(workflow: str, params: dict, name: str | None = None, priority: int = 0,
-           show: str | None = None, shot: str | None = None) -> dict:
-    """Queue a job. Raises FarmError with a readable message if the input is unusable."""
+           show: str | None = None, shot: str | None = None, publish: dict | None = None) -> dict:
+    """Queue a job. Raises FarmError with a readable message if the input is unusable.
+    publish: publish it when it's done, e.g. {} (the defaults) or {"step": "comp",
+    "template": "default", "description": "...", "dry_run": True}; see publish()."""
     return _request("POST", "/api/v1/jobs", {"workflow": workflow, "params": params, "name": name,
                                              "priority": priority, "show": show, "shot": shot,
-                                             "user": getpass.getuser()})
+                                             "user": getpass.getuser(), "publish": publish})
 
 
 def get(job_id: str) -> dict:
@@ -181,6 +190,45 @@ def retry_failed(job_id: str) -> dict:
 def batches(set_id: str) -> list:
     """A texture set's batch jobs, in order."""
     return _request("GET", "/api/v1/jobs?" + urllib.parse.urlencode({"parent": set_id, "limit": 5000}))["jobs"]
+
+
+def publish_options(workflow: str) -> dict:
+    """What a workflow can be published with: templates, steps, defaults; `why` when it can't."""
+    return _request("GET", f"/api/v1/workflows/{urllib.parse.quote(workflow)}/publish")
+
+
+def publish(job_id: str, step: str | None = None, show: str | None = None, shot: str | None = None,
+            template: str | None = None, description: str | None = None, dry_run: bool = False,
+            wait: bool = False) -> dict:
+    """Publish a finished job through Daiquiri: the template staged with its frames and
+    update_and_render_nuke dispatched to Tractor. Left out: the workflow's step, the first
+    template, the show and shot of the input path, "Auto Publish". dry_run: dispatchGraph
+    --dry-run (Daiquiri checks it, sends nothing). wait: return once it's dispatched (or
+    failed) rather than queued. Returns the publish record (state, tractor_id, error)."""
+    body = {"step": step, "show": show, "shot": shot, "template": template, "description": description,
+            "dry_run": dry_run, "wait": wait, "user": getpass.getuser()}
+    return _request("POST", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/publish", body,
+                    timeout=900 if wait else 60)
+
+
+def publishes(job_id: str) -> list:
+    """A job's publishes, the latest first, with the command run and dispatchGraph's output."""
+    return _request("GET", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/publishes")["publishes"]
+
+
+def describe_publish(p: dict) -> str:
+    s = f"publish {p.get('state')}: {p.get('show')} {p.get('shot')} {p.get('step')} with {p.get('template')}.nk"
+    if p.get("tractor_id"):
+        s += f", Tractor job {p['tractor_id']}"
+    if p.get("title"):
+        s += f"\n    {p['title']}"
+    if p.get("error"):
+        s += f"\n    error: {p['error']}"
+    for n in p.get("notes") or []:
+        s += f"\n    note: {n}"
+    if p.get("workfile"):
+        s += f"\n    script: {p['workfile']}"
+    return s
 
 
 def wait(job_id: str, poll: float = 3.0, timeout: float | None = None, on_update=None) -> dict:
@@ -223,6 +271,10 @@ def describe(job: dict) -> str:
         s += f"\n    warning: {w}"
     if job["status"] == "done":
         s += f"\n    frames: {output_pattern(job)}  {job['outputs'].get('first')}-{job['outputs'].get('last')}"
+    if job.get("publish"):
+        s += "\n    " + describe_publish(job["publish"]).replace("\n    ", "\n        ")
+    elif (job.get("info") or {}).get("publish_request"):
+        s += "\n    publishes when done"
     return s
 
 
@@ -254,7 +306,7 @@ def main(argv: list[str]) -> int:
             wf, flags = args[0], [a for a in args[1:] if a.startswith("--")]
             params = dict(a.split("=", 1) for a in args[1:] if "=" in a and not a.startswith("--"))
             params = {k: (v if k == "input" else _parse_value(v)) for k, v in params.items()}
-            job = submit(wf, params)
+            job = submit(wf, params, publish={} if "--publish" in flags else None)
             print(describe(job))
             print(f"    output: {job['info'].get('output_dir_posix') or job['info'].get('output_dir')}")
             if "--wait" in flags:
@@ -272,6 +324,23 @@ def main(argv: list[str]) -> int:
             print(describe(retry(args[0])))
         elif cmd == "retry-failed":
             print(describe(retry_failed(args[0])))
+        elif cmd == "publish":
+            fields = dict(a.split("=", 1) for a in args[1:] if "=" in a and not a.startswith("--"))
+            unknown = set(fields) - {"step", "show", "shot", "template", "description"}
+            if unknown:
+                raise FarmError(f"publish takes step= show= shot= template= description=, not {', '.join(sorted(unknown))}")
+            print("Dispatching (this takes a minute)…", file=sys.stderr)
+            rec = publish(args[0], dry_run="--dry-run" in args, wait=True, **fields)
+            print(describe_publish(rec))
+            if rec.get("command"):
+                print(f"    command: {rec['command']}")
+            if rec.get("state") == "failed" and rec.get("output"):
+                print(rec["output"][-3000:])
+            return 0 if rec.get("state") in ("dispatched", "dry_run") else 1
+        elif cmd == "publishes":
+            for p in publishes(args[0]):
+                print(describe_publish(p))
+                print(f"    command: {p.get('command') or ''}\n    output:\n{p.get('output') or ''}\n")
         else:
             print(f"unknown command {cmd}\n{__doc__}")
             return 2

@@ -349,6 +349,49 @@ class AgentTests(unittest.TestCase):
                          ("gpu1", True, True, 0, "cuda:0 fake"))
         self.assertEqual(self.farm.online_workers(), 1)
 
+    @unittest.skipIf(os.name == "nt", "publishing runs on the Linux manager (a POSIX shell)")
+    def test_publish_when_done(self):
+        """Asked for at submit: checked then, run once the job is done."""
+        from test_publish import FAKE_DISPATCH, TEMPLATE
+        def submit(**publish):
+            return self.farm.submit("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1003"}, "ann", publish=publish)
+        with self.assertRaises(ParamError) as e:
+            submit()
+        self.assertIn("isn't switched on", str(e.exception))
+        pub = self.cfg.publish
+        templates = Path(self.root, "publishTemplates")
+        (templates / "ltx25_alpha_gen").mkdir(parents=True)
+        shutil.copy(TEMPLATE, templates / "ltx25_alpha_gen" / "default.nk")
+        Path(self.root, "dispatch.py").write_text(FAKE_DISPATCH)
+        for k, v in {"enabled": True, "dry_run": False, "templates": str(templates),
+                     "staging": str(templates / ".staging"), "shell": ["/bin/sh", "-c"],
+                     "command": f"{sys.executable} {self.root}/dispatch.py --entities {{shot}} --step {{step}} "
+                                f"--workfile {{workfile}} --show {{show}} --frameRange {{frames}}"}.items():
+            self.addCleanup(setattr, pub, k, getattr(pub, k))
+            setattr(pub, k, v)
+        with self.assertRaises(ParamError):
+            submit(step="nope")
+        a = self.ready(self.agent())
+        job = submit(step="comp")
+        self.assertEqual(job["info"]["publish_request"],
+                         {"show": "xyz", "shot": "abc_0010", "step": "comp", "template": "default",
+                          "description": "Auto Publish", "user": "ann"})
+        done = self.finish(a, job["id"], self.dispatched(a, job))
+        self.assertEqual(done["status"], "done", done["error"])
+        self.until(lambda: (self.store.publishes(job["id"]) or [{}])[0].get("state") in ("dispatched", "failed"),
+                   what="published")
+        rec = self.store.publishes(job["id"])[0]
+        self.assertEqual((rec["state"], rec["tractor_id"]), ("dispatched", "6501887"), rec["error"])
+        self.assertEqual(Path(rec["workfile"]), templates / ".staging" / job["id"] / "default.nk")
+        self.assertEqual(rec["frames"], "1001-1003")
+        self.assertEqual(self.farm.annotate([self.job(job["id"])])[0]["publish"]["state"], "dispatched")
+        # Run again: published when done too; a dry run stays one.
+        again = self.farm.retry(job["id"], "ann")
+        self.assertEqual(again["info"]["publish_request"]["step"], "comp")
+        self.assertTrue(submit(dry_run=True)["info"]["publish_request"]["dry_run"])
+        pub.templates = str(Path(self.root, "elsewhere"))                  # can't publish any more: run it anyway
+        self.assertNotIn("publish_request", self.farm.retry(job["id"], "ann")["info"])
+
     @unittest.skipIf(os.name == "nt", "read permissions are set on Linux; on Windows the share decides")
     def test_outputs_are_readable_by_everyone(self):
         old = os.umask(0o077)                                  # an agent or ComfyUI with a private umask

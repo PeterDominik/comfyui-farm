@@ -210,6 +210,11 @@ class Workflow:
         req = m.get("requires") or {}
         self.requires: dict = {"vram_gb": req.get("vram_gb"), "tags": [str(t).lower() for t in req.get("tags") or []]} \
             if isinstance(req, dict) else {"bad": req}
+        # Published through the studio's pipeline (comfyfarm.publish): the step a publish
+        # goes to unless the artist picks another. None: this workflow isn't published.
+        pub = m.get("publish")
+        self.publish: dict | None = ({"step": pub.get("step"), "graph": pub.get("graph") or "update_and_render_nuke"}
+                                     if isinstance(pub, dict) else ({"bad": pub} if pub is not None else None))
         self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
@@ -299,6 +304,9 @@ class Workflow:
 
     def static_check(self) -> list[str]:
         problems = []
+        if self.publish is not None and ("bad" in self.publish or
+                                         (self.publish["step"] is not None and not isinstance(self.publish["step"], str))):
+            problems.append("publish: needs to be a section like {step: lay}")
         for p in self.params.values():
             if p.type in GATEWAY_TYPES or p.naming:
                 if p.targets:
@@ -568,6 +576,7 @@ class Workflow:
             "tag": self.tag, "enabled": self.enabled, "problems": self.problems,
             "work_resolution": self.work_resolution,
             "requires": self.requires if "bad" not in self.requires else None,
+            "publish": self.publish if self.publish and "bad" not in self.publish else None,
             "params": params,
             "maps": [mp.channel for mp in self.textures.maps] if self.textures else None,
         }

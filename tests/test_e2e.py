@@ -661,6 +661,22 @@ convert:
         self.assertEqual(env["differs"], [])
         self.assertIn("ComfyUI's folder isn't known", " ".join(env["notes"]))
 
+    def test_0501_publishing_off(self):
+        """Publishing is off until publish.enabled: no Publish buttons, and asking says why."""
+        wf = {w["name"]: w for w in farm.workflows()}["ltx25_alpha_gen"]
+        self.assertIsNone(wf["publish"])
+        opts = farm.publish_options("ltx25_alpha_gen")
+        self.assertEqual((opts["step"], opts["templates"]), ("lay", []))
+        self.assertIn("isn't switched on", opts["why"])
+        self.assertIn("isn't published", farm.publish_options("wan22_i2i")["why"])
+        with self.assertRaisesRegex(farm.FarmError, "isn't switched on"):
+            farm.submit("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1002"}, publish={})
+        done = next(j for j in farm.jobs(limit=500) if j["status"] == "done" and j["workflow"] == "ltx25_alpha_gen")
+        self.assertIsNone(done["publish"])
+        with self.assertRaisesRegex(farm.FarmError, "isn't switched on"):
+            farm.publish(done["id"], dry_run=True)
+        self.assertEqual(farm.publishes(done["id"]), [])
+
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
             self.submit("1001-1014")

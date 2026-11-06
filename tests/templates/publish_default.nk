@@ -1,0 +1,168 @@
+#! /softwareLocal/nuke/linux/Nuke16.0v9/libnuke-16.0.9.so -nx
+#write_info WriteNukleus_1 file:"/rdo/shows/bri3/.published/305046/305046_0010/precomp/lay.primary.main.defPart/v1/lay.primary.main.defPart.v1.%04d.exr" format:"1920 1088 1" chans:":rgba.red:rgba.green:rgba.blue:" framerange:"1001 1084" fps:"0" colorspace:"linear	linear (rdo)" datatype:"16 bit half" transfer:"unknown" views:"main" colorManagement:"OCIO"
+version 16.0 v9
+define_window_layout_xml {<?xml version="1.0" encoding="UTF-8"?>
+<layout version="1.0">
+    <window x="0" y="38" w="3072" h="1660" maximized="1" screen="0">
+        <splitter orientation="1">
+            <split size="0"/>
+            <dock id="" hideTitles="1"/>
+            <split size="3068" stretch="1"/>
+            <splitter orientation="2">
+                <split size="88"/>
+                <dock id="" hideTitles="1" activePageId="Toolbar.1">
+                    <page id="Toolbar.1"/>
+                </dock>
+                <split size="1511"/>
+                <splitter orientation="1">
+                    <split size="1532"/>
+                    <splitter orientation="2">
+                        <split size="620"/>
+                        <dock id="" activePageId="Viewer.1">
+                            <page id="Viewer.1"/>
+                        </dock>
+                        <split size="887"/>
+                        <dock id="" activePageId="Properties.1">
+                            <page id="Properties.1"/>
+                            <page id="com.rodeofx.comfyfarm"/>
+                        </dock>
+                    </splitter>
+                    <split size="1532"/>
+                    <dock id="" activePageId="DAG.1">
+                        <page id="DAG.1"/>
+                    </dock>
+                </splitter>
+            </splitter>
+        </splitter>
+    </window>
+</layout>
+}
+Root {
+ inputs 0
+ name /rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/default.nk
+ frame 1001
+ first_frame 1001
+ last_frame 1084
+ lock_range true
+ format "3840 2160 0 0 3840 2160 1 sg_305046_0010"
+ proxy_type scale
+ proxy_format "1024 778 0 0 1024 778 1 1K_Super_35(full-ap)"
+ colorManagement OCIO
+ OCIO_config custom
+ customOCIOConfigPath /rdo/shows/bri3/.published/ocioConfig/config_1_0/v1/config_1_0_v1.ocio
+ defaultViewerLUT "OCIO LUTs"
+ workingSpaceLUT scene_linear
+ monitorLut "Client-look (sRGB-monitor)"
+ monitorOutLUT "Client-look (sRGB-monitor)"
+ int8Lut color_picking
+ int16Lut color_picking
+ logLut color_timing
+ floatLut scene_linear
+ free_type_font_path /rdo/rodeo/setup/nuke/fonts
+ addUserKnob {20 rdo_tab l Rdo}
+}
+Read {
+ inputs 0
+ file_type png
+ file /rdo/shows/bri3/_project_ref/_cg/comfyui/renders/305046_0010/305046_0010.ap01.rdo-nwb.distort.compPlate.v1.alpha_v001.%04d.png
+ first 1001
+ last 1084
+ origfirst 1001
+ origlast 1084
+ origset true
+ name Placeholder_Output_Comfyui
+ label "comfyfarm c89cadf3\nltx25_alpha_gen"
+ xpos -508
+ ypos -34
+}
+Dot {
+ name Dot1
+ label "Nuke optional postprocess  start"
+ note_font_size 40
+ xpos -474
+ ypos 151
+}
+Clamp {
+ name Clamp1
+ xpos -508
+ ypos 234
+}
+Dot {
+ name Dot2
+ label "Nuke optional postprocess end"
+ note_font_size 40
+ xpos -474
+ ypos 372
+}
+Write {
+ channels all
+ file /rdo/shows/bri3/.published/305046/305046_0010/precomp/lay.primary.main.defPart/v1/lay.primary.main.defPart.v1.%04d.exr
+ file_type exr
+ compression DWAA
+ metadata "all metadata"
+ first_part rgba
+ colorspace linear
+ create_directories true
+ ocioColorspace scene_linear
+ display sRGB-monitor
+ view Client-look
+ name WriteNukleus_1
+ autolabel rdo_comp_pipeline.nodes.write.writeNukleus._writes.WriteNukleus.onAutoLabel()
+ xpos -508
+ ypos 472
+ addUserKnob {20 rdo_tab l Rdo}
+ addUserKnob {4 rdo_profile l "" +STARTLINE M {Key Plate PrecompQC Precomp Reference}}
+ rdo_profile Precomp
+ addUserKnob {22 rdo_refreshProfile l @refresh-1 t "Refreshes the current node to the latest profile." -STARTLINE T "\nfrom rdo_comp_pipeline.nodes.write import Write\nWrite.fromNode(nuke.thisNode()).refreshNode()\n"}
+ addUserKnob {85 rdo_token1 l "" t step +STARTLINE +DISABLED M {lay}}
+ addUserKnob {85 rdo_token2 l "" t variant -STARTLINE M {primary}}
+ addUserKnob {85 rdo_token3 l "" t name -STARTLINE M {main}}
+ addUserKnob {85 rdo_token4 l "" t part -STARTLINE M {defPart}}
+ addUserKnob {85 rdo_token5 l token5 -STARTLINE +DISABLED +HIDDEN M {""}}
+ addUserKnob {85 rdo_token6 l token6 -STARTLINE +DISABLED +HIDDEN M {""}}
+ addUserKnob {26 rdo_templateName l "" +STARTLINE T "<font color=#9a9a9a>lay.primary.main.defPart</font>"}
+ addUserKnob {26 interstice1 l " " T " "}
+ addUserKnob {26 rdo_version_label l "" +STARTLINE T version}
+ addUserKnob {4 rdo_version l "" t "Allows to dynamically set the version to either 'New' or 'Latest'. If a `New`\n version is sent to the farm, it'll automatically switch to `Latest`. If `manual` is checked, this field\n will be disabled." -STARTLINE M {New Latest}}
+ addUserKnob {6 rdo_version_manual l manual t "If checked, the version will stay the same, but version up/down will be\n unrestricted.\nIf unchecked, the version (Next/Latest) will be used dynamically during\ntemplate builds and render submissions. Version up/down with the shortcut will be limited to those two \noptions.\n" -STARTLINE}
+ addUserKnob {3 rdo_version_manual_number l "" t "The version number to use when the version manual knob is checked" -STARTLINE +HIDDEN}
+ rdo_version_manual_number 1
+ addUserKnob {52 rdo_version_manual_number_spinbox l "" -STARTLINE +HIDDEN T rdo_comp_pipeline.nodes.write.writeNukleus._widget.SpinboxButtonsKnob(rdo_comp_pipeline.nodes.write.Write.fromNode(nuke.thisNode()))}
+ addUserKnob {26 divider1 l "" +STARTLINE}
+ addUserKnob {4 rdo_upstream l "upstream plate" +HIDDEN M {}}
+ addUserKnob {22 rdo_upstream_refresh l @refresh-1 -STARTLINE +HIDDEN T "import nuke\nfrom rdo_comp_pipeline.nodes.write.writeNukleus._knobs import UpstreamKnobs\nfrom rdo_comp_pipeline.nodes.write import Write\nUpstreamKnobs(Write.fromNode(nuke.thisNode())).updateUpstreamList()"}
+ addUserKnob {26 rdo_upstream_publishName l " " -STARTLINE +HIDDEN T "<font color=#9a9a9a> </font>"}
+ addUserKnob {4 rdo_upstream_camera l camera +DISABLED +HIDDEN M {}}
+ addUserKnob {4 rdo_upstream_camera_version l version -STARTLINE +DISABLED +HIDDEN M {}}
+ addUserKnob {1 rdo_upstream_camera_serialize l __camera +DISABLED +HIDDEN}
+ addUserKnob {1 rdo_upstream_camera_version_serialize l __version +DISABLED +HIDDEN}
+ addUserKnob {6 rdo_lightTexture_maketx l "Make Texture" t "Convert each frame using `maketx`" +HIDDEN +STARTLINE}
+ rdo_lightTexture_maketx false
+ addUserKnob {26 spaceRemover1 l "" +STARTLINE +HIDDEN T " "}
+ addUserKnob {22 rdo_convertToNativeWrite l "Convert to Nuke Write" t "Changes the current WriteNukleus node into a basic Write node." -STARTLINE +DISABLED +HIDDEN}
+ addUserKnob {3 chunk_size l "  chunk size" +DISABLED}
+ chunk_size 3
+ addUserKnob {6 override_chunk_size l override -STARTLINE}
+ addUserKnob {26 spaceRemover2 l "" +STARTLINE T " "}
+ addUserKnob {6 gpu_only l "GPU Only" t "If checked, the node will only be rendered on GPU" -STARTLINE}
+ addUserKnob {26 spaceRemover3 l "" +STARTLINE T " "}
+ addUserKnob {22 rdo_render l Render -STARTLINE T "\nfrom rdo_comp_pipeline.writeRdo import _api\n_api.submit(\[nuke.thisNode()])\n"}
+ addUserKnob {22 rdo_read l "Create Read" t "Creates a Read node from the Write node" -STARTLINE T "rdo_comp_pipeline.nodes.Write.fromNode(nuke.thisNode()).createReadNode()\n"}
+ addUserKnob {26 interstice2 l " " T " "}
+ addUserKnob {20 rdo_groupInfos l info n 2}
+ addUserKnob {26 rdo_writeVersion l "node vers." t "The version of the node when it was created.\nUsed to know if an update might be available" T "<font color=#9a9a9a>v9.22.2-beta.rdev-34037.1</font>"}
+ addUserKnob {26 rdo_publishFlow l flow T plate}
+ addUserKnob {26 rdo_publishedFile l "last publish" T " "}
+ addUserKnob {20 rdo_groupInfos l "" +STARTLINE n -1}
+ addUserKnob {26 rdo_tokenMapping l "" +STARTLINE +HIDDEN T "\{\"rdo_token1\": \"step\", \"rdo_token2\": \"variant\", \"rdo_token3\": \"name\", \"rdo_token4\": \"part\"\}"}
+ addUserKnob {26 rdo_profileCache l "profile cache" t "Serialized profiles" +HIDDEN}
+}
+Viewer {
+ frame 1001
+ frame_range 1001-1084
+ viewerProcess "Client-look (sRGB-monitor)"
+ monitorOutNDISenderName "Nuke - untitled - Viewer1"
+ name Viewer1
+ xpos -526
+ ypos 778
+}

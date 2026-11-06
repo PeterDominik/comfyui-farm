@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS run_stats (
     w REAL, wx REAL, wy REAL, wxx REAL, wxy REAL,
     PRIMARY KEY (workflow, gpu)
 );
+CREATE TABLE IF NOT EXISTS publishes (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    user TEXT,
+    state TEXT NOT NULL,        -- staging, dry_run, dispatched, failed
+    show TEXT, shot TEXT, step TEXT, template TEXT, description TEXT, frames TEXT,
+    workfile TEXT,              -- the staged .nk
+    command TEXT,
+    output TEXT,                -- dispatchGraph's
+    tractor_id TEXT, title TEXT, error TEXT, notes TEXT,
+    finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS publishes_job ON publishes(job_id, created_at);
 CREATE TABLE IF NOT EXISTS workflow_stats (
     workflow TEXT PRIMARY KEY,
     runs INTEGER NOT NULL DEFAULT 0,
@@ -296,6 +310,53 @@ class JobStore:
                                  (worker, by, now()))
             else:
                 self._db.execute("DELETE FROM drained WHERE worker=?", (worker,))
+
+    # ---------------------------------------------------------------- publishes
+    @staticmethod
+    def _publish_row(row) -> dict:
+        d = dict(row)
+        d["notes"] = json.loads(d["notes"]) if d.get("notes") else []
+        return d
+
+    def insert_publish(self, rec: dict) -> dict:
+        rec = dict(rec, notes=json.dumps(rec.get("notes") or []))
+        with self._lock:
+            self._db.execute(f"INSERT INTO publishes ({','.join(rec)}) VALUES ({','.join('?' * len(rec))})",
+                             tuple(rec.values()))
+        return self.publish(rec["id"])
+
+    def update_publish(self, pid: str, **fields) -> dict:
+        if "notes" in fields:
+            fields["notes"] = json.dumps(fields["notes"] or [])
+        with self._lock:
+            self._db.execute(f"UPDATE publishes SET {', '.join(f'{k}=?' for k in fields)} WHERE id=?",
+                             (*fields.values(), pid))
+        return self.publish(pid)
+
+    def publish(self, pid: str) -> dict | None:
+        rows = self._q("SELECT * FROM publishes WHERE id=?", (pid,))
+        return self._publish_row(rows[0]) if rows else None
+
+    def publishes(self, job_id: str) -> list[dict]:
+        """A job's publishes, the latest first."""
+        return [self._publish_row(r) for r in
+                self._q("SELECT * FROM publishes WHERE job_id=? ORDER BY created_at DESC", (job_id,))]
+
+    def latest_publishes(self, job_ids: list[str]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for i in range(0, len(job_ids), 500):
+            chunk = job_ids[i:i + 500]
+            rows = self._q(f"SELECT * FROM publishes WHERE job_id IN ({','.join('?' * len(chunk))}) "
+                           f"ORDER BY created_at", tuple(chunk))
+            for r in rows:
+                out[r["job_id"]] = self._publish_row(r)      # the latest wins
+        return out
+
+    def publish_requests(self) -> list[dict]:
+        """Done jobs asked at submit to be published that haven't been yet."""
+        rows = self._q("SELECT * FROM jobs WHERE status='done' AND json_extract(info, '$.publish_request') IS NOT NULL "
+                       "AND NOT EXISTS (SELECT 1 FROM publishes p WHERE p.job_id = jobs.id) ORDER BY finished_at")
+        return [self._row(r) for r in rows]
 
     # ---------------------------------------------------------------- stats
     def run_stats(self) -> dict[tuple[str, str], dict]:
