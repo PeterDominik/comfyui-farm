@@ -66,6 +66,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
+| `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check |
 | `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
@@ -554,6 +555,9 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/workflows/{name}/publish` | What it can be published with: `templates` (and `unusable` ones, with why), `steps`, the default `step` and `description`; `why` when it can't be |
 | POST | `/api/v1/jobs/{id}/publish` | Publish a finished job `{step?, show?, shot?, template?, description?, dry_run?, wait?}` → the publish (`state`: `queued`, `dispatching`, `dispatched` with `tractor_id`, `dry_run`, `failed` with `error`) |
 | GET | `/api/v1/jobs/{id}/publishes` | Its publishes, the latest first, with the command run and dispatchGraph's output |
+| GET | `/api/v1/shotgrid` | Whether the ShotGrid lookups work (`enabled`, `set_up`), or `why` not |
+| GET | `/api/v1/shotgrid/projects?refresh=` | The active shows `[{code, name}]`; `refresh=true` reloads them from ShotGrid |
+| GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
@@ -593,7 +597,8 @@ Two ways to ask for it:
 
 | Field | |
 |---|---|
-| Show, shot | Empty: the ones read from the input path. The shot is Daiquiri's `--entities` |
+| Show, shot | Filled in from the input path until you type in them; empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities` |
+| Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
 | Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step` |
 | Nuke template | One of the workflow's templates, `default` first |
 | Description | Default `Auto Publish`; ` (ComfyFarm <job>, <user>)` is added to it |
@@ -603,6 +608,36 @@ The frame range is the job's (`--frameRange 1001-1084`). The job's details show 
 publish: *sent to Tractor* with the Tractor job id and title, *dry run passed*, or *failed* with
 dispatchGraph's last line. *Publish log* has every publish of the job with the command run and
 dispatchGraph's output. The Queue marks published jobs with **pub**.
+
+### ShotGrid lookups
+
+With them on, the show field suggests ShotGrid's active shows, and the shot field that
+show's shots (without on-hold, omitted, hidden and void ones), narrowed by the sequence
+field. **↻** next to the shot reloads both from ShotGrid, for a shot created since. A
+publish to a shot that isn't in the show is refused at submit (after reloading the show's
+shots once). When ShotGrid isn't set up the fields are plain text; when it doesn't answer
+they say so and keep the last lists. Publishing never waits on ShotGrid.
+
+Only the manager talks to ShotGrid, with its own read-only API script; the dashboard (and
+the Nuke panel) ask the manager, so the key never leaves wrk1125l. To set it up:
+
+1. The script's name and key in `~/.config/comfyfarm/shotgrid.env`, readable only by the
+   manager's account (the manager reads the file itself, so cron needs nothing). Make the
+   file first, then put the two lines in with an editor (so the key isn't in the shell's
+   history):
+   ```bash
+   mkdir -p ~/.config/comfyfarm && touch ~/.config/comfyfarm/shotgrid.env && chmod 600 ~/.config/comfyfarm/shotgrid.env
+   ```
+   ```
+   SG_SCRIPT_NAME=<script name>
+   SG_SCRIPT_KEY=<script key>
+   ```
+   (Or set `SG_SCRIPT_NAME` / `SG_SCRIPT_KEY` in the manager's environment.)
+2. shotgun_api3 in the manager's Python (only the manager needs it):
+   `$(cat run/python) -m pip install git+https://github.com/shotgunsoftware/python-api.git`
+3. `shotgrid: {enabled: true}` in `config.yaml` (see `config.example.yaml` for the filters),
+   then restart the manager. `GET /api/v1/shotgrid` says whether it's set up, and
+   `GET /api/v1/shotgrid/projects` asks ShotGrid (its `why` says what went wrong).
 
 ### Publish templates
 

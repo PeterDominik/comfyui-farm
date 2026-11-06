@@ -164,3 +164,19 @@ publish:
   # The command, in a clean login shell (shell: env -i … /bin/bash -lc). {graph} {show} {shot}
   # {step} {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted:
   # command: "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} && /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph {graph} --description {description} --step {step} --entities {shot} --workfile {workfile} --frameRange {frames}"
+
+# ShotGrid lookups for the publish fields (README, ShotGrid lookups): the active shows and
+# each show's sequences and shots as suggestions, and a check that a publish goes to a shot
+# that exists. Read only. The script's name and key are never written here: they come from
+# the manager's environment or env_file (KEY=value lines, chmod 600).
+shotgrid:
+  enabled: false
+  url: https://rodeofx.shotgrid.autodesk.com/
+  script_name_env: SG_SCRIPT_NAME
+  script_key_env: SG_SCRIPT_KEY
+  env_file: ~/.config/comfyfarm/shotgrid.env
+  project_filters: [[sg_status, is, Active]]     # the shows offered
+  show_field: tank_name                          # the Project field with the show code (bri3)
+  hidden_statuses: [hld, omt, hdn, void]         # shots left out of the lists
+  projects_ttl: 900        # seconds a list is used before it's loaded again
+  shots_ttl: 600           # (the ↻ buttons reload at once)

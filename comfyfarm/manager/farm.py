@@ -27,6 +27,7 @@ from ..fileio.errors import SequenceError
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
 from ..publish.publisher import Publisher, summary as publish_summary
+from ..shotgrid import ShotGrid
 from . import eta as E
 from .db import JobStore
 from .events import EventBus
@@ -59,6 +60,7 @@ class Farm:
         # @scratch/ (fileio.wire), so each converts into its own scratch folder.
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
         # Publishing finished jobs through the studio's pipeline (comfyfarm.publish).
+        self.shotgrid = ShotGrid(cfg.shotgrid)     # read-only lookups for the publish fields
         self.publisher = Publisher(self)
 
     # ================================================================ lifecycle
