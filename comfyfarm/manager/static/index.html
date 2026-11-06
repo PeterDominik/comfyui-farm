@@ -99,6 +99,7 @@
   <button data-tab="submit">Submit</button>
   <button data-tab="queue">Queue<span class="count" id="queueCount"></span></button>
   <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
+  <button data-tab="runtimes">Run times</button>
 </nav>
 
 <main>
@@ -128,7 +129,10 @@
       <thead><tr><th title="The order machines get jobs in: a job goes to the first free one that can run it">#</th><th>Machine</th><th>Status</th><th>GPU</th><th>VRAM free</th><th>Jobs</th><th>Running</th><th>ComfyUI</th><th>Agent</th><th>Last seen</th><th></th></tr></thead>
       <tbody id="machines"></tbody>
     </table>
-    <div class="sechead" style="margin-top:28px"><h2>Run times</h2>
+  </section>
+
+  <section id="tab-runtimes" hidden>
+    <div class="sechead"><h2>Run times</h2>
       <span class="muted">What the queue's ETAs come from: recent runs of each workflow on each GPU type, prepare included.</span></div>
     <table>
       <thead><tr><th>Workflow</th><th>GPU</th><th>Runs</th><th title="Frames read (tiles for texture workflows), weighted toward recent runs">Usual size</th><th>Usual time</th><th title="Seconds per frame (per tile for texture workflows)">Per frame</th><th title="Seconds every run takes whatever its size: loading models, preparing">Overhead</th></tr></thead>
@@ -178,7 +182,7 @@ const about = s => s == null ? "" : s < 60 ? Math.max(5, Math.round(s / 5) * 5) 
   : s < 5940 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 
 // ------------------------------------------------------------- tabs
-const TABS = ["submit", "queue", "machines"];
+const TABS = ["submit", "queue", "machines", "runtimes"];
 function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
@@ -244,9 +248,12 @@ function renderWorkers() {
       ? `<details data-env="${esc(w.name)}"${state.envOpen.has(w.name) ? " open" : ""}><summary>Differs from the farm's ComfyUI in ${envDiff.length} way(s) (jobs still run here)</summary>${envDiff.map(d => esc(d)).join("<br>")}${(env.notes || []).map(n => `<br><span class="muted">Not checked: ${esc(n)}</span>`).join("")}</details>`
       : (env.notes || []).map(n => `Environment not checked: ${esc(n)}`).join("<br>")}</td></tr>` : ""}
     ${w.drained ? `<tr><td></td><td></td><td colspan="9" class="muted">Drained by ${esc(w.drained.by || "?")} ${ago(w.drained.since)}: it finishes what it holds and takes no new jobs until resumed.</td></tr>` : ""}
-    ${Object.keys(w.skips || {}).length ? `<tr><td></td><td></td><td colspan="9" class="muted">Not for ${Object.entries(w.skips).map(([wf, why]) => `<b>${esc(wf)}</b> (${esc(why)})`).join(", ")}</td></tr>` : ""}
     ${!w.online && w.error && !w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="err">${esc(w.error)}</td></tr>` : ""}`;
   }).join("") : '<tr><td colspan="11" class="empty">No machines have checked in.</td></tr>';
+}
+
+// How long each workflow takes on each GPU type (Run times tab): what the ETAs come from.
+function renderRunTimes() {
   const rt = state.runTimes || [];
   const secs = s => s == null ? "" : s < 10 ? s.toFixed(1) + "s" : dur(s);
   $("#runtimes").innerHTML = rt.length ? rt.map(r => `<tr>
@@ -605,7 +612,7 @@ async function refreshJobs() {
     for (const id of state.batches.keys()) await loadBatches(id);   // open sets' batches
     (await api("/api/v1/workers")).workers.forEach(w => state.workers.set(w.name, w));
     state.runTimes = (await api("/api/v1/run-times")).run_times;
-    renderWorkers(); render();
+    renderWorkers(); renderRunTimes(); render();
   } catch (err) { /* shown via the live indicator */ }
 }
 
