@@ -20,7 +20,7 @@ from comfyfarm.config import ComfyUILaunchConfig
 from comfyfarm.protocol import LinkError
 
 try:
-    from comfyfarm.agent.launch import Launcher, pid_alive
+    from comfyfarm.agent.launch import Launcher, pid_alive, release_hold, write_hold
     from comfyfarm.agent.link import HttpLink
 except ImportError:   # pragma: no cover
     Launcher = None
@@ -72,6 +72,29 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("started by agent gpu1", la.log_file.read_text())
         self.tick(la, False, after=5)                       # still starting
         self.tick(la, False, after=200)                     # running but never answered: left alone
+        self.assertEqual(la.starts, 1)
+
+    def test_a_hold_keeps_it_down_until_its_released(self):
+        """comfyfarm comfyui sync stops ComfyUI to update it: the agent doesn't start it meanwhile."""
+        la = self.launcher()
+        write_hold(la.hold_file, "comfyfarm comfyui sync is updating ComfyUI")
+        self.tick(la, False)
+        self.tick(la, False, after=500)
+        self.assertEqual(la.starts, 0)
+        self.assertEqual(la.held(), "comfyfarm comfyui sync is updating ComfyUI")
+        release_hold(la.hold_file)
+        self.tick(la, False)                                # started again at once
+        self.assertEqual(la.starts, 1)
+
+    def test_a_hold_left_by_a_sync_that_died_is_removed(self):
+        la = self.launcher()
+        gone = subprocess.Popen([PYTHON, "-c", "pass"])
+        gone.wait(30)
+        la.hold_file.parent.mkdir(parents=True, exist_ok=True)
+        la.hold_file.write_text(f"{gone.pid} updating")
+        self.assertIsNone(la.held())
+        self.assertFalse(la.hold_file.exists())
+        self.tick(la, False)
         self.assertEqual(la.starts, 1)
 
     def test_up_then_gone_started_again_after_a_while(self):

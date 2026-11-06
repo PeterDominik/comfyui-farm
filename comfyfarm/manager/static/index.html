@@ -195,9 +195,9 @@ const ACTIVE = ["queued", ...ON_MACHINE];
 const gpuName = w => ((w.gpu?.name || "").split(" : ")[0]).replace(/^cuda:\d+\s+/, "");
 // Its ComfyUI runs other farm nodes than its checkout (after a git pull): no new jobs.
 const FARM_NODES = {waiting: "new farm nodes: restarting ComfyUI when idle", restarting: "restarting ComfyUI (new farm nodes)",
-                    manual: "farm nodes out of date"};
+                    manual: "farm nodes out of date", syncing: "updating ComfyUI (sync)"};
 function machineState(w) {
-  if (w.farm_nodes?.state === "restarting") return [FARM_NODES.restarting, "warn"];
+  if (["restarting", "syncing"].includes(w.farm_nodes?.state)) return [FARM_NODES[w.farm_nodes.state], "warn"];
   if (!w.online) return ["offline", "err"];
   if (!w.connected) return ["ComfyUI connecting", "warn"];
   if (w.farm_nodes) return [FARM_NODES[w.farm_nodes.state] || FARM_NODES.manual, "warn"];

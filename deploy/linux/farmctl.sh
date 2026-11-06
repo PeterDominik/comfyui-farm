@@ -3,6 +3,8 @@
 #
 #   deploy/linux/farmctl.sh start|stop|restart|status|ensure|log|check  manager|agent [agent.yaml]
 #   deploy/linux/farmctl.sh stop|status comfyui      the ComfyUI the agent started (comfyui_launch)
+#   deploy/linux/farmctl.sh verify|sync agent [--apply ...]   this machine's ComfyUI against the
+#            farm's (comfyfarm comfyui verify|sync, with agent.yaml)
 #
 #   ensure   start it if it isn't running (install_cron.sh runs this every minute)
 #   log      follow its console output (the full log is logs/comfyfarm.log, logs/agent-<name>.log)
@@ -14,7 +16,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cmd="${1:-}" role="${2:-}" conf="${3:-}"
-usage() { echo "usage: $0 start|stop|restart|status|ensure|log|check manager|agent [agent.yaml]" >&2; exit 2; }
+usage() { echo "usage: $0 start|stop|restart|status|ensure|log|check manager|agent [agent.yaml]  |  verify|sync agent [--apply]" >&2; exit 2; }
 [ -n "$cmd" ] && [ -n "$role" ] || usage
 
 py="${COMFYFARM_PYTHON:-$(cat "$ROOT/run/python" 2>/dev/null || true)}"
@@ -30,6 +32,13 @@ mkdir -p "$ROOT/run" "$ROOT/logs"
 pidfile="$ROOT/run/$role.pid"
 out="$ROOT/logs/$role.out"
 clean=(env -u PYTHONPATH -u PYTHONHOME -u PYTHONSTARTUP PYTHONNOUSERSITE=1 PYTHONUTF8=1)
+
+if [ "$cmd" = verify ] || [ "$cmd" = sync ]; then
+  [ "$role" = agent ] || usage
+  [ -n "$py" ] || { echo "no Python recorded: run deploy/linux/setup.sh agent first" >&2; exit 1; }
+  shift 2
+  cd "$ROOT" && exec "${clean[@]}" "$py" -m comfyfarm comfyui "$cmd" --config "$ROOT/agent.yaml" "$@"
+fi
 
 running() {   # prints the pid if it runs
   local pid

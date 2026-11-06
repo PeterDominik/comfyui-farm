@@ -799,6 +799,31 @@ class AgentTests(unittest.TestCase):
         self.wait(a._hello())
         self.assertIsNotNone(self.desk.agents["gpu1"].environment)
 
+    def test_a_sync_holds_the_machine(self):
+        """While comfyfarm comfyui sync updates ComfyUI, the machine takes no jobs and says why."""
+        from comfyfarm.agent.launch import release_hold, write_hold
+        a = self.ready(self.agent())
+        w = self.desk.agents["gpu1"]
+        self.assertEqual(self.desk.ping({"name": "gpu1"})["drained"], False)
+        self.desk.set_drained("gpu1", True, "ann")
+        job = self.submit()
+        r = self.desk.ping({"name": "gpu1"})                               # what sync asks before stopping ComfyUI
+        self.assertEqual((r["drained"], r["held"]), (True, 0))
+        write_hold(a.launcher.hold_file, "sync is updating ComfyUI")
+        self.assertTrue(a._hold_tick())
+        self.wait(a._send_status())
+        self.assertEqual(self.desk.summary(w)["farm_nodes"], {"state": "syncing", "message": "sync is updating ComfyUI"})
+        self.desk.set_drained("gpu1", False)
+        self.beat(a)
+        self.assertEqual(self.job(job["id"])["status"], "queued")           # held: no jobs
+        release_hold(a.launcher.hold_file)
+        self.assertFalse(a._hold_tick())
+        self.assertIsNone(a.farm_nodes)
+        self.assertTrue(a._env_stale)                                      # its environment is read again
+        self.wait(a._send_status())
+        self.beat(a)
+        self.assertEqual(self.job(job["id"])["worker"], "gpu1")
+
     def test_an_agent_that_doesnt_know_its_comfyui_folder(self):
         a = self.ready(self.agent())
         self.wait(a.check_environment())

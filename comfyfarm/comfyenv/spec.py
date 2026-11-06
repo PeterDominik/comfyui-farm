@@ -173,7 +173,8 @@ def snapshot(state: dict, need: dict, machine: str, old: dict | None = None) -> 
             warnings.append(f"node pack {name} is in {len(where)} places ({', '.join(w['path'] for w in where)}); "
                             f"the first is recorded")
         w = where[0]
-        packs[name] = {k: w[k] for k in ("shared", "url", "commit", "version", "registry", "hash") if w.get(k) is not None}
+        packs[name] = {k: w[k] for k in ("shared", "url", "commit", "version", "registry", "id", "hash")
+                       if w.get(k) is not None and (k != "id" or w.get("registry"))}
         packs[name]["for"] = wfs
     models = {}
     for name, wfs in need["models"].items():

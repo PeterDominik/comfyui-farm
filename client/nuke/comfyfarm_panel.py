@@ -290,6 +290,8 @@ class PanelModel:
         nodes = w.get("farm_nodes") or {}       # its ComfyUI runs other farm nodes than its checkout
         if nodes.get("state") == "restarting":
             return ("restarting ComfyUI (new farm nodes)", "#e0a24a")
+        if nodes.get("state") == "syncing":     # comfyfarm comfyui sync is updating it
+            return ("updating ComfyUI (sync)", "#e0a24a")
         if not w.get("online"):
             return ("offline", "#e0675b")
         if not w.get("connected"):

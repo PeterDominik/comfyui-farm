@@ -318,8 +318,11 @@ class Desk:
     # ================================================================ messages
     def ping(self, msg: dict) -> dict:
         """`comfyfarm agent --check`: the manager's version, and the storage an agent must see."""
+        name = msg.get("name") or ""
+        # For `comfyfarm comfyui sync`: it only stops ComfyUI on a drained machine holding no jobs.
         return {"manager": build(), "lease_seconds": self.lease_seconds, "storage": self._storage_roots(),
-                "known": (msg.get("name") or "") in self.agents}
+                "known": name in self.agents, "drained": name in self.drained,
+                "held": len(self.store.held_by(name)) if name else 0}
 
     def _storage_roots(self) -> list[str]:
         """The storage agents are sent paths on: one studio path per storage area. Other names

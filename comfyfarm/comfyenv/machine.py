@@ -240,17 +240,30 @@ def python_packages(python: str, names) -> dict:
         return {"error": f"{python} gave no package list: {(r.stderr or r.stdout).strip()[-300:]}"}
 
 
-def driver_version() -> str | None:
+def nvidia() -> tuple[str | None, int | None]:
+    """(driver version, the first GPU's memory in bytes) from nvidia-smi, or Nones. The
+    memory says which workflows the machine gets (requires) while ComfyUI is down."""
     exe = shutil.which("nvidia-smi")
     if not exe:
-        return None
+        return None, None
     try:
-        r = subprocess.run([exe, "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True,
-                           text=True, timeout=30, **_quiet())
+        r = subprocess.run([exe, "--query-gpu=driver_version,memory.total", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=30, **_quiet())
         lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
-        return lines[0] if lines else None
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, None
+    if not lines:
+        return None, None
+    driver, _, mem = (p.strip() for p in lines[0].partition(","))
+    try:
+        memory = int(float(mem)) * 2**20                 # MiB
+    except ValueError:
+        memory = None
+    return driver or None, memory
+
+
+def driver_version() -> str | None:
+    return nvidia()[0]
 
 
 # ================================================================ model and node folders
@@ -427,6 +440,8 @@ def pack_info(where: dict, with_hash: bool) -> dict:
         pp = pyproject(path)
         if pp.get("version"):
             info["version"] = pp["version"]
+        if pp.get("name"):
+            info["id"] = pp["name"]         # its id in the Comfy registry
         if not info.get("url") and pp.get("url"):
             info["url"] = pp["url"]
         if os.path.isfile(os.path.join(path, ".tracking")):
@@ -460,7 +475,7 @@ def collect(comfyui_dir: str, python: str = "", stats: dict | None = None, argv:
         if system.get("pytorch_version"):           # ComfyUI says which torch it runs
             py = {"packages": {"torch": system["pytorch_version"]}}
     state["python"] = py
-    state["driver"] = driver_version()
+    state["driver"], state["gpu_memory"] = nvidia()
     mp = read_model_paths(extra_configs(args, comfyui_dir))
     state["notes"] += mp.pop("errors")
     for sec in mp["sections"]:              # which library each points at (checked here, on this machine)
