@@ -11,6 +11,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              few seconds for the dashboard).
   nodes      its ComfyUI's node definitions (object_info), when it connects. The manager
              checks every workflow against them; an agent only gets jobs it can run.
+  environment  its ComfyUI's environment (version, packages, node packs, models:
+             comfyenv), when ComfyUI starts and every agent.environment_seconds. The
+             manager compares it with the farm's environment file for the dashboard.
   heartbeat  the jobs it holds, which renews their leases. The manager answers as soon as
              it has something for the agent (new jobs, cancels, jobs to drop) or after
              `wait` seconds.

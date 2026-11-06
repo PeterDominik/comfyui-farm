@@ -142,7 +142,7 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const store = { get: k => { try { return localStorage.getItem(k) || ""; } catch { return ""; } },
                 set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-const state = { jobs: new Map(), workers: new Map(), workflows: [], auth: false, open: new Set(),
+const state = { jobs: new Map(), workers: new Map(), workflows: [], auth: false, open: new Set(), envOpen: new Set(),
                 scope: "all", filter: "active",
                 batches: new Map() };   // texture set id -> Map of its batch jobs (loaded when opened)
 
@@ -219,6 +219,11 @@ function renderWorkers() {
       .map(j => `<span title="${esc(j.short_id)}">${esc(j.name || j.short_id)}</span>`).join(", ");
     const vram = w.gpu?.vram_total ? `${gb(w.gpu.vram_free)} of ${gb(w.gpu.vram_total)}` : "";
     const probs = Object.entries(w.problems || {});
+    // Its ComfyUI against the farm's (deploy/comfyui/environment.yaml): shown, never holds jobs back.
+    const env = w.environment, envDiff = env?.differs || [];
+    const envTip = !env ? "" : !env.file ? "No farm environment file yet (comfyfarm comfyui snapshot)"
+      : envDiff.length ? `Differs from the farm's ComfyUI in ${envDiff.length} way(s), checked ${ago(env.checked_at)}`
+      : `Matches the farm's ComfyUI, checked ${ago(env.checked_at)}`;
     return `<tr>
       <td class="muted">${w.rank ?? ""}</td>
       <td><b>${esc(w.name)}</b></td>
@@ -227,7 +232,7 @@ function renderWorkers() {
       <td class="muted">${esc(vram)}</td>
       <td>${w.inflight}/${w.max_inflight}</td>
       <td>${running || '<span class="muted">—</span>'}</td>
-      <td class="muted">${esc(w.comfyui_version || "")}</td>
+      <td class="${envDiff.length ? "warn" : "muted"}" title="${esc(envTip)}">${esc(w.comfyui_version || "")}${envDiff.length ? " ≠" : env?.file && !env.notes?.length ? " ✓" : ""}</td>
       <td class="muted mono">${esc((w.agent_version || "").split("+").pop())}</td>
       <td class="muted">${ago(w.last_seen)}</td>
       <td>${w.drained
@@ -235,6 +240,9 @@ function renderWorkers() {
         : `<button class="small" type="button" data-drain="${esc(w.name)}" title="Finish what it holds, then take no new jobs (e.g. before working on that machine)">Drain</button>`}</td>
     </tr>${probs.length ? `<tr><td></td><td></td><td colspan="9" class="problems">${probs.map(([wf, p]) => `<b>${esc(wf)}</b>: ${esc(p.join("; "))}`).join("<br>")}</td></tr>` : ""}
     ${w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="problems">${esc(w.farm_nodes.message)}</td></tr>` : ""}
+    ${envDiff.length || env?.notes?.length ? `<tr><td></td><td></td><td colspan="9" class="${envDiff.length ? "warn" : "muted"}">${envDiff.length
+      ? `<details data-env="${esc(w.name)}"${state.envOpen.has(w.name) ? " open" : ""}><summary>Differs from the farm's ComfyUI in ${envDiff.length} way(s) (jobs still run here)</summary>${envDiff.map(d => esc(d)).join("<br>")}${(env.notes || []).map(n => `<br><span class="muted">Not checked: ${esc(n)}</span>`).join("")}</details>`
+      : (env.notes || []).map(n => `Environment not checked: ${esc(n)}`).join("<br>")}</td></tr>` : ""}
     ${w.drained ? `<tr><td></td><td></td><td colspan="9" class="muted">Drained by ${esc(w.drained.by || "?")} ${ago(w.drained.since)}: it finishes what it holds and takes no new jobs until resumed.</td></tr>` : ""}
     ${Object.keys(w.skips || {}).length ? `<tr><td></td><td></td><td colspan="9" class="muted">Not for ${Object.entries(w.skips).map(([wf, why]) => `<b>${esc(wf)}</b> (${esc(why)})`).join(", ")}</td></tr>` : ""}
     ${!w.online && w.error && !w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="err">${esc(w.error)}</td></tr>` : ""}`;
@@ -246,6 +254,12 @@ function renderWorkers() {
       <td>${r.size ?? ""}</td><td>${dur(r.seconds)}</td><td>${secs(r.per_unit)}</td><td>${r.overhead ? secs(r.overhead) : "—"}</td></tr>`).join("")
     : '<tr><td colspan="7" class="empty">No runs recorded yet: ETAs show once each workflow has run.</td></tr>';
 }
+
+// Which machines' environment differences are unfolded (kept across re-renders).
+$("#machines").addEventListener("toggle", e => {
+  const name = e.target.dataset?.env;
+  if (name) e.target.open ? state.envOpen.add(name) : state.envOpen.delete(name);
+}, true);
 
 // Drain / Resume (Machines tab): a drained machine finishes what it holds, takes nothing new.
 $("#machines").addEventListener("click", async e => {

@@ -38,6 +38,9 @@ class LocalLink:
     async def nodes(self, msg: dict) -> dict:
         return _copy(self.desk.nodes(msg))     # object_info is large and only read: not copied
 
+    async def environment(self, msg: dict) -> dict:
+        return _copy(self.desk.environment(_copy(msg)))
+
     async def heartbeat(self, msg: dict) -> dict:
         return _copy(await self.desk.heartbeat(_copy(msg)))
 
@@ -116,6 +119,9 @@ class HttpLink:
 
     async def nodes(self, msg: dict) -> dict:
         return await self._post("/nodes", msg, timeout=120.0)
+
+    async def environment(self, msg: dict) -> dict:
+        return await self._post("/environment", msg)
 
     async def heartbeat(self, msg: dict) -> dict:
         return await self._post("/heartbeat", msg, timeout=float(msg.get("wait") or 0) + 30.0)

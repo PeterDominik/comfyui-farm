@@ -66,12 +66,14 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
-| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent` and `check` |
+| `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, and how it differs from `deploy/comfyui/environment.yaml` |
+| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
+| `deploy/comfyui/` | The farm's ComfyUI: `environment.yaml` (versions, node packs, models) and `extra_model_paths.yaml` (see *The farm's ComfyUI*) |
 | `tools/mock_comfyui.py` | Fake ComfyUI for testing without a GPU |
 | `tests/` | Unit tests + end-to-end tests against the mock |
 
@@ -266,6 +268,49 @@ once it holds none, restarts ComfyUI itself (when it starts ComfyUI, `comfyui_la
 The Machines tab shows *new farm nodes: restarting ComfyUI when idle* meanwhile. Without
 `comfyui_launch`, restart ComfyUI by hand. (`standalone` with services:
 `deploy\windows\update.ps1`.)
+
+### The farm's ComfyUI
+
+Every farm machine should run the same ComfyUI, so a job comes out the same wherever it
+runs. `deploy/comfyui/environment.yaml` records it, from a reference machine:
+
+- ComfyUI's version and git commit, and the launch flags that change results
+  (`--use-sage-attention`, `--fast`, precision flags).
+- Python, and the packages that matter: torch, torchvision and torchaudio with their CUDA
+  build (`2.7.1+cu128`), xformers, sageattention, triton, transformers and the like. A
+  package that exists on one OS only (`triton-windows`) is pinned per OS. Same versions
+  everywhere is safe on mixed cards: the CUDA 12.8 builds the 5090 needs also run on a
+  3090. What each machine needs on top is an NVIDIA driver new enough for that build
+  (`driver_min`, 570 for CUDA 12.8). Results can still differ slightly between card
+  generations (a 3090 has no FP8 hardware), whatever the packages.
+- The node packs the farm's workflows use: git commit or registry version, and a hash of
+  their Python files, so a pack edited in place shows too. Other packs on a machine don't
+  count, nor do the packs and models of workflows a machine never gets (`requires`: LTX on
+  the 3090).
+  Packs live on each machine (`ComfyUI/custom_nodes`), except those in the farm library
+  (ComfyUI-Chord).
+- The models the farm's workflows name: which library each comes from and its size (not
+  its contents). Models come from the two shared libraries only, `/rdo/bank/comfyui` and
+  `/rdo/bank/comfy_farm/comfyui` (`B:\comfyui`, `B:\comfy_farm\comfyui` on Windows);
+  a copy in ComfyUI's own `models/` folder shadows the library's and shows as a difference.
+
+`deploy/comfyui/extra_model_paths.yaml` is the farm's `extra_model_paths.yaml`, the same
+for every farm ComfyUI (studio paths; `B:\` on Windows).
+
+```bash
+python -m comfyfarm comfyui snapshot    # on the reference machine, with ComfyUI running: writes environment.yaml
+python -m comfyfarm comfyui verify      # on any machine: how its ComfyUI differs (exit 1 when it does)
+```
+
+Both read `agent.yaml` for ComfyUI's folder and Python (`comfyui_dir`, `comfyui_python`,
+else from `comfyui_launch`) and its address; `--comfyui`, `--python` and `--url` override
+them. Review the snapshot's diff before committing it.
+
+Each agent also checks its machine when ComfyUI starts and every `environment_seconds`
+(15 min), and the manager compares it with its copy of the file. The Machines tab marks
+ComfyUI's version ✓ (matches) or ≠, and lists the differences under the machine. A
+machine that differs keeps taking jobs; missing nodes or models still keep a workflow off
+it, as before. `agent --check` lists the differences as warnings.
 
 ### How the manager and agents work together
 

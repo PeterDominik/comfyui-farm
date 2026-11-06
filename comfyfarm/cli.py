@@ -1,4 +1,4 @@
-"""python -m comfyfarm standalone | serve | manager | agent | check
+"""python -m comfyfarm standalone | serve | manager | agent | check | comfyui
 
   standalone   the manager and an agent for each ComfyUI in config.yaml's workers, in one
                process, as the farm has always run (serve is the same, under its old name)
@@ -6,7 +6,9 @@
   agent        one agent: runs the manager's jobs on this machine's ComfyUI (agent.yaml);
                agent --check checks this worker and exits
   check        preflight: workflows, tools, OCIO, storage, the shared folder, and config.yaml's
-               workers"""
+               workers
+  comfyui      comfyui snapshot: write the farm's ComfyUI environment file from this machine;
+               comfyui verify: list how this machine's ComfyUI differs from it (comfyenv)"""
 
 from __future__ import annotations
 
@@ -269,6 +271,9 @@ async def run_agent_check(cfg, path) -> int:
         else:
             bad += 1
             _line("FAIL", f"comfyui_launch: {'no ' + exe if not found else 'no folder ' + lc.cwd}")
+    from .comfyenv import cli as envcli
+    for tag, text in envcli.check_lines(cfg):       # differences are warnings: they never stop a machine
+        _line(tag, text)
     for root in storage or [m.posix for m in cfg.paths.mappings]:
         local = P.to_farm(root, cfg.paths.mappings)
         ok = os.path.isdir(local)
@@ -298,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     agent.add_argument("--check", action="store_true",
                        help="check this worker (manager, token, ComfyUI, nodes, storage, scratch, tools) and exit")
     sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
+    from .comfyenv import cli as envcli
+    envcli.add_parser(sub)
     args = ap.parse_args(argv)
 
     # Node titles contain emoji (VHS nodes); a service's redirected stdout on Windows
@@ -308,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
 
+    if args.cmd == "comfyui":
+        return envcli.run(args)
     if args.cmd == "agent":
         if args.check:
             from .config import default_agent_config_path, load_agent_config

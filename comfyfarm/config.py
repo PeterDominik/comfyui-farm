@@ -227,6 +227,11 @@ class AgentConfig(BaseModel):
     token: str = ""                             # the manager's agents.token, if it has one
     comfyui: str = "http://127.0.0.1:8188"      # this machine's ComfyUI (keep it on localhost)
     comfyui_launch: ComfyUILaunchConfig = Field(default_factory=ComfyUILaunchConfig)
+    # Where ComfyUI and its Python are, for checking it against the farm's environment
+    # (comfyfarm comfyui verify). Empty: from comfyui_launch (its main.py, its python).
+    comfyui_dir: str = ""
+    comfyui_python: str = ""
+    environment_seconds: float = 900.0  # the environment is checked this often (and when ComfyUI starts)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []

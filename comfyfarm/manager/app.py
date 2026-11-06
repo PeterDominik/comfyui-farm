@@ -267,6 +267,10 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     async def agent_nodes(request: Request):
         return desk.nodes(await request.json())
 
+    @app.post("/api/v1/agent/environment", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_environment(request: Request):
+        return desk.environment(await request.json())
+
     @app.post("/api/v1/agent/heartbeat", include_in_schema=False, dependencies=[Depends(agent_auth)])
     async def agent_heartbeat(request: Request):
         return await desk.heartbeat(await request.json())

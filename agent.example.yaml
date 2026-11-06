@@ -30,6 +30,12 @@ comfyui_launch:
   restart_after: 30              # seconds down before it's started again
   startup_seconds: 300           # how long a start may take to answer
 
+# Where ComfyUI and its Python are, for checking this machine against the farm's ComfyUI
+# (deploy/comfyui/environment.yaml; `comfyfarm comfyui verify`). Empty: from comfyui_launch.
+# comfyui_dir: D:/comfyui
+# comfyui_python: C:/ProgramData/miniconda3/envs/comfyui/python.exe
+# environment_seconds: 900       # checked this often, and whenever ComfyUI starts
+
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 
 paths:
