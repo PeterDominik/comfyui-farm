@@ -20,8 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_textures import FAKE_OIIOTOOL, OCIO_CONFIG
+from test_comfyenv import COMMIT_A
+from test_comfyenv import Farm as ComfyInstall
 from test_workflows import fake_object_info, plate_matte_workflow
 
+from comfyfarm.comfyenv import spec as ES
 from comfyfarm.config import AgentConfig, Config
 from comfyfarm.fileio import farmnodes
 from comfyfarm.fileio.errors import SequenceError
@@ -159,6 +162,10 @@ class FlakyLink(LocalLink if Agent else object):
     async def heartbeat(self, msg):
         self._check()
         return await super().heartbeat(msg)
+
+    async def environment(self, msg):
+        self._check()
+        return await super().environment(msg)
 
     async def report(self, msg):
         self._check()
@@ -759,6 +766,45 @@ class AgentTests(unittest.TestCase):
         self.beat(small)
         self.assertEqual(self.job(job["id"])["worker"], "small")
         self.assertNotIn(job["id"], self.desk._passed)
+
+    # ------------------------------------------------------------ the farm's ComfyUI
+    def test_the_environment_goes_to_the_dashboard(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        inst = ComfyInstall(tmp)
+        ES.save({"comfyui": {"version": "0.33.0"}, "libraries": inst.libraries,
+                 "node_packs": {"comfyui-kjnodes": {"version": "1.1.9", "hash": "0" * 12, "for": ["ltx25_alpha_gen"]}},
+                 "models": {"ltx.safetensors": {"folder": "diffusion_models", "library": str(inst.bank), "size": 100}}},
+                tmp / "environment.yaml")
+        self.desk.env = ES.Cached(tmp / "environment.yaml", tmp / "no-farm-paths.yaml")
+        a = self.ready(self.agent(comfyui_dir=str(inst.comfy), comfyui_python=sys.executable))
+        state = self.wait(a.check_environment())
+        self.assertEqual(state["comfyui"]["commit"], COMMIT_A)
+        self.assertEqual(state["models"]["ltx.safetensors"]["size"], 100)
+        env = self.desk.summary(self.desk.agents["gpu1"])["environment"]
+        self.assertEqual(env["comfyui"], {"version": "test", "commit": COMMIT_A})    # FakeComfy's version
+        kj = os.path.normpath(inst.comfy / "custom_nodes" / "comfyui-kjnodes")
+        self.assertEqual(env["differs"], [f"ComfyUI test / {COMMIT_A[:7]}; the farm's is 0.33.0",
+                                          f"Node pack comfyui-kjnodes has local changes ({kj})"])
+        self.assertEqual(a.environment_differs, env["differs"])
+        job = self.submit()                                     # a machine that differs still gets jobs
+        self.beat(a)
+        self.assertEqual(self.job(job["id"])["worker"], "gpu1")
+        # The file changes (git pull): compared again without the agent sending anything.
+        ES.save({"comfyui": {"version": "test"}, "libraries": inst.libraries}, tmp / "environment.yaml")
+        os.utime(tmp / "environment.yaml", (time.time() + 5, time.time() + 5))
+        self.assertEqual(self.desk.summary(self.desk.agents["gpu1"])["environment"]["differs"], [])
+        # A manager that restarted gets it again after hello.
+        self.desk.agents.clear()
+        self.wait(a._hello())
+        self.assertIsNotNone(self.desk.agents["gpu1"].environment)
+
+    def test_an_agent_that_doesnt_know_its_comfyui_folder(self):
+        a = self.ready(self.agent())
+        self.wait(a.check_environment())
+        env = self.desk.summary(self.desk.agents["gpu1"])["environment"]
+        self.assertEqual(env["differs"], [])
+        self.assertIn("ComfyUI's folder isn't known", env["notes"][-1])
 
     # ------------------------------------------------------------ ETAs
     def test_etas_walk_the_queue_per_gpu_type(self):

@@ -1,0 +1,55 @@
+# The farm's extra_model_paths.yaml: every farm ComfyUI uses exactly this, so all of them
+# read models (and the shared node packs) from the same two libraries:
+#   /rdo/bank/comfyui              the studio's ComfyUI model library
+#   /rdo/bank/comfy_farm/comfyui   the farm's own: its node packs and models
+# Paths are studio paths; on Windows /rdo/bank is B:\ (B:\comfyui, B:\comfy_farm\comfyui).
+# `comfyfarm comfyui verify` and the dashboard's Machines tab show how a machine's own file
+# differs from this one.
+
+other_ui:
+  base_path: /rdo/bank/comfyui/
+  is_default: false
+  checkpoints: models/checkpoints/
+  clip: models/clip/
+  clip_vision: models/clip_vision/
+  configs: models/configs/
+  controlnet: models/controlnet/
+  diffusion_models: |
+    models/diffusion_models
+    models/unet
+  embeddings: models/embeddings/
+  loras: models/loras/
+  upscale_models: models/upscale_models/
+  vae: models/vae/
+  classifiers: models/classifiers/
+  diffusers: models/diffusers/
+  latent_upscale_models: models/latent_upscale_models/
+  gligen: models/gligen/
+  hypernetworks: models/hypernetworks/
+  photomaker: models/photomaker/
+  style_models: models/style_models/
+  unet: models/unet/
+  vae_approx: models/vae_approx/
+  animatediff_models: models/animatediff_models/
+  animatediff_motion_lora: models/animatediff_motion_lora/
+  animatediff_video_formats: models/animatediff_video_formats/
+  ipadapter: models/ipadapter/
+  liveportrait: models/liveportrait/
+  insightface: models/insightface/
+  layerstyle: models/layerstyle/
+  LLM: models/LLM/
+  text_encoders: models/text_encoders/
+  sams: models/sams/
+  blip: models/blip/
+  CogVideo: models/CogVideo/
+  xlabs: models/xlabs/
+  instantid: models/instantid/
+  model_patches: models/model_patches/
+  audio_encoders: models/audio_encoders/
+
+comfyfarm:
+  base_path: /rdo/bank/comfy_farm/comfyui/
+  is_default: false
+  custom_nodes: custom_nodes/
+  checkpoints: models/checkpoints/
+  loras: models/loras/

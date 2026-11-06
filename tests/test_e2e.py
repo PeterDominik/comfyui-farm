@@ -647,6 +647,20 @@ convert:
             self.assertEqual(q["next_worker"], "mock")
         self.assertEqual(self.wait_for(job["id"], ("done", "failed"))["status"], "done")
 
+    def test_0500_environment(self):
+        """Each worker's ComfyUI environment reaches the dashboard. In standalone the agent
+        doesn't know ComfyUI's folder: it says so instead of comparing."""
+        deadline = time.time() + 30
+        while True:
+            w = {x["name"]: x for x in farm._request("GET", "/api/v1/workers")["workers"]}["mock"]
+            if w.get("environment") or time.time() > deadline:
+                break
+            time.sleep(0.5)
+        env = w["environment"]
+        self.assertIsNotNone(env, w)
+        self.assertEqual(env["differs"], [])
+        self.assertIn("ComfyUI's folder isn't known", " ".join(env["notes"]))
+
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):
             self.submit("1001-1014")

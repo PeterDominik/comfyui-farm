@@ -38,6 +38,8 @@ from pathlib import Path
 import httpx
 import websockets
 
+from ..comfyenv import machine as EM
+from ..comfyenv import spec as ES
 from ..config import AgentConfig, PathsConfig
 from ..fileio import convert as C
 from ..fileio import farmnodes as FN
@@ -140,6 +142,14 @@ class Agent:
         # What workflows can ask for (requires.tags): agent.yaml's tags, and this OS.
         osname = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else sys.platform
         self.tags = sorted({str(t).strip().lower() for t in cfg.tags if str(t).strip()} | {osname})
+        # This machine's ComfyUI environment (comfyenv), sent to the manager: read when
+        # ComfyUI (re)connects and every environment_seconds.
+        self.environment: dict | None = None
+        self.environment_differs: list[str] = []
+        self._env_want: dict | None = None      # what the manager's environment file asks to read
+        self._env_next = 0.0
+        self._env_stale = True
+        self._env_busy = False
         self._restarted_for: str | None = None   # the checkout's node version ComfyUI was restarted for
         self._restarting = False
         self._cant_restart = False               # its ComfyUI wasn't started by this agent
@@ -249,6 +259,8 @@ class Agent:
         await self._send_status()
         if self.object_info is not None and not self.farm_nodes:
             await self._send_nodes()
+        if self.environment is not None:
+            await self._send_environment()
         if not self._cleaned:
             self._cleaned = True
             self._clean_orphan_scratch()
@@ -880,6 +892,9 @@ class Agent:
                 await self._farm_nodes_tick(reachable)
             except Exception:  # noqa: BLE001
                 log.exception("checking the farm nodes on %s failed", self.name)
+            if reachable and self.object_info is not None and not self._env_busy and \
+                    (self._env_stale or now() >= self._env_next):
+                self._spawn(self.check_environment())
             if self.registered:
                 await self._send_status()
             await asyncio.sleep(self.cfg.health_seconds)
@@ -949,6 +964,7 @@ class Agent:
             return
         self.object_info = oi
         self.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
+        self._env_stale = True              # ComfyUI (re)started: read its environment again
         # Other farm nodes than the checkout's: the manager gets no node definitions, so it
         # gives this agent no jobs until ComfyUI runs the checkout's (_farm_nodes_tick).
         if self._check_farm_nodes() and self.registered:
@@ -956,6 +972,53 @@ class Agent:
         self.checked = True
         if self.registered:
             await self._send_status()
+
+    # ================================================================ environment
+    async def check_environment(self) -> dict | None:
+        """Read this machine's ComfyUI (version and launch flags, Python packages, driver,
+        node packs, extra_model_paths.yaml, the farm's models) and send it to the manager,
+        which compares it with the farm's environment file (comfyenv)."""
+        if self._env_busy:
+            return None
+        self._env_busy, self._env_stale = True, False
+        state = None
+        try:
+            want = self._env_want or ES.wanted(ES.load(ES.SPEC))
+            folder = EM.comfyui_folder(self.cfg)
+            if folder and not os.path.isabs(folder):
+                folder = str(self.cfg.resolve(folder))
+            argv = list(self.cfg.comfyui_launch.command[1:])
+            for _ in range(2):              # again if the manager's file asks for other packs or models
+                state = await asyncio.to_thread(EM.collect, folder, EM.comfyui_python(self.cfg), self.stats, argv,
+                                                **want)
+                self.environment = state
+                asked = await self._send_environment()
+                if not asked or asked == want:
+                    break
+                want = self._env_want = asked
+        except Exception:  # noqa: BLE001
+            log.exception("reading the ComfyUI environment on %s failed", self.name)
+        finally:
+            self._env_busy = False
+            self._env_next = now() + self.cfg.environment_seconds
+        return state
+
+    async def _send_environment(self) -> dict | None:
+        """Send the last state read; returns what the manager wants read."""
+        if self.environment is None or not self.registered:
+            return None
+        try:
+            reply = await self.link.environment({"name": self.name, "state": self.environment})
+        except LinkError:
+            return None                     # sent again after hello
+        if reply.get("hello"):
+            self.registered = False
+            return None
+        differs = [d.get("message", "") for d in reply.get("differs") or []]
+        if differs and differs != self.environment_differs:
+            log.warning("ComfyUI on %s differs from the farm's: %s", self.name, "; ".join(differs))
+        self.environment_differs = differs
+        return reply.get("want")
 
     # ================================================================ outputs
     async def _finalize(self, h: Held, hist: dict | None = None) -> None:

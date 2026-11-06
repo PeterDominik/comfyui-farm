@@ -25,6 +25,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 
+from ..comfyenv import spec as ES
 from ..fileio import paths as P
 from ..fileio import wire as W
 from ..fileio.ocio import REPO
@@ -72,6 +73,7 @@ class AgentState:
     last_claimed: float = 0.0           # identical cards take turns
     last_workflow: str | None = None    # its models are probably still loaded
     tags: list[str] = field(default_factory=list)   # agent.yaml's tags and its OS (requires.tags)
+    environment: dict | None = None     # its ComfyUI as the agent read it (comfyenv.machine.collect)
 
 
 def vram(a: AgentState) -> int:
@@ -105,6 +107,8 @@ class Desk:
         self._order: tuple[str, ...] = ()
         # Machines drained from the dashboard (kept in the database): name -> {by, since}.
         self.drained: dict[str, dict] = self.store.drained()
+        # The farm's ComfyUI environment file, read again when it changes (comfyenv.spec).
+        self.env = ES.Cached()
         self._changed: asyncio.Event | None = None
         self._tasks: list[asyncio.Task] = []
         self.view = W.View(mappings=self.cfg.paths.mappings, scratch=farm.scratch_root, repo=P.normalize(str(REPO)))
@@ -264,7 +268,22 @@ class Desk:
             "skips": {n: why for n in list(self.farm.registry.workflows)
                       if (why := self.unmet(a, n)) is not None},
             "last_workflow": a.last_workflow,
+            # How its ComfyUI differs from the farm's (deploy/comfyui/environment.yaml).
+            "environment": self.environment_of(a),
         }
+
+    def environment_of(self, a: AgentState) -> dict | None:
+        """Its ComfyUI against the farm's environment file: what differs (shown, never
+        a reason to hold jobs back) and what couldn't be checked."""
+        st = a.environment
+        if st is None:
+            return None
+        spec, farm_paths = self.env.get()
+        result = ES.compare(spec, st, farm_paths, skip=self._never_runs(a))
+        core = st.get("comfyui") or {}
+        return {"checked_at": st.get("collected_at"), "file": spec is not None,
+                "comfyui": {"version": core.get("version"), "commit": core.get("commit")},
+                "differs": [d["message"] for d in result["differs"]], "notes": result["notes"]}
 
     def summaries(self) -> list[dict]:
         ranks = self.ranks()
@@ -382,6 +401,27 @@ class Desk:
         self._publish(a)
         self.wake()
         return {"problems": a.problems}
+
+    def environment(self, msg: dict) -> dict:
+        """The agent's ComfyUI environment (version, packages, node packs, models): how it
+        differs from the farm's. Shown on the Machines tab; jobs keep going there."""
+        a = self._known(msg)
+        if a is None:
+            return {"hello": True}
+        before = (self.environment_of(a) or {}).get("differs")
+        a.environment = msg.get("state") or {}
+        now_differs = (self.environment_of(a) or {}).get("differs") or []
+        if now_differs and now_differs != before:
+            log.warning("worker %s differs from the farm's ComfyUI: %s", a.name, "; ".join(now_differs[:5]) +
+                        (f" (and {len(now_differs) - 5} more)" if len(now_differs) > 5 else ""))
+        self._publish(a)
+        spec, farm_paths = self.env.get()
+        # What to read is the manager's file's call: an agent on another checkout reads it again.
+        return {**ES.compare(spec, a.environment, farm_paths, skip=self._never_runs(a)), "want": ES.wanted(spec)}
+
+    def _never_runs(self, a: AgentState) -> set[str]:
+        """Workflows its manifests keep off this machine: their packs and models don't matter there."""
+        return {n for n in list(self.farm.registry.workflows) if self.unmet(a, n) is not None}
 
     async def heartbeat(self, msg: dict) -> dict:
         """The agent's jobs (leases renewed); answered with what it should do: drop runs
