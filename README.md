@@ -367,7 +367,7 @@ it, as before. `agent --check` lists the differences as warnings.
   out (best free GPU, then one prepared ahead, then whichever frees first) to say when
   each job will be done and which machine should take it. A workflow that hasn't run on a
   GPU type yet goes by its runs on the others; one that has never run has no ETA. The
-  Machines tab lists the run times (*Run times*).
+  *Run times* tab lists them.
 - **Paths travel as studio paths** (`/rdo/shows/...`) and each machine maps them its own
   way (`paths.mappings` in its config), so Linux and Windows workers mix. Inputs are
   converted on the agent that runs the job, in its own scratch folder.
@@ -389,9 +389,9 @@ it, as before. `agent --check` lists the differences as warnings.
   row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
   (if any), *Run again* and *API JSON*.
 - **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
-  free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model, or
-  too little VRAM) and why. *Drain* / *Resume* per machine. Below, *Run times*: how long each
-  workflow takes on each GPU type, what the ETAs come from.
+  free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
+  and why. *Drain* / *Resume* per machine.
+- **Run times:** how long each workflow takes on each GPU type, what the ETAs come from.
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
