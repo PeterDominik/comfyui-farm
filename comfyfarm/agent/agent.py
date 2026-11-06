@@ -888,16 +888,32 @@ class Agent:
                 self.launcher.tick(reachable)   # starts ComfyUI if agent.yaml says how and it isn't running
             except Exception:  # noqa: BLE001
                 log.exception("starting ComfyUI on %s failed", self.name)
-            try:
-                await self._farm_nodes_tick(reachable)
-            except Exception:  # noqa: BLE001
-                log.exception("checking the farm nodes on %s failed", self.name)
+            if not self._hold_tick():
+                try:
+                    await self._farm_nodes_tick(reachable)
+                except Exception:  # noqa: BLE001
+                    log.exception("checking the farm nodes on %s failed", self.name)
             if reachable and self.object_info is not None and not self._env_busy and \
                     (self._env_stale or now() >= self._env_next):
                 self._spawn(self.check_environment())
             if self.registered:
                 await self._send_status()
             await asyncio.sleep(self.cfg.health_seconds)
+
+    def _hold_tick(self) -> bool:
+        """While `comfyfarm comfyui sync` updates ComfyUI (the launcher's hold file), the
+        agent takes no jobs and says why; True then. Once the hold is gone, ComfyUI is
+        started again and its environment read again."""
+        hold = self.launcher.held()
+        if hold:
+            if (self.farm_nodes or {}).get("state") != "syncing":
+                log.warning("agent %s takes no new jobs: %s", self.name, hold)
+            self.farm_nodes = {"state": "syncing", "message": hold}
+            return True
+        if (self.farm_nodes or {}).get("state") == "syncing":
+            log.info("ComfyUI on %s was updated: it's started again", self.name)
+            self.farm_nodes, self._env_stale = None, True
+        return False
 
     async def _farm_nodes_tick(self, reachable: bool) -> None:
         """After every health check: a `git pull` may have changed the farm nodes; once

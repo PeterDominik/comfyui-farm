@@ -4,7 +4,9 @@
               `comfyfarm comfyui snapshot`) and how a machine differs from it
   machine.py  what a machine's ComfyUI is: version and launch flags, Python packages,
               driver, node packs, extra_model_paths.yaml, the farm's models
-  cli.py      comfyfarm comfyui snapshot | verify
+  sync.py     bringing a machine to the file: ComfyUI's commit, node packs, packages
+              (torch held), extra_model_paths.yaml
+  cli.py      comfyfarm comfyui snapshot | verify | sync
 
 Agents collect their machine's state and send it to the manager, which compares it with
 the environment file; the Machines tab shows the differences. A machine that differs

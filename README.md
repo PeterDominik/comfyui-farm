@@ -66,8 +66,8 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
-| `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, and how it differs from `deploy/comfyui/environment.yaml` |
-| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify` |
+| `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
+| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
@@ -300,11 +300,39 @@ for every farm ComfyUI (studio paths; `B:\` on Windows).
 ```bash
 python -m comfyfarm comfyui snapshot    # on the reference machine, with ComfyUI running: writes environment.yaml
 python -m comfyfarm comfyui verify      # on any machine: how its ComfyUI differs (exit 1 when it does)
+python -m comfyfarm comfyui sync        # what it would take to bring this machine to it
+python -m comfyfarm comfyui sync --apply
 ```
 
-Both read `agent.yaml` for ComfyUI's folder and Python (`comfyui_dir`, `comfyui_python`,
+All read `agent.yaml` for ComfyUI's folder and Python (`comfyui_dir`, `comfyui_python`,
 else from `comfyui_launch`) and its address; `--comfyui`, `--python` and `--url` override
-them. Review the snapshot's diff before committing it.
+them. Review the snapshot's diff before committing it. On Linux,
+`deploy/linux/farmctl.sh verify|sync agent [--apply]` runs them with the farm's Python and
+the pipeline's Python settings kept out.
+
+**sync** fixes what verify lists that it can fix safely, and says how to do the rest:
+
+- ComfyUI (a git checkout) is checked out at the file's commit.
+- Node packs: a git pack is checked out at its commit, or cloned (a copy that isn't a git
+  checkout is replaced by one); a registry pack is installed at its version from the Comfy
+  registry; a local copy shadowing a pack of the farm library, or a second copy, is moved
+  aside. Whatever it replaces goes to `<ComfyUI>/custom_nodes.old/`.
+- One `pip install` (from pypi.org; `--index-url` to change it) of ComfyUI's and the changed
+  packs' requirements and the file's package pins, with torch, torchvision, torchaudio and
+  the packages built for the GPU (xformers, sageattention, flash-attn, triton) held at the
+  versions this machine has: pip fails rather than replace them.
+- `extra_model_paths.yaml` becomes the farm's, with the libraries as this OS sees them; the
+  old one is kept as `extra_model_paths.yaml.<date>.bak`.
+- Never done, only explained (with the command where there is one): torch & co., the NVIDIA
+  driver, launch flags (`comfyui_launch` in agent.yaml), Python's version, models (they live
+  in the libraries), and the shared packs of the farm library (every machine's).
+- A git checkout with local changes is refused; `--force` discards them.
+
+Without `--apply` it only prints the plan. With it, the machine must be drained on the
+dashboard and hold no jobs (it asks the manager; `--no-manager` when the manager is down),
+and ComfyUI's queue must be empty. It keeps the agent from starting ComfyUI meanwhile (the
+Machines tab shows *updating ComfyUI (sync)*), stops the ComfyUI the agent started, does the
+plan, lets the agent start ComfyUI again and verifies. Then *Resume* the machine.
 
 Each agent also checks its machine when ComfyUI starts and every `environment_seconds`
 (15 min), and the manager compares it with its copy of the file. The Machines tab marks

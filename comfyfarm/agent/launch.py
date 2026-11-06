@@ -8,7 +8,11 @@ logs/comfyui-<name>.log, so stopping or restarting the agent leaves it and its j
 running; its pid is kept in logs/comfyui-<name>.pid for the next agent to find.
 
 restart() stops that ComfyUI and starts it again: the agent does it when ComfyUI runs
-older farm nodes than the checkout (ComfyUI loads nodes only at startup)."""
+older farm nodes than the checkout (ComfyUI loads nodes only at startup).
+
+While logs/comfyui-<name>.hold exists, ComfyUI is down on purpose (`comfyfarm comfyui
+sync` is updating it) and isn't started. The file names the sync's process: a hold
+left behind by one that died is removed."""
 
 from __future__ import annotations
 
@@ -23,6 +27,23 @@ from pathlib import Path
 log = logging.getLogger("comfyfarm")
 
 BACKOFF_MAX = 600.0
+
+
+def hold_path(log_dir, name: str) -> Path:
+    """While this file exists, the agent leaves ComfyUI down (comfyenv.sync)."""
+    return Path(log_dir) / f"comfyui-{name}.hold"
+
+
+def write_hold(path: Path, why: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{os.getpid()} {why}\n", encoding="utf-8")
+
+
+def release_hold(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def boot_time() -> float:
@@ -90,6 +111,7 @@ class Launcher:
         self.log_dir = Path(log_dir)
         self.base_dir = Path(base_dir)
         self.pid_file = self.log_dir / f"comfyui-{name}.pid"
+        self.hold_file = hold_path(self.log_dir, name)
         self.log_file = self.log_dir / f"comfyui-{name}.log"
         self.clock = clock
         self.proc: subprocess.Popen | None = None
@@ -123,9 +145,30 @@ class Launcher:
             self.came_up = self.clock() - st.st_mtime > self.lc.startup_seconds
         return pid
 
+    def held(self) -> str | None:
+        """Why ComfyUI is down on purpose (its hold file), or None. A hold whose process
+        is gone (a sync that died) is removed."""
+        try:
+            text = self.hold_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        pid, _, why = text.partition(" ")
+        try:
+            alive = pid_alive(int(pid))
+        except ValueError:
+            alive = False
+        if not alive:
+            log.warning("removing %s: the process that held ComfyUI down (%s) is gone", self.hold_file, pid)
+            release_hold(self.hold_file)
+            return None
+        return why or "ComfyUI is being updated."
+
     def tick(self, reachable: bool) -> None:
         """Called after every health check of ComfyUI."""
         if not self.enabled:
+            return
+        if self.held():
+            self.dead_since = None            # left down on purpose: started again after the hold
             return
         t = self.clock()
         first, self._seen = not self._seen, True

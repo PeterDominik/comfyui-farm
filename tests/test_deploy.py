@@ -95,6 +95,18 @@ class LinuxDeployTests(unittest.TestCase):
         self.ctl("start", "manager")
         self.assertEqual(self.calls()[-1]["args"][-1], "manager")
 
+    def test_farmctl_verify_and_sync(self):
+        (self.root / "run").mkdir()
+        (self.root / "run/python").write_text(f"{self.py}\n")
+        self.ctl("sync", "agent", "--apply")
+        run = self.calls()[-1]
+        self.assertEqual(run["args"], ["-m", "comfyfarm", "comfyui", "sync", "--config", str(self.root / "agent.yaml"),
+                                       "--apply"])
+        self.assertIsNone(run["PYTHONPATH"])                     # the pipeline's Python stays out
+        self.ctl("verify", "agent")
+        self.assertEqual(self.calls()[-1]["args"][3], "verify")
+        self.assertEqual(self.ctl("sync", "manager", check=False).returncode, 2)
+
     def test_farmctl_without_setup_says_so(self):
         r = self.ctl("start", "manager", check=False)
         self.assertEqual(r.returncode, 1)

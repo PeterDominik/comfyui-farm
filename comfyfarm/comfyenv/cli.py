@@ -1,15 +1,18 @@
-"""comfyfarm comfyui snapshot | verify: the farm's ComfyUI environment file, from and
-against this machine.
+"""comfyfarm comfyui snapshot | verify | sync: the farm's ComfyUI environment file, from
+and against this machine, and bringing this machine to it (comfyenv.sync).
 
-Both read this machine's agent.yaml (--config) for where ComfyUI and its Python are
+All read this machine's agent.yaml (--config) for where ComfyUI and its Python are
 (comfyui_dir / comfyui_python, else comfyui_launch) and ComfyUI's address; --comfyui,
 --python and --url override it, so they also run on a machine without an agent."""
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 import json
 import os
 import socket
+import time
 from pathlib import Path
 
 from ..fileio.ocio import REPO
@@ -33,6 +36,7 @@ def _where(args) -> tuple[str, str, str, list[str]]:
     if folder and cfg and not os.path.isabs(folder):
         folder = str(cfg.resolve(folder))
     args.name = getattr(args, "name", None) or (cfg.name if cfg else socket.gethostname())
+    args.cfg = cfg
     return folder, python, url, command
 
 
@@ -67,22 +71,31 @@ def _describe(state: dict) -> str:
     return ", ".join(bits)
 
 
-def _check(folder: str, python: str, url: str, command: list[str], tags=()) -> tuple[dict | None, dict, dict]:
-    """(the environment file, this machine's state, how it differs). Packs and models of
-    workflows this machine never gets (requires: VRAM, tags) don't count, as on the dashboard."""
+def _state(folder: str, python: str, url: str, command: list[str], tags=()) -> tuple[dict | None, dict, set[str]]:
+    """(the environment file, this machine's state, the workflows it never gets). Packs and
+    models of those (requires: VRAM, tags) don't count, as on the dashboard."""
     from ..workflows import WorkflowRegistry
 
-    spec, farm_paths = S.load(S.SPEC), S.farm_model_paths(S.FARM_MODEL_PATHS)
+    spec = S.load(S.SPEC)
     if spec is None:
-        return None, {}, {"differs": [], "notes": []}
+        return None, {}, set()
     stats = _get(url + "/system_stats", 5)
     state = M.collect(folder, python, stats, argv=command[1:] if command else None, **S.wanted(spec))
-    if stats is None:
+    if stats is None and not state.get("error"):
         state["notes"].append(f"ComfyUI isn't answering at {url}: its version and flags were read from its folder "
                               f"and agent.yaml")
     devices = (stats or {}).get("devices") or [{}]
-    skip = S.excluded(WorkflowRegistry(REPO / "workflows"), devices[0].get("vram_total"), {*tags, M.OS})
-    return spec, state, S.compare(spec, state, farm_paths, skip=skip)
+    skip = S.excluded(WorkflowRegistry(REPO / "workflows"), devices[0].get("vram_total") or state.get("gpu_memory"),
+                      {*tags, M.OS})
+    return spec, state, skip
+
+
+def _check(folder: str, python: str, url: str, command: list[str], tags=()) -> tuple[dict | None, dict, dict]:
+    """(the environment file, this machine's state, how it differs)."""
+    spec, state, skip = _state(folder, python, url, command, tags)
+    if spec is None:
+        return None, {}, {"differs": [], "notes": []}
+    return spec, state, S.compare(spec, state, S.farm_model_paths(S.FARM_MODEL_PATHS), skip=skip)
 
 
 def check_lines(cfg) -> list[tuple[str, str]]:
@@ -158,12 +171,169 @@ def snapshot(args) -> int:
     return 0
 
 
+# ================================================================ sync
+async def _ping(cfg) -> dict:
+    from ..agent.link import HttpLink
+    link = HttpLink(cfg.manager, cfg.token)
+    try:
+        return await link.ping({"name": cfg.name})
+    finally:
+        await link.close()
+
+
+def _not_safe(cfg, url: str, ask_manager: bool) -> str | None:
+    """Why ComfyUI mustn't be stopped now, or None: a job in it, or (asking the manager) a
+    machine that isn't drained or still holds jobs."""
+    from ..protocol import LinkError
+
+    q = _get(url + "/queue", 5)
+    if q and (q.get("queue_running") or q.get("queue_pending")):
+        return "ComfyUI has a job in its queue: wait for it to finish, then run sync again."
+    if cfg is None or not ask_manager:
+        return None
+    try:
+        r = asyncio.run(_ping(cfg))
+    except LinkError as e:
+        return (f"Can't ask the manager whether {cfg.name} is drained ({e}). Drain it on the dashboard, and once it "
+                f"holds no jobs run sync again with --no-manager.")
+    if "drained" not in r:
+        return (f"The manager doesn't say whether {cfg.name} is drained (an older manager): drain it on the dashboard "
+                f"and, once it holds no jobs, run sync again with --no-manager.")
+    if not r["drained"]:
+        return (f"Drain {cfg.name} on the dashboard's Machines tab first (sync stops its ComfyUI), then run sync again "
+                f"once it holds no jobs.")
+    if r.get("held"):
+        return f"{cfg.name} still holds {r['held']} job(s): run sync again once they're done."
+    return None
+
+
+def _stop_comfyui(cfg, url: str) -> str:
+    """Stop the ComfyUI the agent started (with the hold in place, it isn't started again)."""
+    from ..agent.launch import Launcher, pid_alive, stop_process
+    from .sync import SyncError
+
+    if _get(url + "/system_stats", 3) is None:
+        return "ComfyUI isn't running"
+    pid = None
+    if cfg is not None:
+        pid = Launcher(cfg.name, cfg.comfyui_launch, cfg.resolve(cfg.log_dir), cfg.base_dir).running_pid()
+    if pid is None:
+        raise SyncError(f"ComfyUI is running at {url}, but the agent didn't start it, so sync won't stop it: stop it "
+                        f"yourself, then run sync again.")
+    stop_process(pid)
+    end = time.time() + 30
+    while pid_alive(pid) and time.time() < end:
+        time.sleep(0.3)
+    if pid_alive(pid):
+        stop_process(pid, force=True)
+    end = time.time() + 15
+    while _get(url + "/system_stats", 2) is not None and time.time() < end:
+        time.sleep(0.5)
+    return f"stopped ComfyUI (pid {pid})"
+
+
+def _print_plan(p) -> None:
+    if p.differs:
+        print(f"\n{len(p.differs)} difference(s):")
+        for d in p.differs:
+            print(f"  - {d['message']}")
+    if p.steps:
+        print("\nsync does:")
+        for i, s in enumerate(p.steps, 1):
+            print(f"  {i}. {s.title}")
+    if p.manual:
+        print("\nBy hand (sync doesn't do these):")
+        for m in p.manual:
+            print(f"  - {m}")
+
+
+def sync(args) -> int:
+    from ..agent import launch as L
+    from . import sync as Y
+
+    folder, python, url, command = _where(args)
+    cfg = args.cfg
+    spec, state, skip = _state(folder, python, url, command, args.tags)
+    if spec is None:
+        print(f"There's no environment file yet ({S.SPEC}): run `comfyfarm comfyui snapshot` on the reference machine.")
+        return 2
+    if state.get("error"):
+        print(state["error"])
+        return 2
+    index = args.index_url if args.index_url is not None else Y.PYPI
+
+    def make_plan(st):
+        return Y.plan(spec, st, S.farm_model_paths(S.FARM_MODEL_PATHS), skip, comfyui_dir=folder, python=python,
+                      force=args.force, index_url=index or None, farm_file=S.FARM_MODEL_PATHS)
+
+    p = make_plan(state)
+    print(_describe(state))
+    print(f"Farm environment: {_shown(S.SPEC)}")
+    if not p.differs:
+        print("\nMatches the farm's ComfyUI: nothing to do.")
+        return 0
+    _print_plan(p)
+    if not args.apply:
+        if p.steps:
+            print(f"\nNothing changed yet. Run again with --apply to do it: that stops ComfyUI, so first drain "
+                  f"{args.name} on the dashboard's Machines tab and wait until it holds no jobs.")
+        return 1
+    if not p.steps:
+        print("\nNothing sync can do itself: the rest is by hand.")
+        return 1
+    why = _not_safe(cfg, url, ask_manager=not args.no_manager)
+    if why:
+        print("\n" + why)
+        return 2
+    hold = L.hold_path(cfg.resolve(cfg.log_dir), cfg.name) if cfg else None
+    if hold:
+        L.write_hold(hold, f"comfyfarm comfyui sync is updating ComfyUI (since "
+                           f"{datetime.datetime.now():%H:%M}): no jobs until it's done.")
+    failed = False
+    print()
+    try:
+        try:
+            print(f"  {_stop_comfyui(cfg, url)}")
+        except Y.SyncError as e:
+            print(f"\n{e}")
+            return 2
+        for i, step in enumerate(p.steps, 1):
+            print(f"  [{i}/{len(p.steps)}] {step.title} … ", end="", flush=True)
+            try:
+                print(step.run() or "done")
+            except Y.SyncError as e:
+                print(f"failed:\n{e}")
+                failed = True
+                break
+    finally:
+        if hold:
+            L.release_hold(hold)        # the agent starts ComfyUI again
+    spec, state, skip = _state(folder, python, url, command, args.tags)
+    after = make_plan(state)
+    if after.differs:
+        print("\nStill different:" if not failed else "\nAs it is now:")
+        for d in after.differs:
+            print(f"  - {d['message']}")
+        if after.manual:
+            print("\nBy hand:")
+            for m in after.manual:
+                print(f"  - {m}")
+    else:
+        print("\nMatches the farm's ComfyUI.")
+    if cfg and cfg.comfyui_launch.command:
+        print(f"\nThe agent starts ComfyUI again within a minute. Then Resume {cfg.name} on the dashboard.")
+    else:
+        print("\nStart ComfyUI again" + (f", then Resume {cfg.name} on the dashboard." if cfg else "."))
+    return 2 if failed else (1 if after.differs else 0)
+
+
 def add_parser(sub) -> None:
-    p = sub.add_parser("comfyui", help="the farm's ComfyUI environment: snapshot it from this machine, or verify "
-                                       "this machine against it")
+    p = sub.add_parser("comfyui", help="the farm's ComfyUI environment: snapshot it from this machine, verify this "
+                                       "machine against it, or sync this machine to it")
     cmds = p.add_subparsers(dest="comfyui_cmd", required=True)
     for name, helptext in (("snapshot", f"write {_shown(S.SPEC)} from this machine's ComfyUI"),
-                           ("verify", "list how this machine's ComfyUI differs from the farm's")):
+                           ("verify", "list how this machine's ComfyUI differs from the farm's"),
+                           ("sync", "bring this machine's ComfyUI to the farm's (prints the plan; --apply does it)")):
         c = cmds.add_parser(name, help=helptext)
         c.add_argument("--config", dest="agent_config", help="agent.yaml (default: repo root, or $COMFYFARM_AGENT_CONFIG)")
         c.add_argument("--comfyui", help="ComfyUI's folder (default: from agent.yaml)")
@@ -172,9 +342,16 @@ def add_parser(sub) -> None:
         if name == "snapshot":
             c.add_argument("--out", help="where to write it (default: the repo's)")
             c.add_argument("--name", help="this machine's name in the file (default: the agent's)")
-        else:
+        elif name == "verify":
             c.add_argument("--json", action="store_true", help="print the machine's state and differences as JSON")
+        else:
+            c.add_argument("--apply", action="store_true",
+                           help="do it: stops ComfyUI (drain the machine first), updates it, the agent starts it again")
+            c.add_argument("--force", action="store_true", help="discard local changes in ComfyUI's and the packs' git checkouts")
+            c.add_argument("--no-manager", action="store_true",
+                           help="don't ask the manager whether this machine is drained (it's down; you drained it)")
+            c.add_argument("--index-url", help="pip's package index (default: pypi.org; '' for pip's own settings)")
 
 
 def run(args) -> int:
-    return snapshot(args) if args.comfyui_cmd == "snapshot" else verify(args)
+    return {"snapshot": snapshot, "verify": verify, "sync": sync}[args.comfyui_cmd](args)
