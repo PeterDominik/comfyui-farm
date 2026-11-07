@@ -420,7 +420,7 @@ farm.output_pattern(job)                    # /rdo/shows/.../<shot>_alpha_v001.%
 ### Nuke panel
 
 The ComfyFarm panel is the dashboard inside Nuke, with the same three tabs: *Submit*, *Queue*
-and *Machines*. The form is built from the farm's workflow list, so it has the same fields as
+and *Machines*, and publishing (*Publishing* below). The form is built from the farm's workflow list, so it has the same fields as
 the web page and picks up manifest changes without a client update. It shows the same live
 destination line. Nuke stays usable while jobs run, and a Read node for each finished job is
 created next to its source. Jobs are always submitted from the form.
@@ -452,8 +452,20 @@ installed: the client is standard library only.
    done; tick *Only mine* or *Only active* to narrow it. When a job
    finishes, a Read appears next to the source node (turn this off on the *Submit* tab).
    Right-click a job to create its Read, copy the output path, reuse its input, cancel it,
-   run it again, or see the error. Double-click a finished job to create its Read.
+   run it again, or see the error. Double-click a finished job to create its Read. The
+   *Publish* column shows where its publish is (*when done*, *Tractor 6505856*, *dry run
+   passed*, *publish failed*: hover for the details).
 6. The *Machines* tab shows the farm's GPU machines and what each is running.
+
+**Publishing from Nuke** (workflows that publish, when the farm has publishing on): tick
+*Publish when done* under the form, or right-click a finished job, *Publish…*. The fields are
+the dashboard's. Show and shot start as the input path's; when it names none, as the Nuke
+session's `RDO_CURRENT_SHOW` / `RDO_CURRENT_SHOT` (with `RDO_CURRENT_SEQUENCE`; a shot given as
+`0040` becomes `<sequence>_0040`), and the step as `RDO_CURRENT_STEP` when it's one of the
+studio's. Everything can be changed, and a field you've typed in stops following the input
+path. With ShotGrid lookups on, show and shot suggest as you type, *Sequence* narrows the
+shots down and **↻** reloads them. *Publish log* (right-click) shows every publish of the job
+with the command and Daiquiri's output.
 
 Movies: a Read of a `movhistory` `.mov` sends the whole movie. The farm numbers its frames
 from the timecode and drops the slate, as it does from the dashboard.
@@ -589,15 +601,15 @@ makes a daily for each in Artist Review.
 
 Two ways to ask for it:
 
-- **Publish when done**, at submit (the dashboard's form; client `submit(..., publish={})`, CLI
-  `submit … --publish`). It's checked with the job: a step, template or shot that won't work
+- **Publish when done**, at submit (the dashboard's form, the Nuke panel; client
+  `submit(..., publish={})`, CLI `submit … --publish`). It's checked with the job: a step, template or shot that won't work
   refuses the submit. It runs once the job is done, and again for *Run again*.
-- **Publish…** on a finished job, in its details (client `publish(job_id, …)`, CLI
+- **Publish…** on a finished job, in its details (Nuke panel: right-click it; client `publish(job_id, …)`, CLI
   `publish <job id> [step=…] [shot=…] [show=…] [template=…] [description=…] [--dry-run]`).
 
 | Field | |
 |---|---|
-| Show, shot | Filled in from the input path until you type in them; empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities` |
+| Show, shot | Filled in from the input path until you type in them (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
 | Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
 | Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step` |
 | Nuke template | One of the workflow's templates, `default` first |
@@ -611,7 +623,8 @@ dispatchGraph's output. The Queue marks published jobs with **pub**.
 
 ### ShotGrid lookups
 
-With them on, the show field suggests ShotGrid's active shows, and the shot field that
+With them on, the show field suggests ShotGrid's active shows that have a show folder
+(`publish.show_folder`), and the shot field that
 show's shots (without on-hold, omitted, hidden and void ones), narrowed by the sequence
 field. **↻** next to the shot reloads both from ShotGrid, for a shot created since. A
 publish to a shot that isn't in the show is refused at submit (after reloading the show's

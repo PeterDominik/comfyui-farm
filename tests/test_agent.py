@@ -364,7 +364,7 @@ class AgentTests(unittest.TestCase):
         shutil.copy(TEMPLATE, templates / "ltx25_alpha_gen" / "default.nk")
         Path(self.root, "dispatch.py").write_text(FAKE_DISPATCH)
         for k, v in {"enabled": True, "dry_run": False, "templates": str(templates),
-                     "staging": str(templates / ".staging"), "shell": ["/bin/sh", "-c"],
+                     "staging": str(templates / ".staging"), "shell": ["/bin/sh", "-c"], "show_folder": "",
                      "command": f"{sys.executable} {self.root}/dispatch.py --entities {{shot}} --step {{step}} "
                                 f"--workfile {{workfile}} --show {{show}} --frameRange {{frames}}"}.items():
             self.addCleanup(setattr, pub, k, getattr(pub, k))

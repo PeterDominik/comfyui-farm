@@ -64,11 +64,13 @@ def read_env_file(path) -> dict[str, str]:
 
 class ShotGrid:
     """The manager's ShotGrid: cached lists, and the publish check. `connect` (tests):
-    a function returning a shotgun_api3.Shotgun-like object (find, find_one)."""
+    a function returning a shotgun_api3.Shotgun-like object (find, find_one). `keep`:
+    which show codes to offer (the farm: those with a show folder on disk)."""
 
-    def __init__(self, cfg, connect=None):
+    def __init__(self, cfg, connect=None, keep=None):
         self.cfg = cfg
         self._connect = connect
+        self._keep = keep
         self._sg = None
         self._lock = threading.Lock()           # one ShotGrid call at a time: a connection isn't thread-safe
         self._projects: tuple[float, list[dict]] | None = None
@@ -181,7 +183,7 @@ class ShotGrid:
             found = []
             for r in rows or []:
                 code = r.get(self.cfg.show_field) or r.get("tank_name") or r.get("code")
-                if code:
+                if code and (self._keep is None or self._keep(str(code))):
                     found.append({"code": str(code), "name": str(r.get("name") or code), "id": r.get("id")})
             found.sort(key=lambda p: p["code"].lower())
             cached = self._projects = (time.time(), found)

@@ -232,8 +232,8 @@ class FakeFarm:
     def __init__(self):
         self.listed, self.by_id, self.submitted = [], {}, []
 
-    def submit(self, workflow, params, name=None):
-        self.submitted.append((workflow, params, name))
+    def submit(self, workflow, params, name=None, publish=None):
+        self.submitted.append((workflow, params, name, publish))
         if "bad" in params.get("input", ""):
             raise farm.FarmError("No frames")
         job = {"id": f"job{len(self.submitted)}", "status": "queued"}
@@ -291,7 +291,7 @@ class PanelLogic(unittest.TestCase):
                                        "workflow": "ltx25_alpha_gen", "queue_position": 2, "eta_seconds": 125,
                                        "created_at": now - 30, "info": {"version": 3}}, now, labels)
         self.assertEqual(q, ["abcdef12", "abc_0010  v003", "LTX 2.5 alpha generation", "", "jane", "queued", "",
-                             "#2 · done in ~2 min", "just now", ""])        # queued: no machine yet
+                             "#2 · done in ~2 min", "just now", "", ""])    # queued: no machine yet
         q = self.panel.PanelModel.row({"id": "abcdef1234", "status": "queued", "user": "jane", "workflow": "x",
                                        "queue_position": 1, "eta_seconds": 40, "next_worker": "wrk59467w-5090",
                                        "created_at": now}, now)
@@ -313,6 +313,83 @@ class PanelLogic(unittest.TestCase):
         s = self.panel.PanelModel.row({"id": "s" * 10, "status": "running", "kind": "set", "workflow": "chord_pbr"}, now)
         self.assertEqual(s[3], "per batch")                           # a texture set's batches run anywhere
         self.assertEqual(self.m.labels(), {"wf": "wf"})
+
+    def test_publish_prefill(self):
+        PM = self.panel.PanelModel
+        env = {"RDO_CURRENT_SHOW": "bc1", "RDO_CURRENT_SEQUENCE": "mis", "RDO_CURRENT_SHOT": "0040",
+               "RDO_CURRENT_STEP": "roto"}
+        ctx = PM.rdo_context(env)
+        self.assertEqual(ctx, {"show": "bc1", "sequence": "mis", "shot": "mis_0040", "step": "roto"})  # short shot: full
+        self.assertEqual(PM.rdo_context({"RDO_CURRENT_SEQUENCE": "305046", "RDO_CURRENT_SHOT": "305046_0010",
+                                         "RDO_CURRENT_STEP": " "}), {"sequence": "305046", "shot": "305046_0010"})
+        self.assertEqual(PM.rdo_context({}), {})
+        opts = {"steps": ["comp", "lay", "roto"], "step": "lay", "description": "Auto Publish"}
+        # The input path wins; the session fills what it doesn't name; its step when the studio has it.
+        self.assertEqual(PM.publish_prefill({"show": "bri3", "shot": "305046_0010"}, ctx, opts),
+                         {"show": "bri3", "shot": "305046_0010", "sequence": "", "step": "roto", "template": "",
+                          "description": ""})
+        self.assertEqual(PM.publish_prefill({}, ctx, opts)["shot"], "mis_0040")
+        self.assertEqual(PM.publish_prefill({}, ctx, opts)["sequence"], "mis")    # the session's shot: its sequence
+        self.assertEqual(PM.publish_prefill({}, {"step": "nope"}, opts)["step"], "lay")
+        # A finished job: its earlier publish first.
+        last = {"show": "bri3", "shot": "305046_0020", "step": "comp", "template": "with_plate",
+                "description": "Auto Publish"}
+        got = PM.publish_prefill({"show": "bri3", "shot": "305046_0010"}, ctx, opts, last)
+        self.assertEqual((got["shot"], got["step"], got["template"], got["description"]),
+                         ("305046_0020", "comp", "with_plate", ""))
+        self.assertEqual(PM.publish_request({"show": " bri3 ", "shot": "", "step": "lay", "description": "  ",
+                                             "dry_run": 1}),
+                         {"show": "bri3", "shot": None, "step": "lay", "template": None, "description": None,
+                          "dry_run": True})
+
+    def test_publish_when_done_and_states(self):
+        PM = self.panel.PanelModel
+        self.m.submit("wf", {"input": "/a.%04d.png 1-2"}, publish={"step": "lay"})
+        self.m.submit("wf", {"input": "/a.%04d.png 1-2"})
+        self.assertEqual([s[3] for s in self.client.submitted], [{"step": "lay"}, None])
+        ask = {"show": "bri3", "shot": "305046_0010", "step": "lay", "template": "default", "dry_run": True}
+        self.assertEqual(PM.publish_cell({"status": "running", "info": {"publish_request": ask}})[:2],
+                         ("when done (dry run)", "#a3a9b0"))
+        self.assertEqual(PM.publish_cell({"status": "failed", "info": {"publish_request": ask}}), ("", "", ""))
+        sent = {"state": "dispatched", "tractor_id": "6505856", "title": "[Nuke Render] bri3", "show": "bri3",
+                "shot": "305046_0010", "step": "lay", "template": "default"}
+        text, color, tip = PM.publish_cell({"status": "done", "publish": sent})
+        self.assertEqual((text, color), ("Tractor 6505856", "#93d6a6"))
+        self.assertIn("[Nuke Render] bri3", tip)
+        failed = PM.publish_cell({"status": "done", "publish": {"state": "failed", "error": "No entity named x"}})
+        self.assertEqual((failed[0], failed[2].splitlines()[-1]), ("publish failed", "No entity named x"))
+        self.assertEqual(PM.row({"id": "x" * 10, "status": "done", "publish": sent}, 10.0)[-1], "Tractor 6505856")
+        log = PM.publish_log_text([dict(sent, created_at=0, command="dispatchGraph x", output="#ID: 6505856.\n",
+                                        user="peter", frames="1001-1084")])
+        self.assertIn("command: dispatchGraph x", log)
+        self.assertIn("output:\n#ID: 6505856.", log)
+        self.assertEqual(PM.publish_log_text([]), "Not published yet.")
+
+    def test_shotgrid_lists(self):
+        PM = self.panel.PanelModel
+        asked = []
+        self.client.shotgrid_projects = lambda refresh=False: asked.append(("p", refresh)) or {
+            "projects": [{"code": "bri3", "name": "bri3"}], "why": None, "set_up": True}
+        self.client.shotgrid_shots = lambda show, refresh=False: asked.append((show, refresh)) or {
+            "show": show, "shots": [{"code": "305046_0010", "sequence": "305046"},
+                                    {"code": "301011_0140", "sequence": "301011"}], "why": None, "fetched_at": 1.0}
+        self.m.sg_projects()
+        self.m.sg_projects()
+        self.m.sg_projects(refresh=True)
+        self.m.sg_shots("bri3")
+        self.m.sg_shots("BRI3 ")
+        self.m.sg_shots("bri3", refresh=True)
+        self.assertEqual(asked, [("p", False), ("p", True), ("bri3", False), ("bri3", True)])   # kept, until ↻
+        shots = self.m.sg_shots("bri3")["shots"]
+        self.assertEqual(PM.shot_codes(shots), ["305046_0010", "301011_0140"])
+        self.assertEqual(PM.shot_codes(shots, " 301011"), ["301011_0140"])
+        self.assertEqual(PM.sequence_of(shots, "305046_0010"), "305046")
+        self.assertEqual(PM.sg_note({"show": "bri3", "shots": shots[:1], "fetched_at": 100.0}, 130.0),
+                         ("1 shot in bri3 · from ShotGrid just now", False))
+        self.assertEqual(PM.sg_note({"why": "ShotGrid didn't answer", "set_up": True}), ("ShotGrid didn't answer", True))
+        self.assertEqual(PM.sg_note({"why": "off", "set_up": False}), ("", False))      # not set up: plain fields
+        self.client.shotgrid_projects = lambda refresh=False: (_ for _ in ()).throw(farm.FarmError("farm down"))
+        self.assertEqual(self.m.sg_projects(refresh=True)["why"], "farm down")
 
     def test_machines(self):
         now = 10_000.0

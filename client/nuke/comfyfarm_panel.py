@@ -10,6 +10,12 @@ prerender the plate to a PNG sequence (or use a movhistory .mov), then, on the S
   3. Submit. The Queue tab follows the job (which workflow, on which machine); a Read node
      is created when it finishes. The Machines tab shows the farm's GPU machines.
 
+Publishing (workflows that publish, when the farm has it switched on): "Publish when done"
+on the Submit tab, or Publish… on a finished job in the Queue (right-click). The show and
+shot start as the input path's, else the Nuke session's (RDO_CURRENT_SHOW / _SEQUENCE /
+_SHOT), the step as the session's RDO_CURRENT_STEP; all can be changed. Show and shot
+suggest from ShotGrid (through the farm; ↻ reloads), the sequence narrows the shots down.
+
 Layout of this file:
   PanelModel      everything the panel does, without Qt or Nuke (unit-tested)
   ComfyFarmPanel  the Qt widget (PySide6 in Nuke 16, PySide2 in Nuke 13-15)
@@ -21,6 +27,7 @@ from __future__ import annotations
 
 import getpass
 import html
+import os
 import threading
 import time
 
@@ -34,12 +41,20 @@ except ImportError:   # run straight from a checkout: python client/nuke/comfyfa
 
 STATUS_COLORS = {"preparing": "#ecc98a", "queued": "#cdbdf0", "dispatched": "#b8c6d8", "running": "#9fcdf2",
                  "postprocessing": "#9fcdf2", "done": "#93d6a6", "failed": "#f0a59c", "cancelled": "#a3a9b0"}
-COLUMNS = ["Job", "Shot / name", "Workflow", "Machine", "User", "Status", "Progress", "Wait", "Submitted", "Took"]
-STATUS_COL, PROGRESS_COL = COLUMNS.index("Status"), COLUMNS.index("Progress")
+COLUMNS = ["Job", "Shot / name", "Workflow", "Machine", "User", "Status", "Progress", "Wait", "Submitted", "Took",
+           "Publish"]
+STATUS_COL, PROGRESS_COL, PUBLISH_COL = COLUMNS.index("Status"), COLUMNS.index("Progress"), COLUMNS.index("Publish")
 MACHINE_COLUMNS = ["#", "Machine", "Status", "GPU", "VRAM free", "Jobs", "Running", "ComfyUI", "Agent", "Last seen"]
 MACHINE_STATUS_COL = 2
 ACTIVE = ("queued", "preparing", "dispatched", "running", "postprocessing")
 ON_MACHINE = ("preparing", "dispatched", "running", "postprocessing")
+# The Nuke session's pipeline context: where a publish goes when the input path doesn't say.
+RDO_ENV = {"show": "RDO_CURRENT_SHOW", "sequence": "RDO_CURRENT_SEQUENCE", "shot": "RDO_CURRENT_SHOT",
+           "step": "RDO_CURRENT_STEP"}
+PUBLISH_STATES = {"queued": ("publish queued", "#a3a9b0"), "dispatching": ("dispatching…", "#ecc98a"),
+                  "dispatched": ("sent to Tractor", "#93d6a6"), "dry_run": ("dry run passed", "#93d6a6"),
+                  "failed": ("publish failed", "#f0a59c")}
+SG_KEEP = 300.0     # seconds the panel keeps ShotGrid lists (the farm caches them too; ↻ reloads)
 
 
 def _ago(t: float | None, now: float) -> str:
@@ -104,6 +119,9 @@ class PanelModel:
         self.workflows: list[dict] = []
         self.session_jobs: dict[str, str] = {}   # id -> last status, for jobs submitted here
         self.sources: dict[str, str] = {}        # id -> Nuke node the input came from
+        self._pub_options: dict[str, dict] = {}  # workflow -> its publish options
+        self._sg_projects: tuple[float, dict] | None = None
+        self._sg_shots: dict[str, tuple[float, dict]] = {}
 
     # ------------------------------------------------------------ workflows / form
     def load_workflows(self) -> list[dict]:
@@ -163,8 +181,11 @@ class PanelModel:
     def plan(self, wf_name: str, raw: dict) -> dict:
         return self.client.plan(wf_name, self.params_from_form(self.workflow(wf_name), raw))
 
-    def submit(self, wf_name: str, raw: dict, name: str | None = None, source_node: str | None = None) -> dict:
-        job = self.client.submit(wf_name, self.params_from_form(self.workflow(wf_name), raw), name=name or None)
+    def submit(self, wf_name: str, raw: dict, name: str | None = None, source_node: str | None = None,
+               publish: dict | None = None) -> dict:
+        """Queue a job; `publish`: publish it when it's done (publish_request())."""
+        kw = {"publish": publish} if publish is not None else {}
+        job = self.client.submit(wf_name, self.params_from_form(self.workflow(wf_name), raw), name=name or None, **kw)
         self.session_jobs[job["id"]] = job["status"]
         if source_node:
             self.sources[job["id"]] = source_node
@@ -189,6 +210,155 @@ class PanelModel:
             else:
                 self.session_jobs[jid] = job["status"]
         return jobs, finished
+
+    # ------------------------------------------------------------ publishing
+    def publishes_jobs(self, wf_name: str | None) -> bool:
+        """Whether a workflow's jobs can be published (the farm says so per workflow)."""
+        return bool((self.workflow(wf_name) or {}).get("publish"))
+
+    def publish_options(self, wf_name: str, refresh: bool = False) -> dict:
+        """The workflow's templates, steps and defaults for publishing, or `why` it can't be."""
+        if refresh or wf_name not in self._pub_options:
+            try:
+                self._pub_options[wf_name] = self.client.publish_options(wf_name)
+            except farm.FarmError as e:
+                return {"why": str(e)}
+        return self._pub_options[wf_name]
+
+    @staticmethod
+    def rdo_context(env=None) -> dict:
+        """The Nuke session's pipeline context (RDO_CURRENT_*), what's set of it. A shot
+        given without its sequence (0010) becomes <sequence>_<shot>."""
+        env = os.environ if env is None else env
+        out = {k: (env.get(v) or "").strip() for k, v in RDO_ENV.items()}
+        out = {k: v for k, v in out.items() if v}
+        seq, shot = out.get("sequence"), out.get("shot")
+        if seq and shot and not shot.lower().startswith(seq.lower()):
+            out["shot"] = f"{seq}_{shot}"
+        return out
+
+    @staticmethod
+    def publish_prefill(plan: dict | None, context: dict, options: dict, last: dict | None = None) -> dict:
+        """What the publish fields start with. Show and shot: the input path's (the frames
+        are that shot's), else the Nuke session's; `last`: a finished job's earlier publish
+        or request, first. Sequence: the session's, when the shot is the session's. Step:
+        the earlier one, else the session's when the studio has it, else the workflow's."""
+        plan, last = plan or {}, last or {}
+        steps = options.get("steps") or []
+        out = {"show": last.get("show") or plan.get("show") or context.get("show") or "",
+               "shot": last.get("shot") or plan.get("shot") or context.get("shot") or ""}
+        same = out["shot"] and out["shot"] == context.get("shot")
+        out["sequence"] = context.get("sequence", "") if same else ""
+        out["step"] = next((s for s in (last.get("step"), context.get("step")) if s and s in steps),
+                           options.get("step") or (steps[0] if steps else ""))
+        out["template"] = last.get("template") or ""
+        desc = last.get("description") or ""
+        out["description"] = "" if desc == options.get("description") else desc
+        return out
+
+    @staticmethod
+    def publish_request(values: dict) -> dict:
+        """Field values -> the farm's publish request. Empty fields are the farm's to fill:
+        the input path's show and shot, the workflow's step, its first template, Auto Publish."""
+        out = {k: (str(values.get(k) or "").strip() or None) for k in ("show", "shot", "step", "template", "description")}
+        out["dry_run"] = bool(values.get("dry_run"))
+        return out
+
+    def publish(self, job_id: str, values: dict) -> dict:
+        """Publish a finished job: the publish record, queued (the Queue follows it)."""
+        r = self.publish_request(values)
+        return self.client.publish(job_id, step=r["step"], show=r["show"], shot=r["shot"], template=r["template"],
+                                   description=r["description"], dry_run=r["dry_run"])
+
+    def publishes(self, job_id: str) -> list:
+        return self.client.publishes(job_id)
+
+    @staticmethod
+    def publish_cell(job: dict) -> tuple[str, str, str]:
+        """(text, colour, tooltip) for the Queue's Publish column."""
+        p, ask = job.get("publish"), (job.get("info") or {}).get("publish_request")
+        if not p:
+            if not ask or job.get("status") in ("failed", "cancelled"):
+                return "", "", ""
+            where = " · ".join(x for x in (ask.get("show"), ask.get("shot"), ask.get("step")) if x)
+            return ("when done" + (" (dry run)" if ask.get("dry_run") else ""), "#a3a9b0",
+                    f"Publishes to {where} with {ask.get('template')}.nk when it's done")
+        label, color = PUBLISH_STATES.get(p.get("state"), (p.get("state") or "", "#a3a9b0"))
+        text = f"Tractor {p['tractor_id']}" if p.get("state") == "dispatched" and p.get("tractor_id") else label
+        tip = [label + (f": Tractor job {p['tractor_id']}" if p.get("tractor_id") else ""), p.get("title") or "",
+               " · ".join(x for x in (p.get("show"), p.get("shot"), p.get("step")) if x)
+               + (f" with {p['template']}.nk" if p.get("template") else ""),
+               p.get("error") or "", *(p.get("notes") or [])]
+        return text, color, "\n".join(t for t in tip if t)
+
+    @staticmethod
+    def publish_log_text(publishes: list[dict]) -> str:
+        """Every publish of a job, latest first: what went where, the command, Daiquiri's output."""
+        if not publishes:
+            return "Not published yet."
+        blocks = []
+        for p in publishes:
+            label = PUBLISH_STATES.get(p.get("state"), (p.get("state") or "",))[0]
+            lines = [f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(p.get('created_at') or 0))}  "
+                     f"{label}{'  Tractor job ' + str(p['tractor_id']) if p.get('tractor_id') else ''}"
+                     f"{'  by ' + p['user'] if p.get('user') else ''}",
+                     f"to {' · '.join(x for x in (p.get('show'), p.get('shot'), p.get('step')) if x)} "
+                     f"with {p.get('template')}.nk, frames {p.get('frames') or 'forceInput'}"]
+            for key, title in (("title", "job"), ("description", "description"), ("error", "error"),
+                               ("workfile", "script"), ("command", "command")):
+                if p.get(key):
+                    lines.append(f"{title}: {p[key]}")
+            lines += [f"note: {n}" for n in p.get("notes") or []]
+            if p.get("output"):
+                lines += ["output:", p["output"].rstrip()]
+            blocks.append("\n".join(lines))
+        return ("\n\n" + "-" * 60 + "\n\n").join(blocks)
+
+    # ------------------------------------------------------------ ShotGrid (through the farm)
+    def sg_projects(self, refresh: bool = False) -> dict:
+        """The shows to suggest: {"projects": [{code, name}], "why", "set_up"}."""
+        now = time.time()
+        if refresh or self._sg_projects is None or now - self._sg_projects[0] > SG_KEEP:
+            try:
+                data = self.client.shotgrid_projects(refresh=refresh)
+            except farm.FarmError as e:
+                data = {"projects": [], "why": str(e), "set_up": True}
+            self._sg_projects = (now, data)
+        return self._sg_projects[1]
+
+    def sg_shots(self, show: str, refresh: bool = False) -> dict:
+        """A show's shots to suggest: {"shots": [{code, sequence, status}], "sequences", "why", "set_up"}."""
+        key, now = show.strip().lower(), time.time()
+        had = self._sg_shots.get(key)
+        if refresh or had is None or now - had[0] > SG_KEEP:
+            try:
+                data = self.client.shotgrid_shots(show.strip(), refresh=refresh)
+            except farm.FarmError as e:
+                data = {"show": show, "shots": [], "sequences": [], "why": str(e), "set_up": True}
+            had = self._sg_shots[key] = (now, data)
+        return had[1]
+
+    @staticmethod
+    def shot_codes(shots: list[dict], sequence: str = "") -> list[str]:
+        """The shot codes to suggest, narrowed to a sequence when one is given."""
+        s = (sequence or "").strip().lower()
+        return [x["code"] for x in shots if not s or (x.get("sequence") or "").lower() == s]
+
+    @staticmethod
+    def sequence_of(shots: list[dict], shot: str) -> str | None:
+        want = (shot or "").strip().lower()
+        return next((x.get("sequence") for x in shots if x["code"].lower() == want), None)
+
+    @staticmethod
+    def sg_note(data: dict, now: float | None = None) -> tuple[str, bool]:
+        """(the line under the shot field, whether it's a warning)."""
+        if not data or data.get("set_up") is False:
+            return "", False
+        if data.get("why"):
+            return data["why"], True
+        n = len(data.get("shots") or [])
+        return (f"{n} shot{'' if n == 1 else 's'} in {data.get('show')} · from ShotGrid "
+                f"{_ago(data.get('fetched_at'), now or time.time())}", False)
 
     # ------------------------------------------------------------ text for the view
     @staticmethod
@@ -281,7 +451,7 @@ class PanelModel:
             name += f"  v{version:03d}"
         workflow = (labels or {}).get(job.get("workflow")) or job.get("workflow") or ""
         return [job.get("short_id") or job["id"][:8], name, workflow, PanelModel.machine_of(job), job.get("user", ""),
-                status, progress, wait, _ago(job.get("created_at"), now), took]
+                status, progress, wait, _ago(job.get("created_at"), now), took, PanelModel.publish_cell(job)[0]]
 
     # ------------------------------------------------------------ machines
     @staticmethod
@@ -364,6 +534,174 @@ if QtWidgets is not None:
         """Delivers results from worker threads to the UI thread."""
         finished = QtCore.Signal(object, object, object)   # callback, result, error
 
+    def _suggesting(combo):
+        """An editable combo box that suggests from its items as you type (anywhere in the
+        name, any case) and takes anything typed."""
+        combo.setEditable(True)
+        combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        combo.setMaxVisibleItems(20)
+        c = combo.completer()
+        if c is not None:
+            c.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+            c.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+            c.setFilterMode(QtCore.Qt.MatchContains)
+        return combo
+
+    def _set_items(combo, items):
+        """New items, keeping what's typed."""
+        text = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(items)
+        combo.setEditText(text)
+        combo.blockSignals(False)
+
+    class PublishFields(QtWidgets.QWidget):
+        """Where a publish goes and how: show, sequence (narrows the shots down), shot (↻
+        reloads the lists), step, template, description, dry run. Show and shot suggest
+        from ShotGrid, through the farm; without it they're plain text."""
+
+        def __init__(self, panel, options: dict, values: dict, parent=None):
+            super().__init__(parent)
+            self.panel, self.model, self.options = panel, panel.model, options
+            self.touched: set[str] = set()     # typed in: no longer follows the input path
+            self._shots: list[dict] = []
+            self._n = 0
+            form = QtWidgets.QFormLayout(self)
+            form.setContentsMargins(0, 0, 0, 0)
+            self.show_box = _suggesting(QtWidgets.QComboBox())
+            self.show_box.setEditText(values.get("show") or "")
+            self.show_box.lineEdit().setPlaceholderText("from the input path")
+            self.seq_box = _suggesting(QtWidgets.QComboBox())
+            self.seq_box.setEditText(values.get("sequence") or "")
+            self.seq_box.lineEdit().setPlaceholderText("all (narrows the shot list)")
+            self.shot_box = _suggesting(QtWidgets.QComboBox())
+            self.shot_box.setEditText(values.get("shot") or "")
+            self.shot_box.lineEdit().setPlaceholderText("from the input path")
+            self.refresh_btn = QtWidgets.QToolButton()
+            self.refresh_btn.setText("↻")
+            self.refresh_btn.setToolTip("Reload the shows and shots from ShotGrid (a shot was just created)")
+            shot_row = QtWidgets.QHBoxLayout()
+            shot_row.setContentsMargins(0, 0, 0, 0)
+            shot_row.addWidget(self.shot_box, 1)
+            shot_row.addWidget(self.refresh_btn)
+            self.note = QtWidgets.QLabel("")
+            self.note.setWordWrap(True)
+            self.step_box = QtWidgets.QComboBox()
+            self.step_box.addItems(options.get("steps") or [])
+            step = values.get("step") or options.get("step")
+            if step and self.step_box.findText(step) >= 0:
+                self.step_box.setCurrentIndex(self.step_box.findText(step))
+            self.template_box = QtWidgets.QComboBox()
+            self.template_box.addItems(options.get("templates") or [])
+            if values.get("template") and self.template_box.findText(values["template"]) >= 0:
+                self.template_box.setCurrentIndex(self.template_box.findText(values["template"]))
+            unusable = options.get("unusable") or {}
+            self.template_box.setToolTip(f"In {options.get('folder')}/" + "".join(
+                f"\nNot usable: {n}.nk ({w})" for n, w in unusable.items()))
+            self.desc_edit = QtWidgets.QLineEdit(values.get("description") or "")
+            self.desc_edit.setPlaceholderText(options.get("description") or "Auto Publish")
+            self.desc_edit.setMaxLength(500)
+            forced = bool(options.get("dry_run"))
+            self.dry_check = QtWidgets.QCheckBox("Dry run: Daiquiri checks it, nothing goes to Tractor")
+            self.dry_check.setChecked(forced or bool(values.get("dry_run")))
+            self.dry_check.setEnabled(not forced)
+            if forced:
+                self.dry_check.setToolTip("publish.dry_run is on in the farm's config")
+            self.seq_label = QtWidgets.QLabel("Sequence")
+            form.addRow("Show", self.show_box)
+            form.addRow(self.seq_label, self.seq_box)
+            form.addRow("Shot", shot_row)
+            form.addRow("", self.note)
+            form.addRow("Step", self.step_box)
+            form.addRow("Nuke template", self.template_box)
+            form.addRow("Description", self.desc_edit)
+            form.addRow("", self.dry_check)
+            self._set_up(False)                # shown once the farm says ShotGrid is there
+            self.show_timer = QtCore.QTimer(self)
+            self.show_timer.setSingleShot(True)
+            self.show_timer.timeout.connect(lambda: self.load_shots(False))
+            self.show_box.lineEdit().textEdited.connect(self._show_typed)
+            self.show_box.activated.connect(lambda *_: (self.touched.add("show"), self.load_shots(False)))
+            self.seq_box.editTextChanged.connect(lambda *_: self._fill_shots())
+            self.shot_box.lineEdit().textEdited.connect(lambda *_: (self.touched.add("shot"), self._seq_of_shot()))
+            self.shot_box.activated.connect(lambda *_: (self.touched.add("shot"), self._seq_of_shot()))
+            self.refresh_btn.clicked.connect(lambda *_: self.reload(True))
+            self.reload(False)
+
+        def _set_up(self, on: bool):
+            for w in (self.seq_label, self.seq_box, self.refresh_btn):
+                w.setVisible(on)
+
+        def _show_typed(self, *_):
+            self.touched.add("show")
+            self.show_timer.start(500)
+
+        def values(self) -> dict:
+            return {"show": self.show_box.currentText(), "shot": self.shot_box.currentText(),
+                    "step": self.step_box.currentText(), "template": self.template_box.currentText(),
+                    "description": self.desc_edit.text(), "dry_run": self.dry_check.isChecked()}
+
+        def prefill(self, plan: dict):
+            """The input path's show and shot, into the fields not typed in."""
+            changed = False
+            for key, box in (("show", self.show_box), ("shot", self.shot_box)):
+                if key not in self.touched and plan.get(key) and box.currentText() != plan[key]:
+                    box.setEditText(plan[key])
+                    changed = True
+            if changed:
+                self.load_shots(False)
+
+        # ShotGrid, through the farm (in the background)
+        def reload(self, refresh: bool):
+            if refresh:
+                self.refresh_btn.setEnabled(False)
+                self.note.setText("Reloading from ShotGrid…")
+
+            def done(data, error):
+                if error:
+                    data = {"projects": [], "why": str(error), "set_up": True}
+                self._set_up(data.get("set_up") is not False)
+                _set_items(self.show_box, [p["code"] for p in data.get("projects") or []])
+                self.load_shots(refresh)
+            self.panel._async(lambda: self.model.sg_projects(refresh), done)
+
+        def load_shots(self, refresh: bool):
+            show = self.show_box.currentText().strip()
+            self._n += 1
+            n = self._n
+            if not show:
+                self._shots = []
+                self._fill_shots()
+                self.note.setText("")
+                self.refresh_btn.setEnabled(True)
+                return
+
+            def done(data, error):
+                self.refresh_btn.setEnabled(True)
+                if n != self._n:
+                    return                     # a newer show was asked for
+                if error:
+                    data = {"show": show, "shots": [], "why": str(error), "set_up": True}
+                if data.get("set_up") is False:
+                    self.note.setText("")
+                    return
+                self._shots = data.get("shots") or []
+                _set_items(self.seq_box, data.get("sequences") or [])
+                self._fill_shots()
+                self._seq_of_shot()
+                text, warn = PanelModel.sg_note(data)
+                self.note.setText(f"<span style='color:{'#e0a24a' if warn else '#8a929c'}'>{html.escape(text)}</span>")
+            self.panel._async(lambda: self.model.sg_shots(show, refresh), done)
+
+        def _fill_shots(self):
+            _set_items(self.shot_box, PanelModel.shot_codes(self._shots, self.seq_box.currentText()))
+
+        def _seq_of_shot(self):
+            seq = PanelModel.sequence_of(self._shots, self.shot_box.currentText())
+            if seq and self.seq_box.currentText().strip().lower() != seq.lower():
+                self.seq_box.setEditText(seq)
+
     class ComfyFarmPanel(QtWidgets.QWidget):
         instances: list = []
 
@@ -382,6 +720,8 @@ if QtWidgets is not None:
             self._selected_node: tuple[str, str] | None = None   # (node, input) from "From selected"
             self._workers: list[dict] = []
             self._plan_seq = 0
+            self._plan: dict | None = None             # the destination preview's answer
+            self.pub_check = self.pub_fields = self.pub_host = None   # "Publish when done"
             self._polling = False
             self._polls = 0
             self._build()
@@ -631,8 +971,40 @@ if QtWidgets is not None:
             self.name_edit = QtWidgets.QLineEdit()
             self.name_edit.setPlaceholderText("defaults to the shot")
             self.form.addRow("Job name", self.name_edit)
+            self.pub_check = self.pub_fields = self.pub_host = None
+            if self.model.publishes_jobs(wf["name"]):
+                self._add_publish_option(wf)
             self.submit_btn.setEnabled(bool(wf.get("enabled", True)))
             self._schedule_plan()
+
+        def _add_publish_option(self, wf):
+            """"Publish when done": the publish fields, once the farm has said what the
+            workflow can be published with."""
+            check = QtWidgets.QCheckBox("Publish when done")
+            check.setToolTip("A Nuke template rendered with the frames on Tractor (Daiquiri), with a daily "
+                             "in Artist Review")
+            host = QtWidgets.QWidget()
+            QtWidgets.QVBoxLayout(host).setContentsMargins(12, 0, 0, 0)
+            host.setVisible(False)
+            check.setEnabled(False)
+            check.toggled.connect(host.setVisible)
+            self.form.addRow("", check)
+            self.form.addRow("", host)
+            self.pub_check, self.pub_host = check, host
+
+            def done(options, error):
+                if self.pub_check is not check:
+                    return                     # another workflow was picked meanwhile
+                why = str(error) if error else options.get("why")
+                if why:
+                    check.setText("Publish when done (not available)")
+                    check.setToolTip(why)
+                    return
+                values = PanelModel.publish_prefill(self._plan, PanelModel.rdo_context(), options)
+                self.pub_fields = PublishFields(self, options, values)
+                host.layout().addWidget(self.pub_fields)
+                check.setEnabled(True)
+            self._async(lambda: self.model.publish_options(wf["name"], refresh=True), done)
 
         def _field(self, wf, p):
             """(value widget, row widget or layout) for one parameter."""
@@ -757,8 +1129,11 @@ if QtWidgets is not None:
                 if error:
                     self.dest_label.setText(f"<span style='color:#e0675b'>{html.escape(str(error))}</span>")
                 else:
+                    self._plan = result
                     self.dest_label.setText(PanelModel.destination_html(
                         result, {i["name"]: i.get("label") or i["name"] for i in PanelModel.inputs(wf)}))
+                    if self.pub_fields is not None:
+                        self.pub_fields.prefill(result)     # the input path's show and shot
             self._async(lambda: self.model.plan(wf["name"], raw), done)
 
         # -------------------------------------------------------- submit
@@ -775,6 +1150,9 @@ if QtWidgets is not None:
             seq = PanelModel.sequence_param(wf)
             node = self._selected_node[0] if self._selected_node and seq and \
                 raw.get(seq, "").strip() == self._selected_node[1] else None
+            publish = None
+            if self.pub_check is not None and self.pub_check.isChecked() and self.pub_fields is not None:
+                publish = PanelModel.publish_request(self.pub_fields.values())   # checked with the job
             self.submit_btn.setEnabled(False)
             self.msg_label.setText("Submitting…")
 
@@ -784,10 +1162,13 @@ if QtWidgets is not None:
                     self._message(str(error), True)
                     return
                 info = job.get("info") or {}
-                self._message(f"Queued {job['short_id']} → {info.get('output_dir_posix') or info.get('output_dir')}")
+                pub = info.get("publish_request")
+                self._message(f"Queued {job['short_id']} → {info.get('output_dir_posix') or info.get('output_dir')}"
+                              + (f" · publishes to {pub.get('shot')} {pub.get('step')} when done"
+                                 + (" (dry run)" if pub.get("dry_run") else "") if pub else ""))
                 self._schedule_plan()   # that version is taken now
                 self._poll(force=True)
-            self._async(lambda: self.model.submit(wf["name"], raw, name, source_node=node), done)
+            self._async(lambda: self.model.submit(wf["name"], raw, name, source_node=node, publish=publish), done)
 
         # -------------------------------------------------------- jobs
         def _poll(self, force=False):
@@ -845,6 +1226,9 @@ if QtWidgets is not None:
                     item.setText(col, text)
                 item.setForeground(STATUS_COL, QtGui.QBrush(QtGui.QColor(STATUS_COLORS.get(job["status"], "#d9dde2"))))
                 item.setToolTip(PROGRESS_COL, job.get("error") or "")
+                _text, color, tip = PanelModel.publish_cell(job)
+                item.setForeground(PUBLISH_COL, QtGui.QBrush(QtGui.QColor(color or "#d9dde2")))
+                item.setToolTip(PUBLISH_COL, tip)
             self._jobs = {j["id"]: j for j in jobs}
             active = sum(1 for j in jobs if j["status"] in ACTIVE)
             self.tabs.setTabText(1, f"Queue ({active} active)" if active else "Queue")
@@ -889,6 +1273,15 @@ if QtWidgets is not None:
             copy.triggered.connect(lambda *_: QtWidgets.QApplication.clipboard().setText(path))
             reuse = menu.addAction("Use this job's input")
             reuse.triggered.connect(lambda *_: self._reuse(job))
+            if self.model.publishes_jobs(job.get("workflow")) or job.get("publish"):
+                menu.addSeparator()
+                pub = menu.addAction("Publish…")
+                pub.setEnabled(job["status"] == "done" and job.get("kind") != "set"
+                               and self.model.publishes_jobs(job.get("workflow")))
+                pub.triggered.connect(lambda *_: self._publish_dialog(job))
+                log = menu.addAction("Publish log")
+                log.setEnabled(bool(job.get("publish")))
+                log.triggered.connect(lambda *_: self._publish_log(job))
             menu.addSeparator()
             cancel = menu.addAction("Cancel job")
             cancel.setEnabled(job["status"] in ("preparing", "queued", "dispatched", "running"))
@@ -908,6 +1301,79 @@ if QtWidgets is not None:
                 err.triggered.connect(lambda *_: QtWidgets.QMessageBox.warning(self, "ComfyFarm", job["error"]))
             run = getattr(menu, "exec", None) or getattr(menu, "exec_")
             run(self.table.viewport().mapToGlobal(pos))
+
+        # -------------------------------------------------------- publishing a finished job
+        def _publish_dialog(self, job):
+            """Publish… : the fields, started from the job (its earlier publish, its shot,
+            the Nuke session's step), then dispatch."""
+            def opened(options, error):
+                why = str(error) if error else options.get("why")
+                if why:
+                    QtWidgets.QMessageBox.warning(self, "ComfyFarm", why)
+                    return
+                info = job.get("info") or {}
+                last = job.get("publish") or info.get("publish_request")
+                values = PanelModel.publish_prefill({"show": info.get("show"), "shot": info.get("shot")},
+                                                    PanelModel.rdo_context(), options, last)
+                dlg = QtWidgets.QDialog(self)
+                dlg.setWindowTitle(f"Publish {job.get('short_id') or job['id'][:8]} · {job.get('name') or ''}")
+                dlg.setMinimumWidth(520)
+                lay = QtWidgets.QVBoxLayout(dlg)
+                out = job.get("outputs") or {}
+                frames = f" ({out['first']}-{out['last']})" if out.get("first") is not None else ""
+                about = QtWidgets.QLabel(
+                    f"The template is copied with its Placeholder_Output_Comfyui Read on this job's frames{frames}, "
+                    f"then Daiquiri renders its Writes on Tractor and makes a daily in Artist Review.")
+                about.setWordWrap(True)
+                lay.addWidget(about)
+                fields = PublishFields(self, options, values, dlg)
+                lay.addWidget(fields)
+                msg = QtWidgets.QLabel("")
+                msg.setWordWrap(True)
+                lay.addWidget(msg)
+                buttons = QtWidgets.QDialogButtonBox()
+                go = buttons.addButton("Publish", QtWidgets.QDialogButtonBox.AcceptRole)
+                buttons.addButton(QtWidgets.QDialogButtonBox.Cancel)
+                buttons.rejected.connect(dlg.reject)
+                lay.addWidget(buttons)
+
+                def publish(*_):
+                    chosen = fields.values()
+                    go.setEnabled(False)
+                    msg.setText("Staging the template…")
+
+                    def done(rec, err):
+                        if err:
+                            go.setEnabled(True)
+                            msg.setText(f"<span style='color:#e0675b'>{html.escape(str(err))}</span>")
+                            return
+                        dlg.accept()
+                        self._message(f"{job.get('short_id') or ''} publish {rec.get('state')}: {rec.get('show')} "
+                                      f"{rec.get('shot')} {rec.get('step')}" + (" (dry run)" if chosen["dry_run"] else ""))
+                        self._poll(force=True)
+                    self._async(lambda: self.model.publish(job["id"], chosen), done)
+                go.clicked.connect(publish)
+                dlg.open()
+            self._async(lambda: self.model.publish_options(job["workflow"], refresh=True), opened)
+
+        def _publish_log(self, job):
+            """Every publish of the job: where it went, the command, Daiquiri's output."""
+            def done(publishes, error):
+                if error:
+                    self._message(str(error), True)
+                    return
+                dlg = QtWidgets.QDialog(self)
+                dlg.setWindowTitle(f"Publishes of {job.get('short_id') or job['id'][:8]} · {job.get('name') or ''}")
+                dlg.resize(820, 520)
+                lay = QtWidgets.QVBoxLayout(dlg)
+                text = QtWidgets.QPlainTextEdit(PanelModel.publish_log_text(publishes))
+                text.setReadOnly(True)
+                lay.addWidget(text)
+                close = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+                close.rejected.connect(dlg.reject)
+                lay.addWidget(close)
+                dlg.open()
+            self._async(lambda: self.model.publishes(job["id"]), done)
 
         def _retry(self, job_id):
             job = farm.retry(job_id)

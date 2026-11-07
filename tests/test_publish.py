@@ -210,7 +210,9 @@ class PublisherTests(unittest.TestCase):
         self.cfg = Config.model_validate({
             "workers": [], "database": str(self.tmp / "farm.db"),
             "publish": {"enabled": True, "dry_run": False, "templates": str(templates),
-                        "staging": str(templates / ".staging"), "shell": ["/bin/sh", "-c"], "command": cmd}})
+                        "staging": str(templates / ".staging"), "shell": ["/bin/sh", "-c"], "command": cmd,
+                        "show_folder": str(self.tmp / "shows" / "{show}")}})
+        (self.tmp / "shows" / "bri3").mkdir(parents=True)
         self.store = JobStore(self.tmp / "farm.db")
         self.addCleanup(self.store.close)
         self.farm = Farm(self.cfg, self.store, WorkflowRegistry(REPO / "workflows"), EventBus())
@@ -240,6 +242,9 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("isn't switched on", self.pub.options("ltx25_alpha_gen")["why"])
 
     def test_check(self):
+        with self.assertRaises(ParamError) as e:                     # no /rdo/shows/<show>: not published to
+            self.pub.check("ltx25_alpha_gen", {"show": "bc1"}, show="bri3", shot="305046_0010")
+        self.assertIn("Show bc1 has no folder on disk", str(e.exception))
         r = self.pub.check("ltx25_alpha_gen", {}, show="bri3", shot="305046_0010")
         self.assertEqual(r, {"show": "bri3", "shot": "305046_0010", "step": "lay", "template": "default",
                              "description": "Auto Publish"})
