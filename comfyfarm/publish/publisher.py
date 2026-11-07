@@ -24,7 +24,7 @@ from ..protocol import now
 from ..workflows import ParamError
 from . import dispatch as D
 from . import nuke as N
-from .templates import GENERIC, TemplateStore, key_of, label, split_key, valid_name
+from .templates import GLOBAL, TemplateStore, canonical, key_of, label, scope_of, split_key, valid_name
 
 log = logging.getLogger("comfyfarm")
 
@@ -71,9 +71,13 @@ class Publisher:
         self._task: asyncio.Task | None = None
         self._cleaned = 0.0
         self._lock = threading.Lock()
+        self._templates: TemplateStore | None = None
 
     # ================================================================ lifecycle
     async def start(self) -> None:
+        if self.cfg.enabled:
+            for line in await asyncio.to_thread(self.templates.move_legacy):
+                log.info("publish templates: %s", line)
         self._loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="publisher")
@@ -108,7 +112,11 @@ class Publisher:
     # ================================================================ what's possible
     @property
     def templates(self) -> TemplateStore:
-        return TemplateStore(self.cfg.templates)
+        """One store (its lock keeps two saves of a template from crossing)."""
+        root = Path(self.cfg.templates)
+        if self._templates is None or self._templates.root != root:
+            self._templates = TemplateStore(root)
+        return self._templates
 
     def templates_dir(self, workflow: str) -> Path:
         return self.templates.folder(workflow)
@@ -134,12 +142,12 @@ class Publisher:
 
     def options(self, workflow: str) -> dict:
         """What the forms offer for a workflow: whether it publishes, its templates (its
-        own, then the generic ones; and why any can't be used), the steps and defaults."""
+        own, then the global ones; and why any can't be used), the steps and defaults."""
         wf = self.farm.registry.get(workflow)
         store = self.templates
         out = {"workflow": wf.name, "enabled": self.cfg.enabled, "dry_run": self.cfg.dry_run, "steps": self.cfg.steps,
                "step": (wf.publish or {}).get("step") or self.cfg.default_step, "description": self.cfg.description,
-               "folder": str(store.folder(wf.name)), "generic_folder": str(store.folder(GENERIC)),
+               "folder": str(store.folder(wf.name)), "global_folder": str(store.folder(GLOBAL)),
                "templates": [], "labels": {}, "template": None, "unusable": {}, "why": None}
         why = self.not_published(wf)
         if why:
@@ -149,7 +157,7 @@ class Publisher:
             out["why"] = "Publishing isn't switched on (publish.enabled in the manager's config.yaml)."
             return out
         inputs = list(wf.ports)
-        for scope in (wf.name, GENERIC):
+        for scope in (wf.name, GLOBAL):
             for name in store.names(scope):
                 key = key_of(scope, name)
                 probs = store.problems(scope, name, inputs)
@@ -160,7 +168,7 @@ class Publisher:
                     out["labels"][key] = label(key)
         out["template"] = self._default_template(out["templates"])
         if not out["templates"]:
-            out["why"] = (f"No usable template for {wf.label} in {out['folder']} or {out['generic_folder']}" +
+            out["why"] = (f"No usable template for {wf.label} in {out['folder']} or {out['global_folder']}" +
                           (f" ({'; '.join(f'{label(k)}: {w}' for k, w in out['unusable'].items())})"
                            if out["unusable"] else "") + ": save one (README, Publishing).")
         return out
@@ -168,14 +176,14 @@ class Publisher:
     @staticmethod
     def _default_template(keys: list[str]) -> str | None:
         """The one the forms start with: the workflow's own default, else its first, else the
-        generic default, else the first generic one."""
-        own = [k for k in keys if not k.startswith(GENERIC + "/")]
+        global default, else the first global one."""
+        own = [k for k in keys if not k.startswith(GLOBAL + "/")]
         if "default" in own:
             return "default"
         if own:
             return own[0]
-        if f"{GENERIC}/default" in keys:
-            return f"{GENERIC}/default"
+        if f"{GLOBAL}/default" in keys:
+            return f"{GLOBAL}/default"
         return keys[0] if keys else None
 
     def check(self, workflow: str, req: dict, show: str | None = None, shot: str | None = None) -> dict:
@@ -189,7 +197,7 @@ class Publisher:
             raise ParamError("Pick the step to publish to.")
         if step not in self.cfg.steps:
             raise ParamError(f"Step {step!r} isn't one of the studio's ({', '.join(self.cfg.steps)}).")
-        template = str(req.get("template") or "").strip() or opts["template"]
+        template = canonical(str(req.get("template") or "").strip()) or opts["template"]
         if template not in opts["templates"]:
             why = opts["unusable"].get(template)
             raise ParamError(f"Template {label(template)} can't be used: {why}." if why else
@@ -311,11 +319,11 @@ class Publisher:
 
     # ================================================================ the templates
     def _template_scope(self, scope: str):
-        """The workflow a scope is (None for the generic one); ParamError when it can't
+        """The workflow a scope is (None for the global one); ParamError when it can't
         hold templates."""
         if not self.cfg.enabled:
             raise ParamError("Publishing isn't switched on (publish.enabled in the manager's config.yaml).")
-        if scope == GENERIC:
+        if scope_of(scope) == GLOBAL:
             return None
         wf = self.farm.registry.workflows.get(scope)
         if wf is None:
@@ -326,14 +334,14 @@ class Publisher:
         return wf
 
     def template_overview(self) -> dict:
-        """Every scope that can hold templates (generic first, then each published
+        """Every scope that can hold templates (global first, then each published
         workflow) with its templates: usable or why not, who saved each last and when."""
         store = self.templates
         out = {"enabled": self.cfg.enabled, "folder": str(store.root), "scopes": [], "why": None}
         if not self.cfg.enabled:
             out["why"] = "Publishing isn't switched on (publish.enabled in the manager's config.yaml)."
             return out
-        scopes = [(GENERIC, "Generic (every workflow)", None)]
+        scopes = [(GLOBAL, "Global (every workflow)", None)]
         scopes += [(wf.name, wf.label, list(wf.ports)) for wf in self.farm.registry.workflows.values()
                    if not self.not_published(wf)]
         for scope, title, inputs in scopes:
@@ -347,12 +355,14 @@ class Publisher:
         return out
 
     def template_history(self, scope: str, name: str) -> list[dict]:
+        scope = scope_of(scope)
         self._template_scope(scope)
         if not valid_name(name):
             raise PublishError(f"There's no template {name}.", 404)
         return self.templates.history(scope, name)
 
     def template_file(self, scope: str, name: str, version: str | None = None) -> bytes:
+        scope = scope_of(scope)
         self._template_scope(scope)
         if not valid_name(name):
             raise PublishError(f"There's no template {name}.", 404)
@@ -365,6 +375,7 @@ class Publisher:
     def save_template(self, scope: str, name: str, text: str, user: str) -> dict:
         """Save a template (anyone may; every version is kept). ParamError says why a
         script can't be one."""
+        scope = scope_of(scope)
         wf = self._template_scope(scope)
         if not valid_name(name):
             raise ParamError("A template's name is letters, digits, _ . - (up to 64), e.g. default or alpha_over_plate.")
@@ -376,6 +387,7 @@ class Publisher:
         return {"scope": scope, "name": name, "key": key_of(scope, name), **entry}
 
     def restore_template(self, scope: str, name: str, version: str, user: str) -> dict:
+        scope = scope_of(scope)
         self._template_scope(scope)
         if not valid_name(name):
             raise PublishError(f"There's no template {name}.", 404)

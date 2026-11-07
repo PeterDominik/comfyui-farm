@@ -347,9 +347,13 @@ class PanelModel:
 
     @staticmethod
     def template_label(key: str | None) -> str:
-        """A template as the forms show it: default, or default (generic)."""
+        """A template as the forms show it: default, or default (global). (_generic/ is
+        what the global ones were called at first.)"""
         key = key or ""
-        return f"{key[len('_generic/'):]} (generic)" if key.startswith("_generic/") else key
+        for prefix in ("_global/", "_generic/"):
+            if key.startswith(prefix):
+                return f"{key[len(prefix):]} (global)"
+        return key
 
     @staticmethod
     def sequence_from_shot(shot: str) -> str:
@@ -656,10 +660,12 @@ if QtWidgets is not None:
             self.reload(False)
 
         def _fill_templates(self, options: dict, pick: str | None = None):
-            """The usable templates (the workflow's own, then the generic ones), keeping the
+            """The usable templates (the workflow's own, then the global ones), keeping the
             pick when it's still there, else the farm's default; why the others can't be used
             on hover."""
             keys = options.get("templates") or []
+            if pick and pick.startswith("_generic/"):          # what the global ones were called at first
+                pick = "_global/" + pick[len("_generic/"):]
             self.template_box.blockSignals(True)
             self.template_box.clear()
             for k in keys:
@@ -669,7 +675,7 @@ if QtWidgets is not None:
                 self.template_box.setCurrentIndex(keys.index(want))
             self.template_box.blockSignals(False)
             unusable = options.get("unusable") or {}
-            self.template_box.setToolTip(f"In {options.get('folder')}/ and {options.get('generic_folder')}/" + "".join(
+            self.template_box.setToolTip(f"In {options.get('folder')}/ and {options.get('global_folder')}/" + "".join(
                 f"\nNot usable: {PanelModel.template_label(n)} ({w})" for n, w in unusable.items()))
 
         def reload_templates(self):

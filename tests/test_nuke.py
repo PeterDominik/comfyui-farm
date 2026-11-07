@@ -133,20 +133,21 @@ class NukeHelpers(unittest.TestCase):
 
     def test_publish_template_targets(self):
         nk, _ = self.load([])
-        scopes = ["_generic", "ltx25_alpha_gen", "wan22_i2i"]
+        scopes = ["_global", "ltx25_alpha_gen", "wan22_i2i"]
         self.assertEqual(nk.workflow_from_label("comfyfarm a1b2c3d4\nltx25_alpha_gen"), "ltx25_alpha_gen")
         self.assertIsNone(nk.workflow_from_label("my notes"))
-        self.assertEqual(nk.template_from_filename("/home/x/.nuke/comfyfarm_templates/_generic__default.nk"),
-                         ("_generic", "default"))
+        self.assertEqual(nk.template_from_filename("/home/x/.nuke/comfyfarm_templates/_global__default.nk"),
+                         ("_global", "default"))
+        self.assertEqual(nk.template_from_filename("_generic__default.nk"), ("_global", "default"))   # opened before the rename
         self.assertEqual(nk.template_from_filename("ltx25_alpha_gen__over_plate.nk"), ("ltx25_alpha_gen", "over_plate"))
         self.assertIsNone(nk.template_from_filename("/shows/x/comp_v003.nk"))
-        # Opened from a template: back to it; else the output Read's workflow; else generic.
+        # Opened from a template: back to it; else the output Read's workflow; else global.
         self.assertEqual(nk.template_target(scopes, "/t/wan22_i2i__still.nk", "comfyfarm x\nltx25_alpha_gen"),
                          ("wan22_i2i", "still"))
         self.assertEqual(nk.template_target(scopes, "/shows/x/comp.nk", "comfyfarm x\nltx25_alpha_gen"),
                          ("ltx25_alpha_gen", "default"))
-        self.assertEqual(nk.template_target(scopes, "/shows/x/comp.nk", "comfyfarm x\nchord_pbr"), ("_generic", "default"))
-        self.assertEqual(nk.scope_label("_generic"), "generic")
+        self.assertEqual(nk.template_target(scopes, "/shows/x/comp.nk", "comfyfarm x\nchord_pbr"), ("_global", "default"))
+        self.assertEqual((nk.scope_label("_global"), nk.scope_label("_generic")), ("global", "global"))
 
     def test_save_as_publish_template(self):
         tmp = Path(tempfile.mkdtemp())
@@ -182,7 +183,7 @@ class NukeHelpers(unittest.TestCase):
                 return self.fields[k]
         fake.Panel = Panel
         saved = []
-        overview = {"scopes": [{"scope": "_generic", "templates": []},
+        overview = {"scopes": [{"scope": "_global", "templates": []},
                                {"scope": "ltx25_alpha_gen", "templates": [{"name": "default"}]}], "why": None}
         with mock.patch.object(farm, "publish_templates", return_value=overview), \
                 mock.patch.object(farm, "save_template", side_effect=lambda *a: saved.append(a) or {"version": "v1"}):
@@ -191,7 +192,7 @@ class NukeHelpers(unittest.TestCase):
         self.assertEqual(read.name(), "Placeholder_Output_Comfyui")          # renamed, asked first
         self.assertIn("Rename the selected Read (Read1)", state["asked"][0])
         self.assertEqual(state["saved"], 1)                                   # saved before it's read
-        self.assertEqual(state["panel"].items, "ltx25_alpha_gen generic")     # its workflow first
+        self.assertEqual(state["panel"].items, "ltx25_alpha_gen global")     # its workflow first
         self.assertIn("Replace default (ltx25_alpha_gen)?", state["asked"][-1])
         self.assertEqual(saved, [("ltx25_alpha_gen", "default", script.read_text())])
         self.assertIn("Published as default (ltx25_alpha_gen)", fake.messages[-1])

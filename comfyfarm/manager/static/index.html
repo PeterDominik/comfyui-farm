@@ -16,9 +16,11 @@
   h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
   h1 span { color: var(--accent); }
   .spacer { flex: 1; }
-  nav.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--line); }
+  nav.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--line);
+             overflow-x: auto; scrollbar-width: none; }   /* a narrow window scrolls the tabs, not the page */
+  nav.tabs::-webkit-scrollbar { display: none; }
   nav.tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-                    color: var(--muted); padding: 10px 14px; font-weight: 600; }
+                    color: var(--muted); padding: 10px 14px; font-weight: 600; white-space: nowrap; flex: none; }
   nav.tabs button:hover { color: var(--text); }
   nav.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
   nav.tabs .count { color: var(--muted); font-weight: 400; margin-left: 4px; }
@@ -124,7 +126,7 @@
   <button data-tab="queue">Queue<span class="count" id="queueCount"></span></button>
   <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
   <button data-tab="runtimes">Run times</button>
-  <button data-tab="templates" id="templatesTab" hidden>Templates</button>
+  <button data-tab="templates" id="templatesTab" hidden>Nuke Publish Templates</button>
 </nav>
 
 <main>
@@ -166,14 +168,14 @@
   </section>
 
   <section id="tab-templates" hidden>
-    <div class="sechead"><h2>Publish templates</h2>
+    <div class="sechead"><h2>Nuke Publish Templates</h2>
       <span class="muted">The Nuke scripts publishing renders (README, Publishing). Anyone can publish one; every version is kept and can be restored.</span>
       <button class="small" type="button" id="tplReload" title="Reload the list">↻</button></div>
     <form id="tplForm" autocomplete="off">
       <label>For<select id="tplScope"></select></label>
       <label>Name<input id="tplName" list="tplNames" value="default" maxlength="64"><datalist id="tplNames"></datalist>
         <span class="help">default is the one publishing starts with</span></label>
-      <label class="wide">Nuke script<input type="file" id="tplFile" accept=".nk"><span class="help">a saved script with a Read named Placeholder_Output_Comfyui and a WriteNukleus. In Nuke: ComfyFarm ▸ Save as publish template…</span></label>
+      <label class="wide">Nuke script<input type="file" id="tplFile" accept=".nk"><span class="help">a saved script with a Read named Placeholder_Output_Comfyui and a WriteNukleus. In Nuke: ComfyFarm ▸ Save as Nuke Publish Template…</span></label>
       <div class="actions"><button class="primary" type="submit">Publish template</button><span class="msg" id="tplMsg"></span></div>
     </form>
     <table>
@@ -234,9 +236,25 @@ function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
   $("#tabs").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  tabsMoved = false; tabInView();
   store.set("comfyfarm.tab", tab);
   if (tab === "templates") loadTemplates();
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
+}
+// In a narrow window the tabs scroll: keep the open one in view, also when a tab before it
+// grows (its count, the Nuke Publish Templates tab appearing), until the tabs are scrolled by hand.
+let tabsMoved = false;
+function tabInView() {
+  const nav = $("#tabs"), on = nav.querySelector("button.on");
+  if (!on || on.hidden) return;
+  const n = nav.getBoundingClientRect(), b = on.getBoundingClientRect();
+  if (b.right > n.right) nav.scrollLeft += b.right - n.right + 20;
+  else if (b.left < n.left) nav.scrollLeft -= n.left - b.left + 20;
+}
+for (const ev of ["wheel", "touchstart", "pointerdown"]) $("#tabs").addEventListener(ev, () => { tabsMoved = true; }, { passive: true });
+if (window.ResizeObserver) {
+  const tabsGrew = new ResizeObserver(() => { if (!tabsMoved) tabInView(); });
+  $("#tabs").querySelectorAll("button").forEach(b => tabsGrew.observe(b));
 }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); });
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
@@ -651,7 +669,8 @@ for (const [id, key] of [["#scope", "scope"], ["#filter", "filter"]]) {
 const pubOptions = name => api(`/api/v1/workflows/${encodeURIComponent(name)}/publish`);
 const wfPublish = name => state.workflows.find(w => w.name === name)?.publish;
 const fromPath = v => v ? `${v} (from the input path)` : "from the input path";
-const tplLabel = k => k.startsWith("_generic/") ? `${k.slice(9)} (generic)` : k;   // default, default (generic)
+// default, default (global); _generic/ is what the global ones were called at first
+const tplLabel = k => { const m = /^_(?:global|generic)\/(.*)$/.exec(k); return m ? `${m[1]} (global)` : k; };
 
 // ↻ next to the template list: what's published now, keeping the pick when it's still there.
 function wireTemplateReload(px, workflow) {
@@ -900,8 +919,8 @@ async function openPublishLog(id) {
   dlg.showModal();
 }
 
-// ------------------------------------------------------------- publish templates (Templates tab)
-// Every scope (generic, then each published workflow) with its templates; History lists every
+// ------------------------------------------------------------- publish templates (Nuke Publish Templates tab)
+// Every scope (global, then each published workflow) with its templates; History lists every
 // version kept, any of which can be put back (Restore makes it the newest; nothing is lost).
 const tplOpen = new Set();          // "scope/name" whose history is unfolded
 const tplHistory = new Map();       // "scope/name" -> its versions
@@ -931,7 +950,7 @@ function renderTemplates() {
   $("#templates").innerHTML = d.scopes.map(s => `<tr class="tplscope"><td colspan="5"><b>${esc(s.label)}</b>
       <span class="muted mono">${esc(s.folder)}/</span></td></tr>` + (s.templates.length ? s.templates.map(t => {
       const k = `${s.scope}/${t.name}`, open = tplOpen.has(k), hist = tplHistory.get(k) || [];
-      const starts = t.name !== "default" ? "" : s.scope === "_generic" ? "(starts selected when a workflow has none of its own)" : "(starts selected)";
+      const starts = t.name !== "default" ? "" : s.scope === "_global" ? "(starts selected when a workflow has none of its own)" : "(starts selected)";
       return `<tr><td class="mono">${esc(t.name)}${starts ? ` <span class="muted">${starts}</span>` : ""}</td>
         <td>${t.usable ? '<span class="ok">usable</span>' : `<span class="err" title="${esc(t.why)}">not usable</span><br><span class="help">${esc(t.why)}</span>`}
           ${t.changed_on_disk ? '<br><span class="warn">changed on disk outside the farm (kept at the next save)</span>' : ""}</td>
@@ -962,12 +981,12 @@ $("#templates").addEventListener("click", async e => {
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(await r.blob());
-      a.download = `${scope === "_generic" ? "generic_" : ""}${name}${ver ? "_" + ver : ""}.nk`;
+      a.download = `${scope === "_global" ? "global_" : ""}${name}${ver ? "_" + ver : ""}.nk`;
       a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     } catch (err) { alert(err.message); }
   } else if (t.dataset.tplrestore) {
     const [scope, name] = t.dataset.tplrestore.split("/"), ver = t.dataset.ver;
-    if (!confirm(`Put ${name} (${scope === "_generic" ? "generic" : scope}) back to the version of ${ver}?\nThe one in place now stays in the history.`)) return;
+    if (!confirm(`Put ${name} (${scope === "_global" ? "global" : scope}) back to the version of ${ver}?\nThe one in place now stays in the history.`)) return;
     t.disabled = true;
     try {
       await api(tplUrl(scope, name, "/restore"), { method: "POST", body: JSON.stringify({ version: ver }) });

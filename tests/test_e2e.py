@@ -679,7 +679,7 @@ convert:
         # Templates can't be published either, and the overview says why.
         self.assertIn("isn't switched on", farm.publish_templates()["why"])
         with self.assertRaisesRegex(farm.FarmError, "isn't switched on"):
-            farm.save_template("_generic", "default", "Root {\n}\n")
+            farm.save_template("_global", "default", "Root {\n}\n")
         # ShotGrid lookups are off too: the fields are plain text.
         sg = farm.shotgrid_projects(refresh=True)
         self.assertEqual((sg["projects"], sg["set_up"]), ([], False))

@@ -256,7 +256,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         return {"publishes": store.publishes(_job_or_404(job_id)["id"])}
 
     # ---------------------------------------------------------------- publish templates
-    # scope: a workflow's name, or _generic (every workflow). Anyone may save; every
+    # scope: a workflow's name, or _global (every workflow). Anyone may save; every
     # version is kept, so a bad save can be restored.
     def _who(ident: Identity, given: str | None) -> str:
         return ident.user if cfg.auth.api_keys else ((given or ident.user or "").strip()[:64] or "unknown")

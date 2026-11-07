@@ -395,7 +395,7 @@ it, as before. `agent --check` lists the differences as warnings.
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
   and why. *Drain* / *Resume* per machine.
 - **Run times:** how long each workflow takes on each GPU type, what the ETAs come from.
-- **Templates** (while publishing is on): the publish templates, their history, publishing and restoring one (see *Publishing*).
+- **Nuke Publish Templates** (while publishing is on): the publish templates, their history, publishing and restoring one (see *Publishing*).
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
@@ -569,7 +569,7 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/workflows/{name}/publish` | What it can be published with: `templates` (and `unusable` ones, with why), `steps`, the default `step` and `description`; `why` when it can't be |
 | POST | `/api/v1/jobs/{id}/publish` | Publish a finished job `{step?, show?, shot?, template?, description?, dry_run?, wait?}` → the publish (`state`: `queued`, `dispatching`, `dispatched` with `tractor_id`, `dry_run`, `failed` with `error`) |
 | GET | `/api/v1/jobs/{id}/publishes` | Its publishes, the latest first, with the command run and dispatchGraph's output |
-| GET | `/api/v1/publish/templates` | Every scope's templates (`_generic`, then each published workflow): usable or `why`, `saved_by`, `saved_at`, `versions` |
+| GET | `/api/v1/publish/templates` | Every scope's templates (`_global`, then each published workflow): usable or `why`, `saved_by`, `saved_at`, `versions` |
 | GET | `/api/v1/publish/templates/{scope}/{name}/history` | Every version kept: `version`, `time`, `user`, `action` (save, restore, found), `current` |
 | GET | `/api/v1/publish/templates/{scope}/{name}/file?version=` | The `.nk` (the one in place, or a version) |
 | POST | `/api/v1/publish/templates/{scope}/{name}` | Publish a template `{text}` (the whole script), checked like publishing checks it |
@@ -620,7 +620,7 @@ Two ways to ask for it:
 | Show, shot | Filled in from the input path until you type in them, and again (with the sequence) when a new input path names another show or shot (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
 | Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
 | Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step`, else `publish.default_step` (`lay`) |
-| Nuke template | The workflow's own templates, then the generic ones (`default (generic)`); it starts on the workflow's `default`, else its first, else the generic `default`. **↻** reloads the list after a template is published |
+| Nuke template | The workflow's own templates, then the global ones (`default (global)`); it starts on the workflow's `default`, else its first, else the global `default`. **↻** reloads the list after a template is published |
 | Description | Default `Auto Publish`; ` (ComfyFarm <job>, <user>)` is added to it |
 | Dry run | dispatchGraph `--dry-run`: Daiquiri checks the context and the script, nothing goes to Tractor |
 
@@ -663,9 +663,9 @@ the Nuke panel) ask the manager, so the key never leaves wrk1125l. To set it up:
 ### Publish templates
 
 `<publish.templates>/<workflow>/<name>.nk`, e.g.
-`/rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/default.nk`, and the **generic**
-ones, `<publish.templates>/_generic/<name>.nk`, offered for every workflow after its own (so a
-workflow without a template of its own publishes with the generic `default`). An ordinary
+`/rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/default.nk`, and the **global**
+ones, `<publish.templates>/_global/<name>.nk`, shared by every workflow and offered after its own
+(so a workflow without a template of its own publishes with the global `default`). An ordinary
 Nuke script, built around nodes with set names:
 
 - a Read named **`Placeholder_Output_Comfyui`**: the job's frames go into it (file, frame range,
@@ -683,27 +683,32 @@ offered; the form lists it as not usable, with why. The staged copy is
 `<publish.staging>/<job id>/<name>.nk` (readable by everyone, removed after
 `publish.keep_days`), so what Tractor rendered can be opened afterwards.
 
-A generic template can only count on `Placeholder_Output_Comfyui`: an input Read in it makes
+A global template can only count on `Placeholder_Output_Comfyui`: an input Read in it makes
 it unusable for workflows without that input (listed so, with why).
 
 **Publishing a template** (anyone can; every version is kept):
 
 - **In Nuke:** build the comp on a real ComfyFarm output (the panel's Read), save the script,
-  then *ComfyFarm ▸ Save as publish template…*. A selected Read is renamed
+  then *ComfyFarm ▸ Save as Nuke Publish Template…*. A selected Read is renamed
   `Placeholder_Output_Comfyui` if the script has none (asked first). Pick the workflow (it
-  starts on the one the Read came from) or *generic*, and a name (`default` is the one
+  starts on the one the Read came from) or *global*, and a name (`default` is the one
   publishing starts with). The whole saved script is published.
-- *ComfyFarm ▸ Open publish template…* opens a copy of one to edit (in `~/.nuke/comfyfarm_templates`);
-  *Save as publish template…* then offers to save it back to the same one.
-- **In the dashboard's Templates tab:** pick the workflow (or generic), a name and the `.nk`.
+- *ComfyFarm ▸ Open Nuke Publish Template…* opens a copy of one to edit (in `~/.nuke/comfyfarm_templates`);
+  *Save as Nuke Publish Template…* then offers to save it back to the same one.
+- **In the dashboard's Nuke Publish Templates tab:** pick the workflow (or global), a name and the `.nk`.
 
 The manager checks the script (the output Read, a WriteNukleus, input Reads the workflow
 has) and writes it, so artists don't need write access to the bank. Every version put in
 place is kept in `<publish.templates>/.history/<scope>/<name>/` with who saved it and when
-(a file found changed on disk is kept first). The **Templates** tab lists every workflow's
-templates and the generic ones (usable or why not, last saved by, versions); *History* shows
+(a file found changed on disk is kept first). The **Nuke Publish Templates** tab lists every
+workflow's templates and the global ones (usable or why not, last saved by, versions); *History* shows
 each version with *Download* and **Restore**, which puts it back as the newest version, so
 nothing is lost.
+
+The global templates were called *generic* at first (`_generic/`): when the manager starts it
+moves `_generic/` to `_global/`, and `.history/_generic/` with it, unless `_global/` is already
+there (then both are left for you to merge, and the manager's log says so). Publishes asked
+for with a `_generic/` template still work.
 
 ### Turning it on
 

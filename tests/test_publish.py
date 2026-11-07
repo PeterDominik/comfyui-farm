@@ -242,31 +242,35 @@ class PublisherTests(unittest.TestCase):
         self.cfg.publish.enabled = False
         self.assertIn("isn't switched on", self.pub.options("ltx25_alpha_gen")["why"])
 
-    def test_generic_templates_and_the_default(self):
+    def test_global_templates_and_the_default(self):
         root = Path(self.cfg.publish.templates)
-        (root / "_generic").mkdir()
-        shutil.copy(TEMPLATE, root / "_generic" / "default.nk")
-        shutil.copy(TEMPLATE, root / "_generic" / "over_plate.nk")
-        (root / "_generic" / "with_input.nk").write_text(TEMPLATE.read_text().replace(
+        (root / "_global").mkdir()
+        shutil.copy(TEMPLATE, root / "_global" / "default.nk")
+        shutil.copy(TEMPLATE, root / "_global" / "over_plate.nk")
+        (root / "_global" / "with_input.nk").write_text(TEMPLATE.read_text().replace(
             "Dot {\n name Dot1", "Read {\n inputs 0\n name Placeholder_Input_reference\n}\nDot {\n name Dot1"))
-        # A workflow with its own: its own default first, the generic ones after.
+        # A workflow with its own: its own default first, the global ones after.
         o = self.pub.options("ltx25_alpha_gen")
-        self.assertEqual(o["templates"], ["default", "_generic/default", "_generic/over_plate"])
-        self.assertEqual((o["template"], o["labels"]["_generic/default"]), ("default", "default (generic)"))
-        self.assertIn("reference", o["unusable"]["_generic/with_input"])     # LTX alpha has no reference input
-        # Without its own: the generic default; Wan (no publish section) publishes too, at the default step.
+        self.assertEqual(o["templates"], ["default", "_global/default", "_global/over_plate"])
+        self.assertEqual((o["template"], o["labels"]["_global/default"]), ("default", "default (global)"))
+        self.assertTrue(o["global_folder"].endswith("_global"))
+        self.assertIn("reference", o["unusable"]["_global/with_input"])     # LTX alpha has no reference input
+        # Without its own: the global default; Wan (no publish section) publishes too, at the default step.
         o = self.pub.options("wan22_i2i")
-        self.assertEqual((o["why"], o["template"], o["step"]), (None, "_generic/default", "lay"))
+        self.assertEqual((o["why"], o["template"], o["step"]), (None, "_global/default", "lay"))
         own = root / "wan22_i2i"
         own.mkdir()
         shutil.copy(TEMPLATE, own / "still.nk")
         self.assertEqual(self.pub.options("wan22_i2i")["template"], "still")   # its own first, even not "default"
-        self.assertEqual(self.pub._default_template(["_generic/b", "_generic/a"]), "_generic/b")
-        # Published with a generic one: staged under its own name.
+        self.assertEqual(self.pub._default_template(["_global/b", "_global/a"]), "_global/b")
+        # Published with a global one: staged under its own name. Asked for by its old name
+        # (_generic/, before the rename: an open Nuke panel, a job's publish when done) it's the same one.
         job = self.done_job()
-        rec = self.pub.start_publish(job["id"], {"template": "_generic/over_plate"}, "jdoe", wait=True)
+        rec = self.pub.start_publish(job["id"], {"template": "_global/over_plate"}, "jdoe", wait=True)
         self.assertEqual(rec["state"], "dispatched", rec.get("error"))
-        self.assertEqual(Path(rec["workfile"]).name, "_generic-over_plate.nk")
+        self.assertEqual(Path(rec["workfile"]).name, "_global-over_plate.nk")
+        old = self.pub.check("wan22_i2i", {"template": "_generic/over_plate"}, show="bri3", shot="305046_0010")
+        self.assertEqual(old["template"], "_global/over_plate")
         self.assertEqual(self.calls_made()[-1][-3], "1001-1050")
         info = self.pub.publish_info(self.farm.registry.get("wan22_i2i"))
         self.assertEqual(info, {"step": "lay", "graph": "update_and_render_nuke"})
@@ -282,7 +286,8 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(self.pub.check("ltx25_alpha_gen", {"step": "comp", "shot": "305046_0020"}, show="bri3",
                                         shot="305046_0010")["shot"], "305046_0020")
         for req, why in (({"step": "nope"}, "isn't one of the studio's"), ({"template": "other"}, "no template other"),
-                         ({"template": "_generic/default"}, "no template default (generic)"),
+                         ({"template": "_global/default"}, "no template default (global)"),
+                         ({"template": "_generic/default"}, "no template default (global)"),
                          ({"shot": "a b"}, "isn't a shot code")):
             with self.assertRaises(ParamError) as e:
                 self.pub.check("ltx25_alpha_gen", req, show="bri3", shot="305046_0010")
