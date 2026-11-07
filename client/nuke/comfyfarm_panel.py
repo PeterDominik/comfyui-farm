@@ -227,15 +227,11 @@ class PanelModel:
 
     @staticmethod
     def rdo_context(env=None) -> dict:
-        """The Nuke session's pipeline context (RDO_CURRENT_*), what's set of it. A shot
-        given without its sequence (0010) becomes <sequence>_<shot>."""
+        """The Nuke session's pipeline context (RDO_CURRENT_*), what's set of it. The shot
+        is the full name (<sequence>_<number>), as everywhere in the pipeline."""
         env = os.environ if env is None else env
         out = {k: (env.get(v) or "").strip() for k, v in RDO_ENV.items()}
-        out = {k: v for k, v in out.items() if v}
-        seq, shot = out.get("sequence"), out.get("shot")
-        if seq and shot and not shot.lower().startswith(seq.lower()):
-            out["shot"] = f"{seq}_{shot}"
-        return out
+        return {k: v for k, v in out.items() if v}
 
     @staticmethod
     def publish_prefill(plan: dict | None, context: dict, options: dict, last: dict | None = None) -> dict:
@@ -350,15 +346,12 @@ class PanelModel:
         return next((x.get("sequence") for x in shots if x["code"].lower() == want), None)
 
     @staticmethod
-    def sg_note(data: dict, now: float | None = None) -> tuple[str, bool]:
-        """(the line under the shot field, whether it's a warning)."""
+    def sg_warning(data: dict) -> str:
+        """What to say under the shot field: only why ShotGrid's lists couldn't be loaded
+        (nothing when they could, or when the farm has no ShotGrid)."""
         if not data or data.get("set_up") is False:
-            return "", False
-        if data.get("why"):
-            return data["why"], True
-        n = len(data.get("shots") or [])
-        return (f"{n} shot{'' if n == 1 else 's'} in {data.get('show')} · from ShotGrid "
-                f"{_ago(data.get('fetched_at'), now or time.time())}", False)
+            return ""
+        return data.get("why") or ""
 
     # ------------------------------------------------------------ text for the view
     @staticmethod
@@ -569,6 +562,7 @@ if QtWidgets is not None:
             self._n = 0
             form = QtWidgets.QFormLayout(self)
             form.setContentsMargins(0, 0, 0, 0)
+            # Show, sequence and shot: one width (about 20 characters), not the window's.
             self.show_box = _suggesting(QtWidgets.QComboBox())
             self.show_box.setEditText(values.get("show") or "")
             self.show_box.lineEdit().setPlaceholderText("from the input path")
@@ -581,12 +575,17 @@ if QtWidgets is not None:
             self.refresh_btn = QtWidgets.QToolButton()
             self.refresh_btn.setText("↻")
             self.refresh_btn.setToolTip("Reload the shows and shots from ShotGrid (a shot was just created)")
+            for box in (self.show_box, self.seq_box, self.shot_box):
+                box.setMinimumContentsLength(20)
+                box.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
             shot_row = QtWidgets.QHBoxLayout()
             shot_row.setContentsMargins(0, 0, 0, 0)
-            shot_row.addWidget(self.shot_box, 1)
+            shot_row.addWidget(self.shot_box)
             shot_row.addWidget(self.refresh_btn)
-            self.note = QtWidgets.QLabel("")
+            shot_row.addStretch(1)
+            self.note = QtWidgets.QLabel("")     # only when ShotGrid's lists couldn't be loaded
             self.note.setWordWrap(True)
+            self.note.setVisible(False)
             self.step_box = QtWidgets.QComboBox()
             self.step_box.addItems(options.get("steps") or [])
             step = values.get("step") or options.get("step")
@@ -656,7 +655,6 @@ if QtWidgets is not None:
         def reload(self, refresh: bool):
             if refresh:
                 self.refresh_btn.setEnabled(False)
-                self.note.setText("Reloading from ShotGrid…")
 
             def done(data, error):
                 if error:
@@ -673,7 +671,7 @@ if QtWidgets is not None:
             if not show:
                 self._shots = []
                 self._fill_shots()
-                self.note.setText("")
+                self._warn("")
                 self.refresh_btn.setEnabled(True)
                 return
 
@@ -683,16 +681,18 @@ if QtWidgets is not None:
                     return                     # a newer show was asked for
                 if error:
                     data = {"show": show, "shots": [], "why": str(error), "set_up": True}
+                self._warn(PanelModel.sg_warning(data))
                 if data.get("set_up") is False:
-                    self.note.setText("")
                     return
                 self._shots = data.get("shots") or []
                 _set_items(self.seq_box, data.get("sequences") or [])
                 self._fill_shots()
                 self._seq_of_shot()
-                text, warn = PanelModel.sg_note(data)
-                self.note.setText(f"<span style='color:{'#e0a24a' if warn else '#8a929c'}'>{html.escape(text)}</span>")
             self.panel._async(lambda: self.model.sg_shots(show, refresh), done)
+
+        def _warn(self, text: str):
+            self.note.setText(f"<span style='color:#e0a24a'>{html.escape(text)}</span>" if text else "")
+            self.note.setVisible(bool(text))
 
         def _fill_shots(self):
             _set_items(self.shot_box, PanelModel.shot_codes(self._shots, self.seq_box.currentText()))
