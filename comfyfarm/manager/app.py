@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .. import __version__
@@ -46,6 +46,16 @@ class JobRequest(BaseModel):
     # Publish it when it's done: {show, shot, step, template, description}, all optional
     # (the manifest's step, the first template, the show and shot read from the input path).
     publish: dict | None = None
+
+
+class TemplateSave(BaseModel):
+    text: str                 # the whole Nuke script
+    user: str | None = None   # ignored when API keys are configured
+
+
+class TemplateRestore(BaseModel):
+    version: str              # from the template's history
+    user: str | None = None
 
 
 class PublishRequest(BaseModel):
@@ -162,8 +172,8 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
                     p["placeholder"] = "Empty = " + default_output_dir_display(cfg.paths, wf.tag, tpl)
             s["worker_problems"] = {a.name: a.problems[wf.name] for a in list(desk.agents.values())
                                     if wf.name in a.problems}
-            if not cfg.publish.enabled:     # no Publish buttons while publishing is off
-                s["publish"] = None
+            # Publish buttons: every video and image workflow, while publishing is on
+            s["publish"] = farm.publisher.publish_info(wf)
             out.append(s)
         return {"workflows": out, "load_errors": registry.load_errors}
 
@@ -244,6 +254,39 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def job_publishes(job_id: str, ident: Identity = Depends(identity)):
         """A job's publishes, the latest first, with the command run and its output."""
         return {"publishes": store.publishes(_job_or_404(job_id)["id"])}
+
+    # ---------------------------------------------------------------- publish templates
+    # scope: a workflow's name, or _generic (every workflow). Anyone may save; every
+    # version is kept, so a bad save can be restored.
+    def _who(ident: Identity, given: str | None) -> str:
+        return ident.user if cfg.auth.api_keys else ((given or ident.user or "").strip()[:64] or "unknown")
+
+    @app.get("/api/v1/publish/templates")
+    def publish_templates(ident: Identity = Depends(identity)):
+        """Every scope's templates: usable or why not, who saved each last and when."""
+        return farm.publisher.template_overview()
+
+    @app.get("/api/v1/publish/templates/{scope}/{name}/history")
+    def publish_template_history(scope: str, name: str, ident: Identity = Depends(identity)):
+        return {"scope": scope, "name": name, "history": farm.publisher.template_history(scope, name)}
+
+    @app.get("/api/v1/publish/templates/{scope}/{name}/file")
+    def publish_template_file(scope: str, name: str, version: str | None = None, ident: Identity = Depends(identity)):
+        """The .nk: the one in place, or `version` from its history."""
+        data = farm.publisher.template_file(scope, name, version)
+        fname = f"{name}{'_' + version if version else ''}.nk"
+        return Response(data, media_type="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    @app.post("/api/v1/publish/templates/{scope}/{name}", status_code=201)
+    def save_publish_template(scope: str, name: str, req: TemplateSave, ident: Identity = Depends(identity)):
+        """Save a Nuke script as a publish template (checked like publishing checks it)."""
+        return farm.publisher.save_template(scope, name, req.text, _who(ident, req.user))
+
+    @app.post("/api/v1/publish/templates/{scope}/{name}/restore")
+    def restore_publish_template(scope: str, name: str, req: TemplateRestore, ident: Identity = Depends(identity)):
+        """Put an earlier version back (it becomes the newest; nothing is lost)."""
+        return farm.publisher.restore_template(scope, name, req.version, _who(ident, req.user))
 
     @app.post("/api/v1/jobs/{job_id}/retry-failed")
     def retry_failed(job_id: str, ident: Identity = Depends(identity)):

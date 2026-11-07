@@ -10,3 +10,6 @@ comfyfarm_nuke.register_panel()   # Windows > Custom > ComfyFarm, restored with 
 m = nuke.menu("Nuke").addMenu("ComfyFarm")
 m.addCommand("Open panel", comfyfarm_nuke.show_panel)
 m.addCommand("Load finished job...", comfyfarm_nuke.load_job)
+m.addSeparator()
+m.addCommand("Save as publish template...", comfyfarm_nuke.save_as_template)
+m.addCommand("Open publish template...", comfyfarm_nuke.open_template)

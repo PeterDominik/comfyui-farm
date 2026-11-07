@@ -153,6 +153,8 @@ publish:
   enabled: false           # true: Publish buttons and "Publish when done" for workflows with publish: in their manifest
   dry_run: true            # every publish is a dispatchGraph --dry-run (checked, nothing sent): start with this
   templates: /rdo/bank/comfy_farm/publishTemplates/Nuke            # <templates>/<workflow>/<name>.nk
+                           # and <templates>/_generic/<name>.nk for every workflow; .history/ keeps each version
+  default_step: lay        # for workflows whose manifest names no publish step
   staging: /rdo/bank/comfy_farm/publishTemplates/Nuke/.staging     # <staging>/<job id>/<name>.nk
   show_folder: /rdo/shows/{show}  # only shows with this folder are published to (and offered); empty: no check
   keep_days: 14            # staged scripts are removed after this long

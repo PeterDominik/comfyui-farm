@@ -278,12 +278,12 @@ class PanelModel:
                 return "", "", ""
             where = " · ".join(x for x in (ask.get("show"), ask.get("shot"), ask.get("step")) if x)
             return ("when done" + (" (dry run)" if ask.get("dry_run") else ""), "#a3a9b0",
-                    f"Publishes to {where} with {ask.get('template')}.nk when it's done")
+                    f"Publishes to {where} with {PanelModel.template_label(ask.get('template'))} when it's done")
         label, color = PUBLISH_STATES.get(p.get("state"), (p.get("state") or "", "#a3a9b0"))
         text = f"Tractor {p['tractor_id']}" if p.get("state") == "dispatched" and p.get("tractor_id") else label
         tip = [label + (f": Tractor job {p['tractor_id']}" if p.get("tractor_id") else ""), p.get("title") or "",
                " · ".join(x for x in (p.get("show"), p.get("shot"), p.get("step")) if x)
-               + (f" with {p['template']}.nk" if p.get("template") else ""),
+               + (f" with {PanelModel.template_label(p['template'])}" if p.get("template") else ""),
                p.get("error") or "", *(p.get("notes") or [])]
         return text, color, "\n".join(t for t in tip if t)
 
@@ -299,7 +299,7 @@ class PanelModel:
                      f"{label}{'  Tractor job ' + str(p['tractor_id']) if p.get('tractor_id') else ''}"
                      f"{'  by ' + p['user'] if p.get('user') else ''}",
                      f"to {' · '.join(x for x in (p.get('show'), p.get('shot'), p.get('step')) if x)} "
-                     f"with {p.get('template')}.nk, frames {p.get('frames') or 'forceInput'}"]
+                     f"with {PanelModel.template_label(p.get('template'))}, frames {p.get('frames') or 'forceInput'}"]
             for key, title in (("title", "job"), ("description", "description"), ("error", "error"),
                                ("workfile", "script"), ("command", "command")):
                 if p.get(key):
@@ -344,6 +344,12 @@ class PanelModel:
     def sequence_of(shots: list[dict], shot: str) -> str | None:
         want = (shot or "").strip().lower()
         return next((x.get("sequence") for x in shots if x["code"].lower() == want), None)
+
+    @staticmethod
+    def template_label(key: str | None) -> str:
+        """A template as the forms show it: default, or default (generic)."""
+        key = key or ""
+        return f"{key[len('_generic/'):]} (generic)" if key.startswith("_generic/") else key
 
     @staticmethod
     def sequence_from_shot(shot: str) -> str:
@@ -609,12 +615,15 @@ if QtWidgets is not None:
             if step and self.step_box.findText(step) >= 0:
                 self.step_box.setCurrentIndex(self.step_box.findText(step))
             self.template_box = QtWidgets.QComboBox()
-            self.template_box.addItems(options.get("templates") or [])
-            if values.get("template") and self.template_box.findText(values["template"]) >= 0:
-                self.template_box.setCurrentIndex(self.template_box.findText(values["template"]))
-            unusable = options.get("unusable") or {}
-            self.template_box.setToolTip(f"In {options.get('folder')}/" + "".join(
-                f"\nNot usable: {n}.nk ({w})" for n, w in unusable.items()))
+            self.tpl_refresh = QtWidgets.QToolButton()
+            self.tpl_refresh.setText("↻")
+            self.tpl_refresh.setToolTip("Reload the templates (one was just published)")
+            self._fill_templates(options, values.get("template"))
+            tpl_row = QtWidgets.QHBoxLayout()
+            tpl_row.setContentsMargins(0, 0, 0, 0)
+            tpl_row.addWidget(self.template_box)
+            tpl_row.addWidget(self.tpl_refresh)
+            tpl_row.addStretch(1)
             self.desc_edit = QtWidgets.QLineEdit(values.get("description") or "")
             self.desc_edit.setPlaceholderText(options.get("description") or "Auto Publish")
             self.desc_edit.setMaxLength(500)
@@ -630,7 +639,7 @@ if QtWidgets is not None:
             form.addRow("Shot", shot_row)
             form.addRow("", self.note)
             form.addRow("Step", self.step_box)
-            form.addRow("Nuke template", self.template_box)
+            form.addRow("Nuke template", tpl_row)
             form.addRow("Description", self.desc_edit)
             form.addRow("", self.dry_check)
             self._set_up(False)                # shown once the farm says ShotGrid is there
@@ -643,7 +652,39 @@ if QtWidgets is not None:
             self.shot_box.lineEdit().textEdited.connect(lambda *_: (self.touched.add("shot"), self._seq_of_shot()))
             self.shot_box.activated.connect(lambda *_: (self.touched.add("shot"), self._seq_of_shot()))
             self.refresh_btn.clicked.connect(lambda *_: self.reload(True))
+            self.tpl_refresh.clicked.connect(lambda *_: self.reload_templates())
             self.reload(False)
+
+        def _fill_templates(self, options: dict, pick: str | None = None):
+            """The usable templates (the workflow's own, then the generic ones), keeping the
+            pick when it's still there, else the farm's default; why the others can't be used
+            on hover."""
+            keys = options.get("templates") or []
+            self.template_box.blockSignals(True)
+            self.template_box.clear()
+            for k in keys:
+                self.template_box.addItem((options.get("labels") or {}).get(k) or PanelModel.template_label(k), k)
+            want = pick if pick in keys else options.get("template")
+            if want in keys:
+                self.template_box.setCurrentIndex(keys.index(want))
+            self.template_box.blockSignals(False)
+            unusable = options.get("unusable") or {}
+            self.template_box.setToolTip(f"In {options.get('folder')}/ and {options.get('generic_folder')}/" + "".join(
+                f"\nNot usable: {PanelModel.template_label(n)} ({w})" for n, w in unusable.items()))
+
+        def reload_templates(self):
+            """↻: what's published now (a template was just saved)."""
+            self.tpl_refresh.setEnabled(False)
+            pick = self.template_box.currentData() or self.template_box.currentText()
+
+            def done(options, error):
+                self.tpl_refresh.setEnabled(True)
+                if error or options.get("why"):
+                    self._warn(str(error) if error else options["why"])
+                    return
+                self.options = options
+                self._fill_templates(options, pick)
+            self.panel._async(lambda: self.model.publish_options(self.options.get("workflow"), refresh=True), done)
 
         def _set_up(self, on: bool):
             for w in (self.seq_label, self.seq_box, self.refresh_btn):
@@ -655,7 +696,8 @@ if QtWidgets is not None:
 
         def values(self) -> dict:
             return {"show": self.show_box.currentText(), "shot": self.shot_box.currentText(),
-                    "step": self.step_box.currentText(), "template": self.template_box.currentText(),
+                    "step": self.step_box.currentText(),
+                    "template": self.template_box.currentData() or self.template_box.currentText(),
                     "description": self.desc_edit.text(), "dry_run": self.dry_check.isChecked()}
 
         def prefill(self, plan: dict):
