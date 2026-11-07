@@ -701,9 +701,8 @@ function wireShotGrid(px) {
     el("seqList").innerHTML = (r.sequences || []).map(x => `<option value="${esc(x)}"></option>`).join("");
     fillShots();
     seqOfShot();
-    note.className = "help" + (r.why ? " warn" : "");
-    note.textContent = r.why ? r.why
-      : `${shots.length} shot${shots.length === 1 ? "" : "s"} in ${r.show} · from ShotGrid ${ago(r.fetched_at)}`;
+    note.className = "help warn";
+    note.textContent = r.why || "";      // only when ShotGrid's lists couldn't be loaded
   };
   const touched = e => { if (e.isTrusted) e.target.dataset.touched = "1"; };
   let wait;
@@ -719,9 +718,8 @@ function wireShotGrid(px) {
   el("sgRefresh").onclick = async () => {
     const b = el("sgRefresh");
     b.disabled = true;
-    note.className = "help"; note.textContent = "Reloading from ShotGrid…";
     try { await loadShows(true); await loadShots(true); } finally { b.disabled = false; }
-    if (!show.value.trim()) note.textContent = sg.projects?.why || `${(sg.projects?.projects || []).length} active shows`;
+    if (!show.value.trim()) { note.className = "help warn"; note.textContent = sg.projects?.why || ""; }
   };
   loadShows(false).then(() => loadShots(false));
 }

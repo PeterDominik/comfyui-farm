@@ -460,9 +460,8 @@ installed: the client is standard library only.
 **Publishing from Nuke** (workflows that publish, when the farm has publishing on): tick
 *Publish when done* under the form, or right-click a finished job, *Publish…*. The fields are
 the dashboard's. Show and shot start as the input path's; when it names none, as the Nuke
-session's `RDO_CURRENT_SHOW` / `RDO_CURRENT_SHOT` (with `RDO_CURRENT_SEQUENCE`; a shot given as
-`0040` becomes `<sequence>_0040`), and the step as `RDO_CURRENT_STEP` when it's one of the
-studio's. Everything can be changed, and a field you've typed in stops following the input
+session's `RDO_CURRENT_SHOW` / `RDO_CURRENT_SHOT` (with `RDO_CURRENT_SEQUENCE`), and the step
+as `RDO_CURRENT_STEP` when it's one of the studio's. Everything can be changed, and a field you've typed in stops following the input
 path. With ShotGrid lookups on, show and shot suggest as you type, *Sequence* narrows the
 shots down and **↻** reloads them. *Publish log* (right-click) shows every publish of the job
 with the command and Daiquiri's output.

@@ -316,10 +316,10 @@ class PanelLogic(unittest.TestCase):
 
     def test_publish_prefill(self):
         PM = self.panel.PanelModel
-        env = {"RDO_CURRENT_SHOW": "bc1", "RDO_CURRENT_SEQUENCE": "mis", "RDO_CURRENT_SHOT": "0040",
+        env = {"RDO_CURRENT_SHOW": "bc1", "RDO_CURRENT_SEQUENCE": "mis", "RDO_CURRENT_SHOT": "mis_0040",
                "RDO_CURRENT_STEP": "roto"}
         ctx = PM.rdo_context(env)
-        self.assertEqual(ctx, {"show": "bc1", "sequence": "mis", "shot": "mis_0040", "step": "roto"})  # short shot: full
+        self.assertEqual(ctx, {"show": "bc1", "sequence": "mis", "shot": "mis_0040", "step": "roto"})
         self.assertEqual(PM.rdo_context({"RDO_CURRENT_SEQUENCE": "305046", "RDO_CURRENT_SHOT": "305046_0010",
                                          "RDO_CURRENT_STEP": " "}), {"sequence": "305046", "shot": "305046_0010"})
         self.assertEqual(PM.rdo_context({}), {})
@@ -384,10 +384,9 @@ class PanelLogic(unittest.TestCase):
         self.assertEqual(PM.shot_codes(shots), ["305046_0010", "301011_0140"])
         self.assertEqual(PM.shot_codes(shots, " 301011"), ["301011_0140"])
         self.assertEqual(PM.sequence_of(shots, "305046_0010"), "305046")
-        self.assertEqual(PM.sg_note({"show": "bri3", "shots": shots[:1], "fetched_at": 100.0}, 130.0),
-                         ("1 shot in bri3 · from ShotGrid just now", False))
-        self.assertEqual(PM.sg_note({"why": "ShotGrid didn't answer", "set_up": True}), ("ShotGrid didn't answer", True))
-        self.assertEqual(PM.sg_note({"why": "off", "set_up": False}), ("", False))      # not set up: plain fields
+        self.assertEqual(PM.sg_warning({"show": "bri3", "shots": shots, "fetched_at": 100.0}), "")   # loaded: nothing said
+        self.assertEqual(PM.sg_warning({"why": "ShotGrid didn't answer", "set_up": True}), "ShotGrid didn't answer")
+        self.assertEqual(PM.sg_warning({"why": "off", "set_up": False}), "")      # not set up: plain fields
         self.client.shotgrid_projects = lambda refresh=False: (_ for _ in ()).throw(farm.FarmError("farm down"))
         self.assertEqual(self.m.sg_projects(refresh=True)["why"], "farm down")
 
