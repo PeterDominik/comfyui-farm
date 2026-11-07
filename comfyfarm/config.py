@@ -186,8 +186,8 @@ _LAUNCHER = "/rdo/rodeo/setup/rdo_rez_launcher/current"
 
 class PublishConfig(BaseModel):
     """Publishing jobs through Daiquiri's update_and_render_nuke (comfyfarm.publish). Off
-    until enabled; with dry_run, a publish stages its .nk and records the command without
-    running it."""
+    until enabled; with dry_run, every publish is a dispatchGraph --dry-run (Daiquiri
+    checks it, nothing goes to Tractor)."""
     enabled: bool = False
     dry_run: bool = True
     templates: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke"        # <templates>/<workflow>/<name>.nk
@@ -213,6 +213,25 @@ class PublishConfig(BaseModel):
     workers: int = 2                    # publishes dispatched at once
 
 
+class ShotGridConfig(BaseModel):
+    """The manager's read-only ShotGrid lookups for the publish fields (comfyfarm.shotgrid):
+    active shows, their sequences and shots. Off until enabled; the script's name and key
+    come from the environment or env_file, never from this file."""
+    enabled: bool = False
+    url: str = "https://rodeofx.shotgrid.autodesk.com/"
+    script_name_env: str = "SG_SCRIPT_NAME"
+    script_key_env: str = "SG_SCRIPT_KEY"
+    env_file: str = "~/.config/comfyfarm/shotgrid.env"     # KEY=value lines; chmod 600
+    project_filters: list = Field(default_factory=lambda: [["sg_status", "is", "Active"]])   # the shows offered
+    show_field: str = "tank_name"        # the Project field holding the show code (bri3)
+    hidden_statuses: list[str] = Field(default_factory=lambda: ["hld", "omt", "hdn", "void"])   # shots left out
+    projects_ttl: float = 900.0          # seconds a list is used before it's loaded again
+    shots_ttl: float = 600.0
+    refresh_hold: float = 10.0           # a refresh button reloads at most this often
+    retry_seconds: float = 60.0          # a ShotGrid that didn't answer is left alone this long
+    timeout: float = 20.0
+
+
 class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     share: ShareConfig = Field(default_factory=ShareConfig)
@@ -228,6 +247,7 @@ class Config(BaseModel):
     farm: FarmConfig = Field(default_factory=FarmConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
+    shotgrid: ShotGridConfig = Field(default_factory=ShotGridConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)
     obsolete_keys: list[str] = Field(default_factory=list, exclude=True)

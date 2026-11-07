@@ -676,6 +676,11 @@ convert:
         with self.assertRaisesRegex(farm.FarmError, "isn't switched on"):
             farm.publish(done["id"], dry_run=True)
         self.assertEqual(farm.publishes(done["id"]), [])
+        # ShotGrid lookups are off too: the fields are plain text.
+        sg = farm.shotgrid_projects(refresh=True)
+        self.assertEqual((sg["projects"], sg["set_up"]), ([], False))
+        self.assertIn("shotgrid.enabled", sg["why"])
+        self.assertEqual(farm.shotgrid_shots("bri3")["shots"], [])
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):

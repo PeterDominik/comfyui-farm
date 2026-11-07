@@ -151,6 +151,9 @@ class Publisher:
         if not shot_ or not _CODE.fullmatch(shot_):
             raise ParamError("Publishing needs the shot: the input path doesn't name one, so enter it." if not shot_
                              else f"Shot {shot_!r} isn't a shot code.")
+        why = self.farm.shotgrid.check(show_, shot_)      # None when ShotGrid can't be asked
+        if why:
+            raise ParamError(why)
         desc = str(req.get("description") or "").strip() or self.cfg.description
         if len(desc) > 500:
             raise ParamError("The description is too long (500 characters at most).")

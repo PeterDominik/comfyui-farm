@@ -211,6 +211,18 @@ def publish(job_id: str, step: str | None = None, show: str | None = None, shot:
                     timeout=900 if wait else 60)
 
 
+def shotgrid_projects(refresh: bool = False) -> dict:
+    """The active shows, from the manager's ShotGrid lookups: {"projects": [{code, name}],
+    "why"} (why: they couldn't be loaded, the fields are free text then)."""
+    return _request("GET", "/api/v1/shotgrid/projects" + ("?refresh=true" if refresh else ""))
+
+
+def shotgrid_shots(show: str, refresh: bool = False) -> dict:
+    """A show's shots and sequences: {"shots": [{code, sequence, status}], "sequences", "why"}."""
+    return _request("GET", f"/api/v1/shotgrid/projects/{urllib.parse.quote(show)}/shots"
+                    + ("?refresh=true" if refresh else ""))
+
+
 def publishes(job_id: str) -> list:
     """A job's publishes, the latest first, with the command run and dispatchGraph's output."""
     return _request("GET", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/publishes")["publishes"]

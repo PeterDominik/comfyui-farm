@@ -214,6 +214,23 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """What a workflow can be published with: templates, steps, defaults, or why not."""
         return farm.publisher.options(name)
 
+    # ---------------------------------------------------------------- ShotGrid (read only)
+    # The publish fields' dropdowns. Plain `def`s: ShotGrid is asked in a thread.
+    @app.get("/api/v1/shotgrid")
+    def shotgrid_status(ident: Identity = Depends(identity)):
+        """Whether the lookups work, or why not."""
+        return farm.shotgrid.status()
+
+    @app.get("/api/v1/shotgrid/projects")
+    def shotgrid_projects(refresh: bool = False, ident: Identity = Depends(identity)):
+        """The active shows: [{code, name}]; `refresh` reloads them from ShotGrid."""
+        return farm.shotgrid.projects(refresh)
+
+    @app.get("/api/v1/shotgrid/projects/{show}/shots")
+    def shotgrid_shots(show: str, refresh: bool = False, ident: Identity = Depends(identity)):
+        """A show's shots [{code, sequence, status}] and sequences; `refresh` reloads them."""
+        return farm.shotgrid.shots(show, refresh)
+
     @app.post("/api/v1/jobs/{job_id}/publish", status_code=201)
     def publish_job(job_id: str, req: PublishRequest, ident: Identity = Depends(identity)):
         """Publish a finished job through Daiquiri (update_and_render_nuke)."""

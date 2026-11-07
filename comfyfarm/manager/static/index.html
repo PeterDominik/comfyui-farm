@@ -88,6 +88,11 @@
   .pubbox { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 16px;
             border-left: 2px solid var(--accent); padding: 4px 0 4px 12px; margin-top: 8px; align-items: start; }
   .pubbox[hidden] { display: none; }
+  .inrow { display: flex; gap: 6px; align-items: center; min-width: 0; }
+  .inrow input { flex: 1; width: 0; min-width: 0; }   /* width 0: the button stays inside the column */
+  .pubbox label, #pubForm label { min-width: 0; }
+  .inrow button { padding: 6px 9px; }
+  form label[hidden] { display: none; }
   .kv pre { margin: 0; }
   dialog .kv { grid-template-columns: 120px minmax(0, 1fr); }
   dialog pre { overflow-wrap: anywhere; }
@@ -417,7 +422,7 @@ async function updateDest(wf, seqP, outP) {
     const r = await api("/api/v1/plan", { method: "POST", body: JSON.stringify({ workflow: wf.name, params }) });
     if (n !== destSeq) return;   // a newer request is on its way
     state.planHint = { show: r.show, shot: r.shot };   // what a publish goes to unless entered
-    for (const k of ["show", "shot"]) { const el = $("#sp_" + k); if (el) el.placeholder = fromPath(r[k]); }
+    prefillTarget("sp_", r);
     const dir = r.output_dir_posix || r.output_dir;
     const files = r.last_file && r.last_file !== r.first_file
       ? `<code>${esc(r.first_file)}</code> … <code>${esc(r.last_file)}</code>` : `<code>${esc(r.first_file)}</code>`;
@@ -628,16 +633,109 @@ const fromPath = v => v ? `${v} (from the input path)` : "from the input path";
 const PUB_STATE = { queued: ["publish queued", "muted"], dispatching: ["dispatching to Tractor…", "warn"],
                     dispatched: ["sent to Tractor", "ok"], dry_run: ["dry run passed", "ok"], failed: ["publish failed", "err"] };
 
-// The fields of a publish, their ids prefixed: show and shot (empty = read from the input
-// path), step, template, description, dry run. `v`: values to start from.
+// ShotGrid, through the manager (it alone has the script): the active shows, and each
+// show's shots and sequences, as suggestions for the fields. Kept for a few minutes here;
+// the ↻ button reloads them (a shot just created).
+const sg = { projects: null, shots: new Map() };
+const SG_KEEP = 300;   // seconds
+async function sgProjects(refresh = false) {
+  if (sg.projects && !refresh && Date.now() / 1000 - sg.projects.at < SG_KEEP) return sg.projects;
+  try { sg.projects = await api("/api/v1/shotgrid/projects" + (refresh ? "?refresh=true" : "")); }
+  catch (err) { sg.projects = { projects: [], why: err.message, set_up: true }; }
+  sg.projects.at = Date.now() / 1000;
+  return sg.projects;
+}
+async function sgShots(show, refresh = false) {
+  const key = show.toLowerCase(), had = sg.shots.get(key);
+  if (had && !refresh && Date.now() / 1000 - had.at < SG_KEEP) return had;
+  let r;
+  try { r = await api(`/api/v1/shotgrid/projects/${encodeURIComponent(show)}/shots${refresh ? "?refresh=true" : ""}`); }
+  catch (err) { r = { shots: [], sequences: [], why: err.message, set_up: true }; }
+  r.at = Date.now() / 1000;
+  sg.shots.set(key, r);
+  return r;
+}
+
+// Show and shot follow the input path (prefilled) until they're typed in.
+function prefillTarget(px, r) {
+  let changed = false;
+  for (const k of ["show", "shot"]) {
+    const el = $("#" + px + k);
+    if (!el) continue;
+    el.placeholder = fromPath(r[k]);
+    if (!el.dataset.touched && r[k] && el.value !== r[k]) { el.value = r[k]; changed = true; }
+  }
+  if (changed) $("#" + px + "show").dispatchEvent(new Event("prefill"));
+}
+
+// The suggestions for show, sequence and shot (the sequence only narrows the shots down).
+function wireShotGrid(px) {
+  const el = id => $("#" + px + id);
+  const show = el("show"), seq = el("seq"), shot = el("shot"), note = el("sgNote");
+  if (!show) return;
+  let shots = [], n = 0;
+  const fillShots = () => {
+    const s = seq.value.trim().toLowerCase();
+    el("shotList").innerHTML = shots.filter(x => !s || (x.sequence || "").toLowerCase() === s)
+      .map(x => `<option value="${esc(x.code)}">${esc([x.sequence, x.status].filter(Boolean).join(" · "))}</option>`).join("");
+  };
+  const seqOfShot = () => {          // a shot picked: its sequence
+    const x = shots.find(x => x.code.toLowerCase() === shot.value.trim().toLowerCase());
+    if (x?.sequence && seq.value.trim().toLowerCase() !== x.sequence.toLowerCase()) { seq.value = x.sequence; fillShots(); }
+  };
+  const showSetUp = on => { for (const x of [el("seqBox"), el("sgRefresh")]) if (x) x.hidden = !on; };
+  const loadShows = async refresh => {
+    const r = await sgProjects(refresh);
+    showSetUp(r.set_up !== false);
+    el("showList").innerHTML = (r.projects || []).map(p => `<option value="${esc(p.code)}">${esc(p.name)}</option>`).join("");
+    return r;
+  };
+  const loadShots = async refresh => {
+    const name = show.value.trim(), mine = ++n;
+    if (!name) { shots = []; fillShots(); note.textContent = ""; return; }
+    const r = await sgShots(name, refresh);
+    if (mine !== n || !document.body.contains(show)) return;
+    if (r.set_up === false) { note.textContent = ""; return; }   // no ShotGrid: plain text fields
+    shots = r.shots || [];
+    el("seqList").innerHTML = (r.sequences || []).map(x => `<option value="${esc(x)}"></option>`).join("");
+    fillShots();
+    seqOfShot();
+    note.className = "help" + (r.why ? " warn" : "");
+    note.textContent = r.why ? r.why : `${shots.length} shots in ${r.show} · from ShotGrid ${ago(r.fetched_at)}`;
+  };
+  const touched = e => { if (e.isTrusted) e.target.dataset.touched = "1"; };
+  let wait;
+  show.addEventListener("input", e => {
+    touched(e);
+    clearTimeout(wait);
+    const known = (sg.projects?.projects || []).some(p => p.code.toLowerCase() === show.value.trim().toLowerCase());
+    wait = setTimeout(() => loadShots(false), known ? 0 : 500);
+  });
+  show.addEventListener("prefill", () => loadShots(false));
+  shot.addEventListener("input", e => { touched(e); seqOfShot(); });
+  seq.addEventListener("input", fillShots);
+  el("sgRefresh").onclick = async () => {
+    const b = el("sgRefresh");
+    b.disabled = true;
+    note.className = "help"; note.textContent = "Reloading from ShotGrid…";
+    try { await loadShows(true); await loadShots(true); } finally { b.disabled = false; }
+    if (!show.value.trim()) note.textContent = sg.projects?.why || `${(sg.projects?.projects || []).length} active shows`;
+  };
+  loadShows(false).then(() => loadShots(false));
+}
+
+// The fields of a publish, their ids prefixed: show, sequence (narrows the shot list) and
+// shot (empty = read from the input path), step, template, description, dry run. `v`:
+// values to start from; `hint`: what the input path names.
 function publishFields(o, px, v = {}, hint = {}) {
   const opts = (list, cur) => list.map(x => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
   const unusable = Object.entries(o.unusable || {});
   // Templates that can't be used: named, why in the tooltip.
   const tplHelp = unusable.length ? `Not usable: ${unusable.map(([n]) => n).join(", ")} (hover for why)` : `in ${o.folder}/`;
   const tplTip = unusable.length ? unusable.map(([n, w]) => `${n}.nk: ${w}`).join("\n") : "";
-  return `<label>Show<input id="${px}show" value="${esc(v.show || "")}" placeholder="${esc(fromPath(hint.show))}"></label>
-    <label>Shot<input id="${px}shot" value="${esc(v.shot || "")}" placeholder="${esc(fromPath(hint.shot))}"></label>
+  return `<label>Show<input id="${px}show" list="${px}showList" autocomplete="off" value="${esc(v.show || "")}" placeholder="${esc(fromPath(hint.show))}"><datalist id="${px}showList"></datalist></label>
+    <label id="${px}seqBox" hidden>Sequence<input id="${px}seq" list="${px}seqList" autocomplete="off" placeholder="all"><datalist id="${px}seqList"></datalist><span class="help">narrows the shot list</span></label>
+    <label>Shot<span class="inrow"><input id="${px}shot" list="${px}shotList" autocomplete="off" value="${esc(v.shot || "")}" placeholder="${esc(fromPath(hint.shot))}"><button type="button" class="small" id="${px}sgRefresh" hidden title="Reload the shows and shots from ShotGrid (a shot was just created)">↻</button></span><datalist id="${px}shotList"></datalist><span class="help" id="${px}sgNote"></span></label>
     <label>Step<select id="${px}step">${opts(o.steps, v.step || o.step)}</select></label>
     <label>Nuke template<select id="${px}template">${opts(o.templates, v.template || o.templates[0])}</select><span class="help ${unusable.length ? "warn" : ""}" title="${esc(tplTip)}">${esc(tplHelp)}</span></label>
     <label class="wide">Description<input id="${px}description" value="${esc(v.description || "")}" placeholder="${esc(o.description)}" maxlength="500"></label>
@@ -659,8 +757,9 @@ async function loadPublishForm(wf) {
   if (o.why) { slot.innerHTML = `<div class="help">Publishing: ${esc(o.why)}</div>`; return; }
   slot.innerHTML = `<label class="check flat"><input type="checkbox" id="pubToggle"> Publish when done
       <span class="help">a Nuke template rendered with the frames on Tractor (Daiquiri), with a daily in Artist Review</span></label>
-    <div class="pubbox" id="pubBox" hidden>${publishFields(o, "sp_", {}, state.planHint || {})}</div>`;
+    <div class="pubbox" id="pubBox" hidden>${publishFields(o, "sp_", state.planHint || {}, state.planHint || {})}</div>`;
   $("#pubToggle").onchange = e => { $("#pubBox").hidden = !e.target.checked; };
+  wireShotGrid("sp_");
 }
 
 // Job details: the latest publish (or the one asked for at submit).
@@ -710,6 +809,7 @@ async function openPublish(j) {
       <div class="actions"><button class="primary" type="submit">Publish</button><button type="button" data-close>Cancel</button>
         <span class="msg" id="pubMsg"></span></div></form>`;
   const f = $("#pubForm");
+  if (f) wireShotGrid("dp_");
   if (f) f.onsubmit = async e => {
     e.preventDefault();
     const msg = $("#pubMsg"), btn = f.querySelector("button[type=submit]");
