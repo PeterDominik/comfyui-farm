@@ -39,6 +39,17 @@ class PublishError(Exception):
         self.status = status
 
 
+def show_folder(cfg, show: str) -> Path | None:
+    """The folder a show must have to be published to (publish.show_folder), or None
+    when there's no such rule."""
+    if not cfg.show_folder or not show:
+        return None
+    try:
+        return Path(cfg.show_folder.format(show=show))
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
 def summary(rec: dict | None) -> dict | None:
     """A publish as job lists carry it."""
     if not rec:
@@ -151,6 +162,9 @@ class Publisher:
         if not shot_ or not _CODE.fullmatch(shot_):
             raise ParamError("Publishing needs the shot: the input path doesn't name one, so enter it." if not shot_
                              else f"Shot {shot_!r} isn't a shot code.")
+        folder = show_folder(self.cfg, show_)
+        if folder is not None and not folder.is_dir():
+            raise ParamError(f"Show {show_} has no folder on disk ({folder}), so it isn't published to.")
         why = self.farm.shotgrid.check(show_, shot_)      # None when ShotGrid can't be asked
         if why:
             raise ParamError(why)

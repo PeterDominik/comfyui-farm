@@ -192,6 +192,9 @@ class PublishConfig(BaseModel):
     dry_run: bool = True
     templates: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke"        # <templates>/<workflow>/<name>.nk
     staging: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke/.staging"  # <staging>/<job id>/<name>.nk
+    # A show is published to only when it has this folder (on the manager); the ShotGrid
+    # show list leaves out projects without one. Empty: no such check.
+    show_folder: str = "/rdo/shows/{show}"
     keep_days: float = 14.0             # staged scripts are removed after this long
     steps: list[str] = Field(default_factory=lambda: list(PUBLISH_STEPS))
     description: str = "Auto Publish"

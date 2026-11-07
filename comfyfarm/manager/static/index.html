@@ -677,7 +677,7 @@ function wireShotGrid(px) {
   const fillShots = () => {
     const s = seq.value.trim().toLowerCase();
     el("shotList").innerHTML = shots.filter(x => !s || (x.sequence || "").toLowerCase() === s)
-      .map(x => `<option value="${esc(x.code)}">${esc([x.sequence, x.status].filter(Boolean).join(" · "))}</option>`).join("");
+      .map(x => `<option value="${esc(x.code)}"></option>`).join("");      // just the codes
   };
   const seqOfShot = () => {          // a shot picked: its sequence
     const x = shots.find(x => x.code.toLowerCase() === shot.value.trim().toLowerCase());
@@ -687,7 +687,8 @@ function wireShotGrid(px) {
   const loadShows = async refresh => {
     const r = await sgProjects(refresh);
     showSetUp(r.set_up !== false);
-    el("showList").innerHTML = (r.projects || []).map(p => `<option value="${esc(p.code)}">${esc(p.name)}</option>`).join("");
+    el("showList").innerHTML = (r.projects || []).map(p =>      // the name only when it says more than the code
+      `<option value="${esc(p.code)}">${p.name && p.name !== p.code ? esc(p.name) : ""}</option>`).join("");
     return r;
   };
   const loadShots = async refresh => {
@@ -701,7 +702,8 @@ function wireShotGrid(px) {
     fillShots();
     seqOfShot();
     note.className = "help" + (r.why ? " warn" : "");
-    note.textContent = r.why ? r.why : `${shots.length} shots in ${r.show} · from ShotGrid ${ago(r.fetched_at)}`;
+    note.textContent = r.why ? r.why
+      : `${shots.length} shot${shots.length === 1 ? "" : "s"} in ${r.show} · from ShotGrid ${ago(r.fetched_at)}`;
   };
   const touched = e => { if (e.isTrusted) e.target.dataset.touched = "1"; };
   let wait;

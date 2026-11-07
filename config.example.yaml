@@ -154,6 +154,7 @@ publish:
   dry_run: true            # every publish is a dispatchGraph --dry-run (checked, nothing sent): start with this
   templates: /rdo/bank/comfy_farm/publishTemplates/Nuke            # <templates>/<workflow>/<name>.nk
   staging: /rdo/bank/comfy_farm/publishTemplates/Nuke/.staging     # <staging>/<job id>/<name>.nk
+  show_folder: /rdo/shows/{show}  # only shows with this folder are published to (and offered); empty: no check
   keep_days: 14            # staged scripts are removed after this long
   description: Auto Publish            # when the artist leaves it empty
   description_suffix: " (ComfyFarm {job}, {user})"

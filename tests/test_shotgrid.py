@@ -83,6 +83,21 @@ class LookupTests(unittest.TestCase):
         self.assertIn("tank_name", fields)
         self.assertEqual(sg.status()["enabled"], True)
 
+    def test_only_shows_that_can_be_published_to(self):
+        fake = FakeShotGrid()
+        conf = Config.model_validate({"workers": [], "shotgrid": {"enabled": True}}).shotgrid
+        sg = ShotGrid(conf, connect=lambda: fake, keep=lambda code: code == "bri3")   # the farm: a show folder
+        self.assertEqual([p["code"] for p in sg.projects()["projects"]], ["bri3"])
+        self.assertFalse(sg.shots("bc1")["known_show"])
+        from comfyfarm.manager.farm import publish_target_ok
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "bri3").mkdir()
+        pub = Config.model_validate({"workers": [], "publish": {"show_folder": str(tmp / "{show}")}}).publish
+        self.assertEqual((publish_target_ok(pub, "bri3"), publish_target_ok(pub, "bizdev audio")), (True, False))
+        pub.show_folder = ""
+        self.assertTrue(publish_target_ok(pub, "anything"))
+
     def test_shots_and_sequences(self):
         sg, fake = lookups()
         got = sg.shots("BRI3")
@@ -195,7 +210,8 @@ class PublishCheckTests(unittest.TestCase):
         templates.mkdir(parents=True)
         shutil.copy(Path(__file__).resolve().parent / "templates" / "publish_default.nk", templates / "default.nk")
         cfg = Config.model_validate({"workers": [], "database": str(tmp / "f.db"),
-                                     "publish": {"enabled": True, "templates": str(templates.parent)}})
+                                     "publish": {"enabled": True, "templates": str(templates.parent),
+                                                 "show_folder": ""}})
         store = JobStore(tmp / "f.db")
         self.addCleanup(store.close)
         farm = Farm(cfg, store, WorkflowRegistry(REPO / "workflows"), EventBus())
