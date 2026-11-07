@@ -346,6 +346,22 @@ class PanelModel:
         return next((x.get("sequence") for x in shots if x["code"].lower() == want), None)
 
     @staticmethod
+    def sequence_from_shot(shot: str) -> str:
+        """The sequence a shot name holds: the pipeline names shots <sequence>_<number>."""
+        shot = (shot or "").strip()
+        return shot.rsplit("_", 1)[0] if "_" in shot else ""
+
+    @staticmethod
+    def follow_input(plan: dict | None, last: tuple | None, touched: set) -> tuple[tuple, set]:
+        """(the input path's show and shot, the fields still typed in). A path naming
+        another show or shot than the last one fills show, sequence and shot again, typed
+        in or not; the same shot again (the frame range changed, a resubmit) keeps them."""
+        target = ((plan or {}).get("show") or "", (plan or {}).get("shot") or "")
+        if target != last:
+            touched = set(touched) - {"show", "sequence", "shot"}
+        return target, set(touched)
+
+    @staticmethod
     def sg_warning(data: dict) -> str:
         """What to say under the shot field: only why ShotGrid's lists couldn't be loaded
         (nothing when they could, or when the farm has no ShotGrid)."""
@@ -560,6 +576,7 @@ if QtWidgets is not None:
             self.touched: set[str] = set()     # typed in: no longer follows the input path
             self._shots: list[dict] = []
             self._n = 0
+            self._target: tuple | None = None   # the show and shot the input path last named
             form = QtWidgets.QFormLayout(self)
             form.setContentsMargins(0, 0, 0, 0)
             # Show, sequence and shot: one width (about 20 characters), not the window's.
@@ -642,13 +659,17 @@ if QtWidgets is not None:
                     "description": self.desc_edit.text(), "dry_run": self.dry_check.isChecked()}
 
         def prefill(self, plan: dict):
-            """The input path's show and shot, into the fields not typed in."""
+            """The input path's show and shot (and so the sequence), into the fields not
+            typed in; a path naming another shot fills them all again."""
+            self._target, self.touched = PanelModel.follow_input(plan, self._target, self.touched)
             changed = False
             for key, box in (("show", self.show_box), ("shot", self.shot_box)):
                 if key not in self.touched and plan.get(key) and box.currentText() != plan[key]:
                     box.setEditText(plan[key])
                     changed = True
             if changed:
+                # The shot's sequence: by the naming rule now, ShotGrid's once its shots are in.
+                self.seq_box.setEditText(PanelModel.sequence_from_shot(self.shot_box.currentText()))
                 self.load_shots(False)
 
         # ShotGrid, through the farm (in the background)

@@ -656,8 +656,16 @@ async function sgShots(show, refresh = false) {
   return r;
 }
 
-// Show and shot follow the input path (prefilled) until they're typed in.
+// Show and shot follow the input path (prefilled) until they're typed in. A path naming
+// another show or shot than the last one fills show, sequence and shot again, typed in or
+// not; the same shot again (another frame range, a resubmit) keeps them.
+const seqFromShot = shot => shot.includes("_") ? shot.slice(0, shot.lastIndexOf("_")) : "";   // <sequence>_<number>
 function prefillTarget(px, r) {
+  const show = $("#" + px + "show"), target = `${r.show || ""}|${r.shot || ""}`;
+  if (show && show.dataset.target !== target) {
+    show.dataset.target = target;
+    for (const k of ["show", "seq", "shot"]) { const el = $("#" + px + k); if (el) delete el.dataset.touched; }
+  }
   let changed = false;
   for (const k of ["show", "shot"]) {
     const el = $("#" + px + k);
@@ -665,7 +673,11 @@ function prefillTarget(px, r) {
     el.placeholder = fromPath(r[k]);
     if (!el.dataset.touched && r[k] && el.value !== r[k]) { el.value = r[k]; changed = true; }
   }
-  if (changed) $("#" + px + "show").dispatchEvent(new Event("prefill"));
+  if (changed) {
+    const seq = $("#" + px + "seq"), shot = $("#" + px + "shot");
+    if (seq && shot) seq.value = seqFromShot(shot.value.trim());   // ShotGrid's once its shots are in
+    show.dispatchEvent(new Event("prefill"));
+  }
 }
 
 // The suggestions for show, sequence and shot (the sequence only narrows the shots down).

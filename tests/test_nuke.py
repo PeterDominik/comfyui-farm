@@ -342,6 +342,21 @@ class PanelLogic(unittest.TestCase):
                          {"show": "bri3", "shot": None, "step": "lay", "template": None, "description": None,
                           "dry_run": True})
 
+    def test_publish_fields_follow_the_input(self):
+        PM = self.panel.PanelModel
+        bc1 = {"show": "bc1", "shot": "mis_0040"}
+        target, touched = PM.follow_input(bc1, None, set())
+        self.assertEqual(target, ("bc1", "mis_0040"))
+        # Typed in, then the same shot again (another frame range, a resubmit): kept.
+        self.assertEqual(PM.follow_input(bc1, target, {"shot", "sequence"})[1], {"shot", "sequence"})
+        # A path naming another shot: show, sequence and shot follow it again.
+        target, touched = PM.follow_input({"show": "bri3", "shot": "305046_0030"}, target, {"shot", "sequence", "x"})
+        self.assertEqual((target, touched), (("bri3", "305046_0030"), {"x"}))
+        self.assertEqual(PM.follow_input(None, target, {"shot"}), (("", ""), set()))   # no shot in the path
+        self.assertEqual(PM.sequence_from_shot("mis_0040"), "mis")
+        self.assertEqual(PM.sequence_from_shot(" 301029a_0010 "), "301029a")
+        self.assertEqual(PM.sequence_from_shot("nounderscore"), "")
+
     def test_publish_when_done_and_states(self):
         PM = self.panel.PanelModel
         self.m.submit("wf", {"input": "/a.%04d.png 1-2"}, publish={"step": "lay"})
