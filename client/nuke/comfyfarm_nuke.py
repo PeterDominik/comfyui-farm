@@ -13,10 +13,10 @@ Submit. Jobs
 are always submitted from the form. A Read node for the result appears next to the
 source when the job is done. Nuke stays usable while jobs run.
 
-Publish templates (the scripts publishing renders): ComfyFarm > Save as publish template
-publishes the saved script for a workflow or for every workflow (generic); ComfyFarm >
-Open publish template opens a copy of one to edit, which saves back to the same template.
-Every version is kept (the dashboard's Templates tab restores one).
+Publish templates (the scripts publishing renders): ComfyFarm > Save as Nuke Publish
+Template publishes the saved script for a workflow or for every workflow (global); ComfyFarm >
+Open Nuke Publish Template opens a copy of one to edit, which saves back to the same template.
+Every version is kept (the dashboard's Nuke Publish Templates tab restores one).
 """
 
 from __future__ import annotations
@@ -208,12 +208,13 @@ def show_panel():
 
 # ---------------------------------------------------------------- publish templates
 OUTPUT_READ = "Placeholder_Output_Comfyui"
-GENERIC = "_generic"
+GLOBAL = "_global"
+LEGACY = "_generic"          # what the global templates were called at first
 TEMPLATE_COPIES = os.path.join(os.path.expanduser("~"), ".nuke", "comfyfarm_templates")
 
 
 def scope_label(scope: str) -> str:
-    return "generic" if scope == GENERIC else scope
+    return "global" if scope in (GLOBAL, LEGACY) else scope
 
 
 def workflow_from_label(label: str | None) -> str | None:
@@ -225,19 +226,21 @@ def workflow_from_label(label: str | None) -> str | None:
 
 
 def template_from_filename(path: str | None) -> tuple[str, str] | None:
-    """(scope, name) of a copy made by Open publish template: <scope>__<name>.nk."""
+    """(scope, name) of a copy made by Open Nuke Publish Template: <scope>__<name>.nk."""
     m = re.match(r"(.+?)__([A-Za-z0-9][A-Za-z0-9_.-]*)\.nk$", os.path.basename(path or ""))
-    return (m.group(1), m.group(2)) if m else None
+    if not m:
+        return None
+    return (GLOBAL if m.group(1) == LEGACY else m.group(1)), m.group(2)
 
 
 def template_target(scopes: list[str], script: str | None, output_label: str | None) -> tuple[str, str]:
-    """Where Save as publish template suggests saving: the template this script was opened
-    from, else the workflow its output Read came from, else generic; named default."""
+    """Where Save as Nuke Publish Template suggests saving: the template this script was
+    opened from, else the workflow its output Read came from, else global; named default."""
     opened = template_from_filename(script)
     if opened and opened[0] in scopes:
         return opened
     wf = workflow_from_label(output_label)
-    return (wf if wf in scopes else GENERIC), "default"
+    return (wf if wf in scopes else GLOBAL), "default"
 
 
 def _output_read():
@@ -256,7 +259,7 @@ def _output_read():
 
 def save_as_template() -> None:
     """Menu command: publish this script, as saved, as a publish template for a workflow or
-    for every workflow (generic). Anyone may; the one it replaces stays in its history."""
+    for every workflow (global). Anyone may; the one it replaces stays in its history."""
     path = nuke.root().name()
     if not path or path == "Root":
         nuke.message("Save the script first (File > Save), then save it as a publish template.")
@@ -281,17 +284,17 @@ def save_as_template() -> None:
     scopes = [s["scope"] for s in overview.get("scopes") or []]
     scope, name = template_target(scopes, path, read["label"].value())
     shown = [scope_label(scope)] + [scope_label(s) for s in scopes if s != scope]
-    p = nuke.Panel("Save as publish template")
+    p = nuke.Panel("Save as Nuke Publish Template")
     p.addEnumerationPulldown("For", " ".join(shown))
     p.addSingleLineInput("Name", name)
     if not p.show():
         return
-    scope = GENERIC if p.value("For") == "generic" else p.value("For")
+    scope = GLOBAL if p.value("For") == "global" else p.value("For")
     name = (p.value("Name") or "").strip()
     existing = next((s.get("templates") or [] for s in overview["scopes"] if s["scope"] == scope), [])
     if any(t["name"] == name for t in existing) and not nuke.ask(
             f"Replace {name} ({scope_label(scope)})?\n\nThe one in place stays in its history: "
-            "the dashboard's Templates tab can restore it."):
+            "the dashboard's Nuke Publish Templates tab can restore it."):
         return
     with open(path, encoding="utf-8", errors="replace", newline="") as fh:
         text = fh.read()
@@ -305,8 +308,8 @@ def save_as_template() -> None:
 
 
 def open_template() -> None:
-    """Menu command: open a copy of a publish template to edit. Save as publish template
-    then offers to save it back to the same one."""
+    """Menu command: open a copy of a publish template to edit. Save as Nuke Publish
+    Template then offers to save it back to the same one."""
     try:
         overview = farm.publish_templates()
     except farm.FarmError as e:
@@ -318,14 +321,14 @@ def open_template() -> None:
     choices = [f"{scope_label(s['scope'])}/{t['name']}" for s in overview.get("scopes") or []
                for t in s.get("templates") or []]
     if not choices:
-        nuke.message("ComfyFarm: there are no publish templates yet (ComfyFarm > Save as publish template).")
+        nuke.message("ComfyFarm: there are no publish templates yet (ComfyFarm > Save as Nuke Publish Template).")
         return
-    p = nuke.Panel("Open publish template")
+    p = nuke.Panel("Open Nuke Publish Template")
     p.addEnumerationPulldown("Template", " ".join(choices))
     if not p.show():
         return
     shown, name = p.value("Template").split("/", 1)
-    scope = GENERIC if shown == "generic" else shown
+    scope = GLOBAL if shown == "global" else shown
     try:
         text = farm.template_text(scope, name)
     except farm.FarmError as e:

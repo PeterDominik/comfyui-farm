@@ -1,16 +1,18 @@
-"""Publish templates on disk: each workflow's, the generic ones, and every version saved.
+"""Publish templates on disk: each workflow's, the global ones, and every version saved.
 
   <publish.templates>/<workflow>/<name>.nk                    a workflow's own templates
-  <publish.templates>/_generic/<name>.nk                      for every workflow, after its own
+  <publish.templates>/_global/<name>.nk                       for every workflow, after its own
   <publish.templates>/.history/<scope>/<name>/<stamp>_<user>.nk   each version put in place
   <publish.templates>/.history/<scope>/<name>/log.jsonl       who saved or restored which, when
 
-A template is named by its key: `default` (the workflow's own) or `_generic/default`.
+A template is named by its key: `default` (the workflow's own) or `_global/default`. (Global:
+what the pipeline calls templates shared between steps. They were "generic" at first, in
+_generic/; that folder is moved to _global/ when the manager starts, and old keys still work.)
 
-The manager writes templates (Save as publish template in Nuke, the dashboard's Templates
-tab), so artists don't need write access to the bank. Anyone may save one; every save and
-restore keeps a copy of the version it puts in place, and a file found changed on disk (put
-there by hand) is kept first, so a bad save can always be put back."""
+The manager writes templates (Save as Nuke Publish Template in Nuke, the dashboard's Nuke
+Publish Templates tab), so artists don't need write access to the bank. Anyone may save one;
+every save and restore keeps a copy of the version it puts in place, and a file found changed
+on disk (put there by hand) is kept first, so a bad save can always be put back."""
 
 from __future__ import annotations
 
@@ -24,9 +26,10 @@ from pathlib import Path
 
 from . import nuke as N
 
-__all__ = ["GENERIC", "TemplateStore", "key_of", "split_key", "label", "valid_name"]
+__all__ = ["GLOBAL", "TemplateStore", "key_of", "split_key", "scope_of", "canonical", "label", "valid_name"]
 
-GENERIC = "_generic"
+GLOBAL = "_global"
+LEGACY = "_generic"          # what the global templates were called at first
 HISTORY = ".history"
 LOG = "log.jsonl"
 MAX_BYTES = 32 * 2**20
@@ -34,20 +37,32 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _USER = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
+def scope_of(scope: str) -> str:
+    """A scope as it's called now (_generic is _global)."""
+    return GLOBAL if scope == LEGACY else scope
+
+
 def key_of(scope: str, name: str) -> str:
-    return f"{GENERIC}/{name}" if scope == GENERIC else name
+    return f"{GLOBAL}/{name}" if scope_of(scope) == GLOBAL else name
 
 
 def split_key(key: str, workflow: str) -> tuple[str, str]:
     """(scope, name) of a template key, for a workflow's publish."""
-    if key.startswith(GENERIC + "/"):
-        return GENERIC, key[len(GENERIC) + 1:]
+    for prefix in (GLOBAL + "/", LEGACY + "/"):
+        if key.startswith(prefix):
+            return GLOBAL, key[len(prefix):]
     return workflow, key
 
 
+def canonical(key: str) -> str:
+    """A template key as it's called now (_generic/x is _global/x)."""
+    return key_of(*split_key(key, "")) if key.startswith(LEGACY + "/") else key
+
+
 def label(key: str) -> str:
-    """How a template shows in the forms: default, or default (generic)."""
-    return f"{key[len(GENERIC) + 1:]} (generic)" if key.startswith(GENERIC + "/") else key
+    """How a template shows in the forms: default, or default (global)."""
+    scope, name = split_key(key, "")
+    return f"{name} (global)" if scope == GLOBAL else key
 
 
 def valid_name(name: str) -> bool:
@@ -78,6 +93,24 @@ class TemplateStore:
     def names(self, scope: str) -> list[str]:
         """A scope's templates, default first."""
         return N.templates(self.folder(scope))
+
+    def move_legacy(self) -> list[str]:
+        """Move the global templates from _generic/ to _global/ (and their history), once:
+        only where _global/ doesn't exist yet. What was moved, or why not."""
+        done = []
+        for old, new in ((self.root / LEGACY, self.root / GLOBAL),
+                         (self.root / HISTORY / LEGACY, self.root / HISTORY / GLOBAL)):
+            if not old.is_dir():
+                continue
+            if new.exists():
+                done.append(f"{old} is still there: {new} exists too, so it was left for you to merge")
+                continue
+            try:
+                old.rename(new)
+                done.append(f"moved {old} to {new}")
+            except OSError as e:
+                done.append(f"couldn't move {old} to {new} ({e.strerror or e})")
+        return done
 
     # ---------------------------------------------------------------- checking
     def problems(self, scope: str, name: str, inputs) -> list[str]:

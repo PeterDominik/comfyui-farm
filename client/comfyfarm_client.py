@@ -225,7 +225,7 @@ def shotgrid_shots(show: str, refresh: bool = False) -> dict:
                     + ("?refresh=true" if refresh else ""))
 
 
-# Publish templates: scope is a workflow's name, or "_generic" (every workflow, after its own).
+# Publish templates: scope is a workflow's name, or "_global" (every workflow, after its own).
 def publish_templates() -> dict:
     """Every scope's templates: {"scopes": [{scope, label, templates: [{name, key, usable, why,
     saved_by, saved_at, versions}]}], "why"}."""
