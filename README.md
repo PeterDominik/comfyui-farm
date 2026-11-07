@@ -461,8 +461,9 @@ installed: the client is standard library only.
 *Publish when done* under the form, or right-click a finished job, *Publish…*. The fields are
 the dashboard's. Show and shot start as the input path's; when it names none, as the Nuke
 session's `RDO_CURRENT_SHOW` / `RDO_CURRENT_SHOT` (with `RDO_CURRENT_SEQUENCE`), and the step
-as `RDO_CURRENT_STEP` when it's one of the studio's. Everything can be changed, and a field you've typed in stops following the input
-path. With ShotGrid lookups on, show and shot suggest as you type, *Sequence* narrows the
+as `RDO_CURRENT_STEP` when it's one of the studio's. Everything can be changed. A field you've
+typed in stays as it is while the input path names the same shot; a path naming another show
+or shot fills show, sequence and shot again. With ShotGrid lookups on, show and shot suggest as you type, *Sequence* narrows the
 shots down and **↻** reloads them. *Publish log* (right-click) shows every publish of the job
 with the command and Daiquiri's output.
 
@@ -608,7 +609,7 @@ Two ways to ask for it:
 
 | Field | |
 |---|---|
-| Show, shot | Filled in from the input path until you type in them (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
+| Show, shot | Filled in from the input path until you type in them, and again (with the sequence) when a new input path names another show or shot (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
 | Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
 | Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step` |
 | Nuke template | One of the workflow's templates, `default` first |
