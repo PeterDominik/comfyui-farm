@@ -109,7 +109,8 @@ def base_url() -> str | None:
         return None
 
 
-def _request(method: str, path: str, body: dict | None = None, timeout: float = 60) -> dict:
+def _request(method: str, path: str, body: dict | None = None, timeout: float = 60, raw: bool = False):
+    """The farm's JSON answer (raw: its text, for files)."""
     headers = {"Accept": "application/json", "X-User": getpass.getuser()}
     key = os.environ.get("COMFYFARM_API_KEY")
     if key:
@@ -121,7 +122,8 @@ def _request(method: str, path: str, body: dict | None = None, timeout: float = 
     req = urllib.request.Request(_base() + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8") or "{}")
+            text = r.read().decode("utf-8", "replace")
+            return text if raw else json.loads(text or "{}")
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read().decode("utf-8")).get("detail")
@@ -221,6 +223,27 @@ def shotgrid_shots(show: str, refresh: bool = False) -> dict:
     """A show's shots and sequences: {"shots": [{code, sequence, status}], "sequences", "why"}."""
     return _request("GET", f"/api/v1/shotgrid/projects/{urllib.parse.quote(show)}/shots"
                     + ("?refresh=true" if refresh else ""))
+
+
+# Publish templates: scope is a workflow's name, or "_generic" (every workflow, after its own).
+def publish_templates() -> dict:
+    """Every scope's templates: {"scopes": [{scope, label, templates: [{name, key, usable, why,
+    saved_by, saved_at, versions}]}], "why"}."""
+    return _request("GET", "/api/v1/publish/templates")
+
+
+def template_text(scope: str, name: str, version: str | None = None) -> str:
+    """A template's Nuke script: the one in place, or `version` from its history."""
+    q = f"?version={urllib.parse.quote(version)}" if version else ""
+    return _request("GET", f"/api/v1/publish/templates/{urllib.parse.quote(scope)}/{urllib.parse.quote(name)}/file{q}",
+                    raw=True)
+
+
+def save_template(scope: str, name: str, text: str) -> dict:
+    """Publish a Nuke script as a template (anyone may; the one it replaces stays in the
+    history). Raises FarmError saying why a script can't be one."""
+    return _request("POST", f"/api/v1/publish/templates/{urllib.parse.quote(scope)}/{urllib.parse.quote(name)}",
+                    {"text": text, "user": getpass.getuser()}, timeout=120)
 
 
 def publishes(job_id: str) -> list:

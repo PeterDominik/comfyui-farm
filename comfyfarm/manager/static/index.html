@@ -104,6 +104,8 @@
   dialog .sechead h2 { text-transform: none; letter-spacing: 0; font-size: 14px; color: var(--text); }
   dialog hr { border: 0; border-top: 1px solid var(--line); margin: 0; }
   .publog { padding: 14px; display: grid; gap: 14px; }
+  tr.tplscope td { background: var(--panel2, rgba(255,255,255,.03)); padding-top: 12px; }
+  tr.tplver td { font-size: 12px; padding-left: 22px; }
 </style>
 </head>
 <body>
@@ -122,6 +124,7 @@
   <button data-tab="queue">Queue<span class="count" id="queueCount"></span></button>
   <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
   <button data-tab="runtimes">Run times</button>
+  <button data-tab="templates" id="templatesTab" hidden>Templates</button>
 </nav>
 
 <main>
@@ -159,6 +162,23 @@
     <table>
       <thead><tr><th>Workflow</th><th>GPU</th><th>Runs</th><th title="Frames read (tiles for texture workflows), weighted toward recent runs">Usual size</th><th>Usual time</th><th title="Seconds per frame (per tile for texture workflows)">Per frame</th><th title="Seconds every run takes whatever its size: loading models, preparing">Overhead</th></tr></thead>
       <tbody id="runtimes"></tbody>
+    </table>
+  </section>
+
+  <section id="tab-templates" hidden>
+    <div class="sechead"><h2>Publish templates</h2>
+      <span class="muted">The Nuke scripts publishing renders (README, Publishing). Anyone can publish one; every version is kept and can be restored.</span>
+      <button class="small" type="button" id="tplReload" title="Reload the list">↻</button></div>
+    <form id="tplForm" autocomplete="off">
+      <label>For<select id="tplScope"></select></label>
+      <label>Name<input id="tplName" list="tplNames" value="default" maxlength="64"><datalist id="tplNames"></datalist>
+        <span class="help">default is the one publishing starts with</span></label>
+      <label class="wide">Nuke script<input type="file" id="tplFile" accept=".nk"><span class="help">a saved script with a Read named Placeholder_Output_Comfyui and a WriteNukleus. In Nuke: ComfyFarm ▸ Save as publish template…</span></label>
+      <div class="actions"><button class="primary" type="submit">Publish template</button><span class="msg" id="tplMsg"></span></div>
+    </form>
+    <table>
+      <thead><tr><th>Template</th><th>Status</th><th>Last saved</th><th>Versions</th><th></th></tr></thead>
+      <tbody id="templates"></tbody>
     </table>
   </section>
 </main>
@@ -209,12 +229,13 @@ const about = s => s == null ? "" : s < 60 ? Math.max(5, Math.round(s / 5) * 5) 
   : s < 5940 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 
 // ------------------------------------------------------------- tabs
-const TABS = ["submit", "queue", "machines", "runtimes"];
+const TABS = ["submit", "queue", "machines", "runtimes", "templates"];
 function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
   $("#tabs").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
   store.set("comfyfarm.tab", tab);
+  if (tab === "templates") loadTemplates();
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
 }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); });
@@ -630,6 +651,25 @@ for (const [id, key] of [["#scope", "scope"], ["#filter", "filter"]]) {
 const pubOptions = name => api(`/api/v1/workflows/${encodeURIComponent(name)}/publish`);
 const wfPublish = name => state.workflows.find(w => w.name === name)?.publish;
 const fromPath = v => v ? `${v} (from the input path)` : "from the input path";
+const tplLabel = k => k.startsWith("_generic/") ? `${k.slice(9)} (generic)` : k;   // default, default (generic)
+
+// ↻ next to the template list: what's published now, keeping the pick when it's still there.
+function wireTemplateReload(px, workflow) {
+  const b = $("#" + px + "tplRefresh");
+  if (!b) return;
+  b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const o = await pubOptions(workflow), sel = $("#" + px + "template"), cur = sel.value;
+      const pick = o.templates.includes(cur) ? cur : o.template;
+      sel.innerHTML = (o.templates || []).map(k => `<option value="${esc(k)}" ${k === pick ? "selected" : ""}>${esc((o.labels || {})[k] || tplLabel(k))}</option>`).join("");
+      const bad = Object.entries(o.unusable || {}), help = $("#" + px + "tplHelp");
+      help.textContent = bad.length ? `Not usable: ${bad.map(([n]) => tplLabel(n)).join(", ")} (hover for why)` : "";
+      help.title = bad.map(([n, w]) => `${tplLabel(n)}: ${w}`).join("\n");
+    } catch (err) { $("#" + px + "tplHelp").textContent = err.message; }
+    finally { b.disabled = false; }
+  };
+}
 const PUB_STATE = { queued: ["publish queued", "muted"], dispatching: ["dispatching to Tractor…", "warn"],
                     dispatched: ["sent to Tractor", "ok"], dry_run: ["dry run passed", "ok"], failed: ["publish failed", "err"] };
 
@@ -742,14 +782,16 @@ function wireShotGrid(px) {
 function publishFields(o, px, v = {}, hint = {}) {
   const opts = (list, cur) => list.map(x => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
   const unusable = Object.entries(o.unusable || {});
+  const tplOpts = (o, cur) => o.templates.map(k =>
+    `<option value="${esc(k)}" ${k === cur ? "selected" : ""}>${esc((o.labels || {})[k] || tplLabel(k))}</option>`).join("");
   // Templates that can't be used: named, why in the tooltip.
-  const tplHelp = unusable.length ? `Not usable: ${unusable.map(([n]) => n).join(", ")} (hover for why)` : `in ${o.folder}/`;
-  const tplTip = unusable.length ? unusable.map(([n, w]) => `${n}.nk: ${w}`).join("\n") : "";
+  const tplHelp = unusable.length ? `Not usable: ${unusable.map(([n]) => tplLabel(n)).join(", ")} (hover for why)` : "";
+  const tplTip = unusable.length ? unusable.map(([n, w]) => `${tplLabel(n)}: ${w}`).join("\n") : "";
   return `<label>Show<input id="${px}show" list="${px}showList" autocomplete="off" value="${esc(v.show || "")}" placeholder="${esc(fromPath(hint.show))}"><datalist id="${px}showList"></datalist></label>
     <label id="${px}seqBox" hidden>Sequence<input id="${px}seq" list="${px}seqList" autocomplete="off" placeholder="all"><datalist id="${px}seqList"></datalist><span class="help">narrows the shot list</span></label>
     <label>Shot<span class="inrow"><input id="${px}shot" list="${px}shotList" autocomplete="off" value="${esc(v.shot || "")}" placeholder="${esc(fromPath(hint.shot))}"><button type="button" class="small" id="${px}sgRefresh" hidden title="Reload the shows and shots from ShotGrid (a shot was just created)">↻</button></span><datalist id="${px}shotList"></datalist><span class="help" id="${px}sgNote"></span></label>
     <label>Step<select id="${px}step">${opts(o.steps, v.step || o.step)}</select></label>
-    <label>Nuke template<select id="${px}template">${opts(o.templates, v.template || o.templates[0])}</select><span class="help ${unusable.length ? "warn" : ""}" title="${esc(tplTip)}">${esc(tplHelp)}</span></label>
+    <label>Nuke template<span class="inrow"><select id="${px}template">${tplOpts(o, v.template && o.templates.includes(v.template) ? v.template : o.template)}</select><button type="button" class="small" id="${px}tplRefresh" title="Reload the templates (one was just published)">↻</button></span><span class="help ${unusable.length ? "warn" : ""}" id="${px}tplHelp" title="${esc(tplTip)}">${esc(tplHelp)}</span></label>
     <label class="wide">Description<input id="${px}description" value="${esc(v.description || "")}" placeholder="${esc(o.description)}" maxlength="500"></label>
     <label class="check flat wide"><input type="checkbox" id="${px}dry"${o.dry_run || v.dry_run ? " checked" : ""}${o.dry_run ? " disabled" : ""}> Dry run
       <span class="help">${o.dry_run ? "publish.dry_run is on in the manager's config" : "Daiquiri checks it, nothing goes to Tractor"}</span></label>`;
@@ -772,13 +814,14 @@ async function loadPublishForm(wf) {
     <div class="pubbox" id="pubBox" hidden>${publishFields(o, "sp_", state.planHint || {}, state.planHint || {})}</div>`;
   $("#pubToggle").onchange = e => { $("#pubBox").hidden = !e.target.checked; };
   wireShotGrid("sp_");
+  wireTemplateReload("sp_", wf.name);
 }
 
 // Job details: the latest publish (or the one asked for at submit).
 function publishRows(j) {
   const p = j.publish, ask = j.info?.publish_request;
   if (!p && !ask) return "";
-  const to = x => esc([x.show, x.shot, x.step].filter(Boolean).join(" · ")) + (x.template ? ` with ${esc(x.template)}.nk` : "");
+  const to = x => esc([x.show, x.shot, x.step].filter(Boolean).join(" · ")) + (x.template ? ` with ${esc(tplLabel(x.template))}` : "");
   if (!p) return `<div>Publish</div><div class="muted">When it's done: ${to(ask)}${ask.dry_run ? " (dry run)" : ""}</div>`;
   const [label, cls] = PUB_STATE[p.state] || [p.state, "muted"];
   const notes = (p.notes || []).filter(n => !(p.state === "dry_run" && n.startsWith("dry run")));
@@ -821,7 +864,7 @@ async function openPublish(j) {
       <div class="actions"><button class="primary" type="submit">Publish</button><button type="button" data-close>Cancel</button>
         <span class="msg" id="pubMsg"></span></div></form>`;
   const f = $("#pubForm");
-  if (f) wireShotGrid("dp_");
+  if (f) { wireShotGrid("dp_"); wireTemplateReload("dp_", j.workflow); }
   if (f) f.onsubmit = async e => {
     e.preventDefault();
     const msg = $("#pubMsg"), btn = f.querySelector("button[type=submit]");
@@ -846,7 +889,7 @@ async function openPublishLog(id) {
     return `<div class="kv">
       <div>When</div><div>${new Date(p.created_at * 1000).toLocaleString()}${p.user ? ` · ${esc(p.user)}` : ""}</div>
       <div>State</div><div><span class="${cls}">${esc(label)}</span>${p.tractor_id ? ` · Tractor job <code>${esc(p.tractor_id)}</code>` : ""}${p.title ? `<br><span class="mono">${esc(p.title)}</span>` : ""}</div>
-      <div>To</div><div>${esc([p.show, p.shot, p.step].filter(Boolean).join(" · "))}${p.template ? ` with ${esc(p.template)}.nk` : ""} · frames ${esc(p.frames || "forceInput")}</div>
+      <div>To</div><div>${esc([p.show, p.shot, p.step].filter(Boolean).join(" · "))}${p.template ? ` with ${esc(tplLabel(p.template))}` : ""} · frames ${esc(p.frames || "forceInput")}</div>
       ${p.description ? `<div>Description</div><div>${esc(p.description)}</div>` : ""}
       ${p.error ? `<div>Error</div><div class="err">${esc(p.error)}</div>` : ""}
       ${(p.notes || []).map(n => `<div>Note</div><div class="warn">${esc(n)}</div>`).join("")}
@@ -856,6 +899,97 @@ async function openPublishLog(id) {
     </div>`; }).join("<hr>") || '<div class="empty">Not published yet.</div>'}</div>`;
   dlg.showModal();
 }
+
+// ------------------------------------------------------------- publish templates (Templates tab)
+// Every scope (generic, then each published workflow) with its templates; History lists every
+// version kept, any of which can be put back (Restore makes it the newest; nothing is lost).
+const tplOpen = new Set();          // "scope/name" whose history is unfolded
+const tplHistory = new Map();       // "scope/name" -> its versions
+let tplData = null;
+const tplUrl = (scope, name, tail = "") => `/api/v1/publish/templates/${encodeURIComponent(scope)}/${encodeURIComponent(name)}${tail}`;
+
+async function loadTemplates() {
+  try { tplData = await api("/api/v1/publish/templates"); }
+  catch (err) { tplData = { scopes: [], why: err.message }; }
+  for (const k of tplOpen) await loadTemplateHistory(k);
+  renderTemplates();
+}
+async function loadTemplateHistory(k) {
+  const [scope, name] = k.split("/");
+  try { tplHistory.set(k, (await api(tplUrl(scope, name, "/history"))).history); }
+  catch (err) { tplHistory.set(k, []); }
+}
+function renderTemplates() {
+  const d = tplData || { scopes: [] };
+  const sel = $("#tplScope"), keep = sel.value;
+  sel.innerHTML = d.scopes.map(s => `<option value="${esc(s.scope)}">${esc(s.label)}</option>`).join("");
+  if (d.scopes.some(s => s.scope === keep)) sel.value = keep;
+  $("#tplForm").hidden = !!d.why;
+  const names = (d.scopes.find(s => s.scope === sel.value)?.templates || []).map(t => t.name);
+  $("#tplNames").innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join("");
+  if (d.why) { $("#templates").innerHTML = `<tr><td colspan="5" class="empty">${esc(d.why)}</td></tr>`; return; }
+  $("#templates").innerHTML = d.scopes.map(s => `<tr class="tplscope"><td colspan="5"><b>${esc(s.label)}</b>
+      <span class="muted mono">${esc(s.folder)}/</span></td></tr>` + (s.templates.length ? s.templates.map(t => {
+      const k = `${s.scope}/${t.name}`, open = tplOpen.has(k), hist = tplHistory.get(k) || [];
+      const starts = t.name !== "default" ? "" : s.scope === "_generic" ? "(starts selected when a workflow has none of its own)" : "(starts selected)";
+      return `<tr><td class="mono">${esc(t.name)}${starts ? ` <span class="muted">${starts}</span>` : ""}</td>
+        <td>${t.usable ? '<span class="ok">usable</span>' : `<span class="err" title="${esc(t.why)}">not usable</span><br><span class="help">${esc(t.why)}</span>`}
+          ${t.changed_on_disk ? '<br><span class="warn">changed on disk outside the farm (kept at the next save)</span>' : ""}</td>
+        <td>${t.saved_by ? `${esc(t.saved_by)} · ${ago(t.saved_at)}` : '<span class="muted">before the history</span>'}</td>
+        <td>${t.versions || ""}</td>
+        <td style="white-space:nowrap"><button class="small" data-tplhist="${esc(k)}">${open ? "Hide history" : "History"}</button>
+          <button class="small" data-tpldl="${esc(k)}">Download</button></td></tr>`
+        + (open ? (hist.length ? hist.map(h => `<tr class="tplver"><td class="mono muted">${esc(h.version)}</td>
+            <td>${esc(h.action)}${h.note ? ` <span class="muted">(${esc(h.note)})</span>` : ""}${h.current ? ' <span class="ok">· in place</span>' : ""}</td>
+            <td>${esc(h.user)} · ${new Date(h.time * 1000).toLocaleString()}</td><td>${(h.size / 1024).toFixed(0)} KB</td>
+            <td style="white-space:nowrap"><button class="small" data-tpldl="${esc(k)}" data-ver="${esc(h.version)}">Download</button>
+              ${h.current ? "" : `<button class="small" data-tplrestore="${esc(k)}" data-ver="${esc(h.version)}">Restore</button>`}</td></tr>`).join("")
+          : '<tr class="tplver"><td colspan="5" class="muted">No history yet: it starts with the next save.</td></tr>') : "");
+    }).join("") : '<tr><td colspan="5" class="muted">No templates yet.</td></tr>')).join("");
+}
+$("#tplScope").onchange = renderTemplates;
+$("#tplReload").onclick = loadTemplates;
+$("#templates").addEventListener("click", async e => {
+  const t = e.target;
+  if (t.dataset.tplhist) {
+    const k = t.dataset.tplhist;
+    if (tplOpen.has(k)) tplOpen.delete(k); else { tplOpen.add(k); await loadTemplateHistory(k); }
+    renderTemplates();
+  } else if (t.dataset.tpldl) {
+    const [scope, name] = t.dataset.tpldl.split("/"), ver = t.dataset.ver;
+    try {   // fetched with the farm's headers (API keys), then saved by the browser
+      const r = await fetch(tplUrl(scope, name, "/file") + (ver ? "?version=" + encodeURIComponent(ver) : ""), { headers: headers(false) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(await r.blob());
+      a.download = `${scope === "_generic" ? "generic_" : ""}${name}${ver ? "_" + ver : ""}.nk`;
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (err) { alert(err.message); }
+  } else if (t.dataset.tplrestore) {
+    const [scope, name] = t.dataset.tplrestore.split("/"), ver = t.dataset.ver;
+    if (!confirm(`Put ${name} (${scope === "_generic" ? "generic" : scope}) back to the version of ${ver}?\nThe one in place now stays in the history.`)) return;
+    t.disabled = true;
+    try {
+      await api(tplUrl(scope, name, "/restore"), { method: "POST", body: JSON.stringify({ version: ver }) });
+      await loadTemplateHistory(t.dataset.tplrestore);
+      await loadTemplates();
+    } catch (err) { alert(err.message); t.disabled = false; }
+  }
+});
+$("#tplForm").onsubmit = async e => {
+  e.preventDefault();
+  const msg = $("#tplMsg"), file = $("#tplFile").files[0], scope = $("#tplScope").value, name = $("#tplName").value.trim();
+  if (!file) { msg.className = "msg err"; msg.textContent = "Pick the .nk to publish."; return; }
+  const exists = (tplData?.scopes.find(s => s.scope === scope)?.templates || []).some(t => t.name === name);
+  if (exists && !confirm(`Replace ${name}? The current one stays in its history and can be restored.`)) return;
+  msg.className = "msg"; msg.textContent = "Publishing…";
+  try {
+    const r = await api(tplUrl(scope, name), { method: "POST", body: JSON.stringify({ text: await file.text() }) });
+    msg.className = "msg ok"; msg.textContent = `Published ${tplLabel(r.key)} (${r.version}).`;
+    $("#tplFile").value = "";
+    await loadTemplates();
+  } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+};
 
 // ------------------------------------------------------------- live updates
 let ws, wsTimer;
@@ -895,6 +1029,7 @@ async function boot() {
     $("#keyBox").hidden = !h.auth; $("#userBox").hidden = h.auth;
     const wfs = await api("/api/v1/workflows");
     state.workflows = wfs.workflows;
+    $("#templatesTab").hidden = !state.workflows.some(w => w.publish);   // publishing is on
     $("#wfSelect").innerHTML = state.workflows.map(w => `<option value="${esc(w.name)}">${esc(w.label)}</option>`).join("");
     $("#wfSelect").onchange = renderForm;
     renderForm();

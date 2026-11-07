@@ -8,7 +8,8 @@
 
 name: rtx5090-a                  # as the dashboard shows it; unique on the farm
 # The manager's address, or the manager.json it writes in the farm's shared folder (followed
-# if the manager moves), e.g. /rdo/bank/comfy_farm/manager.json on Linux.
+# if the manager moves): /rdo/bank/comfy_farm/manager.json on Linux, B:\comfy_farm\manager.json
+# on Windows (/rdo/bank is B:\ there).
 manager: http://pipeline-ws42:8000
 token: ''                        # the manager's agents.token, if it has one
 comfyui: http://127.0.0.1:8188   # this machine's ComfyUI. Keep it on localhost (no --listen):

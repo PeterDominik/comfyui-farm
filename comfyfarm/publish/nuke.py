@@ -160,11 +160,12 @@ class Template:
         return rdo or writes
 
     def problems(self, inputs) -> list[str]:
-        """Why this template can't publish a job of a workflow with these inputs."""
+        """Why this template can't publish a job of a workflow with these inputs (None:
+        any workflow, so its input Reads aren't checked)."""
         out = []
         if not self.output_reads():
             out.append(f"it has no Read node named {OUTPUT_READ} (the one the job's output goes into)")
-        unknown = sorted(set(self.input_reads()) - set(inputs))
+        unknown = sorted(set(self.input_reads()) - set(inputs)) if inputs is not None else []
         if unknown:
             out.append(f"it reads input{'s' if len(unknown) > 1 else ''} {', '.join(unknown)}, which the workflow "
                        f"doesn't have ({', '.join(inputs) or 'none'}): Read nodes {INPUT_READ}<input>")

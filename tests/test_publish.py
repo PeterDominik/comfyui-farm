@@ -233,13 +233,44 @@ class PublisherTests(unittest.TestCase):
 
     def test_options(self):
         o = self.pub.options("ltx25_alpha_gen")
-        self.assertEqual((o["why"], o["templates"], o["step"]), (None, ["default"], "lay"))
+        self.assertEqual((o["why"], o["templates"], o["template"], o["step"]), (None, ["default"], "default", "lay"))
         self.assertIn("lay", o["steps"])
-        self.assertIn("isn't published", self.pub.options("wan22_i2i")["why"])
+        self.assertIn("texture publisher", self.pub.options("chord_pbr")["why"])      # textures: not from the farm
+        self.assertIn("No usable template for Wan", self.pub.options("wan22_i2i")["why"])   # published, no template yet
         (Path(self.cfg.publish.templates) / "ltx25_alpha_gen" / "broken.nk").write_text("Root {\n}\n")
         self.assertIn("no Read node named", self.pub.options("ltx25_alpha_gen")["unusable"]["broken"])
         self.cfg.publish.enabled = False
         self.assertIn("isn't switched on", self.pub.options("ltx25_alpha_gen")["why"])
+
+    def test_generic_templates_and_the_default(self):
+        root = Path(self.cfg.publish.templates)
+        (root / "_generic").mkdir()
+        shutil.copy(TEMPLATE, root / "_generic" / "default.nk")
+        shutil.copy(TEMPLATE, root / "_generic" / "over_plate.nk")
+        (root / "_generic" / "with_input.nk").write_text(TEMPLATE.read_text().replace(
+            "Dot {\n name Dot1", "Read {\n inputs 0\n name Placeholder_Input_reference\n}\nDot {\n name Dot1"))
+        # A workflow with its own: its own default first, the generic ones after.
+        o = self.pub.options("ltx25_alpha_gen")
+        self.assertEqual(o["templates"], ["default", "_generic/default", "_generic/over_plate"])
+        self.assertEqual((o["template"], o["labels"]["_generic/default"]), ("default", "default (generic)"))
+        self.assertIn("reference", o["unusable"]["_generic/with_input"])     # LTX alpha has no reference input
+        # Without its own: the generic default; Wan (no publish section) publishes too, at the default step.
+        o = self.pub.options("wan22_i2i")
+        self.assertEqual((o["why"], o["template"], o["step"]), (None, "_generic/default", "lay"))
+        own = root / "wan22_i2i"
+        own.mkdir()
+        shutil.copy(TEMPLATE, own / "still.nk")
+        self.assertEqual(self.pub.options("wan22_i2i")["template"], "still")   # its own first, even not "default"
+        self.assertEqual(self.pub._default_template(["_generic/b", "_generic/a"]), "_generic/b")
+        # Published with a generic one: staged under its own name.
+        job = self.done_job()
+        rec = self.pub.start_publish(job["id"], {"template": "_generic/over_plate"}, "jdoe", wait=True)
+        self.assertEqual(rec["state"], "dispatched", rec.get("error"))
+        self.assertEqual(Path(rec["workfile"]).name, "_generic-over_plate.nk")
+        self.assertEqual(self.calls_made()[-1][-3], "1001-1050")
+        info = self.pub.publish_info(self.farm.registry.get("wan22_i2i"))
+        self.assertEqual(info, {"step": "lay", "graph": "update_and_render_nuke"})
+        self.assertIsNone(self.pub.publish_info(self.farm.registry.get("chord_pbr")))
 
     def test_check(self):
         with self.assertRaises(ParamError) as e:                     # no /rdo/shows/<show>: not published to
@@ -251,6 +282,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(self.pub.check("ltx25_alpha_gen", {"step": "comp", "shot": "305046_0020"}, show="bri3",
                                         shot="305046_0010")["shot"], "305046_0020")
         for req, why in (({"step": "nope"}, "isn't one of the studio's"), ({"template": "other"}, "no template other"),
+                         ({"template": "_generic/default"}, "no template default (generic)"),
                          ({"shot": "a b"}, "isn't a shot code")):
             with self.assertRaises(ParamError) as e:
                 self.pub.check("ltx25_alpha_gen", req, show="bri3", shot="305046_0010")

@@ -191,8 +191,9 @@ powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -Agent -ComfyU
 Edit `agent.yaml`:
 
 - `name`;
-- `manager: http://<manager>:8000` (or the shared folder's `manager.json` as this
-  machine sees it), and `token`;
+- `manager: B:\comfy_farm\manager.json`: the shared folder's `manager.json` (`/rdo/bank` is
+  `B:\` on Windows), so the agent follows the manager if it moves; or `http://<manager>:8000`.
+  And `token`;
 - `paths.mappings: [{posix: /rdo/shows, windows: //rodeofx.com/smb/shows}]`;
 - `convert.scratch_dir`;
 - `comfyui_launch`, optionally, e.g.
@@ -382,7 +383,7 @@ it, as before. `agent --check` lists the differences as warnings.
 
 ## Using it
 
-**Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Four tabs:
+**Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Its tabs:
 
 - **Submit:** pick the workflow, fill in the form, check the destination line, submit.
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
@@ -394,6 +395,7 @@ it, as before. `agent --check` lists the differences as warnings.
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
   and why. *Drain* / *Resume* per machine.
 - **Run times:** how long each workflow takes on each GPU type, what the ETAs come from.
+- **Templates** (while publishing is on): the publish templates, their history, publishing and restoring one (see *Publishing*).
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
 `http://<farm-machine>:8000/client.py`):
@@ -567,6 +569,11 @@ Changing it only affects jobs submitted afterwards.
 | GET | `/api/v1/workflows/{name}/publish` | What it can be published with: `templates` (and `unusable` ones, with why), `steps`, the default `step` and `description`; `why` when it can't be |
 | POST | `/api/v1/jobs/{id}/publish` | Publish a finished job `{step?, show?, shot?, template?, description?, dry_run?, wait?}` → the publish (`state`: `queued`, `dispatching`, `dispatched` with `tractor_id`, `dry_run`, `failed` with `error`) |
 | GET | `/api/v1/jobs/{id}/publishes` | Its publishes, the latest first, with the command run and dispatchGraph's output |
+| GET | `/api/v1/publish/templates` | Every scope's templates (`_generic`, then each published workflow): usable or `why`, `saved_by`, `saved_at`, `versions` |
+| GET | `/api/v1/publish/templates/{scope}/{name}/history` | Every version kept: `version`, `time`, `user`, `action` (save, restore, found), `current` |
+| GET | `/api/v1/publish/templates/{scope}/{name}/file?version=` | The `.nk` (the one in place, or a version) |
+| POST | `/api/v1/publish/templates/{scope}/{name}` | Publish a template `{text}` (the whole script), checked like publishing checks it |
+| POST | `/api/v1/publish/templates/{scope}/{name}/restore` | Put `{version}` back (as the newest version) |
 | GET | `/api/v1/shotgrid` | Whether the ShotGrid lookups work (`enabled`, `set_up`), or `why` not |
 | GET | `/api/v1/shotgrid/projects?refresh=` | The active shows `[{code, name}]`; `refresh=true` reloads them from ShotGrid |
 | GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
@@ -593,8 +600,9 @@ and `files`. `outputs.frame_pattern` is the base colour's.
 
 ## Publishing (Tractor, through Daiquiri)
 
-A finished job of a workflow whose manifest has a `publish:` section (`ltx25_alpha_gen`,
-`ltx25_layout_render`) can be published through the pipeline: the manager copies a Nuke
+A finished job of any video or image workflow (`ltx25_alpha_gen`, `ltx25_layout_render`,
+`wan22_i2i`; not texture workflows such as CHORD, which go through the texture publisher)
+can be published through the pipeline: the manager copies a Nuke
 template with the job's frames in it to a staging folder and dispatches Daiquiri's
 `update_and_render_nuke` on it. That renders the template's WriteNukleus nodes on Tractor and
 makes a daily for each in Artist Review.
@@ -611,8 +619,8 @@ Two ways to ask for it:
 |---|---|
 | Show, shot | Filled in from the input path until you type in them, and again (with the sequence) when a new input path names another show or shot (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
 | Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
-| Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step` |
-| Nuke template | One of the workflow's templates, `default` first |
+| Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step`, else `publish.default_step` (`lay`) |
+| Nuke template | The workflow's own templates, then the generic ones (`default (generic)`); it starts on the workflow's `default`, else its first, else the generic `default`. **↻** reloads the list after a template is published |
 | Description | Default `Auto Publish`; ` (ComfyFarm <job>, <user>)` is added to it |
 | Dry run | dispatchGraph `--dry-run`: Daiquiri checks the context and the script, nothing goes to Tractor |
 
@@ -655,8 +663,10 @@ the Nuke panel) ask the manager, so the key never leaves wrk1125l. To set it up:
 ### Publish templates
 
 `<publish.templates>/<workflow>/<name>.nk`, e.g.
-`/rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/default.nk`. An ordinary Nuke
-script, built around nodes with set names:
+`/rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/default.nk`, and the **generic**
+ones, `<publish.templates>/_generic/<name>.nk`, offered for every workflow after its own (so a
+workflow without a template of its own publishes with the generic `default`). An ordinary
+Nuke script, built around nodes with set names:
 
 - a Read named **`Placeholder_Output_Comfyui`**: the job's frames go into it (file, frame range,
   file type, and the colorspace by extension: PNG `color_picking`, EXR `rdo`, from
@@ -673,8 +683,27 @@ offered; the form lists it as not usable, with why. The staged copy is
 `<publish.staging>/<job id>/<name>.nk` (readable by everyone, removed after
 `publish.keep_days`), so what Tractor rendered can be opened afterwards.
 
-To make one: build the comp in Nuke on a real ComfyFarm output, name the Read
-`Placeholder_Output_Comfyui`, set up the WriteNukleus, and save it in the workflow's folder.
+A generic template can only count on `Placeholder_Output_Comfyui`: an input Read in it makes
+it unusable for workflows without that input (listed so, with why).
+
+**Publishing a template** (anyone can; every version is kept):
+
+- **In Nuke:** build the comp on a real ComfyFarm output (the panel's Read), save the script,
+  then *ComfyFarm ▸ Save as publish template…*. A selected Read is renamed
+  `Placeholder_Output_Comfyui` if the script has none (asked first). Pick the workflow (it
+  starts on the one the Read came from) or *generic*, and a name (`default` is the one
+  publishing starts with). The whole saved script is published.
+- *ComfyFarm ▸ Open publish template…* opens a copy of one to edit (in `~/.nuke/comfyfarm_templates`);
+  *Save as publish template…* then offers to save it back to the same one.
+- **In the dashboard's Templates tab:** pick the workflow (or generic), a name and the `.nk`.
+
+The manager checks the script (the output Read, a WriteNukleus, input Reads the workflow
+has) and writes it, so artists don't need write access to the bank. Every version put in
+place is kept in `<publish.templates>/.history/<scope>/<name>/` with who saved it and when
+(a file found changed on disk is kept first). The **Templates** tab lists every workflow's
+templates and the generic ones (usable or why not, last saved by, versions); *History* shows
+each version with *Download* and **Restore**, which puts it back as the newest version, so
+nothing is lost.
 
 ### Turning it on
 
@@ -944,8 +973,8 @@ params:                        # becomes the form in the dashboard, in this orde
 # requires: {vram_gb: 32, tags: [nightly]}   # optional: the machines that may run it: the
                                # least GPU memory (GB, as the card is sold: a 5090 is 32) and
                                # labels from their agent.yaml `tags` (linux / windows always set)
-# publish: {step: lay}         # optional: its outputs can be published (see Publishing); the
-                               # step offered first
+# publish: {step: lay}         # optional: the step publishing offers first (see Publishing);
+                               # publish: false keeps a video/image workflow from being published
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}
