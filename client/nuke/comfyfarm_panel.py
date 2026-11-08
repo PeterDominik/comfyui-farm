@@ -409,6 +409,13 @@ class PanelModel:
                     else f"frames {c['start']}-{c['end']}")
             if c.get("slate_frame") is not None:
                 out += f", first frame ({c['slate_frame']}) is a slate and is skipped"
+        for name, v in (plan.get("sources") or {}).items():     # ShotGrid Versions given as inputs
+            label = e((labels or {}).get(name) or name)
+            rng = "" if v.get("first") is None else (f" {v['first']}" if v["first"] == v.get("last")
+                                                     else f" {v['first']}-{v['last']}")
+            out += (f"<br>{label}: ShotGrid Version <a href='{e(v.get('url') or '')}'>{e(v.get('code') or '')}</a>"
+                    + (f" ({e(v.get('entity_type') or '')} {e(v['entity'])})" if v.get("entity") else "")
+                    + f", its {'movie' if v.get('kind') == 'movie' else 'frames'} <code>{e(v.get('path') or '')}</code>{rng}")
         if (plan.get("version") or 1) > 1:
             out += (f"<br><span style='color:#e0a24a'>Earlier versions already exist there (or are queued), "
                     f"so this run is v{plan['version']:03d}.</span>")
@@ -866,7 +873,8 @@ if QtWidgets is not None:
             self.dest_label = QtWidgets.QLabel("")
             self.dest_label.setTextFormat(QtCore.Qt.RichText)
             self.dest_label.setWordWrap(True)
-            self.dest_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.dest_label.setTextInteractionFlags(QtCore.Qt.TextBrowserInteraction)   # selectable; links open
+            self.dest_label.setOpenExternalLinks(True)          # a ShotGrid Version, in the browser
             self.dest_label.setStyleSheet("QLabel { border-left: 2px solid #555; padding: 4px 8px; }")
             tl.addWidget(self.dest_label)
             actions = QtWidgets.QHBoxLayout()
@@ -1111,6 +1119,8 @@ if QtWidgets is not None:
                     f"/rdo/shows/…/shot.step.%04d.png (at the {matched.get('label') or matched['name']}'s frames)"
                     if matched else "/rdo/shows/…/shot.step.%04d.png 1050" if one else
                     "/rdo/shows/…/shot.step.%04d.png 1001-1100"))
+                if t == "sequence":
+                    w.setToolTip("A path, or a ShotGrid Version link (its frames, else its movie)")
                 w.textChanged.connect(self._schedule_plan)
                 row = QtWidgets.QHBoxLayout()
                 row.addWidget(w, 1)

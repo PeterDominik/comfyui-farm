@@ -20,6 +20,8 @@ From Python:
 From a shell:
     python comfyfarm_client.py workflows
     python comfyfarm_client.py submit ltx25_alpha_gen input="/rdo/shows/.../x.%04d.png 1001-1158" --wait
+    python comfyfarm_client.py submit ltx25_alpha_gen input="https://<site>/detail/Version/4865327"
+                                       # a ShotGrid Version's frames (its movie when it has none)
     python comfyfarm_client.py status <job id>
     python comfyfarm_client.py list [--mine]
     python comfyfarm_client.py cancel <job id>

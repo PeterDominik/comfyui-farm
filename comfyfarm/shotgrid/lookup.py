@@ -20,7 +20,11 @@ text: publishing never depends on ShotGrid. A ShotGrid that didn't answer is lef
 for retry_seconds.
 
 check() is what publishing asks before it dispatches: a shot that isn't in the show is
-refused (after reloading the show's shots once, in case it's new)."""
+refused (after reloading the show's shots once, in case it's new).
+
+version() is a Version link given as a job's input (comfyfarm.shotgrid.versions): its
+frames and movie paths, frame range, and the show, sequence and shot it belongs to,
+cached for version_ttl seconds."""
 
 from __future__ import annotations
 
@@ -33,11 +37,15 @@ from pathlib import Path
 
 log = logging.getLogger("comfyfarm.shotgrid")
 
-__all__ = ["ShotGrid", "Unavailable", "read_env_file"]
+__all__ = ["ShotGrid", "Unavailable", "NotFound", "read_env_file"]
 
 
 class Unavailable(Exception):
     """ShotGrid can't be asked right now (the message says why)."""
+
+
+class NotFound(Exception):
+    """ShotGrid answered: there's no such thing (the message says what)."""
 
 
 def read_env_file(path) -> dict[str, str]:
@@ -75,6 +83,7 @@ class ShotGrid:
         self._lock = threading.Lock()           # one ShotGrid call at a time: a connection isn't thread-safe
         self._projects: tuple[float, list[dict]] | None = None
         self._shots: dict[str, tuple[float, list[dict]]] = {}
+        self._versions: dict[int, tuple[float, dict]] = {}
         self._forced: dict[str, float] = {}
         self._down_until = 0.0
         self._down_why: str | None = None
@@ -268,3 +277,62 @@ class ShotGrid:
         except Unavailable:
             return None
         return None if found else f"There's no shot {shot} in {data['show']} in ShotGrid."
+
+    # ---------------------------------------------------------------- Versions (job inputs)
+    def version(self, vid: int) -> dict:
+        """A Version as a job's input: {id, code, url, frames, movie, first, last, status,
+        entity_type, entity, show, sequence, shot}. Paths are as ShotGrid holds them (studio
+        paths); frames/movie/first/last are None when the Version has none. Unavailable when
+        ShotGrid can't be asked, NotFound when it has no such Version."""
+        why = self.why()
+        if why:
+            raise Unavailable(why)
+        cached = self._versions.get(vid)
+        if cached and time.time() - cached[0] < self.cfg.version_ttl:
+            return cached[1]
+        f = self.cfg.version_fields
+        want = [f.get(k) for k in ("frames", "movie", "first", "last") if f.get(k)]
+        v = self._ask("find_one", "Version", [["id", "is", vid]],
+                      ["code", "entity", "project", "sg_status_list", *want])
+        if not v:
+            raise NotFound(f"There's no Version {vid} in ShotGrid (or the farm's ShotGrid script can't see it).")
+        ent, proj = v.get("entity") or {}, v.get("project") or {}
+
+        def text(key):
+            value = v.get(f.get(key) or "")
+            return value.strip() if isinstance(value, str) and value.strip() else None
+
+        def number(key):
+            value = v.get(f.get(key) or "")
+            return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        out = {"id": vid, "code": v.get("code") or f"Version {vid}",
+               "url": f"{self.cfg.url.rstrip('/')}/detail/Version/{vid}",
+               "frames": text("frames"), "movie": text("movie"), "first": number("first"), "last": number("last"),
+               "status": v.get("sg_status_list"), "entity_type": ent.get("type"), "entity": ent.get("name"),
+               "show": self._show_of(proj), "sequence": None, "shot": None}
+        if ent.get("type") == "Shot":
+            out["shot"] = ent.get("name")
+            try:
+                shot = self._ask("find_one", "Shot", [["id", "is", ent["id"]]], ["code", "sg_sequence"])
+            except Unavailable:
+                shot = None
+            if shot:
+                out["shot"] = shot.get("code") or out["shot"]
+                out["sequence"] = (shot.get("sg_sequence") or {}).get("name")
+        self._versions[vid] = (time.time(), out)
+        return out
+
+    def _show_of(self, project: dict) -> str | None:
+        """A project's show code (tank_name): from the cached list of shows, else asked."""
+        if not project.get("id"):
+            return None
+        known = next((p for p in (self._projects[1] if self._projects else []) if p.get("id") == project["id"]), None)
+        if known:
+            return known["code"]
+        try:
+            row = self._ask("find_one", "Project", [["id", "is", project["id"]]], [self.cfg.show_field, "tank_name"])
+        except Unavailable:
+            return None
+        code = (row or {}).get(self.cfg.show_field) or (row or {}).get("tank_name")
+        return str(code) if code else None

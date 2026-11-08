@@ -245,6 +245,12 @@ class ShotGridConfig(BaseModel):
     refresh_hold: float = 10.0           # a refresh button reloads at most this often
     retry_seconds: float = 60.0          # a ShotGrid that didn't answer is left alone this long
     timeout: float = 20.0
+    # A Version link as a job's input (README, ShotGrid Version links): the Version fields
+    # holding its frames, its movie and its frame range.
+    version_fields: dict[str, str] = Field(default_factory=lambda: {
+        "frames": "sg_path_to_frames", "movie": "sg_path_to_movie",
+        "first": "sg_first_frame", "last": "sg_last_frame"})
+    version_ttl: float = 120.0           # seconds a Version's paths are used before they're asked again
 
 
 class Config(BaseModel):
