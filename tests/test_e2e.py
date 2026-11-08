@@ -695,6 +695,8 @@ convert:
         self.assertEqual(farm.shotgrid_shots("bri3")["shots"], [])
         with self.assertRaisesRegex(farm.FarmError, "lookups are off"):      # Batch Submit's playlists too
             farm.shotgrid_playlist("https://rodeofx.shotgrid.autodesk.com/detail/Playlist/265342")
+        r = farm.plan("ltx25_alpha_gen", {"input": SEQ}, publish={"step": "lay"})   # a row's check, with its publish
+        self.assertIn("isn't switched on", r["publish"]["why"])
         base = os.environ["COMFYFARM_URL"]                                     # the dashboard and its Batch Submit tab
         with urllib.request.urlopen(f"{base}/") as r:
             self.assertIn('<script src="/batch.js">', r.read().decode())

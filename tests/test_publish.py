@@ -296,6 +296,20 @@ class PublisherTests(unittest.TestCase):
             self.pub.check("ltx25_alpha_gen", {}, show="bri3", shot=None)
         self.assertIn("needs the shot", str(e.exception))
 
+    def test_publish_preview(self):
+        """The plan endpoint's check of a publish-when-done (Batch Submit's rows): as submit
+        checks it, nothing queued."""
+        plan = {"wf": self.farm.registry.get("ltx25_alpha_gen"), "show": "bri3", "shot": "305046_0010"}
+        self.assertEqual(self.farm.publish_preview(plan, {"dry_run": True}),
+                         {"request": {"show": "bri3", "shot": "305046_0010", "step": "lay", "template": "default",
+                                      "description": "Auto Publish", "dry_run": True}})
+        for p, req, why in (({**plan, "show": "bc1"}, {}, "Show bc1 has no folder on disk"),
+                            (plan, {"step": "nope"}, "isn't one of the studio's"),
+                            ({**plan, "batches": [{}]}, {}, "Texture sets aren't published"),
+                            ({**plan, "wf": self.farm.registry.get("chord_pbr")}, {}, "texture publisher")):
+            self.assertIn(why, self.farm.publish_preview(p, req)["why"])
+        self.assertEqual(self.store.list(), [])                                   # nothing queued
+
     def test_publish_a_finished_job(self):
         job = self.done_job()
         rec = self.pub.start_publish(job["id"], {"description": 'Looks "good"'}, "jdoe", wait=True)
