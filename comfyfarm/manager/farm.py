@@ -21,6 +21,7 @@ from ..fileio import inputs as I
 from ..fileio import naming as N
 from ..fileio import ocio as OC
 from ..fileio import paths as P
+from ..fileio import preview as PV
 from ..fileio import scratch as S
 from ..fileio import textures as T
 from ..fileio.errors import SequenceError
@@ -491,9 +492,21 @@ class Farm:
             # Texture workflows: every map's file names, also frozen per job.
             "textures": textures, "what": what,
             # What the agent collects when the run is done, from the manifest the prompt
-            # was built with.
-            "collect": {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview")},
+            # was built with, and the preview movie it makes of the frames (fileio.preview).
+            "collect": {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview"),
+                        "movie": self._movie(wf, seq)},
         }
+
+    def _movie(self, wf, seq) -> dict | None:
+        """The preview movie's settings for a job (None: no movie): preview.*, at the
+        input movie's frame rate when the input is one."""
+        pv = self.cfg.preview
+        if not pv.enabled or not wf.makes_preview:
+            return None
+        c = (seq.convert if seq else None) or {}
+        fps = c.get("fps") if c.get("kind") == "movie" and c.get("fps") else pv.fps
+        fps_str = c.get("fps_str") if c.get("kind") == "movie" and c.get("fps_str") else PV.rate_text(pv.fps)
+        return {"fps": float(fps), "fps_str": fps_str, "max_width": pv.max_width, "crf": pv.crf}
 
     def _insert_set(self, plan: dict, set_id: str, user: str, name: str | None, priority: int) -> dict:
         """A texture set: the set the artist sees (one output folder, reserved by it) and

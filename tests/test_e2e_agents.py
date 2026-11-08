@@ -212,6 +212,9 @@ delete_comfy_history: false{launch[name]}
             self.assertNotIn("/mnt/", pattern)
             self.assertTrue(d["outputs"]["frame_pattern_posix"].startswith("/rdo/shows/xyz/"))
             self.assertTrue(all(os.path.isfile(pattern % f) for f in range(1001, 1005)), pattern)
+            # The preview movie the agent made, at the manager's path too (what it plays).
+            preview = d["outputs"].get("preview")
+            self.assertTrue(preview and os.path.isfile(preview) and "/mnt/" not in preview, (preview, d["warnings"]))
         self.assertEqual({d["worker"] for d in done}, set(AGENTS))
         ws = {w["name"]: w for w in farm.workers()}
         self.assertEqual(ws["gpu-b"]["agent_version"], ws["gpu-a"]["agent_version"])

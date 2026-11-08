@@ -215,6 +215,11 @@ convert:
         self.assertTrue(out["frame_pattern_posix"].startswith("/rdo/shows/xyz/_project_ref/"))
         names = self.outputs(done)
         self.assertIn("abc_0010.pre.v1.alpha_v001.1003.png", names)   # named after the source
+        # The agent's preview movie of the frames, next to them, played by the dashboard.
+        self.assertIn("abc_0010.pre.v1.alpha_v001_preview.mp4", names, done["warnings"])
+        self.assertTrue(out["preview_posix"].endswith("/abc_0010/abc_0010.pre.v1.alpha_v001_preview.mp4"))
+        with urllib.request.urlopen(f"{os.environ['COMFYFARM_URL']}/api/v1/jobs/{job['id']}/preview") as r:
+            self.assertEqual((r.headers["Content-Type"], r.read(12)[4:8]), ("video/mp4", b"ftyp"))
         self.assertTrue(done["info"]["output_dir_posix"].endswith("/comfyui/renders/abc_0010"))
         self.assertFalse([n for n in names if "_raw" in n], "raw frames should be renamed")
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
@@ -272,7 +277,8 @@ convert:
         for j in (job, nxt):
             self.assertEqual(self.wait_for(j["id"], ("done", "failed"))["status"], "done")
         names = sorted(os.listdir(shot_dir))
-        self.assertEqual(names, [f"abc_0010.pre.v1.alpha_v00{v}.{f}.png" for v in (1, 2) for f in (1001, 1002, 1003)])
+        self.assertEqual(names, sorted([f"abc_0010.pre.v1.alpha_v00{v}.{f}.png" for v in (1, 2) for f in (1001, 1002, 1003)]
+                                       + [f"abc_0010.pre.v1.alpha_v00{v}_preview.mp4" for v in (1, 2)]))
         # Files exist now -> Run again is v003, still in the shot folder.
         again = farm.retry(job["id"])
         self.assertEqual((again["info"]["version"], again["info"]["output_dir_posix"]), (3, root + "/abc_0010"))
@@ -327,7 +333,8 @@ convert:
         done = self.wait_for(job["id"], ("done", "failed"))
         self.assertEqual(done["status"], "done", done.get("error"))
         self.assertEqual([n for n in self.outputs(done) if ".render_" in n],
-                         [f"abc_0010.pre.v1.render_v001.{f}.png" for f in (1001, 1002, 1003, 1004)])
+                         [f"abc_0010.pre.v1.render_v001.{f}.png" for f in (1001, 1002, 1003, 1004)]
+                         + ["abc_0010.pre.v1.render_v001_preview.mp4"])
         self.assertFalse([w for w in done["warnings"] if "output frames" in w])   # as many as the layout
         prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
         self.assertTrue(prompt["9060"]["inputs"]["path"].endswith("/abc_0010.pre.v1.%04d.png 1009"))

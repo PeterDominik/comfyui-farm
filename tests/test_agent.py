@@ -23,11 +23,13 @@ from test_textures import FAKE_OIIOTOOL, OCIO_CONFIG
 from test_comfyenv import COMMIT_A
 from test_comfyenv import Farm as ComfyInstall
 from test_workflows import fake_object_info, plate_matte_workflow
+from test_preview import FFMPEG, png
 
 from comfyfarm.comfyenv import spec as ES
 from comfyfarm.config import AgentConfig, Config
 from comfyfarm.fileio import farmnodes
 from comfyfarm.fileio.errors import SequenceError
+from comfyfarm.fileio.media import read_movie_info
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
@@ -206,6 +208,7 @@ class AgentTests(unittest.TestCase):
                       "output_root": f"{root}/shows/{{show}}/_project_ref/_cg/comfyui/renders"},
             "ocio": {"config": f"{root}/ocio/config.ocio"},
             "convert": {"scratch_dir": f"{root}/scratch", "tools": {"oiiotool": FAKE_OIIOTOOL}},
+            "preview": {"enabled": False},      # its own tests switch it on (they need ffmpeg)
         })
         self.loop = asyncio.new_event_loop()
         self.addCleanup(self.loop.close)
@@ -303,13 +306,13 @@ class AgentTests(unittest.TestCase):
         self.until(lambda: self.job(job["id"])["status"] == "dispatched", what="dispatched")
         return self.job(job["id"])["prompt_id"]
 
-    def finish(self, a, jid, pid):
+    def finish(self, a, jid, pid, frame=b"png"):
         """ComfyUI runs the prompt: the save node writes its frames, then success."""
         self.msg(a, "execution_start", prompt_id=pid)
         h = a.held[jid]
         info = h.job["info"]
         for i in range(1, (info.get("expected_frames") or 1) + 1):
-            Path(info["output_dir"], f"{info['frames_prefix']}_{i:04d}.png").write_bytes(b"png")
+            Path(info["output_dir"], f"{info['frames_prefix']}_{i:04d}.png").write_bytes(frame)
         a.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
         self.msg(a, "execution_success", prompt_id=pid)
         self.until(lambda: self.job(jid)["status"] in ("done", "failed"), what="done")
@@ -348,6 +351,46 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((w["name"], w["online"], w["connected"], w["inflight"], w["gpu"]["name"]),
                          ("gpu1", True, True, 0, "cuda:0 fake"))
         self.assertEqual(self.farm.online_workers(), 1)
+
+    @unittest.skipUnless(FFMPEG, "no ffmpeg on this machine")
+    def test_the_preview_movie_of_the_frames(self):
+        self.cfg.preview.enabled = True
+        a = self.ready(self.agent())
+        job = self.submit()
+        self.assertEqual(job["info"]["collect"]["movie"], {"fps": 24.0, "fps_str": "24/1", "max_width": 1920, "crf": 18})
+        done = self.finish(a, job["id"], self.dispatched(a, job), frame=png(64, 36))
+        self.assertEqual((done["status"], done["warnings"]), ("done", []), done["error"])
+        out = done["outputs"]
+        self.assertEqual(out["preview"], f"{done['output_dir']}/abc_0010.pre.v1.alpha_v001_preview.mp4")
+        self.assertTrue(out["preview_posix"].startswith("/rdo/shows/xyz/_project_ref/"))
+        info = read_movie_info(out["preview"], self.cfg.convert)
+        self.assertEqual((info["frames"], info["width"], info["height"]), (3, 64, 36))
+        self.assertEqual(sorted(os.listdir(done["output_dir"])),
+                         [f"abc_0010.pre.v1.alpha_v001.{f}.png" for f in (1001, 1002, 1003)]
+                         + ["abc_0010.pre.v1.alpha_v001_preview.mp4"])
+
+    def test_a_preview_that_cant_be_made_is_only_a_warning(self):
+        self.cfg.preview.enabled = True
+        a = self.ready(self.agent())
+        job = self.submit()
+        done = self.finish(a, job["id"], self.dispatched(a, job), frame=b"not a png")
+        self.assertEqual(done["status"], "done")
+        self.assertEqual(done["outputs"]["frames"], 3)                      # the frames are what counts
+        self.assertNotIn("preview", done["outputs"])
+        self.assertTrue(any(w.startswith("Couldn't make the preview movie") for w in done["warnings"]), done["warnings"])
+
+    def test_no_preview_of_one_frame_or_when_switched_off(self):
+        self.cfg.preview.enabled = True
+        a = self.ready(self.agent())
+        one = self.submit(f"{SEQ} 1002")
+        done = self.finish(a, one["id"], self.dispatched(a, one), frame=png(8, 8))
+        self.assertEqual((done["outputs"]["frames"], done["warnings"]), (1, []))
+        self.assertNotIn("preview", done["outputs"])
+        self.cfg.preview.enabled = False                                   # frozen at submit
+        off = self.submit()
+        self.assertIsNone(off["info"]["collect"]["movie"])
+        done = self.finish(a, off["id"], self.dispatched(a, off), frame=png(8, 8))
+        self.assertNotIn("preview", done["outputs"])
 
     @unittest.skipIf(os.name == "nt", "publishing runs on the Linux manager (a POSIX shell)")
     def test_publish_when_done(self):

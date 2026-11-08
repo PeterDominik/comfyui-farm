@@ -17,7 +17,7 @@ if TYPE_CHECKING:   # type hints only: fileio never imports pydantic
 from .errors import ConvertError, SequenceError
 from . import tools as TL   # by module, so tests can patch find_tool in one place
 
-__all__ = ["timecode_to_frame", "parse_probe", "probe_movie", "parse_ffmpeg_info", "probe_movie_ffmpeg",
+__all__ = ["timecode_to_frame", "frame_to_timecode", "parse_probe", "probe_movie", "parse_ffmpeg_info", "probe_movie_ffmpeg",
            "read_movie_info", "image_channels", "image_size", "fit_size", "rgb_channels", "channel_args",
            "UNKNOWN_CHANNEL"]
 
@@ -38,6 +38,25 @@ def timecode_to_frame(tc: str, fps: float) -> int:
         minutes = h * 60 + mi
         frames -= drop * (minutes - minutes // 10)
     return frames
+
+
+def frame_to_timecode(frame: int, fps: float) -> str | None:
+    """1001 at 24 fps -> '00:00:41:17' (timecode_to_frame backwards; drop-frame, with ';',
+    at 29.97/59.94). None for a negative frame."""
+    if frame < 0 or fps <= 0:
+        return None
+    nominal = round(fps)
+    sep = ":"
+    if nominal in (30, 60) and abs(fps - nominal) > 0.001:
+        drop = 2 * nominal // 30
+        per_10 = nominal * 600 - 9 * drop          # frames in ten minutes (the tenth keeps its numbers)
+        per_1 = nominal * 60 - drop                 # in the other minutes
+        tens, rest = divmod(frame, per_10)
+        frame += 9 * drop * tens + (drop * ((rest - drop) // per_1) if rest > drop else 0)
+        sep = ";"
+    f = frame % nominal
+    s = frame // nominal
+    return f"{s // 3600 % 24:02d}:{s // 60 % 60:02d}:{s % 60:02d}{sep}{f:02d}"
 
 
 def parse_probe(data: dict) -> dict:
