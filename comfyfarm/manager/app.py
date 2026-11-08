@@ -147,6 +147,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def dashboard():
         return FileResponse(HERE / "static" / "index.html")
 
+    @app.get("/batch.js", include_in_schema=False)
+    def batch_js():
+        """The dashboard's Batch Submit tab (static/batch.js)."""
+        return FileResponse(HERE / "static" / "batch.js", media_type="text/javascript")
+
     @app.get("/client.py", include_in_schema=False)
     def client_download():
         """Lets artists grab the Python client straight from the farm."""
@@ -235,6 +240,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def shotgrid_projects(refresh: bool = False, ident: Identity = Depends(identity)):
         """The active shows: [{code, name}]; `refresh` reloads them from ShotGrid."""
         return farm.shotgrid.projects(refresh)
+
+    @app.get("/api/v1/shotgrid/playlist")
+    def shotgrid_playlist(link: str, ident: Identity = Depends(identity)):
+        """Batch Submit: a Playlist's Versions in its order, each a row (its link as the input)."""
+        return farm.batch_playlist(link)
 
     @app.get("/api/v1/shotgrid/projects/{show}/shots")
     def shotgrid_shots(show: str, refresh: bool = False, ident: Identity = Depends(identity)):

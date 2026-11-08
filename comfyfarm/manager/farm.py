@@ -315,6 +315,29 @@ class Farm:
         plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
         return plan
 
+    def batch_playlist(self, link: str) -> dict:
+        """A ShotGrid Playlist as Batch Submit's rows: {playlist: {id, code, url, show},
+        rows: [{version, input}]}, in the playlist's order. Each row's input is its
+        Version's link, which the row checks (plan) and its job resolve as any Version link
+        does; the Versions are cached by the lookup, so checking the rows doesn't ask
+        ShotGrid again."""
+        ref = V.parse_playlist(link)
+        if not ref:
+            raise FarmError("That's not a ShotGrid Playlist link (…/detail/Playlist/<id>) or a playlist id.")
+        sgc = self.cfg.shotgrid
+        if not V.same_site(ref, sgc.url):
+            raise FarmError(f"That's a link to {ref['host']}, not to the farm's ShotGrid ({sgc.url}).")
+        try:
+            pl = self.shotgrid.playlist(ref["id"])
+        except NotFound as e:
+            raise FarmError(str(e), 404) from None
+        except Refused as e:
+            raise FarmError(f"ShotGrid couldn't give Playlist {ref['id']}'s Versions: {e}", 502) from None
+        except Unavailable as e:
+            raise FarmError(f"Playlists need the manager's ShotGrid lookups. {e}", 503) from None
+        return {"playlist": {k: pl[k] for k in ("id", "code", "url", "show")},
+                "rows": [{"version": v, "input": v["url"]} for v in pl["versions"]]}
+
     def _version_inputs(self, wf, values: dict) -> tuple[dict, dict, list[str]]:
         """ShotGrid Version links among a job's inputs (shotgrid.versions): (the values with
         each link replaced by the path ShotGrid has for it and its frames, {param: the

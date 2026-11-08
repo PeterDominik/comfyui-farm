@@ -227,6 +227,12 @@ def shotgrid_shots(show: str, refresh: bool = False) -> dict:
                     + ("?refresh=true" if refresh else ""))
 
 
+def shotgrid_playlist(link) -> dict:
+    """A ShotGrid Playlist's Versions in its order, as Batch Submit's rows (link or id):
+    {"playlist": {id, code, url, show}, "rows": [{"version": {...}, "input": <its link>}]}."""
+    return _request("GET", "/api/v1/shotgrid/playlist?link=" + urllib.parse.quote(str(link), safe=""))
+
+
 # Publish templates: scope is a workflow's name, or "_global" (every workflow, after its own).
 def publish_templates() -> dict:
     """Every scope's templates: {"scopes": [{scope, label, templates: [{name, key, usable, why,
