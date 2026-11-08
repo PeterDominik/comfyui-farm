@@ -66,6 +66,11 @@ class FakeShotGrid:
             raise self.down if isinstance(self.down, Exception) else ConnectionError("Connection refused")
         if entity == "Version":
             return dict(self.v) if self.v and filters[0][2] == self.v["id"] else None
+        if entity == "Playlist":
+            if filters[0][2] != 265342:
+                return None
+            return {"type": "Playlist", "id": 265342, "code": "XYZ - Client Submission 001", "project": {"type": "Project", "id": 12},
+                    "versions": [{"type": "Version", "id": i} for i in (12, 11, 13)]}
         if entity == "Shot":
             # ShotGrid's own sequence can be an editorial one (yht_1040's is "child"): not asked for
             return {"type": "Shot", "id": 77, "code": "abc_0010", "sg_sequence": {"type": "Sequence", "name": "child"}}
@@ -75,7 +80,26 @@ class FakeShotGrid:
 
     def find(self, entity, filters, fields=None, **kw):
         self.calls.append(("find", entity, fields))
-        return [{"type": "Project", "id": 12, "name": "Xyz", "tank_name": "xyz"}]
+        if entity == "Project":
+            return [{"type": "Project", "id": 12, "name": "Xyz", "tank_name": "xyz"}]
+        if entity == "PlaylistVersionConnection":
+            if self.no_order:
+                raise Fault("API read() PlaylistVersionConnection.sg_sort_order doesn't exist")
+            self.order_asked = kw.get("order")
+            return sorted(self.links, key=lambda c: c["sg_sort_order"])     # as ShotGrid sorts them
+        if entity == "Version":
+            ids = filters[0][2]
+            return [dict(v) for v in self.playlist_versions if v["id"] in ids]   # in no particular order
+        raise AssertionError(entity)
+
+    # A playlist of three Versions; its order is the connections' sg_sort_order.
+    playlist_versions = [version(id=11, code="abc_0010.lineup.v1"),
+                         version(id=12, code="abc_0020.lineup.v1", entity={"type": "Shot", "id": 78, "name": "abc_0020"}),
+                         version(id=13, code="abc_0030.lineup.v2", entity={"type": "Shot", "id": 79, "name": "abc_0030"})]
+    links = [{"version": {"type": "Version", "id": 13}, "sg_sort_order": 1},
+             {"version": {"type": "Version", "id": 11}, "sg_sort_order": 2},
+             {"version": {"type": "Version", "id": 12}, "sg_sort_order": 3}]
+    no_order = False
 
 
 class Links(unittest.TestCase):
@@ -192,6 +216,39 @@ class Lookup(unittest.TestCase):
             off.version(4865327)
 
 
+class Playlists(unittest.TestCase):
+    def test_its_versions_in_its_order(self):
+        sg, fake = lookups()
+        pl = sg.playlist(265342)
+        self.assertEqual((pl["code"], pl["url"], pl["show"]),
+                         ("XYZ - Client Submission 001", f"{SITE}detail/Playlist/265342", "xyz"))
+        self.assertEqual([v["code"] for v in pl["versions"]], ["abc_0030.lineup.v2", "abc_0010.lineup.v1", "abc_0020.lineup.v1"])
+        self.assertEqual(fake.order_asked[0], {"field_name": "sg_sort_order", "direction": "asc"})
+        self.assertEqual(sum(1 for c in fake.calls if c[:2] == ("find_one", "Project")), 1)   # one show, asked once
+        n = len(fake.calls)
+        self.assertEqual(sg.version(12)["shot"], "abc_0020")                     # the rows' checks: cached
+        self.assertEqual(sg.playlist(265342)["id"], 265342)
+        self.assertEqual(len(fake.calls), n)
+
+    def test_without_the_playlists_own_order(self):
+        sg, fake = lookups()
+        fake.no_order = True
+        self.assertEqual([v["id"] for v in sg.playlist(265342)["versions"]], [12, 11, 13])   # as the Playlist lists them
+        self.assertIsNone(sg.why())
+
+    def test_not_there(self):
+        sg, _ = lookups()
+        with self.assertRaises(NotFound):
+            sg.playlist(1)
+
+    def test_links(self):
+        self.assertEqual(V.parse_playlist(f"{SITE}detail/Playlist/265342")["id"], 265342)
+        self.assertEqual(V.parse_playlist(f"{SITE}page/9921#Playlist_265342")["id"], 265342)
+        self.assertEqual(V.parse_playlist(" 265342 "), {"id": 265342, "link": "265342", "host": ""})
+        for not_one in (LINK, "/rdo/shows/xyz", "", None, "Playlist 265342"):
+            self.assertIsNone(V.parse_playlist(not_one), not_one)
+
+
 class Jobs(unittest.TestCase):
     """Planned and submitted from a link, on frames laid out like a published render."""
 
@@ -272,6 +329,28 @@ class Jobs(unittest.TestCase):
         self.use(version(sg_path_to_movie=None, sg_last_frame=1010))           # frames 1004-1010 aren't there
         with self.assertRaisesRegex(SequenceError, "^ShotGrid Version abc_0010.pre.v1 \\(frames "):
             self.plan(LINK)
+
+    def test_a_playlist_as_batch_rows(self):
+        from comfyfarm.manager.farm import FarmError
+        out = self.farm.batch_playlist(f"{SITE}detail/Playlist/265342")
+        self.assertEqual(out["playlist"]["code"], "XYZ - Client Submission 001")
+        self.assertEqual([r["input"] for r in out["rows"]],
+                         [f"{SITE}detail/Version/{i}" for i in (13, 11, 12)])     # each row: its Version's link
+        self.fake.v = None                                                      # the row checks use the cache
+        self.assertEqual(self.plan(out["rows"][1]["input"])["sources"]["input"]["code"], "abc_0010.lineup.v1")
+        cases = [("/rdo/shows/xyz", "not a ShotGrid Playlist link", 400),
+                 ("https://other.shotgunstudio.com/detail/Playlist/265342", "not to the farm's ShotGrid", 400),
+                 ("999", "There's no Playlist 999", 404)]
+        for link, why, status in cases:
+            with self.assertRaises(FarmError) as e:
+                self.farm.batch_playlist(link)
+            self.assertIn(why, str(e.exception))
+            self.assertEqual(e.exception.status, status)
+        self.farm.shotgrid = ShotGrid(Config.model_validate({"workers": []}).shotgrid, connect=lambda: self.fake)
+        with self.assertRaises(FarmError) as e:
+            self.farm.batch_playlist("265342")
+        self.assertEqual(e.exception.status, 503)
+        self.assertIn("lookups are off", str(e.exception))
 
     def test_submitted_the_link_stays(self):
         job = self.farm.submit("ltx25_alpha_gen", {"input": LINK}, "ann")

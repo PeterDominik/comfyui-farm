@@ -26,7 +26,7 @@ from urllib.parse import urlsplit
 
 from ..fileio import paths as P
 
-__all__ = ["parse", "same_site", "pad_hash", "input_text"]
+__all__ = ["parse", "parse_playlist", "same_site", "pad_hash", "input_text"]
 
 # http(s)://<site>/…/detail/Version/<id> or …#Version_<id>, then optional frames
 _LINK = re.compile(r"^(?P<link>https?://\S*?(?:/detail/Version/|#Version_)(?P<id>\d+)\S*?)"
@@ -47,9 +47,24 @@ def parse(raw) -> dict | None:
             "first": first, "last": last}
 
 
+_PLAYLIST = re.compile(r"^(?P<link>https?://\S*?(?:/detail/Playlist/|#Playlist_)(?P<id>\d+)\S*?)\s*$", re.I)
+
+
+def parse_playlist(raw) -> dict | None:
+    """{id, link, host} of a Playlist link (…/detail/Playlist/<id>, …#Playlist_<id>), or of
+    a bare playlist id (host ""), or None."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if text.isdigit():
+        return {"id": int(text), "link": text, "host": ""}
+    m = _PLAYLIST.match(text)
+    return {"id": int(m["id"]), "link": m["link"], "host": urlsplit(m["link"]).hostname or ""} if m else None
+
+
 def same_site(ref: dict, site_url: str) -> bool:
-    """The link is to the farm's ShotGrid site (shotgrid.url)."""
-    return ref["host"].lower() == (urlsplit(site_url).hostname or "").lower()
+    """The link is to the farm's ShotGrid site (shotgrid.url); a bare id is."""
+    return not ref["host"] or ref["host"].lower() == (urlsplit(site_url).hostname or "").lower()
 
 
 def pad_hash(path: str, pc, listdir=os.listdir) -> str:

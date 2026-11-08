@@ -388,6 +388,8 @@ it, as before. `agent --check` lists the differences as warnings.
 - **Submit:** pick the workflow, fill in the form, check the destination line, submit. An input
   takes a path or a ShotGrid Version link (see *ShotGrid Version links*). A link to
   `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in.
+- **Batch Submit:** many jobs from one table, e.g. one per Version of a ShotGrid playlist (see
+  *Batch Submit*).
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
   queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
   should be done, or the time left once running. Click a
@@ -604,6 +606,7 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/shotgrid` | Whether the ShotGrid lookups work (`enabled`, `set_up`), or `why` not |
 | GET | `/api/v1/shotgrid/projects?refresh=` | The active shows `[{code, name}]`; `refresh=true` reloads them from ShotGrid |
 | GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
+| GET | `/api/v1/shotgrid/playlist?link=` | Batch Submit's rows from a Playlist (link or id): `playlist` and `rows` `[{version, input}]`, in its order |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
@@ -974,8 +977,8 @@ The manager asks ShotGrid for the Version (read only) and reads:
 - **Else its movie** (`sg_path_to_movie`): when it has no frames, or they're no longer on
   disk (the destination line says so).
 - **The show and shot come from the Version** (its Project and Shot), not from the path, and
-  the sequence from the shot's name (`yht_1040` → `yht`, as in the pipeline; a Shot's own
-  ShotGrid sequence can be an editorial one). The output folder and the publish fields follow
+  the sequence from the shot's name (`yht_1040` → `yht`, as in the pipeline; it's what the
+  Shot's ShotGrid Sequence should be too). The output folder and the publish fields follow
   them.
 
 The destination line and the job's details show the Version, with a link back to it. The
@@ -986,6 +989,29 @@ path instead). A request ShotGrid refuses (a field the site doesn't have) says s
 hold the show and shot lists back; only a ShotGrid that doesn't answer is left alone for
 `retry_seconds`. The Version fields used are `shotgrid.version_fields` in `config.yaml`;
 `tools/sg_probe.py <link>` (on the manager) shows what ShotGrid holds for a Version.
+
+### Batch Submit
+
+The dashboard's **Batch Submit** tab makes one job per row of a table, one workflow per table.
+**Playlist** fills the table from a ShotGrid Playlist: paste its link (or its id) and *Load*,
+and each of its Versions becomes a row, in the playlist's order, its link the input (see
+*ShotGrid Version links*). *ShotGrid query* and *Variations* are coming.
+
+- **Columns:** the shot, the Version (a link to it) and its frames, then the workflow's own
+  fields, as in the Submit form, then where the row writes and its state.
+- **Fill:** the cell under each header sets that column for every ticked row. Any cell can
+  still be changed per row; a cell that differs from its column is outlined.
+- **Checks:** the manager checks every row as the Submit form's "Will write" line does, a few
+  at a time, again after each change: *ready* (with notes, e.g. a Version read from its
+  movie), or why it can't run. A row that can't run starts unticked. Rows going into the same
+  folder show `v002+`: they take the next versions, in the order they're sent.
+- **Kept in your browser:** the table survives a reload; nobody else sees it.
+  ↻ loads the playlist again, keeping your edits.
+- **Sending** the ticked rows as jobs comes next; for now the table checks a batch.
+
+A link opens it with a playlist loaded:
+`/#batch?playlist=<link or id>&workflow=<name>`. `GET /api/v1/shotgrid/playlist?link=` gives
+the rows (`comfyfarm_client.shotgrid_playlist(link)` from Python).
 
 ## Adding or updating a workflow
 

@@ -24,7 +24,9 @@ refused (after reloading the show's shots once, in case it's new).
 
 version() is a Version link given as a job's input (comfyfarm.shotgrid.versions): its
 frames and movie paths, frame range, and the show, sequence and shot it belongs to,
-cached for version_ttl seconds."""
+cached for version_ttl seconds. playlist() is a Playlist's Versions in its order (the
+dashboard's Batch Submit), each cached the same way, so checking the rows one by one
+doesn't ask ShotGrid again."""
 
 from __future__ import annotations
 
@@ -97,6 +99,8 @@ class ShotGrid:
         self._projects: tuple[float, list[dict]] | None = None
         self._shots: dict[str, tuple[float, list[dict]]] = {}
         self._versions: dict[int, tuple[float, dict]] = {}
+        self._playlists: dict[int, tuple[float, dict]] = {}
+        self._show_codes: dict[int, str] = {}           # project id -> show code, for Versions
         self._forced: dict[str, float] = {}
         self._down_until = 0.0
         self._down_why: str | None = None
@@ -299,21 +303,31 @@ class ShotGrid:
         """A Version as a job's input: {id, code, url, frames, movie, first, last, status,
         entity_type, entity, show, sequence, shot}. Paths are as ShotGrid holds them (studio
         paths); frames/movie/first/last are None when the Version has none. The sequence is
-        the pipeline's, from the shot's name (<sequence>_<number>): a Shot's sg_sequence in
-        ShotGrid can be an editorial one (yht_1040's is "child"). Unavailable when ShotGrid
-        can't be asked, NotFound when it has no such Version."""
+        the pipeline's, from the shot's name (<sequence>_<number>), which is what the shot's
+        ShotGrid Sequence should be too (bc1's yht_1040 was imported into "child" by
+        mistake). Unavailable when ShotGrid can't be asked, NotFound when it has no such
+        Version."""
         why = self.why()
         if why:
             raise Unavailable(why)
         cached = self._versions.get(vid)
         if cached and time.time() - cached[0] < self.cfg.version_ttl:
             return cached[1]
-        f = self.cfg.version_fields
-        want = [f.get(k) for k in ("frames", "movie", "first", "last") if f.get(k)]
-        v = self._ask("find_one", "Version", [["id", "is", vid]],
-                      ["code", "entity", "project", "sg_status_list", *want])
+        v = self._ask("find_one", "Version", [["id", "is", vid]], self._version_fields())
         if not v:
             raise NotFound(f"There's no Version {vid} in ShotGrid (or the farm's ShotGrid script can't see it).")
+        out = self._version_dict(v)
+        self._versions[vid] = (time.time(), out)
+        return out
+
+    def _version_fields(self) -> list[str]:
+        f = self.cfg.version_fields
+        return ["code", "entity", "project", "sg_status_list",
+                *[f.get(k) for k in ("frames", "movie", "first", "last") if f.get(k)]]
+
+    def _version_dict(self, v: dict) -> dict:
+        """A Version as ShotGrid answered it -> what version() returns."""
+        f, vid = self.cfg.version_fields, v["id"]
         ent, proj = v.get("entity") or {}, v.get("project") or {}
 
         def text(key):
@@ -332,7 +346,41 @@ class ShotGrid:
         if ent.get("type") == "Shot" and ent.get("name"):
             out["shot"] = ent["name"]
             out["sequence"] = ent["name"].rpartition("_")[0] or None
-        self._versions[vid] = (time.time(), out)
+        return out
+
+    # ---------------------------------------------------------------- Playlists (Batch Submit)
+    def playlist(self, pid: int) -> dict:
+        """A Playlist's Versions, in its order: {id, code, url, show, versions: [as
+        version()]}. The order is the playlist's own (PlaylistVersionConnection.sg_sort_order),
+        else the order ShotGrid lists them in. Every Version is cached as version() would,
+        for the row checks that follow. Unavailable / NotFound as version()."""
+        why = self.why()
+        if why:
+            raise Unavailable(why)
+        cached = self._playlists.get(pid)
+        if cached and time.time() - cached[0] < self.cfg.version_ttl:
+            return cached[1]
+        pl = self._ask("find_one", "Playlist", [["id", "is", pid]], ["code", "project", "versions"])
+        if not pl:
+            raise NotFound(f"There's no Playlist {pid} in ShotGrid (or the farm's ShotGrid script can't see it).")
+        try:
+            links = self._ask("find", "PlaylistVersionConnection",
+                              [["playlist", "is", {"type": "Playlist", "id": pid}]], ["version", "sg_sort_order"],
+                              order=[{"field_name": "sg_sort_order", "direction": "asc"},
+                                     {"field_name": "id", "direction": "asc"}])
+            ids = [link["version"]["id"] for link in links or [] if link.get("version")]
+        except Refused:                                   # a site without the connection's order
+            ids = [v["id"] for v in pl.get("versions") or [] if v.get("id")]
+        rows = self._ask("find", "Version", [["id", "in", ids]], self._version_fields()) if ids else []
+        found = {r["id"]: self._version_dict(r) for r in rows or []}
+        now = time.time()
+        for vid, d in found.items():
+            self._versions[vid] = (now, d)
+        out = {"id": pid, "code": pl.get("code") or f"Playlist {pid}",
+               "url": f"{self.cfg.url.rstrip('/')}/detail/Playlist/{pid}",
+               "show": self._show_of(pl.get("project") or {}),
+               "versions": [found[i] for i in ids if i in found]}
+        self._playlists[pid] = (now, out)
         return out
 
     def _show_of(self, project: dict) -> str | None:
@@ -342,9 +390,13 @@ class ShotGrid:
         known = next((p for p in (self._projects[1] if self._projects else []) if p.get("id") == project["id"]), None)
         if known:
             return known["code"]
+        if project["id"] in self._show_codes:
+            return self._show_codes[project["id"]]
         try:
             row = self._ask("find_one", "Project", [["id", "is", project["id"]]], [self.cfg.show_field, "tank_name"])
         except Unavailable:
             return None
         code = (row or {}).get(self.cfg.show_field) or (row or {}).get("tank_name")
+        if code:
+            self._show_codes[project["id"]] = str(code)
         return str(code) if code else None

@@ -108,6 +108,33 @@
   dialog hr { border: 0; border-top: 1px solid var(--line); margin: 0; }
   .publog { padding: 14px; display: grid; gap: 14px; }
   tr.tplscope td { background: var(--panel2, rgba(255,255,255,.03)); padding-top: 12px; }
+  /* Batch Submit (batch.js): one row per job, the workflow's fields as columns */
+  .seg button:disabled { opacity: .45; }
+  .bsrc { display: flex; gap: 10px; align-items: center; padding: 12px 14px; flex-wrap: wrap; font-size: 13px; }
+  .bsrc label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; flex: 1; min-width: 260px; }
+  .bsrc label input { flex: 1; min-width: 0; }
+  #plInfo { flex-basis: 100%; color: var(--muted); }
+  #plInfo:empty { display: none; }
+  #plInfo code { font-family: var(--mono); color: var(--text); }
+  #tab-batch { min-width: 0; }   /* a grid item: without it the wide table would widen the page */
+  .btwrap { overflow-x: auto; border-top: 1px solid var(--line); }
+  #batchTable { width: max-content; min-width: 100%; }
+  #batchTable td, #batchTable th { white-space: nowrap; padding: 5px 8px; }
+  #batchTable td input, #batchTable td select { padding: 3px 6px; font-size: 12px; }
+  #batchTable input.b-path { width: 280px; } #batchTable input.b-text { width: 220px; } #batchTable input.b-word { width: 110px; }
+  #batchTable input[type=number] { width: 80px; }
+  #batchTable .b-stick { position: sticky; left: 0; background: var(--panel); z-index: 1; box-shadow: 1px 0 0 var(--line); }
+  #batchTable tr.b-fill td { background: #191b1e; border-bottom: 2px solid var(--line); }
+  #batchTable tr.b-fill td.b-stick { background: #191b1e; }
+  .b-shot { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .b-num { font-size: 11px; min-width: 16px; text-align: right; }
+  #batchTable td.b-changed input, #batchTable td.b-changed select { border-color: var(--accent); }
+  #batchTable tr.b-off td:not(.b-stick) { opacity: .45; }
+  #batchTable td.b-state { white-space: normal; min-width: 160px; max-width: 380px; font-size: 12px; }
+  .b-fillnote { font-size: 11px; }
+  #batchTable td.empty { white-space: normal; }
+  #batchFoot { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; flex-wrap: wrap; }
+  #batchFoot:empty { display: none; }
   tr.tplver td { font-size: 12px; padding-left: 22px; }
 </style>
 </head>
@@ -124,6 +151,7 @@
 
 <nav class="tabs" id="tabs">
   <button data-tab="submit">Submit</button>
+  <button data-tab="batch">Batch Submit</button>
   <button data-tab="queue">Queue<span class="count" id="queueCount"></span></button>
   <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
   <button data-tab="runtimes">Run times</button>
@@ -137,6 +165,26 @@
       <select id="wfSelect"></select>
     </div>
     <form id="form" autocomplete="off"></form>
+  </section>
+
+  <section id="tab-batch" hidden>
+    <div class="sechead">
+      <h2>Batch submit</h2>
+      <div class="seg" id="batchSrc">
+        <button type="button" class="on">Playlist</button>
+        <button type="button" disabled title="Coming soon: rows from a ShotGrid search (show, sequences, shots, step, status…)">ShotGrid query</button>
+        <button type="button" disabled title="Coming soon: one input, a row per set of parameter values (wedges)">Variations</button>
+      </div>
+      <select id="batchWf" title="The workflow every row runs"></select>
+    </div>
+    <div class="bsrc">
+      <label>Playlist<input id="plLink" class="mono" placeholder="https://rodeofx.shotgrid.autodesk.com/detail/Playlist/…" autocomplete="off"></label>
+      <button type="button" id="plLoad">Load</button>
+      <button type="button" id="plClear" title="Empty the table">Clear</button>
+      <div id="plInfo"></div>
+    </div>
+    <div class="btwrap"><table id="batchTable"></table></div>
+    <div id="batchFoot"></div>
   </section>
 
   <section id="tab-queue" hidden>
@@ -232,7 +280,7 @@ const about = s => s == null ? "" : s < 60 ? Math.max(5, Math.round(s / 5) * 5) 
   : s < 5940 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 
 // ------------------------------------------------------------- tabs
-const TABS = ["submit", "queue", "machines", "runtimes", "templates"];
+const TABS = ["submit", "batch", "queue", "machines", "runtimes", "templates"];
 function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
@@ -240,6 +288,7 @@ function showTab(tab) {
   tabsMoved = false; tabInView();
   store.set("comfyfarm.tab", tab);
   if (tab === "templates") loadTemplates();
+  if (tab === "batch") window.batchShown?.();   // batch.js
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
 }
 // In a narrow window the tabs scroll: keep the open one in view, also when a tab before it
@@ -261,9 +310,12 @@ $("#tabs").addEventListener("click", e => { const b = e.target.closest("button")
 window.addEventListener("hashchange", () => { if (!deepLink(location.hash)) showTab(location.hash.slice(1)); });
 
 // Deep links: /#submit?workflow=<name>&input=<path or ShotGrid Version link> opens the
-// Submit tab with them filled in (ShotGrid's right-click, links in messages).
-let pendingDeep = null;
+// Submit tab with them filled in (ShotGrid's right-click, links in messages);
+// /#batch?playlist=<link or id>&workflow=<name> opens Batch Submit with the playlist loaded.
+let pendingDeep = null, pendingBatch = null;
 function deepLink(hash) {
+  const b = /^#batch\?(.*)$/.exec(hash || "");
+  if (b) { pendingBatch = new URLSearchParams(b[1]); showTab("batch"); window.batchDeepLink?.(); return true; }
   const m = /^#submit\?(.*)$/.exec(hash || "");
   if (!m) return false;
   const q = new URLSearchParams(m[1]);
@@ -1088,6 +1140,7 @@ async function boot() {
     $("#wfSelect").onchange = renderForm;
     renderForm();
     applyDeepLink();
+    window.batchInit?.();                     // batch.js: its workflow list, the table kept from before
     await refreshJobs();
     if (ws) { ws.onclose = null; ws.close(); }
     connect();
@@ -1100,5 +1153,6 @@ setInterval(refreshJobs, 15000);   // keeps queue positions / ETAs fresh
 setInterval(() => { if (visible().some(j => j.status === "running")) render(); }, 1000);
 boot();
 </script>
+<script src="/batch.js"></script>
 </body>
 </html>
