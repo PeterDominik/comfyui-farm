@@ -11,7 +11,9 @@ What's offered:
              code (shotgrid.show_field, tank_name) and the name
   shots      a show's Shots, leaving out the statuses in shotgrid.hidden_statuses
              (hld omt hdn void): code, sequence, status. The sequences are those of its
-             shots; they only narrow the shot list down.
+             shots; they only narrow the shot list down. A shot's sequence is the
+             pipeline's, from its name (pipeline_sequence: yht_1040 -> yht), not its
+             ShotGrid Sequence, which can be an editorial one (yht_1040's is "child").
 
 The lists are cached (projects_ttl, shots_ttl) and reloaded on demand (the refresh
 buttons, when a shot was just created), at most once per refresh_hold seconds. When
@@ -37,7 +39,15 @@ from pathlib import Path
 
 log = logging.getLogger("comfyfarm.shotgrid")
 
-__all__ = ["ShotGrid", "Unavailable", "Refused", "NotFound", "read_env_file"]
+__all__ = ["ShotGrid", "Unavailable", "Refused", "NotFound", "read_env_file", "pipeline_sequence"]
+
+
+def pipeline_sequence(shot: str | None, sg_sequence: str | None = None) -> str | None:
+    """A shot's sequence as the pipeline names it: what comes before the shot number
+    (<sequence>_<number>: yht_1040 -> yht, 305046_0010 -> 305046). ShotGrid's own Sequence
+    of the shot only when its name has no number to take off."""
+    prefix = (shot or "").rpartition("_")[0]
+    return prefix or sg_sequence or None
 
 
 class Unavailable(Exception):
@@ -250,7 +260,8 @@ class ShotGrid:
                 rows = self._ask("find", "Shot", filters, ["code", "sg_sequence", "sg_status_list"])
             except Unavailable as e:
                 return self._shot_list(out, cached, str(e))
-            found = [{"code": str(r["code"]), "sequence": (r.get("sg_sequence") or {}).get("name"),
+            found = [{"code": str(r["code"]),
+                      "sequence": pipeline_sequence(str(r["code"]), (r.get("sg_sequence") or {}).get("name")),
                       "status": r.get("sg_status_list")} for r in rows or [] if r.get("code")]
             found.sort(key=lambda s: s["code"].lower())
             cached = self._shots[key] = (time.time(), found)
@@ -331,7 +342,7 @@ class ShotGrid:
                "show": self._show_of(proj), "sequence": None, "shot": None}
         if ent.get("type") == "Shot" and ent.get("name"):
             out["shot"] = ent["name"]
-            out["sequence"] = ent["name"].rpartition("_")[0] or None
+            out["sequence"] = pipeline_sequence(ent["name"])
         self._versions[vid] = (time.time(), out)
         return out
 

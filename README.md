@@ -661,7 +661,8 @@ dispatchGraph's output. The Queue marks published jobs with **pub**.
 With them on, the show field suggests ShotGrid's active shows that have a show folder
 (`publish.show_folder`), and the shot field that
 show's shots (without on-hold, omitted, hidden and void ones), narrowed by the sequence
-field. **↻** next to the shot reloads both from ShotGrid, for a shot created since. A
+field. Sequences are the pipeline's, from the shot names (`yht_1040` → `yht`), not the
+shots' ShotGrid Sequences, which can be editorial ones (bc1's `yht_1040` is in `child`). **↻** next to the shot reloads both from ShotGrid, for a shot created since. A
 publish to a shot that isn't in the show is refused at submit (after reloading the show's
 shots once). When ShotGrid isn't set up the fields are plain text; when it doesn't answer
 they say so and keep the last lists. Publishing never waits on ShotGrid. The same set-up lets

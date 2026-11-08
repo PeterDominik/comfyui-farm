@@ -25,7 +25,10 @@ SHOTS = {11: [{"code": "305046_0020", "sg_sequence": {"type": "Sequence", "id": 
               {"code": "301011_0140", "sg_sequence": {"type": "Sequence", "id": 2, "name": "301011"},
                "sg_status_list": "ip"},
               {"code": "loose_0010", "sg_sequence": None, "sg_status_list": "ip"}],
-         12: [{"code": "mis_0040", "sg_sequence": {"type": "Sequence", "id": 3, "name": "mis"}, "sg_status_list": "ip"}]}
+         12: [{"code": "mis_0040", "sg_sequence": {"type": "Sequence", "id": 3, "name": "mis"}, "sg_status_list": "ip"},
+              # bc1's ShotGrid Sequences are editorial ones: the pipeline's sequence is yht
+              {"code": "yht_1040", "sg_sequence": {"type": "Sequence", "id": 4, "name": "child"}, "sg_status_list": "turn"},
+              {"code": "nonumber", "sg_sequence": {"type": "Sequence", "id": 5, "name": "misc"}, "sg_status_list": "ip"}]}
 OMITTED = {11: [{"type": "Shot", "id": 99, "code": "305046_0030", "sg_status_list": "omt"}]}
 ARCHIVED = [{"type": "Project", "id": 14, "tank_name": "old1"}]
 
@@ -104,7 +107,11 @@ class LookupTests(unittest.TestCase):
         self.assertEqual((got["show"], got["why"], got["known_show"]), ("bri3", None, True))
         self.assertEqual([s["code"] for s in got["shots"]], ["301011_0140", "305046_0010", "305046_0020", "loose_0010"])
         self.assertEqual(got["shots"][1], {"code": "305046_0010", "sequence": "305046", "status": "wtg"})
-        self.assertEqual(got["sequences"], ["301011", "305046"])
+        self.assertEqual(got["sequences"], ["301011", "305046", "loose"])          # from the shot names
+        bc1 = sg.shots("bc1")
+        self.assertEqual({s["code"]: s["sequence"] for s in bc1["shots"]},
+                         {"mis_0040": "mis", "yht_1040": "yht", "nonumber": "misc"})   # not ShotGrid's "child"
+        self.assertEqual(bc1["sequences"], ["mis", "misc", "yht"])
         shot_call = next(c for c in fake.calls if c[1] == "Shot")
         self.assertEqual(shot_call[2], [["project", "is", {"type": "Project", "id": 11}],
                                         ["sg_status_list", "not_in", ["hld", "omt", "hdn", "void"]]])
