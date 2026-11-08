@@ -30,7 +30,7 @@ from ..workflows import ParamError, WorkflowRegistry
 from ..publish.publisher import Publisher, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
 from ..shotgrid import versions as V
-from ..shotgrid.lookup import NotFound, Unavailable
+from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
 from .db import JobStore
 from .events import EventBus
@@ -335,6 +335,9 @@ class Farm:
                 raise SequenceError(f"{label}: that's a link to {ref['host']}, not to the farm's ShotGrid ({sgc.url}).")
             try:
                 v = self.shotgrid.version(ref["id"])
+            except Refused as e:
+                raise SequenceError(f"{label}: ShotGrid couldn't give Version {ref['id']}'s paths: {e} "
+                                    f"(shotgrid.version_fields in the manager's config.yaml)") from None
             except Unavailable as e:
                 raise SequenceError(f"{label}: a ShotGrid Version link needs the manager's ShotGrid lookups. {e} "
                                     f"Paste the frames' path instead.") from None

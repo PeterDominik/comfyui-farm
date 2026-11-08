@@ -8,8 +8,9 @@ SG_SCRIPT_KEY the manager uses: its environment or ~/.config/comfyfarm/shotgrid.
 
 It only reads (schema_field_read, find, find_one): nothing in ShotGrid is changed. The
 output is JSON: the Version entity's fields and their types, then for each Version every
-field that has a value (signed media URLs shortened), its Shot, Project, PublishedFiles
-and Playlists. The key never appears in it."""
+field that has a value (signed media URLs shortened), its Shot and Project. (Rodeo's
+site has TankPublishedFile, not PublishedFile: the Version's tank_published_file field
+names it.) The key never appears in it."""
 
 from __future__ import annotations
 
@@ -98,9 +99,6 @@ def main(argv: list[str]) -> int:
             if proj.get("id"):
                 entry["project"] = also(sg, "find_one", "Project", [["id", "is", proj["id"]]],
                                         ["name", "tank_name", "code", "sg_status", "sg_frame_rate"])
-            entry["published_files"] = also(
-                sg, "find", "PublishedFile", [["version", "is", {"type": "Version", "id": vid}]],
-                ["code", "name", "path", "path_cache", "published_file_type", "version_number", "sg_status_list"])
             out["versions"].append(entry)
     except Unavailable as e:
         print(str(e), file=sys.stderr)

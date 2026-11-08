@@ -973,14 +973,18 @@ The manager asks ShotGrid for the Version (read only) and reads:
   read as the padding the files on disk have (`x.#.exr` with `x.0977.exr` is `x.####.exr`).
 - **Else its movie** (`sg_path_to_movie`): when it has no frames, or they're no longer on
   disk (the destination line says so).
-- **The show, sequence and shot come from the Version** (its Shot and Project), not from the
-  path: the output folder and the publish fields follow them.
+- **The show and shot come from the Version** (its Project and Shot), not from the path, and
+  the sequence from the shot's name (`yht_1040` → `yht`, as in the pipeline; a Shot's own
+  ShotGrid sequence can be an editorial one). The output folder and the publish fields follow
+  them.
 
 The destination line and the job's details show the Version, with a link back to it. The
 job keeps the link as its input, so *Run again* asks ShotGrid again. A link to another
 ShotGrid site, a Version ShotGrid doesn't have, or one with neither frames nor a movie is
 refused, and so is a link while ShotGrid can't be asked (the message says why; paste the
-path instead). The Version fields used are `shotgrid.version_fields` in `config.yaml`;
+path instead). A request ShotGrid refuses (a field the site doesn't have) says so and doesn't
+hold the show and shot lists back; only a ShotGrid that doesn't answer is left alone for
+`retry_seconds`. The Version fields used are `shotgrid.version_fields` in `config.yaml`;
 `tools/sg_probe.py <link>` (on the manager) shows what ShotGrid holds for a Version.
 
 ## Adding or updating a workflow

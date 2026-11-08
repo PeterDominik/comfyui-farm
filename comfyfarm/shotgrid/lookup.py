@@ -37,11 +37,24 @@ from pathlib import Path
 
 log = logging.getLogger("comfyfarm.shotgrid")
 
-__all__ = ["ShotGrid", "Unavailable", "NotFound", "read_env_file"]
+__all__ = ["ShotGrid", "Unavailable", "Refused", "NotFound", "read_env_file"]
 
 
 class Unavailable(Exception):
     """ShotGrid can't be asked right now (the message says why)."""
+
+
+class Refused(Unavailable):
+    """ShotGrid answered, and refused the request (a field or entity type the site doesn't
+    have, a filter it can't take). ShotGrid isn't left alone for it: the next request is
+    sent as usual."""
+
+
+def _refused(e: Exception) -> bool:
+    """shotgun_api3 raises Fault when ShotGrid answered with an error; a wrong script or key
+    (AuthenticationFault) fails every request, so that one counts as not answering."""
+    names = {c.__name__ for c in type(e).__mro__}
+    return "Fault" in names and "AuthenticationFault" not in names
 
 
 class NotFound(Exception):
@@ -157,8 +170,11 @@ class ShotGrid:
             try:
                 return getattr(self._conn(), method)(*args, **kwargs)
             except Exception as e:                   # anything: ShotGrid is an aid, never a reason to fail
-                self._sg = None
                 msg = " ".join(str(e).split())[:200]
+                if _refused(e):
+                    log.warning("ShotGrid refused %s: %s", method, msg)
+                    raise Refused(f"ShotGrid refused the request ({type(e).__name__}: {msg}).") from None
+                self._sg = None
                 self._down_why = (f"ShotGrid didn't answer ({type(e).__name__}{': ' + msg if msg else ''}); "
                                   f"trying again in {self.cfg.retry_seconds:.0f} s.")
                 self._down_until = time.time() + self.cfg.retry_seconds
@@ -282,8 +298,10 @@ class ShotGrid:
     def version(self, vid: int) -> dict:
         """A Version as a job's input: {id, code, url, frames, movie, first, last, status,
         entity_type, entity, show, sequence, shot}. Paths are as ShotGrid holds them (studio
-        paths); frames/movie/first/last are None when the Version has none. Unavailable when
-        ShotGrid can't be asked, NotFound when it has no such Version."""
+        paths); frames/movie/first/last are None when the Version has none. The sequence is
+        the pipeline's, from the shot's name (<sequence>_<number>): a Shot's sg_sequence in
+        ShotGrid can be an editorial one (yht_1040's is "child"). Unavailable when ShotGrid
+        can't be asked, NotFound when it has no such Version."""
         why = self.why()
         if why:
             raise Unavailable(why)
@@ -311,15 +329,9 @@ class ShotGrid:
                "frames": text("frames"), "movie": text("movie"), "first": number("first"), "last": number("last"),
                "status": v.get("sg_status_list"), "entity_type": ent.get("type"), "entity": ent.get("name"),
                "show": self._show_of(proj), "sequence": None, "shot": None}
-        if ent.get("type") == "Shot":
-            out["shot"] = ent.get("name")
-            try:
-                shot = self._ask("find_one", "Shot", [["id", "is", ent["id"]]], ["code", "sg_sequence"])
-            except Unavailable:
-                shot = None
-            if shot:
-                out["shot"] = shot.get("code") or out["shot"]
-                out["sequence"] = (shot.get("sg_sequence") or {}).get("name")
+        if ent.get("type") == "Shot" and ent.get("name"):
+            out["shot"] = ent["name"]
+            out["sequence"] = ent["name"].rpartition("_")[0] or None
         self._versions[vid] = (time.time(), out)
         return out
 

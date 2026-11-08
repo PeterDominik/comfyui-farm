@@ -17,7 +17,7 @@ from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm
 from comfyfarm.shotgrid import ShotGrid
 from comfyfarm.shotgrid import versions as V
-from comfyfarm.shotgrid.lookup import NotFound, Unavailable
+from comfyfarm.shotgrid.lookup import NotFound, Refused, Unavailable
 from comfyfarm.workflows import WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
@@ -36,6 +36,24 @@ def version(**over):
     return v
 
 
+class Fault(Exception):
+    """shotgun_api3's: ShotGrid answered with an error."""
+
+
+class AuthenticationFault(Fault):
+    """shotgun_api3's: the script or key is wrong."""
+
+
+# Version 4865327 as the probe of Rodeo's site showed it (tools/sg_probe.py, 2026-11-08).
+RODEO = {"type": "Version", "id": 4865327, "code": "yht_1040.lineup.autoLineup.v1", "sg_status_list": "pdlvr",
+         "sg_path_to_frames": "/rdo/shows/bc1/.published/yht/yht_1040/render.comp/lineup.autoLineup/v1/main/hi/"
+                              "yht_1040.lineup.autoLineup.v1.#.exr",
+         "sg_path_to_movie": "/rdo/shows/bc1/yht/1040/movhistory/yht_1040.lineup.autoLineup.v1.mov",
+         "sg_first_frame": 1001, "sg_last_frame": 1101,
+         "entity": {"id": 258776, "name": "yht_1040", "type": "Shot"},
+         "project": {"id": 7344, "name": "bc1", "type": "Project"}}
+
+
 class FakeShotGrid:
     def __init__(self, v=None):
         self.v = v if v is not None else version()
@@ -45,13 +63,14 @@ class FakeShotGrid:
     def find_one(self, entity, filters, fields=None, **kw):
         self.calls.append(("find_one", entity, fields))
         if self.down:
-            raise ConnectionError("Connection refused")
+            raise self.down if isinstance(self.down, Exception) else ConnectionError("Connection refused")
         if entity == "Version":
             return dict(self.v) if self.v and filters[0][2] == self.v["id"] else None
         if entity == "Shot":
-            return {"type": "Shot", "id": 77, "code": "abc_0010", "sg_sequence": {"type": "Sequence", "name": "abc"}}
+            # ShotGrid's own sequence can be an editorial one (yht_1040's is "child"): not asked for
+            return {"type": "Shot", "id": 77, "code": "abc_0010", "sg_sequence": {"type": "Sequence", "name": "child"}}
         if entity == "Project":
-            return {"type": "Project", "id": 12, "tank_name": "xyz"}
+            return {"type": "Project", "id": 12, "tank_name": "bc1" if filters[0][2] == 7344 else "xyz"}
         raise AssertionError(entity)
 
     def find(self, entity, filters, fields=None, **kw):
@@ -119,6 +138,28 @@ class Lookup(unittest.TestCase):
         self.assertEqual(len(fake.calls), n)
         with self.assertRaises(NotFound):
             sg.version(1)
+
+    def test_rodeos_version(self):
+        sg, fake = lookups(RODEO)
+        v = sg.version(4865327)
+        self.assertEqual((v["show"], v["sequence"], v["shot"], v["first"], v["last"]),
+                         ("bc1", "yht", "yht_1040", 1001, 1101))        # the pipeline's sequence, not "child"
+        self.assertTrue(v["frames"].endswith("/hi/yht_1040.lineup.autoLineup.v1.#.exr"))
+        self.assertNotIn("Shot", [c[1] for c in fake.calls])             # the shot's name is enough
+
+    def test_a_refused_request_isnt_shotgrid_being_down(self):
+        sg, fake = lookups(version_fields={"frames": "sg_no_such_field"})
+        fake.down = Fault("API read() Version.sg_no_such_field doesn't exist")
+        with self.assertRaises(Refused) as e:
+            sg.version(4865327)
+        self.assertIn("sg_no_such_field", str(e.exception))
+        self.assertIsNone(sg.why())                                      # the show and shot lists carry on
+        fake.down = AuthenticationFault("Authentication failed")         # a wrong key fails everything: wait
+        sg.cfg.version_fields = {"frames": "sg_path_to_frames"}
+        with self.assertRaises(Unavailable) as e:
+            sg.version(4865327)
+        self.assertNotIsInstance(e.exception, Refused)
+        self.assertIn("didn't answer", sg.why())
 
     def test_the_show_from_the_list_of_shows(self):
         sg, fake = lookups()
@@ -220,6 +261,11 @@ class Jobs(unittest.TestCase):
         self.use(version())
         self.fake.down = True
         with self.assertRaisesRegex(SequenceError, "needs the manager's ShotGrid lookups.*Paste the frames' path"):
+            self.plan(LINK)
+
+    def test_a_refused_request(self):
+        self.fake.down = Fault("API read() Version.sg_path_to_framez doesn't exist")
+        with self.assertRaisesRegex(SequenceError, "ShotGrid couldn't give Version 4865327's paths.*version_fields"):
             self.plan(LINK)
 
     def test_a_problem_with_its_frames_names_the_version(self):
