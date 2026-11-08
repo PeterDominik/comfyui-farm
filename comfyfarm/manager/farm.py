@@ -29,6 +29,8 @@ from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
 from ..publish.publisher import Publisher, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
+from ..shotgrid import versions as V
+from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
 from .db import JobStore
 from .events import EventBus
@@ -239,24 +241,35 @@ class Farm:
         wf = self.registry.get(workflow)
         values = wf.validate(params or {})
         pc = self.cfg.paths
-        seq = I.resolve_input(values[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
-                              texture=bool(wf.textures), ocio=self.cfg.ocio,
-                              work_resolution=wf.work_resolution, preview=job_id == "preview",
-                              listing=wf.loader.lists_folder) \
-            if wf.sequence_param else None
-        if seq is not None and wf.port.takes == "image":
-            I.one_image(seq, pc)        # one frame of a sequence or movie, named by the artist
-        elif seq is not None:
-            I.frame_limit(seq, wf.port.max_frames)
+        # ShotGrid Version links among the inputs: read as the paths ShotGrid has for them
+        # (`use`); the job keeps the links (values). The Version decides show and shot.
+        use, sources, notes = self._version_inputs(wf, values)
+        src = sources.get(wf.sequence_param) if wf.sequence_param else None
+        if src:
+            show, shot = show or src["show"], shot or src["shot"]
+        try:
+            seq = I.resolve_input(use[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
+                                  texture=bool(wf.textures), ocio=self.cfg.ocio,
+                                  work_resolution=wf.work_resolution, preview=job_id == "preview",
+                                  listing=wf.loader.lists_folder) \
+                if wf.sequence_param else None
+            if seq is not None and wf.port.takes == "image":
+                I.one_image(seq, pc)        # one frame of a sequence or movie, named by the artist
+            elif seq is not None:
+                I.frame_limit(seq, wf.port.max_frames)
+        except SequenceError as e:
+            if src:
+                raise SequenceError(f"ShotGrid Version {src['code']} ({src['kind']} {src['path']}): {e}") from None
+            raise
         if seq is not None and seq.convert:
             S.point_loader_at_scratch(seq, self.scratch_root, job_id)
-        others = self._plan_other_inputs(wf, values, seq, show, shot, job_id) if seq is not None else {}
+        others = self._plan_other_inputs(wf, use, seq, show, shot, job_id) if seq is not None else {}
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
-        seq_name = seq.seq_name if seq else None
+        seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
         source = seq.source if seq else wf.tag
-        plan = {"notes": list((seq.convert or {}).get("notes", [])) if seq else [],
-                "wf": wf, "values": values, "seq": seq, "inputs": others,
+        plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
+                "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
                 "source": source, "out_dir": None, "version": None, "picked": None,
                 "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
@@ -301,6 +314,62 @@ class Farm:
         plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
         plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
         return plan
+
+    def _version_inputs(self, wf, values: dict) -> tuple[dict, dict, list[str]]:
+        """ShotGrid Version links among a job's inputs (shotgrid.versions): (the values with
+        each link replaced by the path ShotGrid has for it and its frames, {param: the
+        Version as the job records it}, notes). Its frames come first, over the Version's
+        range unless frames follow the link; its movie when it has none, or none on disk."""
+        ports = ([wf.port] if wf.port else []) + list(wf.other_ports)
+        refs = {p.name: V.parse(values.get(p.name)) for p in ports}
+        if not any(refs.values()):
+            return values, {}, []
+        pc, sgc = self.cfg.paths, self.cfg.shotgrid
+        use, sources, notes = dict(values), {}, []
+        for port in ports:
+            ref = refs.get(port.name)
+            if not ref:
+                continue
+            label = wf.params[port.name].label or port.name
+            if not V.same_site(ref, sgc.url):
+                raise SequenceError(f"{label}: that's a link to {ref['host']}, not to the farm's ShotGrid ({sgc.url}).")
+            try:
+                v = self.shotgrid.version(ref["id"])
+            except Refused as e:
+                raise SequenceError(f"{label}: ShotGrid couldn't give Version {ref['id']}'s paths: {e} "
+                                    f"(shotgrid.version_fields in the manager's config.yaml)") from None
+            except Unavailable as e:
+                raise SequenceError(f"{label}: a ShotGrid Version link needs the manager's ShotGrid lookups. {e} "
+                                    f"Paste the frames' path instead.") from None
+            except NotFound as e:
+                raise SequenceError(f"{label}: {e}") from None
+            given = ref["first"] is not None
+            # Its own range, unless frames were given, or the input takes the main input's frames.
+            first, last = (ref["first"], ref["last"]) if given else \
+                ((None, None) if port.match else (v["first"], v["last"]))
+            kind, path, why = None, None, None
+            if v["frames"]:
+                kind, path = "frames", V.pad_hash(v["frames"], pc)
+                if v["movie"] and pc.validate_inputs:        # not on disk (purged)? Then the movie.
+                    try:
+                        I.resolve_sequence(V.input_text(path, first, last), pc, listing=False)
+                    except SequenceError as e:
+                        kind, why = None, str(e)
+            if kind is None:
+                if not v["movie"]:
+                    raise SequenceError(f"{label}: ShotGrid Version {v['code']} has no frames or movie path "
+                                        f"({sgc.version_fields.get('frames')}, {sgc.version_fields.get('movie')}).")
+                kind, path = "movie", v["movie"]
+                first, last = (ref["first"], ref["last"]) if given else (None, None)   # the whole movie
+                if why:
+                    notes.append(f"{label}: the frames of ShotGrid Version {v['code']} can't be read ({why}), "
+                                 f"so its movie is.")
+            use[port.name] = V.input_text(path, first, last)
+            sources[port.name] = {"id": v["id"], "code": v["code"], "url": v["url"], "kind": kind, "path": path,
+                                  "first": first, "last": last, "status": v["status"],
+                                  "entity_type": v["entity_type"], "entity": v["entity"], "show": v["show"],
+                                  "sequence": v["sequence"], "shot": v["shot"]}
+        return use, sources, notes
 
     def _plan_other_inputs(self, wf, values: dict, main, show, shot, job_id: str) -> dict:
         """The inputs besides the primary, resolved: {name: Sequence, or None when left
@@ -419,6 +488,7 @@ class Farm:
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
             "what": plan.get("what"), "asset": plan.get("asset"),
             "maps": [m["channel"] for m in plan["textures"]["maps"]] if plan.get("textures") else None,
+            "sources": plan.get("sources") or {},          # ShotGrid Versions given as inputs, by param
             "batches": len(plan["batches"]) if plan.get("batches") else None,
             "inputs": {n: ({"frames": x.frame_count, "first": x.first, "last": x.last, "kind": x.kind,
                             "convert": I.summary(x, pc)} if x else None)
@@ -475,6 +545,8 @@ class Farm:
             "tag": wf.tag, "version": plan["version"],
             "input": seq.as_dict() if seq else None,
             "input_posix": P.to_posix(seq.farm_path, pc.mappings) if seq else None,
+            # ShotGrid Versions given as inputs (their links stay in params), by param
+            "sources": plan.get("sources") or {},
             # The other inputs, by name (None: left empty). The agent converts each.
             "inputs": {n: (x.as_dict() if x else None) for n, x in (plan.get("inputs") or {}).items()},
             "inputs_posix": {n: (P.to_posix(x.farm_path, pc.mappings) if x else None)

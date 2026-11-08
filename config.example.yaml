@@ -192,3 +192,7 @@ shotgrid:
   hidden_statuses: [hld, omt, hdn, void]         # shots left out of the lists
   projects_ttl: 900        # seconds a list is used before it's loaded again
   shots_ttl: 600           # (the ↻ buttons reload at once)
+  # A ShotGrid Version link as a job's input (README, ShotGrid Version links): the Version
+  # fields with its frames (used first), its movie (when there are no frames) and its range.
+  version_fields: {frames: sg_path_to_frames, movie: sg_path_to_movie, first: sg_first_frame, last: sg_last_frame}
+  version_ttl: 120         # seconds a Version's paths are used before ShotGrid is asked again

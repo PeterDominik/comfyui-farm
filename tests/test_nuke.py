@@ -536,6 +536,13 @@ class PanelLogic(unittest.TestCase):
         html = self.panel.PanelModel.destination_html({"frames": 3, "first_file": "a.png", "eta": eta})
         self.assertIn("Takes about 2 min on a-5090; done in about 9 min.", html)
         self.assertEqual(self.panel.eta_text(dict(eta, done_in=140)), "Takes about 2 min on a-5090.")   # nothing ahead
+        # A ShotGrid Version given as the input: a link to it, and what's read of it.
+        html = self.panel.PanelModel.destination_html({"frames": 84, "first_file": "a.png", "sources": {"input": {
+            "code": "yht_1040.lineup.v1", "url": "https://sg/detail/Version/4865327", "kind": "frames",
+            "path": "/rdo/shows/bc1/.published/yht/yht_1040/x.#.exr", "first": 1001, "last": 1084,
+            "entity_type": "Shot", "entity": "yht_1040"}}}, {"input": "Plate"})
+        self.assertIn("Plate: ShotGrid Version <a href='https://sg/detail/Version/4865327'>yht_1040.lineup.v1</a> "
+                      "(Shot yht_1040), its frames <code>/rdo/shows/bc1/.published/yht/yht_1040/x.#.exr</code> 1001-1084", html)
 
 
 if __name__ == "__main__":

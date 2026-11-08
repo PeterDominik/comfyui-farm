@@ -385,7 +385,9 @@ it, as before. `agent --check` lists the differences as warnings.
 
 **Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Its tabs:
 
-- **Submit:** pick the workflow, fill in the form, check the destination line, submit.
+- **Submit:** pick the workflow, fill in the form, check the destination line, submit. An input
+  takes a path or a ShotGrid Version link (see *ShotGrid Version links*). A link to
+  `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in.
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
   queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
   should be done, or the time left once running. Click a
@@ -662,7 +664,8 @@ show's shots (without on-hold, omitted, hidden and void ones), narrowed by the s
 field. **↻** next to the shot reloads both from ShotGrid, for a shot created since. A
 publish to a shot that isn't in the show is refused at submit (after reloading the show's
 shots once). When ShotGrid isn't set up the fields are plain text; when it doesn't answer
-they say so and keep the last lists. Publishing never waits on ShotGrid.
+they say so and keep the last lists. Publishing never waits on ShotGrid. The same set-up lets
+a job's input be a ShotGrid Version link (see *ShotGrid Version links*).
 
 Only the manager talks to ShotGrid, with its own read-only API script; the dashboard (and
 the Nuke panel) ask the manager, so the key never leaves wrk1125l. To set it up:
@@ -951,6 +954,38 @@ in `config.yaml`.
   - **Slates:** in `.mov` files inside a `movhistory` folder, the first frame is a slate,
     so it's dropped. The plate keeps its timecode frame numbers: a slate at 1000 means
     the plate is 1001 onwards. Set by `convert.movie.slate` in `config.yaml`.
+
+### ShotGrid Version links
+
+With ShotGrid lookups set up (see *ShotGrid lookups*), any input takes a Version's link
+instead of a path, in the dashboard, the Nuke panel and the client:
+
+```
+https://rodeofx.shotgrid.autodesk.com/detail/Version/4865327
+https://rodeofx.shotgrid.autodesk.com/page/9921#Version_4865327     (a page with it open)
+https://rodeofx.shotgrid.autodesk.com/detail/Version/4865327 1001-1050   (some of its frames)
+```
+
+The manager asks ShotGrid for the Version (read only) and reads:
+
+- **Its frames** (`sg_path_to_frames`, the published images), over the Version's frame range
+  (`sg_first_frame`–`sg_last_frame`) unless frames follow the link. ShotGrid's lone `#` is
+  read as the padding the files on disk have (`x.#.exr` with `x.0977.exr` is `x.####.exr`).
+- **Else its movie** (`sg_path_to_movie`): when it has no frames, or they're no longer on
+  disk (the destination line says so).
+- **The show and shot come from the Version** (its Project and Shot), not from the path, and
+  the sequence from the shot's name (`yht_1040` → `yht`, as in the pipeline; a Shot's own
+  ShotGrid sequence can be an editorial one). The output folder and the publish fields follow
+  them.
+
+The destination line and the job's details show the Version, with a link back to it. The
+job keeps the link as its input, so *Run again* asks ShotGrid again. A link to another
+ShotGrid site, a Version ShotGrid doesn't have, or one with neither frames nor a movie is
+refused, and so is a link while ShotGrid can't be asked (the message says why; paste the
+path instead). A request ShotGrid refuses (a field the site doesn't have) says so and doesn't
+hold the show and shot lists back; only a ShotGrid that doesn't answer is left alone for
+`retry_seconds`. The Version fields used are `shotgrid.version_fields` in `config.yaml`;
+`tools/sg_probe.py <link>` (on the manager) shows what ShotGrid holds for a Version.
 
 ## Adding or updating a workflow
 

@@ -11,6 +11,7 @@
     --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  a { color: var(--run); }   /* links (a ShotGrid Version): readable on the dark panels */
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
   header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
@@ -257,7 +258,29 @@ if (window.ResizeObserver) {
   $("#tabs").querySelectorAll("button").forEach(b => tabsGrew.observe(b));
 }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); });
-window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+window.addEventListener("hashchange", () => { if (!deepLink(location.hash)) showTab(location.hash.slice(1)); });
+
+// Deep links: /#submit?workflow=<name>&input=<path or ShotGrid Version link> opens the
+// Submit tab with them filled in (ShotGrid's right-click, links in messages).
+let pendingDeep = null;
+function deepLink(hash) {
+  const m = /^#submit\?(.*)$/.exec(hash || "");
+  if (!m) return false;
+  const q = new URLSearchParams(m[1]);
+  pendingDeep = { workflow: q.get("workflow"), input: q.get("input") };
+  showTab("submit");
+  applyDeepLink();
+  return true;
+}
+function applyDeepLink() {
+  const d = pendingDeep;
+  if (!d || !state.workflows.length) return;          // the workflows aren't loaded yet: boot() applies it
+  pendingDeep = null;
+  if (d.workflow && state.workflows.some(w => w.name === d.workflow)) { $("#wfSelect").value = d.workflow; renderForm(); }
+  const wf = state.workflows.find(w => w.name === $("#wfSelect").value), inputs = (wf?.params || []).filter(p => p.type === "sequence");
+  const seqP = inputs.find(p => p.primary) || inputs[0], el = seqP && $("#p_" + seqP.name);
+  if (el && d.input) { el.value = d.input; el.dispatchEvent(new Event("input", { bubbles: true })); el.focus(); }
+}
 
 // ------------------------------------------------------------- machines
 const ON_MACHINE = ["preparing", "dispatched", "running", "postprocessing"];
@@ -360,7 +383,9 @@ function renderForm() {
   const seqP = inputs.find(p => p.primary) || inputs[0], outP = wf.params.find(p => p.type === "output_folder");
   const destAfter = (outP || seqP || {}).name;
   const field = p => {
-    const id = "p_" + p.name, help = p.help ? `<span class="help">${esc(p.help)}</span>` : "";
+    // An input also takes a ShotGrid Version's link (its frames, else its movie).
+    const hint = p.type === "sequence" ? [p.help, "or a ShotGrid Version link"].filter(Boolean).join(" · ") : p.help;
+    const id = "p_" + p.name, help = hint ? `<span class="help">${esc(hint)}</span>` : "";
     const saved = store.get("comfyfarm.last." + wf.name + "." + p.name);
     // Paths are never pre-filled from last time: a remembered folder from another show
     // would quietly send renders to the wrong place.
@@ -477,15 +502,23 @@ async function updateDest(wf, seqP, outP) {
         const frames = x.first == null ? "an image" : x.first === x.last ? `frame ${x.first}` : `frames ${x.first}-${x.last}`;
         return `<br>${label}: ${frames}` + convertLine(x.convert).replace("<br>", ", ");
       }).join("")
+      + Object.entries(r.sources || {}).map(([name, s]) =>
+        `<br>${esc(wf.params.find(p => p.name === name)?.label || name)}: ${versionText(s)}`).join("")
       + etaLine(r.eta)
       + (r.notes || []).map(n => `<br><span class="warn">${esc(n)}</span>`).join("")
-      + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "")
+      + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, ${r.sources?.[seqP?.name] ? "from the ShotGrid Version" : "read from the input path"}.` : "")
       + (!r.picked && !r.shot && r.asset ? `<br>Asset <code>${esc(r.asset)}</code>, show <code>${esc(r.show)}</code>, read from the input path.` : "");
   } catch (err) {
     if (n !== destSeq) return;
     el.className = "dest err"; el.textContent = err.message;
   }
 }
+
+// A ShotGrid Version given as an input: a link to it, what it is, and what's read of it.
+const versionText = s => `ShotGrid Version <a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.code)}</a>`
+  + (s.entity ? ` (${esc(s.entity_type || "")} ${esc(s.entity)})` : "")
+  + `, its ${s.kind === "movie" ? "movie" : "frames"} <code>${esc(s.path)}</code>`
+  + (s.first != null ? ` ${s.first === s.last ? s.first : `${s.first}-${s.last}`}` : "");
 
 // About how long it takes, where, and when it'll be done behind the queue (from past runs).
 const etaLine = e => !e || e.run == null ? "" : `<br>Takes about ${about(e.run)} on ${(e.workers || []).map(esc).join(", ")}`
@@ -562,6 +595,7 @@ function detail(j) {
   return `<tr class="detail"><td colspan="11"><div class="kv">
     <div>Workflow</div><div>${esc(j.workflow)}${j.params?.seed != null ? ` · seed ${esc(j.params.seed)}` : ""} · ${j.kind === "set" ? `a set of ${j.info?.set?.batches} batches` : esc(j.worker || "not dispatched")}${j.attempts > 1 ? ` · attempt ${j.attempts}` : ""}</div>
     ${pathRow("Input", i.input_posix ? i.input_posix + (inp.first != null ? ` ${inp.first}-${inp.last}` : "") : inp.farm_path)}
+    ${Object.entries(i.sources || {}).map(([name, s]) => `<div>ShotGrid</div><div>${name !== "input" ? esc(name) + ": " : ""}${versionText(s)}</div>`).join("")}
     <div>Frames in</div><div>${inp.frame_count ?? "?"}${inp.skip || inp.cap ? ` <span class="muted">(loader skip ${inp.skip}, cap ${inp.cap})</span>` : ""}</div>
     ${o.maps ? pathRow("Output", i.output_dir_posix || i.output_dir)
              : pathRow("Output", o.frame_pattern_posix || i.output_dir_posix || i.output_dir)}
@@ -1053,6 +1087,7 @@ async function boot() {
     $("#wfSelect").innerHTML = state.workflows.map(w => `<option value="${esc(w.name)}">${esc(w.label)}</option>`).join("");
     $("#wfSelect").onchange = renderForm;
     renderForm();
+    applyDeepLink();
     await refreshJobs();
     if (ws) { ws.onclose = null; ws.close(); }
     connect();
@@ -1060,7 +1095,7 @@ async function boot() {
     $("#form").innerHTML = `<div class="msg err" style="grid-column:1/-1">${esc(err.message)}${state.auth ? " — enter your API key (top right)." : ""}</div>`;
   }
 }
-showTab(location.hash.slice(1) || store.get("comfyfarm.tab") || "submit");
+if (!deepLink(location.hash)) showTab(location.hash.slice(1) || store.get("comfyfarm.tab") || "submit");
 setInterval(refreshJobs, 15000);   // keeps queue positions / ETAs fresh
 setInterval(() => { if (visible().some(j => j.status === "running")) render(); }, 1000);
 boot();
