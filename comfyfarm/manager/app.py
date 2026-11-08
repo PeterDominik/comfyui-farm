@@ -194,8 +194,14 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
 
     @app.post("/api/v1/plan")
     def plan(req: JobRequest, ident: Identity = Depends(identity)):
-        """Dry run: where a job with these params would write, without queuing it."""
-        return farm.plan_summary(farm.plan(req.workflow, req.params, show=req.show, shot=req.shot))
+        """Dry run: where a job with these params would write, without queuing it; with
+        `publish`, also whether publishing it when done would be accepted (`publish`:
+        {request} or {why})."""
+        plan = farm.plan(req.workflow, req.params, show=req.show, shot=req.shot)
+        out = farm.plan_summary(plan)
+        if req.publish is not None:
+            out["publish"] = farm.publish_preview(plan, req.publish)
+        return out
 
     @app.get("/api/v1/jobs")
     def list_jobs(user: str | None = None, status: str | None = None,

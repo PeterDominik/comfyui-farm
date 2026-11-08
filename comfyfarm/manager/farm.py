@@ -27,7 +27,7 @@ from ..fileio import textures as T
 from ..fileio.errors import SequenceError
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
-from ..publish.publisher import Publisher, show_folder, summary as publish_summary
+from ..publish.publisher import Publisher, PublishError, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
 from ..shotgrid import versions as V
 from ..shotgrid.lookup import NotFound, Refused, Unavailable
@@ -314,6 +314,19 @@ class Farm:
         plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
         plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
         return plan
+
+    def publish_preview(self, plan: dict, publish: dict) -> dict:
+        """What publishing a job of this plan when it's done would be, checked as submit
+        checks it but without queuing anything: {request} (completed: show and shot from
+        the plan unless given, step, template, description, dry_run) or {why}. The plan
+        endpoint's answer, so Batch Submit's rows say before they're sent."""
+        if plan.get("batches"):
+            return {"why": "Texture sets aren't published from the farm."}
+        try:
+            req = self.publisher.check(plan["wf"].name, publish, show=plan["show"], shot=plan["shot"])
+        except (ParamError, PublishError) as e:
+            return {"why": str(e)}
+        return {"request": {**req, "dry_run": bool(publish.get("dry_run")) or self.cfg.publish.dry_run}}
 
     def batch_playlist(self, link: str) -> dict:
         """A ShotGrid Playlist as Batch Submit's rows: {playlist: {id, code, url, show},

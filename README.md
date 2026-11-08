@@ -585,7 +585,7 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/health` | Liveness, auth on/off, queue size |
 | GET | `/api/v1/workflows` | Workflows and parameter schemas, plus any preflight problems |
 | POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?, publish?}` → job (`publish`: publish it when done, the fields below) |
-| POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing, and `eta` (`run`: its seconds, `done_in`: behind the queue, `workers`) |
+| POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing, and `eta` (`run`: its seconds, `done_in`: behind the queue, `workers`); with `publish`, also whether publishing it when done would be accepted (`publish`: `{request}` or `{why}`) |
 | GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs and texture sets, with `queue_position`, `eta_seconds` (until done) and, while queued, `next_worker` |
 | GET | `/api/v1/jobs?parent={set id}` | A texture set's batches, in order |
 | GET | `/api/v1/jobs/{id}` | One job (full id or 8-char prefix) |
@@ -998,16 +998,26 @@ and each of its Versions becomes a row, in the playlist's order, its link the in
 *ShotGrid Version links*). *ShotGrid query* and *Variations* are coming.
 
 - **Columns:** the shot, the Version (a link to it) and its frames, then the workflow's own
-  fields, as in the Submit form, then where the row writes and its state.
+  fields, as in the Submit form, then, for a workflow that publishes, *Publish*, *Step*,
+  *Nuke template*, *Description* and *Dry run*, then where the row writes and its state
+  (which stays in view on the right).
 - **Fill:** the cell under each header sets that column for every ticked row. Any cell can
   still be changed per row; a cell that differs from its column is outlined.
-- **Checks:** the manager checks every row as the Submit form's "Will write" line does, a few
-  at a time, again after each change: *ready* (with notes, e.g. a Version read from its
-  movie), or why it can't run. A row that can't run starts unticked. Rows going into the same
-  folder show `v002+`: they take the next versions, in the order they're sent.
-- **Kept in your browser:** the table survives a reload; nobody else sees it.
-  ↻ loads the playlist again, keeping your edits.
-- **Sending** the ticked rows as jobs comes next; for now the table checks a batch.
+- **Checks:** the manager checks every row as the Submit form's "Will write" line does, its
+  publish included (a show without a folder, a shot ShotGrid doesn't have…), a few at a time,
+  again after each change: *ready* (with notes, e.g. a Version read from its movie, and where
+  it publishes), or why it can't run. A row that can't run starts unticked. Rows going into
+  the same folder show `v002+`: they take the next versions, in the order they're sent.
+- **Publishing:** each row publishes to its own Version's show and shot; step, template,
+  description and dry run come from the columns (fill them for all, change them per row).
+- **Submit:** *Submit N jobs* sends the ticked ready rows, one ordinary job each, one at a
+  time in the table's order; each row also has its own *Submit*. It always asks first. A
+  refused row says why and stays ticked; the others go on. *Stop* sends no more.
+- **After sending:** a sent row is unticked and follows its job live (queued, running with its
+  progress, done, its publish), its id opening it in the queue; *Submit again* sends it once
+  more. The log under the table keeps what was sent and refused.
+- **Kept in your browser:** the table, its sent jobs and the log survive a reload; nobody else
+  sees them. ↻ loads the playlist again, keeping your edits.
 
 A link opens it with a playlist loaded:
 `/#batch?playlist=<link or id>&workflow=<name>`. `GET /api/v1/shotgrid/playlist?link=` gives

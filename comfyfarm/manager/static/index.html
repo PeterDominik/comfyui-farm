@@ -126,15 +126,26 @@
   #batchTable .b-stick { position: sticky; left: 0; background: var(--panel); z-index: 1; box-shadow: 1px 0 0 var(--line); }
   #batchTable tr.b-fill td { background: #191b1e; border-bottom: 2px solid var(--line); }
   #batchTable tr.b-fill td.b-stick { background: #191b1e; }
+  /* State stays in view on the right, as the shot does on the left */
+  #batchTable .b-end { position: sticky; right: 0; background: var(--panel); z-index: 1; box-shadow: -1px 0 0 var(--line); }
+  #batchTable tr.b-fill td.b-end { background: #191b1e; }
   .b-shot { display: flex; gap: 8px; align-items: center; cursor: pointer; }
   .b-num { font-size: 11px; min-width: 16px; text-align: right; }
   #batchTable td.b-changed input, #batchTable td.b-changed select { border-color: var(--accent); }
   #batchTable tr.b-off td:not(.b-stick) { opacity: .45; }
-  #batchTable td.b-state { white-space: normal; min-width: 160px; max-width: 380px; font-size: 12px; }
+  #batchTable td.b-state { white-space: normal; min-width: 200px; max-width: 340px; font-size: 12px; }
   .b-fillnote { font-size: 11px; }
   #batchTable td.empty { white-space: normal; }
   #batchFoot { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 13px; flex-wrap: wrap; }
   #batchFoot:empty { display: none; }
+  #batchTable th.b-pub, #batchTable td.b-pub { background: rgba(232,160,69,.04); }
+  #batchTable tr.b-fill td.b-pub { background: #1d1c1a; }
+  #batchTable .b-job { margin-top: 3px; }
+  #batchTable .b-job .badge { font-size: 10px; padding: 1px 6px; }
+  #batchLog { border-top: 1px solid var(--line); font-size: 12px; max-height: 260px; overflow-y: auto; }
+  #batchLog:empty { display: none; }
+  .b-loghead { display: flex; align-items: center; padding: 8px 14px; position: sticky; top: 0; background: var(--panel); }
+  .b-logline { padding: 3px 14px; border-top: 1px solid rgba(255,255,255,.03); }
   tr.tplver td { font-size: 12px; padding-left: 22px; }
 </style>
 </head>
@@ -185,6 +196,7 @@
     </div>
     <div class="btwrap"><table id="batchTable"></table></div>
     <div id="batchFoot"></div>
+    <div id="batchLog" aria-live="polite"></div>
   </section>
 
   <section id="tab-queue" hidden>
@@ -676,6 +688,7 @@ function detail(j) {
 
 const wfLabel = name => state.workflows.find(w => w.name === name)?.label || name || "";
 function render() {
+  window.batchJobs?.();                         // batch.js: its sent rows' state
   const rows = visible();
   $("#jobs").innerHTML = rows.length ? rows.map(j => {
     const took = j.finished_at && (j.started_at || j.dispatched_at) ? dur(j.finished_at - (j.started_at || j.dispatched_at))

@@ -149,9 +149,12 @@ def workflows() -> list:
     return _request("GET", "/api/v1/workflows")["workflows"]
 
 
-def plan(workflow: str, params: dict, show: str | None = None, shot: str | None = None) -> dict:
-    """Dry run: where a job would write and what its files are called, without queuing it."""
-    return _request("POST", "/api/v1/plan", {"workflow": workflow, "params": params, "show": show, "shot": shot})
+def plan(workflow: str, params: dict, show: str | None = None, shot: str | None = None,
+         publish: dict | None = None) -> dict:
+    """Dry run: where a job would write and what its files are called, without queuing it.
+    publish: also check publishing it when done (the answer's "publish": {request} or {why})."""
+    return _request("POST", "/api/v1/plan", {"workflow": workflow, "params": params, "show": show, "shot": shot,
+                                             "publish": publish})
 
 
 def submit(workflow: str, params: dict, name: str | None = None, priority: int = 0,
