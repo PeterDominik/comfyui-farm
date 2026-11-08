@@ -194,7 +194,7 @@ class NukeHelpers(unittest.TestCase):
         self.assertEqual(state["saved"], 1)                                   # saved before it's read
         self.assertEqual(state["panel"].items, "ltx25_alpha_gen global")     # its workflow first
         self.assertIn("Replace default (ltx25_alpha_gen)?", state["asked"][-1])
-        self.assertEqual(saved, [("ltx25_alpha_gen", "default", script.read_text())])
+        self.assertEqual(saved, [("ltx25_alpha_gen", "default", script.read_bytes().decode())])   # as on disk, \r\n too
         self.assertIn("Published as default (ltx25_alpha_gen)", fake.messages[-1])
         # An unsaved script: nothing happens but a message.
         root.name = lambda: "Root"

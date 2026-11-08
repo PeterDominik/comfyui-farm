@@ -71,12 +71,13 @@ class StoreTests(unittest.TestCase):
     def test_a_file_put_there_by_hand_is_kept_first(self):
         dest = self.store.path("ltx", "default")
         dest.parent.mkdir(parents=True)
-        dest.write_text(TEXT)                                   # Peter's, copied in before there was a history
+        dest.write_bytes(TEXT.encode())                         # Peter's, copied in before there was a history
+                                                                # (bytes: write_text would make \r\n on Windows)
         self.store.save("ltx", "default", b"Root {\n}\n", "ann")
         hist = self.store.history("ltx", "default")
         self.assertEqual([(h["user"], h["action"]) for h in hist], [("ann", "save"), ("(on disk)", "found")])
         self.assertEqual(self.store.read("ltx", "default", hist[1]["version"]).decode(), TEXT)
-        dest.write_text(TEXT + "\n# edited by hand\n")          # changed outside the farm
+        dest.write_bytes((TEXT + "\n# edited by hand\n").encode())   # changed outside the farm
         self.assertTrue(self.store.info("ltx", "default")["changed_on_disk"])
         self.store.save("ltx", "default", TEXT.encode(), "bob")
         self.assertEqual(self.store.history("ltx", "default")[1]["note"], "changed on disk")

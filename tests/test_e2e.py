@@ -675,7 +675,8 @@ convert:
         opts = farm.publish_options("ltx25_alpha_gen")
         self.assertEqual((opts["step"], opts["templates"]), ("lay", []))
         self.assertIn("isn't switched on", opts["why"])
-        self.assertIn("isn't published", farm.publish_options("wan22_i2i")["why"])
+        self.assertIn("isn't switched on", farm.publish_options("wan22_i2i")["why"])     # Wan publishes too (chunk 9)
+        self.assertIn("texture publisher", farm.publish_options("chord_pbr")["why"])
         with self.assertRaisesRegex(farm.FarmError, "isn't switched on"):
             farm.submit("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1002"}, publish={})
         done = next(j for j in farm.jobs(limit=500) if j["status"] == "done" and j["workflow"] == "ltx25_alpha_gen")
