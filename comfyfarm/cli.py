@@ -135,7 +135,8 @@ def check_tools(convert) -> int:
     """oiiotool, ffmpeg and ffprobe, as conversions will run them (convert.tools)."""
     from .fileio.tools import find_tool
     bad = 0
-    for tool, args, use in (("oiiotool", ["--buildinfo"], "EXR inputs"), ("ffmpeg", ["-version"], "movie inputs"),
+    for tool, args, use in (("oiiotool", ["--buildinfo"], "EXR inputs"),
+                            ("ffmpeg", ["-version"], "movie inputs and preview movies"),
                             ("ffprobe", ["-version"], "movie inputs")):
         cmd = find_tool(tool, convert.tools.get(tool))
         if not cmd and tool == "ffprobe":
@@ -152,6 +153,8 @@ def check_tools(convert) -> int:
             if tool == "oiiotool":
                 m = re.search(r"OpenColorIO[^\n,;]*", text)
                 ocio = f"  ({m.group(0).strip()})" if m else "  (no OpenColorIO support found!)"
+            if tool == "ffmpeg" and "--enable-libx264" not in text:    # preview movies are H.264
+                ocio = "  (no libx264: preview movies will fail)"
             _line(" ok ", f"{tool}: {first[:70]}{ocio}")
         except Exception as e:  # noqa: BLE001
             bad += 1

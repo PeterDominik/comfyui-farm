@@ -10,7 +10,7 @@ at once, max_inflight, plus one). For each job it:
 3. follows it over ComfyUI's websocket, and checks its queue and history (events
    missed, ComfyUI restarted),
 4. collects the outputs: frames renamed, texture maps written as EXRs, the preview
-   copied,
+   movie made from the frames (or copied, from a workflow's own video node),
 5. reports each step to the manager. A report that can't be delivered (the manager is
    restarting) waits and goes later, in order.
 
@@ -45,6 +45,7 @@ from ..fileio import convert as C
 from ..fileio import farmnodes as FN
 from ..fileio import outputs as O
 from ..fileio import paths as P
+from ..fileio import preview as PV
 from ..fileio import scratch as S
 from ..fileio import wire as W
 from ..fileio.errors import ConvertError, SequenceError
@@ -1116,6 +1117,21 @@ class Agent:
                     warnings.append(f"Couldn't copy the preview video: {ex}")
             elif not entries:
                 warnings.append("ComfyUI returned no preview video.")
+
+        # The preview movie of the frames (fileio.preview). Not for one frame, and never a
+        # reason to fail the job.
+        movie = collect.get("movie")
+        if movie and out_dir and "preview" not in outputs and (outputs.get("frames") or 0) >= 2:
+            await self._report(h, "progress", lossy=True, status="postprocessing", stage="making the preview movie")
+            dest = str(Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens))
+            try:
+                await PV.make_movie(outputs, movie, dest, self.cfg.convert)
+                O.readable(dest)
+                outputs["preview"] = P.normalize(dest)
+                outputs["preview_posix"] = P.to_posix(outputs["preview"], mappings)
+            except Exception as ex:  # noqa: BLE001
+                log.warning("preview movie for %s: %s", h.id[:8], ex)
+                warnings.append(f"Couldn't make the preview movie: {ex}")
         return outputs, warnings
 
 

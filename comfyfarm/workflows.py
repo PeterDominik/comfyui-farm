@@ -217,6 +217,9 @@ class Workflow:
         self.publish: dict | None = (
             {"step": pub.get("step"), "graph": pub.get("graph") or "update_and_render_nuke"} if isinstance(pub, dict)
             else {"off": True} if pub is False else {"bad": pub} if pub is not None else None)
+        # A preview movie of its frames, made by the agent (fileio.preview): every workflow
+        # writing frames gets one unless `preview: false`.
+        self.preview_movie = m.get("preview", True)
         self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
@@ -304,11 +307,20 @@ class Workflow:
             out.append(f"{where}: node {node} has no input '{input_name}'")
         return out
 
+    @property
+    def makes_preview(self) -> bool:
+        """The agent makes a preview movie of this workflow's frames: it writes frames, has
+        no video node of its own (outputs.preview), and its manifest doesn't say preview: false."""
+        return bool(self.outputs.get("frames") and not self.textures and not self.outputs.get("preview")
+                    and self.preview_movie is not False)
+
     def static_check(self) -> list[str]:
         problems = []
         if self.publish is not None and ("bad" in self.publish or
                                          (self.publish["step"] is not None and not isinstance(self.publish["step"], str))):
             problems.append("publish: needs to be a section like {step: lay}")
+        if not isinstance(self.preview_movie, bool):
+            problems.append("preview: needs to be true or false (false: no preview movie of the frames)")
         for p in self.params.values():
             if p.type in GATEWAY_TYPES or p.naming:
                 if p.targets:
@@ -582,6 +594,7 @@ class Workflow:
             else None,
             "params": params,
             "maps": [mp.channel for mp in self.textures.maps] if self.textures else None,
+            "preview": self.makes_preview or bool(self.outputs.get("preview")),
         }
 
 

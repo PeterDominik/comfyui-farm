@@ -184,6 +184,16 @@ PUBLISH_STEPS = ["ani", "bmm", "cfx", "cmm", "comp", "crw", "env", "flo", "fx", 
 _LAUNCHER = "/rdo/rodeo/setup/rdo_rez_launcher/current"
 
 
+class PreviewConfig(BaseModel):
+    """The preview movie the agent makes from each job's frames (README, Preview movies):
+    an H.264 MP4 next to them, named by paths.preview_name, played in the dashboard.
+    Frozen into each job at submit, so every agent makes the same one."""
+    enabled: bool = True
+    fps: float = 24.0          # unless the input is a movie: its own rate
+    max_width: int = 1920      # wider frames are scaled down (aspect kept); 0: as they are
+    crf: int = 18              # H.264 quality: lower is better and bigger (18 looks like the frames)
+
+
 class PublishConfig(BaseModel):
     """Publishing jobs through Daiquiri's update_and_render_nuke (comfyfarm.publish). Off
     until enabled; with dry_run, every publish is a dispatchGraph --dry-run (Daiquiri
@@ -251,6 +261,7 @@ class Config(BaseModel):
     textures: TexturesConfig = Field(default_factory=TexturesConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    preview: PreviewConfig = Field(default_factory=PreviewConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
     shotgrid: ShotGridConfig = Field(default_factory=ShotGridConfig)
 

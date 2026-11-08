@@ -389,8 +389,9 @@ it, as before. `agent --check` lists the differences as warnings.
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
   queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
   should be done, or the time left once running. Click a
-  row for input/output paths (copy buttons), warnings, errors with traceback, the MP4 preview
-  (if any), *Run again* and *API JSON*, and on a finished job *Publish…* (see *Publishing*).
+  row for input/output paths (copy buttons), the preview movie (▶ in the row: it has one; see
+  *Preview movies*), warnings, errors with traceback, *Run again* and *API JSON*, and on a
+  finished job *Publish…* (see *Publishing*).
 - **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
   and why. *Drain* / *Resume* per machine.
@@ -549,6 +550,30 @@ show/seq/shot sit in a path), `output_root` (default root) + `output_dir` (`{roo
 Keep `{version}` in `frame_name`: it's what keeps runs in the same shot folder apart.
 Changing it only affects jobs submitted afterwards.
 
+### Preview movies
+
+Every job that writes two or more frames gets a preview movie: once the frames are renamed, the
+agent that ran it encodes them into an H.264 MP4 next to them, named by `paths.preview_name`,
+e.g. `305046_0010.plate.alpha_v002_preview.mp4`. The dashboard plays it in the job's details,
+with its path (copy button); in the queue, ▶ marks the jobs that have one.
+
+- **The frames as they are:** PNG is display-referred, so there's no colour conversion (a matte
+  shows grey), and no burn-ins. Tagged BT.709.
+- **Frame rate:** the input movie's, when the input is a movie; otherwise `preview.fps` (24).
+- **Size:** frames wider than `preview.max_width` (1920) are scaled down, aspect kept.
+- **Numbering:** the movie's timecode is its first frame's number (1001 is `00:00:41:17` at 24
+  fps), so a preview used as an input is numbered like the frames.
+- **Which jobs:** not a single image (Wan) or texture maps (CHORD). A workflow's manifest can
+  say `preview: false`; one with a video node of its own (`outputs.preview`) keeps that instead.
+- **Cost:** made while the outputs are collected, when the GPU is already free for the next
+  job: a few seconds for a shot. The agents' ffmpeg (from `imageio-ffmpeg`) needs no setup.
+- **When it can't be made:** a warning on the job; the frames are what counts, and the job is
+  done.
+
+The settings (`preview:` in the manager's `config.yaml`: `enabled`, `fps`, `max_width`, `crf`)
+are frozen into each job at submit, so every agent makes the same movie and a change only
+affects jobs submitted afterwards.
+
 ### REST API
 
 | Method | Path | |
@@ -564,7 +589,7 @@ Changing it only affects jobs submitted afterwards.
 | POST | `/api/v1/jobs/{id}/retry` | Same params, new version |
 | POST | `/api/v1/jobs/{id}/retry-failed` | A texture set: run its failed and cancelled batches again, same folder |
 | GET | `/api/v1/jobs/{id}/prompt` | The exact API JSON sent to ComfyUI |
-| GET | `/api/v1/jobs/{id}/preview` | MP4 preview |
+| GET | `/api/v1/jobs/{id}/preview` | The job's preview movie (MP4); `?key=` instead of the header, for players |
 | GET | `/api/v1/workers` | Online state, GPU, free VRAM, slots, preflight problems |
 | GET | `/api/v1/workflows/{name}/publish` | What it can be published with: `templates` (and `unusable` ones, with why), `steps`, the default `step` and `description`; `why` when it can't be |
 | POST | `/api/v1/jobs/{id}/publish` | Publish a finished job `{step?, show?, shot?, template?, description?, dry_run?, wait?}` → the publish (`state`: `queued`, `dispatching`, `dispatched` with `tractor_id`, `dry_run`, `failed` with `error`) |
@@ -587,8 +612,8 @@ Jobs in lists carry `publish`: their latest publish (or null), and `info.publish
 one was asked for at submit.
 
 Job statuses: `preparing` (EXR/movie inputs being converted) → `queued` → `dispatched`
-(waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, copying preview,
-writing texture maps as EXR) → `done`, or `failed` / `cancelled`.
+(waiting in ComfyUI) → `running` → `postprocessing` (renaming frames, making the preview
+movie, writing texture maps as EXR) → `done`, or `failed` / `cancelled`.
 
 A job's `kind` is `job`, or for a large texture `set` (what was submitted; its status,
 progress and outputs come from its batches) and `batch` (one run of a set, with
@@ -980,11 +1005,13 @@ params:                        # becomes the form in the dashboard, in this orde
                                # labels from their agent.yaml `tags` (linux / windows always set)
 # publish: {step: lay}         # optional: the step publishing offers first (see Publishing);
                                # publish: false keeps a video/image workflow from being published
+# preview: false               # optional: no preview movie of the frames (see Preview movies)
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}
   frames: {node: "9109", class: "Image Save", path_input: output_path, prefix_input: filename_prefix, ext: png}
-  preview: {node: "...", class: VHS_VideoCombine, prefix_input: filename_prefix}   # optional
+  # optional: the workflow's own video node, copied instead of the farm's preview movie
+  preview: {node: "...", class: VHS_VideoCombine, prefix_input: filename_prefix}
 ```
 
 - **Plain params** (`int`, `text`, …) are written straight into `targets`: node id as

@@ -567,6 +567,8 @@ function detail(j) {
              : pathRow("Output", o.frame_pattern_posix || i.output_dir_posix || i.output_dir)}
     ${o.maps ? `<div>Maps out</div><div>${o.files} EXRs: ${Object.keys(o.maps).map(m => `<code>${esc(m)}</code>`).join(" ")}</div>`
              : o.frames ? `<div>Frames out</div><div>${o.frames} (${o.first}-${o.last})</div>` : ""}
+    ${o.preview ? `<div>Preview</div><div class="vslot" data-vid="${j.id}" data-src="/api/v1/jobs/${j.id}/preview${keyq}"></div>` : ""}
+    ${pathRow("Preview movie", o.preview_posix)}
     ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
     ${j.kind === "set" ? setDetail(j) : ""}
     ${pathRow("Output (Windows)", windows)}
@@ -575,7 +577,6 @@ function detail(j) {
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
     ${j.error ? `<div>Error</div><div class="err">${esc(j.error)}</div>` : ""}
     ${i.traceback ? `<div></div><div><details><summary>traceback</summary><pre>${esc(i.traceback)}</pre></details></div>` : ""}
-    ${o.preview ? `<div>Preview</div><div class="vslot" data-vid="${j.id}" data-src="/api/v1/jobs/${j.id}/preview${keyq}"></div>` : ""}
     <div></div><div style="display:flex;gap:8px">
       ${["preparing", "queued", "dispatched", "running"].includes(j.status) ? `<button class="small" data-cancel="${j.id}">Cancel</button>` : ""}
       ${j.kind === "set" && [...(state.batches.get(j.id) || new Map()).values()].some(b => ["failed", "cancelled"].includes(b.status))
@@ -612,7 +613,7 @@ function render() {
       <td class="muted" style="white-space:nowrap" title="${left != null ? "When it should be done, from past runs of this workflow on that machine's GPU type" : ""}">${esc(wait)}</td>
       <td class="muted" title="${new Date(j.created_at * 1000).toLocaleString()}">${ago(j.created_at)}</td>
       <td class="muted">${took}</td>
-      <td style="white-space:nowrap">${(j.warnings || []).length ? '<span class="warn" title="has warnings">!</span>' : ""}${pubMark(j)}</td>
+      <td style="white-space:nowrap">${(j.warnings || []).length ? '<span class="warn" title="has warnings">!</span>' : ""}${j.outputs?.preview ? ' <span class="muted" title="Has a preview movie: open the job to play it">▶</span>' : ""}${pubMark(j)}</td>
     </tr>${state.open.has(j.id) ? detail(j) : ""}`;
   }).join("") : `<tr><td colspan="11" class="empty">No ${state.filter === "all" ? "" : state.filter} jobs.</td></tr>`;
   const active = [...state.jobs.values()].filter(j => !["done", "failed", "cancelled"].includes(j.status)).length;

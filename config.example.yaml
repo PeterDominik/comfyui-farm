@@ -95,6 +95,15 @@ paths:
 
   validate_inputs: true
 
+# The preview movie each agent makes from a job's frames (README, Preview movies): an H.264
+# MP4 next to them, named by paths.preview_name, played in the dashboard. Not for one frame
+# or texture maps; a workflow's manifest can say preview: false. Frozen per job at submit.
+preview:
+  enabled: true
+  fps: 24                  # unless the input is a movie: its own rate
+  max_width: 1920          # wider frames are scaled down (aspect kept); 0: as they are
+  crf: 18                  # H.264 quality: lower is better and bigger
+
 convert:
   # EXR sequences and movies are converted to PNG frames by the worker that runs the job,
   # into its scratch folder, before the workflow runs; deleted when the job finishes.

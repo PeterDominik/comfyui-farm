@@ -11,5 +11,5 @@ import it too; the config objects passed in are only read by attribute.
 
 - read only (the manager at submit, and the agent): paths, media, tools, ocio, inputs,
   naming, textures
-- writing (the agent only): convert, outputs, scratch
+- writing (the agent only): convert, outputs, preview, scratch
 """
