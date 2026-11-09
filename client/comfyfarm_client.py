@@ -236,6 +236,13 @@ def shotgrid_playlist(link) -> dict:
     return _request("GET", "/api/v1/shotgrid/playlist?link=" + urllib.parse.quote(str(link), safe=""))
 
 
+def shotgrid_versions(ids) -> dict:
+    """Versions by id (a list, or '1,2,3'), in that order, as Batch Submit's rows:
+    {"source": {code, show, ids, missing}, "rows": [{"version": {...}, "input": <its link>}]}."""
+    text = ",".join(map(str, ids)) if isinstance(ids, (list, tuple)) else str(ids)
+    return _request("GET", "/api/v1/shotgrid/versions?ids=" + urllib.parse.quote(text, safe=","))
+
+
 # Publish templates: scope is a workflow's name, or "_global" (every workflow, after its own).
 def publish_templates() -> dict:
     """Every scope's templates: {"scopes": [{scope, label, templates: [{name, key, usable, why,

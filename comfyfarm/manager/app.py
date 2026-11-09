@@ -4,13 +4,14 @@ at (/api/v1/agent/..., protocol.py)."""
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from .. import __version__
@@ -18,6 +19,7 @@ from ..config import Config
 from ..fileio.errors import SequenceError
 from ..fileio.naming import default_output_dir_display
 from ..publish.publisher import PublishError
+from ..shotgrid import versions as SV
 from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
 from .desk import Desk
@@ -27,6 +29,15 @@ from .farm import Farm, FarmError
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+
+
+def _ami_page(message: str) -> str:
+    """The small page ShotGrid's right-click shows when it can't open the dashboard."""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>ComfyFarm</title>
+<style>body {{ font: 15px/1.5 system-ui, sans-serif; background: #141517; color: #e6e6e6; margin: 0; padding: 48px 16px; }}
+main {{ max-width: 560px; margin: 0 auto; }} h1 {{ font-size: 18px; }} a {{ color: #6fb3ff; }}</style></head>
+<body><main><h1>ComfyFarm</h1><p>{message}</p><p><a href="/">Open the farm's dashboard</a></p></main></body></html>"""
 
 
 @dataclass
@@ -152,6 +163,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """The dashboard's Batch Submit tab (static/batch.js)."""
         return FileResponse(HERE / "static" / "batch.js", media_type="text/javascript")
 
+    @app.get("/shotgrid.js", include_in_schema=False)
+    def shotgrid_js():
+        """The dashboard's From ShotGrid button, drop zone and bookmarklet (static/shotgrid.js)."""
+        return FileResponse(HERE / "static" / "shotgrid.js", media_type="text/javascript")
+
     @app.get("/client.py", include_in_schema=False)
     def client_download():
         """Lets artists grab the Python client straight from the farm."""
@@ -251,6 +267,33 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def shotgrid_playlist(link: str, ident: Identity = Depends(identity)):
         """Batch Submit: a Playlist's Versions in its order, each a row (its link as the input)."""
         return farm.batch_playlist(link)
+
+    @app.get("/api/v1/shotgrid/versions")
+    def shotgrid_versions(ids: str, ident: Identity = Depends(identity)):
+        """Batch Submit: Versions picked in ShotGrid (ids, comma-separated), each a row."""
+        return farm.batch_versions(ids)
+
+    # ShotGrid's right-click (an Action Menu Item, README: ShotGrid right-click): ShotGrid
+    # opens a new tab POSTing the selection here, which is sent on to the dashboard's deep
+    # link. It only redirects (nothing is read or changed, no key needed): the dashboard
+    # then asks ShotGrid and checks the job as usual, and nothing is sent without a click.
+    @app.api_route("/api/v1/shotgrid/ami", methods=["GET", "POST"], include_in_schema=False)
+    async def shotgrid_ami(request: Request):
+        form = dict(request.query_params)
+        if request.method == "POST":
+            body = await request.body()
+            if len(body) > 8 << 20:
+                return HTMLResponse(_ami_page("That's more than ShotGrid should send: select fewer."), status_code=413)
+            form.update({k: v for k, v in SV.form_fields(request.headers.get("content-type", ""), body).items()
+                         if k != "workflow"})
+        if not (form.get("entity_type") or form.get("selected_ids")):
+            return HTMLResponse(_ami_page("This is where ShotGrid's <b>Send to ComfyFarm</b> right-click item sends "
+                                          "the Versions or Playlist you picked: it opens them in the farm's dashboard."))
+        try:
+            target = SV.action_target(form, cfg.shotgrid.url)
+        except ValueError as e:
+            return HTMLResponse(_ami_page(html.escape(str(e))), status_code=400)
+        return RedirectResponse("/" + target, status_code=303)
 
     @app.get("/api/v1/shotgrid/projects/{show}/shots")
     def shotgrid_shots(show: str, refresh: bool = False, ident: Identity = Depends(identity)):

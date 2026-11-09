@@ -351,6 +351,31 @@ class Farm:
         return {"playlist": {k: pl[k] for k in ("id", "code", "url", "show")},
                 "rows": [{"version": v, "input": v["url"]} for v in pl["versions"]]}
 
+    def batch_versions(self, ids) -> dict:
+        """Versions picked in ShotGrid (its right-click on a selection: /#batch?versions=…)
+        as Batch Submit's rows, in the order given: {source: {code, show, ids, missing},
+        rows: [{version, input}]}, as batch_playlist."""
+        try:
+            ids = V.version_ids(ids)
+        except ValueError as e:
+            raise FarmError(str(e)) from None
+        try:
+            found = self.shotgrid.versions(ids)
+        except Refused as e:
+            raise FarmError(f"ShotGrid couldn't give those Versions: {e}", 502) from None
+        except Unavailable as e:
+            raise FarmError(f"Versions from ShotGrid need the manager's ShotGrid lookups. {e}", 503) from None
+        if not found:
+            raise FarmError(f"There's no Version {', '.join(map(str, ids))} in ShotGrid (or the farm's ShotGrid "
+                            "script can't see them).", 404)
+        shows = {v["show"] for v in found}
+        have = {v["id"] for v in found}
+        n = len(found)
+        return {"source": {"code": f"{n} Version{'' if n == 1 else 's'} picked in ShotGrid",
+                           "show": shows.pop() if len(shows) == 1 else None,
+                           "ids": [v["id"] for v in found], "missing": [i for i in ids if i not in have]},
+                "rows": [{"version": v, "input": v["url"]} for v in found]}
+
     def _version_inputs(self, wf, values: dict) -> tuple[dict, dict, list[str]]:
         """ShotGrid Version links among a job's inputs (shotgrid.versions): (the values with
         each link replaced by the path ShotGrid has for it and its frames, {param: the

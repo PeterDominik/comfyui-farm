@@ -26,7 +26,7 @@ version() is a Version link given as a job's input (comfyfarm.shotgrid.versions)
 frames and movie paths, frame range, and the show, sequence and shot it belongs to,
 cached for version_ttl seconds. playlist() is a Playlist's Versions in its order (the
 dashboard's Batch Submit), each cached the same way, so checking the rows one by one
-doesn't ask ShotGrid again."""
+doesn't ask ShotGrid again; versions() is several Versions picked in ShotGrid, the same."""
 
 from __future__ import annotations
 
@@ -382,6 +382,27 @@ class ShotGrid:
                "versions": [found[i] for i in ids if i in found]}
         self._playlists[pid] = (now, out)
         return out
+
+    def versions(self, ids: list[int]) -> list[dict]:
+        """Several Versions (picked in ShotGrid: its right-click on a selection), as
+        version() gives each, in the order asked; one request for those not cached. Those
+        ShotGrid doesn't have are left out. Unavailable as version()."""
+        why = self.why()
+        if why:
+            raise Unavailable(why)
+        now, out = time.time(), {}
+        for vid in ids:
+            cached = self._versions.get(vid)
+            if cached and now - cached[0] < self.cfg.version_ttl:
+                out[vid] = cached[1]
+        ask = [vid for vid in dict.fromkeys(ids) if vid not in out]
+        if ask:
+            rows = self._ask("find", "Version", [["id", "in", ask]], self._version_fields())
+            now = time.time()
+            for r in rows or []:
+                out[r["id"]] = d = self._version_dict(r)
+                self._versions[r["id"]] = (now, d)
+        return [out[vid] for vid in dict.fromkeys(ids) if vid in out]
 
     def _show_of(self, project: dict) -> str | None:
         """A project's show code (tank_name): from the cached list of shows, else asked."""
