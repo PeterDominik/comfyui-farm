@@ -202,9 +202,11 @@ shotgrid:
   # The manager keeps ShotGrid's menu matching it (README: ShotGrid right-click): when it
   # starts, when the menu changes, daily. It runs tools/sg_ami.py in the pipeline's rez
   # environment (rdo_publish_pipeline's ShotGrid client may create menu items; the read-only
-  # script above can't). Try the command by hand first (README).
+  # script above can't). The default command (the show's context, then rez by its full path)
+  # is the one tried by hand on wrk1125l (README).
   menu_sync:
     enabled: false
-    command: "rez env rdo_publish_pipeline -- python {tool} --pipeline --menu-json {menu} --apply"
+    # command: "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} && /rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline -- python {tool} --pipeline --menu-json {menu} --apply"
+    # show: raa            # the context's show (default: menu.yaml's first)
     check_minutes: 5       # how often it looks whether the menu changed
     every_hours: 24        # synced again anyway (an item changed by hand in ShotGrid)

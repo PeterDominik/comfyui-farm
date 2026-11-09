@@ -6,8 +6,9 @@ and the pipeline's client that can (rdo_publish_pipeline) lives in the studio's 
 environment, not in the farm's Python. So, as publishing does with dispatchGraph, it runs
 a command in a clean login shell (shotgrid.menu_sync.shell / .command):
 
-    rez env rdo_publish_pipeline -- python <repo>/tools/sg_ami.py --pipeline \\
-        --menu-json <data>/shotgrid_menu.json --apply
+    source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh <show> &&
+    /rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline --
+        python <repo>/tools/sg_ami.py --pipeline --menu-json <data>/shotgrid_menu.json --apply
 
 with the menu written to that file first (GET /api/v1/shotgrid/menu's), so the tool needn't
 ask the manager for it. The tool only touches items posting to the farm, and makes them
@@ -121,15 +122,19 @@ class MenuSync:
             return self._skip(reason, "deploy/shotgrid/menu.yaml has no farm_url (the address ShotGrid's menu posts to)")
         if menu.get("shows") and not menu.get("items"):
             return self._skip(reason, "the menu came out empty though it names shows (did the workflows load?)")
-        return await self._sync(menu, h, reason)
+        show = self.cfg.show or next(iter(menu.get("shows") or {}), "")
+        if not show and "{show}" in self.cfg.command:
+            return self._skip(reason, "no show for the pipeline's context: menu.yaml names none, so set "
+                                      "shotgrid.menu_sync.show")
+        return await self._sync(menu, h, reason, show)
 
-    async def _sync(self, menu: dict, h: str, reason: str) -> dict:
+    async def _sync(self, menu: dict, h: str, reason: str, show: str = "") -> dict:
         self.running = True
         try:
             self.file.parent.mkdir(parents=True, exist_ok=True)
             self.file.write_text(json.dumps(menu, indent=1), encoding="utf-8")
             argv = dispatch.command(self.cfg.shell, self.cfg.command,
-                                    {"tool": self.tool, "menu": self.file, "farm": menu["farm_url"]},
+                                    {"tool": self.tool, "menu": self.file, "farm": menu["farm_url"], "show": show},
                                     "shotgrid.menu_sync.command")
             log.info("ShotGrid menu sync (%s): %s", reason, argv[-1])
             code, output = await asyncio.to_thread(self._run, argv, self.cfg.timeout)

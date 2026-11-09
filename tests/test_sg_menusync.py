@@ -61,7 +61,10 @@ class When(unittest.TestCase):
         self.assertEqual((r["ok"], r["created"], r["deleted"], r["reason"]), (True, 8, 2, "the manager started"))
         argv, timeout = self.run_.calls[0]
         self.assertEqual(argv[:6], ["env", "-i", f"HOME={os.path.expanduser('~')}", argv[3], argv[4], "/bin/bash"])
-        self.assertEqual(argv[-1], "rez env rdo_publish_pipeline -- python " + shlex.quote(str(REPO / "tools" / "sg_ami.py"))
+        # As tried by hand on wrk1125l: the show's context, then rez by its full path (an alias in a terminal).
+        self.assertEqual(argv[-1], "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh raa && "
+                         "/rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline -- "
+                         "python " + shlex.quote(str(REPO / "tools" / "sg_ami.py"))
                          + " --pipeline --menu-json " + shlex.quote(str(self.dir / "shotgrid_menu.json")) + " --apply")
         self.assertEqual(json.loads((self.dir / "shotgrid_menu.json").read_text())["items"], self.menu["items"])
         self.assertIsNone(self.check())                                           # nothing changed: nothing run
@@ -96,8 +99,11 @@ class When(unittest.TestCase):
             self.assertFalse(r["ok"])
             self.assertIn(why, r["why"])
         self.assertEqual(self.run_.calls, [])
-        self.menu = menu({})                                                      # no shows: every item goes
+        self.menu = menu({})                                                      # no shows: every item goes, but
+        self.assertIn("no show for the pipeline's context", self.check()["why"])  # the context needs one
+        self.sync.cfg = MenuSyncConfig(enabled=True, show="bri3")
         self.assertTrue(self.check()["ok"])
+        self.assertIn("set_context.sh bri3 &&", self.run_.calls[-1][0][-1])
 
     def test_a_command_naming_something_else(self):
         self.sync.cfg = MenuSyncConfig(enabled=True, command="python {tool} --menu-json {menu} --site {site}")

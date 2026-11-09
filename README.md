@@ -1139,26 +1139,27 @@ itself, so nobody has to after a change:
   `POST /api/v1/shotgrid/menu/sync` runs it now.
 - **How:** it can't make the items with its own read-only script, and the pipeline's client
   lives in the studio's rez environment, not in the farm's Python. So, as publishing runs
-  dispatchGraph, it runs `shotgrid.menu_sync.command` in a clean login shell:
-  `rez env rdo_publish_pipeline -- python tools/sg_ami.py --pipeline --menu-json <menu> --apply`,
-  with the menu written to `<data>/shotgrid_menu.json` first (`{tool}`, `{menu}`, `{farm}`).
+  dispatchGraph, it runs `shotgrid.menu_sync.command` in a clean login shell: the show's
+  pipeline context, then rez by its full path (in a terminal `rez` is an alias, which a
+  script's shell doesn't expand), then the tool with the menu it wrote to
+  `<data>/shotgrid_menu.json` (`{tool}`, `{menu}`, `{farm}`, `{show}`: `menu_sync.show`, else
+  `menu.yaml`'s first show):
+  `source …/rdo_rez_launcher/current/env/set_context.sh raa && /rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline -- python tools/sg_ami.py --pipeline --menu-json <menu> --apply`
 - **When it doesn't:** a menu with problems, without a `farm_url`, or with no items while
   it names shows (the workflows didn't load) isn't synced. A failed run is tried again at
   the next check. `GET /api/v1/shotgrid/menu`'s `sync` says how the last one went (when,
   why, created / changed / deleted, the tool's output), and the manager's log too.
 
-Try the command by hand on the manager first, as the manager will run it (a clean login
-shell), without `--apply`:
+To try it by hand on the manager, as the manager runs it (a clean login shell; without
+`--apply` it changes nothing; it takes a few seconds to resolve):
 
 ```bash
-cd /mntx/raid/pdominik/comfyui-farm
 env -i HOME=$HOME USER=$USER LOGNAME=$USER /bin/bash -lc \
-  "rez env rdo_publish_pipeline -- python $PWD/tools/sg_ami.py --pipeline --farm http://wrk1125l.rodeofx.com:9090"
+  "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh raa && /rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline -- python /mntx/raid/pdominik/comfyui-farm/tools/sg_ami.py --pipeline --farm http://wrk1125l.rodeofx.com:9090"
 ```
 
-When that shows the menu ("… as they are"), switch it on and restart the manager. If `rez`
-isn't found there, or the pipeline needs more packages, change `menu_sync.command` to what
-works.
+When that shows the menu ("… as they are"), switch it on and restart the manager. If the
+studio's rez moves (another OS, another path), change `menu_sync.command` to what works.
 
 ## Adding or updating a workflow
 
