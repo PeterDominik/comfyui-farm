@@ -28,8 +28,8 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from ..fileio import paths as P
 
-__all__ = ["parse", "parse_playlist", "version_ids", "action_target", "form_fields", "same_site", "pad_hash",
-           "input_text"]
+__all__ = ["parse", "parse_playlist", "version_ids", "picked", "deep_link", "action_target", "form_fields", "same_site",
+           "pad_hash", "input_text"]
 
 # http(s)://<site>/…/detail/Version/<id> or …#Version_<id>, then optional frames
 _LINK = re.compile(r"^(?P<link>https?://\S*?(?:/detail/Version/|#Version_)(?P<id>\d+)\S*?)"
@@ -86,20 +86,18 @@ def version_ids(raw, what: str = "Version") -> list[int]:
 
 
 _WORKFLOW = re.compile(r"^[\w.-]{1,80}$")
+_LOGIN = re.compile(r"^[\w.@+-]{1,64}$")
+ACTIONS = ("open", "submit", "publish")
 
 
-def action_target(form: dict, site_url: str) -> str:
-    """Where ShotGrid's right-click (an Action Menu Item posting to /api/v1/shotgrid/ami)
-    opens the dashboard, as its deep link ('#submit?…', '#batch?…'):
-
-      one Version         #submit?input=<its link>             the Submit form, its input filled
-      several Versions    #batch?versions=<id>,<id>,…          Batch Submit, a row each
-      a Playlist          #batch?playlist=<its link>           Batch Submit, its Versions
-
-    `form` is what ShotGrid posts (entity_type, selected_ids, server_hostname…; README:
-    ShotGrid right-click), plus `workflow` from the item's own URL (…/ami?workflow=<name>:
-    an item per workflow). The links are to the farm's ShotGrid (`site_url`). ValueError
-    with why, for the page the person sees instead (another site, nothing selected, a Shot)."""
+def picked(form: dict, site_url: str) -> dict:
+    """What ShotGrid's right-click (an Action Menu Item posting to /api/v1/shotgrid/ami)
+    picked: {kind, ids, links, action, workflow, user}. `form` is what ShotGrid posts
+    (entity_type, selected_ids, server_hostname, user_login…; README: ShotGrid right-click),
+    plus the item's own URL's action (open, submit, publish: submit and publish when
+    done) and workflow (comfyfarm.shotgrid.menu). The links are to the farm's ShotGrid
+    (`site_url`). ValueError with why, for the page the person sees instead (another site,
+    nothing selected, a Shot)."""
     get = lambda k: str(form.get(k) or "").strip()     # noqa: E731
     host = (urlsplit(site_url).hostname or "").lower()
     posted = get("server_hostname").lower()
@@ -108,17 +106,47 @@ def action_target(form: dict, site_url: str) -> str:
     kind = get("entity_type")
     if kind not in ("Version", "Playlist"):
         raise ValueError(f"ComfyFarm takes Versions and Playlists; that was {'a ' + kind if kind else 'something else'}.")
-    picked = get("selected_ids") or get("ids")
-    if not picked:
+    ids = get("selected_ids") or get("ids")
+    if not ids:
         raise ValueError(f"Nothing was selected: select a {kind}, then right-click it.")
-    ids = version_ids(picked, kind)
+    ids = version_ids(ids, kind)
+    if kind == "Playlist":
+        ids = ids[:1]                            # one playlist per table
     site = site_url.rstrip("/") or f"https://{posted}"
-    q = {"workflow": get("workflow")} if _WORKFLOW.match(get("workflow")) else {}
-    if kind == "Playlist":                       # several: the first (one playlist per table)
-        return "#batch?" + urlencode({**q, "playlist": f"{site}/detail/Playlist/{ids[0]}"})
-    if len(ids) == 1:
-        return "#submit?" + urlencode({**q, "input": f"{site}/detail/Version/{ids[0]}"})
-    return "#batch?" + urlencode({**q, "versions": ",".join(map(str, ids))}, safe=",")
+    action = get("action") if get("action") in ACTIONS else "open"
+    return {"kind": kind, "ids": ids, "links": [f"{site}/detail/{kind}/{i}" for i in ids],
+            "action": "open" if kind == "Playlist" else action,          # a Playlist only opens
+            "workflow": get("workflow") if _WORKFLOW.match(get("workflow")) else None,
+            "user": get("user_login") if _LOGIN.match(get("user_login")) else None}
+
+
+def deep_link(p: dict) -> str:
+    """Where the dashboard opens for what was picked (picked()), as its deep link:
+
+      one Version         #submit?input=<its link>                 the Submit form, its input filled
+      several Versions    #batch?versions=<id>,<id>,…              Batch Submit, a row each
+      a Playlist          #batch?playlist=<its link>               Batch Submit, its Versions
+
+    with the workflow, and the ShotGrid login as the dashboard's user when it has none.
+    Submit (+ Publish) on several Versions also ticks Publish and asks to send them
+    (send=1); on one, the manager submits it itself (here: when it can't, the form)."""
+    q = {"workflow": p["workflow"]} if p.get("workflow") else {}
+    if p.get("user"):
+        q["user"] = p["user"]
+    submit = p.get("action") in ("submit", "publish")
+    if submit and p.get("action") == "publish":
+        q["publish"] = "1"
+    if p["kind"] == "Playlist":
+        return "#batch?" + urlencode({**q, "playlist": p["links"][0]})
+    if len(p["ids"]) == 1:
+        return "#submit?" + urlencode({**q, "input": p["links"][0]})
+    return "#batch?" + urlencode({**q, **({"send": "1"} if submit else {}),
+                                  "versions": ",".join(map(str, p["ids"]))}, safe=",")
+
+
+def action_target(form: dict, site_url: str) -> str:
+    """The deep link for what ShotGrid's right-click posted (picked, then deep_link)."""
+    return deep_link(picked(form, site_url))
 
 
 def form_fields(content_type: str, body: bytes) -> dict[str, str]:

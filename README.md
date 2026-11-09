@@ -76,8 +76,9 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
 | `deploy/comfyui/` | The farm's ComfyUI: `environment.yaml` (versions, node packs, models) and `extra_model_paths.yaml` (see *The farm's ComfyUI*) |
+| `deploy/shotgrid/menu.yaml` | Which shows have the farm in ShotGrid's right-click menu, and the address it posts to (see *ShotGrid right-click*) |
 | `tools/mock_comfyui.py` | Fake ComfyUI for testing without a GPU |
-| `tools/sg_probe.py`, `tools/sg_ami.py` | What ShotGrid holds for a Version (read only); ShotGrid's *Send to ComfyFarm* right-click item, made or removed by an admin script (see *ShotGrid right-click*) |
+| `tools/sg_probe.py`, `tools/sg_ami.py` | What ShotGrid holds for a Version (read only); ShotGrid's ComfyFarm right-click menu made to match the farm's, with the pipeline's client or an admin script (see *ShotGrid right-click*) |
 | `tests/` | Unit tests + end-to-end tests against the mock |
 
 ## Deploying
@@ -611,7 +612,8 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
 | GET | `/api/v1/shotgrid/playlist?link=` | Batch Submit's rows from a Playlist (link or id): `playlist` and `rows` `[{version, input}]`, in its order |
 | GET | `/api/v1/shotgrid/versions?ids=` | Batch Submit's rows from Versions (ids, comma-separated), in that order: `source` (`code`, `show`, `ids`, `missing`) and `rows` |
-| POST | `/api/v1/shotgrid/ami` | ShotGrid's right-click posts here (an Action Menu Item): a redirect to the dashboard's deep link (see *ShotGrid right-click*) |
+| GET | `/api/v1/shotgrid/menu` | ShotGrid's right-click menu as the farm makes it: `items` (folder, title, entity type, url, shows), `workflows` (where each goes, and why), `problems` |
+| POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: Submit (+ Publish) on one Version submits it and redirects to the job; otherwise a redirect to the dashboard's deep link (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
@@ -1036,71 +1038,92 @@ and `GET /api/v1/shotgrid/versions?ids=` give the rows
 ### ShotGrid right-click
 
 Three ways to bring a Version or a Playlist from ShotGrid to the farm (the dashboard's
-*From ShotGrid* button, top right, shows the first two). Each opens the dashboard filled in;
-nothing is sent until you submit.
+*From ShotGrid* button, top right, explains the first two and the menu).
 
-| From ShotGrid | Opens |
-|---|---|
-| one Version | the **Submit** form, the Version as its input |
-| a Playlist | **Batch Submit**, a row per Version, in the playlist's order |
-| several Versions (right-click) | **Batch Submit**, a row each |
+**ShotGrid's right-click menu**, on the Versions (and for *Open*, the Playlists) of the
+shows in `deploy/shotgrid/menu.yaml`. It's a submission form, like the Nuke panel's, shaped
+by what a menu can do: it can't ask for anything, so a workflow only submits from it when a
+Version is all it needs.
 
-- **The ComfyFarm button:** a bookmarklet. Drag it from the *From ShotGrid* dialog onto the
-  browser's bookmarks bar once; then click it on a ShotGrid page with a Version or a Playlist
-  open. It reads the page's address: a Version's or Playlist's own page
-  (`/detail/Version/<id>`), one open over a page (`#Version_<id>`), the Media Center
-  (`type=Version&id=…`, or a playlist in its tree). A page that only lists them (a Shots or
-  Versions page) doesn't name one: open it, or drag it instead. The farm opens in a tab of its
-  own, reused by the next click.
-- **Drag and drop:** drag a Version's or Playlist's name (its link) from ShotGrid onto the
-  dashboard, anywhere but a field (a field takes it as text, as before).
-- **Right-click in ShotGrid:** *Send to ComfyFarm* in a Version's or a Playlist's menu (also on
-  several Versions selected in a list). It's an Action Menu Item: ShotGrid opens a tab posting
-  the selection to the manager's `/api/v1/shotgrid/ami`, which sends it on to the dashboard.
-  That endpoint reads and changes nothing (it only redirects, so it needs no key); a selection
-  from another ShotGrid site, nothing selected, or another entity type (a Shot) shows a page
-  saying so. ShotGrid is on https and the farm on http, so Chrome warns that the form isn't
-  secure the first time: *Send anyway*.
+```
+right-click ▸ ComfyFarm Submit ▸            LTX 2.5 alpha generation …
+            ▸ ComfyFarm Submit + Publish ▸  LTX 2.5 alpha generation …
+            ▸ ComfyFarm Open ▸              every workflow with an image input
+```
 
-Setting the right-click up is a ShotGrid admin's change (it's in everyone's menu where it
-applies), made once with `tools/sg_ami.py` and a ShotGrid connection allowed to create
-Action Menu Items (not the manager's read-only script). It only shows what it would do
-until `--apply`. The connection is either the pipeline's own client (`--pipeline`:
-`rdo_publish_pipeline`, so it runs in a rez environment that has it, or in Maya; the file is
-standalone, standard library only, Python 3.7+) or an admin script:
+| Picked in ShotGrid | Submit, Submit + Publish | Open |
+|---|---|---|
+| one Version | submitted at once, with the workflow's defaults, as the ShotGrid user who clicked; the tab then shows the job in the dashboard's queue | the **Submit** form, the workflow picked, the Version as its input |
+| several Versions | **Batch Submit**, a row each (Publish ticked for + Publish), asking to send them once they're checked | **Batch Submit**, a row each |
+| a Playlist | (not offered) | **Batch Submit**, a row per Version, in the playlist's order |
+
+- **Which folder a workflow goes in** is worked out from its manifest (`comfyfarm/shotgrid/menu.py`):
+  *Open* takes every workflow with an image input; *Submit* those a Version alone can run
+  (one required input, taking frames rather than one image, and every other field optional:
+  LTX 2.5 alpha generation, CHORD); *Submit + Publish* those of them that publish.
+  `shotgrid: false` in a manifest leaves a workflow out, `shotgrid: {submit: false}` out of
+  the Submit folders, `shotgrid: {title: …}` names it in the menu.
+- **When it can't submit** (frames not on disk, ShotGrid not answering, publishing off) the
+  tab says why, with a link that opens it in the dashboard to fix. Only ShotGrid's own POST
+  submits (a link to the same address opens the form instead), and with `auth.api_keys`
+  set it opens the form too (the dashboard asks for the key). The job's user is ShotGrid's
+  `user_login`, else `anonymous`; it's taken as ShotGrid sends it (not checked yet: proof of
+  concept).
+- **The dashboard** follows: `#queue?job=<id>` shows a job, `user=<login>` fills the user
+  when none is entered, Batch Submit's `publish=1` ticks Publish and `send=1` asks to send.
+- ShotGrid is on https and the farm on http, so Chrome warns that the form isn't secure
+  (*Send anyway*), every time, until the manager has https (planned).
+
+**The ComfyFarm button:** a bookmarklet. Drag it from the *From ShotGrid* dialog onto the
+browser's bookmarks bar once; then click it on a ShotGrid page with a Version or a Playlist
+open. It reads the page's address: a Version's or Playlist's own page (`/detail/Version/<id>`),
+one open over a page (`#Version_<id>`), the Media Center (`type=Version&id=…`, or a playlist
+in its tree). A page that only lists them (a Shots or Versions page) doesn't name one: open
+it, or drag it instead. The farm opens in a tab of its own, reused by the next click: a
+Version in the Submit form, a Playlist in Batch Submit.
+
+**Drag and drop:** drag a Version's or Playlist's name (its link) from ShotGrid onto the
+dashboard, anywhere but a field (a field takes it as text, as before).
+
+#### Setting the menu up
+
+`deploy/shotgrid/menu.yaml` says which shows have the menu (`raa: all`, or a list of
+workflows for a show) and `farm_url`, the manager's address as artists' browsers reach it.
+`GET /api/v1/shotgrid/menu` shows the menu the manager makes of it: the items, and why
+each workflow is where it is.
+
+ShotGrid's items (Action Menu Items) are made to match it by `tools/sg_ami.py`, run after
+deploying the manager whenever a show or a workflow is added. It needs a ShotGrid connection
+that may create them (not the manager's read-only script): the pipeline's own client
+(`--pipeline`: `rdo_publish_pipeline`, in a rez environment that has it, or in Maya; the
+file is standalone, standard library only, Python 3.7+), or an admin script. It only shows
+what it would do until `--apply`:
+
+```python
+# Maya's Script Editor (Python)
+import sys; sys.path.insert(0, "/mntx/raid/pdominik/comfyui-farm/tools")
+import sg_ami
+sg_ami.main(["--pipeline", "--farm", "http://wrk1125l.rodeofx.com:9090"])   # then with "--apply"
+```
 
 ```bash
 cd /mntx/raid/pdominik/comfyui-farm
-# the pipeline's client
-rez env <the package with rdo_publish_pipeline> -- python tools/sg_ami.py --pipeline --farm http://wrk1125l:9090 --show bri3
+rez env <the package with rdo_publish_pipeline> -- python tools/sg_ami.py --pipeline --farm http://wrk1125l.rodeofx.com:9090
 # or an admin script (the key: SG_ADMIN_SCRIPT_KEY, or it asks)
 export SG_ADMIN_SCRIPT_NAME=<the admin script's name>
-PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3
-# then the same with --apply to do it
+PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l.rodeofx.com:9090
 ```
 
-From Maya's Script Editor (Python):
-
-```python
-import sys; sys.path.insert(0, "/mntx/raid/pdominik/comfyui-farm/tools")
-import sg_ami
-sg_ami.main(["--pipeline", "--farm", "http://wrk1125l:9090", "--show", "bri3"])   # then with "--apply"
-```
-
-`--pipeline-path <folder>` imports `rdo_publish_pipeline` from that folder instead of rez
-(its own dependencies have to be importable too). With `--pipeline`, `--site` is a check that
-the pipeline's client is on that site.
-
-- It makes one item on Version and one on Playlist, *Send to ComfyFarm*, posting to
-  `<farm>/api/v1/shotgrid/ami`, selection required. It reads ActionMenuItem's fields from the
-  site first and sets only those it has.
-- `--show` (repeatable) limits them to those shows' projects, `--group` to a permission group;
-  with neither it refuses unless `--everywhere`.
-- Run again, it changes the items it made (found by entity type and URL) instead of adding
-  more. `--remove --apply` deletes them. `--workflow <name>` makes items that open that
-  workflow (`…/ami?workflow=<name>`), `--folder` puts them in a menu folder.
-- The key is used for that run only: never written, never printed (not even in ShotGrid's
-  error messages). With `--pipeline` no key passes through it at all.
+- It reads the farm's menu, then creates the items ShotGrid doesn't have, changes those that
+  differ (title, folder, order, shows' projects), and deletes any other item posting to the
+  farm (the first *Send to ComfyFarm* pair included). Run again, it changes nothing.
+- It reads ActionMenuItem's fields first, and stops when the menu has problems (a show
+  ShotGrid doesn't have, a workflow that isn't on the farm) or the site can't hold folders.
+- `--remove --apply` deletes every item posting to the farm. `--pipeline-path <folder>`
+  imports `rdo_publish_pipeline` from a folder instead of rez; with `--pipeline`, `--site`
+  checks the client is on that site.
+- An admin script's key is used for that run only: never written, never printed (not even
+  in ShotGrid's error messages). With `--pipeline` no key passes through it at all.
 
 ## Adding or updating a workflow
 
@@ -1156,6 +1179,8 @@ params:                        # becomes the form in the dashboard, in this orde
 # publish: {step: lay}         # optional: the step publishing offers first (see Publishing);
                                # publish: false keeps a video/image workflow from being published
 # preview: false               # optional: no preview movie of the frames (see Preview movies)
+# shotgrid: {submit: false}    # optional: ShotGrid's right-click menu (see ShotGrid right-click): false keeps
+                               # it out of the menu, submit: false out of the Submit folders, title: its name there
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}

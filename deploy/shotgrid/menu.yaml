@@ -1,0 +1,18 @@
+# The farm in ShotGrid's right-click menu (README: ShotGrid right-click): which shows have it.
+#
+#   ComfyFarm Submit ▸ / ComfyFarm Submit + Publish ▸ / ComfyFarm Open ▸ <workflow>
+#
+# Which workflows go in which folder is worked out from their manifests (a workflow a
+# Version alone can run goes in Submit; every workflow with an image input in Open). After
+# changing this file (or adding a workflow), deploy the manager, then make ShotGrid's
+# menu match it with tools/sg_ami.py --sync (with a script that may: --pipeline in Maya).
+
+# What ShotGrid's menu posts to: the manager's address as artists' browsers reach it
+# (manager.json's). Changing it later means syncing again (the old items are removed).
+farm_url: http://wrk1125l.rodeofx.com:9090
+
+# The shows (their tank_name) whose Versions and Playlists have the menu: `all` the
+# workflows that fit, or a list of them.
+shows:
+  raa: all
+  # bri3: [ltx25_alpha_gen]

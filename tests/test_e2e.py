@@ -724,7 +724,7 @@ convert:
         site = "https://rodeofx.shotgrid.autodesk.com"
         status, where, _ = ami(b"user_login=ann&entity_type=Version&selected_ids=4865327&ids=4865327%2C4865328"
                                b"&server_hostname=rodeofx.shotgrid.autodesk.com&cols=code&project_id=6351")
-        self.assertEqual((status, urllib.parse.unquote(where)), (303, f"/#submit?input={site}/detail/Version/4865327"))
+        self.assertEqual((status, urllib.parse.unquote(where)), (303, f"/#submit?user=ann&input={site}/detail/Version/4865327"))
         status, where, _ = ami(b"entity_type=Version&selected_ids=4865327%2C4865328", "?workflow=ltx25_alpha_gen")
         self.assertEqual((status, where), (303, "/#batch?workflow=ltx25_alpha_gen&versions=4865327,4865328"))
         status, where, _ = ami(b'--b\r\nContent-Disposition: form-data; name="entity_type"\r\n\r\nPlaylist\r\n'
@@ -740,9 +740,38 @@ convert:
         self.assertEqual(status, 400)
         status, _, page = ami(None)                                         # opened by hand: what it's for
         self.assertEqual(status, 200)
-        self.assertIn("Send to ComfyFarm", page)
+        self.assertIn("<b>ComfyFarm</b> right-click menu", page)
         self.assertEqual(ami(None, "?entity_type=Version&selected_ids=7")[:2], (303, "/#submit?input=" + urllib.parse.quote(
             f"{site}/detail/Version/7", safe="")))
+        # The menu (chunk 13c): the items for deploy/shotgrid/menu.yaml's shows, as the farm's
+        # workflows fit (publishing is off here: no Submit + Publish).
+        with urllib.request.urlopen(f"{base}/api/v1/shotgrid/menu") as r:
+            menu = json.loads(r.read())
+        self.assertEqual(menu["farm_url"], "http://wrk1125l.rodeofx.com:9090")
+        self.assertEqual(sorted({(i["folder"], i["workflow"]) for i in menu["items"] if i["entity_type"] == "Version"}),
+                         [("ComfyFarm Open", w) for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "wan22_i2i")]
+                         + [("ComfyFarm Submit", "chord_pbr"), ("ComfyFarm Submit", "ltx25_alpha_gen")])
+        self.assertEqual({i["entity_type"] for i in menu["items"] if i["folder"] != "ComfyFarm Open"}, {"Version"})
+        # Submit on one Version submits it there and then; here ShotGrid's lookups are off, so
+        # the page says why, with the form to fix it.
+        sel = b"entity_type=Version&selected_ids=4865327&user_login=ann"
+        status, _, page = ami(sel, "?action=submit&workflow=ltx25_alpha_gen")
+        self.assertEqual(status, 400)
+        self.assertIn("LTX 2.5 alpha generation wasn&#x27;t submitted: ", page)
+        self.assertIn("needs the manager&#x27;s ShotGrid lookups", page)
+        self.assertIn('href="/#submit?workflow=ltx25_alpha_gen&amp;user=ann&amp;input=https%3A%2F%2Frodeofx', page)
+        status, _, page = ami(sel, "?action=submit&workflow=ltx25_layout_render")
+        self.assertIn("can&#x27;t be submitted from a Version alone: it also needs Reference frame; it needs Prompt", page)
+        status, _, page = ami(sel, "?action=publish&workflow=ltx25_alpha_gen")
+        self.assertIn("publishing isn&#x27;t switched on", page)
+        status, where, _ = ami(None, "?action=submit&workflow=ltx25_alpha_gen&entity_type=Version&selected_ids=7")
+        self.assertEqual((status, where.split("?")[0]), (303, "/#submit"))   # a link (GET) never submits
+        status, where, _ = ami(b"entity_type=Version&selected_ids=11%2C12&user_login=ann", "?action=publish&workflow=ltx25_alpha_gen")
+        self.assertEqual((status, where), (303, "/#batch?workflow=ltx25_alpha_gen&user=ann&publish=1&send=1&versions=11,12"))
+        status, _, page = ami(sel, "?action=open&workflow=gone_wf")
+        self.assertEqual(status, 404)
+        self.assertIn("sync it again", page)
+        self.assertEqual(len([j for j in farm.jobs(limit=500) if j["user"] == "ann" and "Version" in str(j["params"])]), 0)
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):

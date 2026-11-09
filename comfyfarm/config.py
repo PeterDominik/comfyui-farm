@@ -251,6 +251,9 @@ class ShotGridConfig(BaseModel):
         "frames": "sg_path_to_frames", "movie": "sg_path_to_movie",
         "first": "sg_first_frame", "last": "sg_last_frame"})
     version_ttl: float = 120.0           # seconds a Version's paths are used before they're asked again
+    # ShotGrid's right-click menu (README: ShotGrid right-click): which shows have it, and
+    # the address it posts to. Relative to the repo.
+    menu_file: str = "deploy/shotgrid/menu.yaml"
 
 
 class Config(BaseModel):

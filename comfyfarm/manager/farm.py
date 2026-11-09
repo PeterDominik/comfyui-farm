@@ -29,6 +29,7 @@ from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
 from ..workflows import ParamError, WorkflowRegistry
 from ..publish.publisher import Publisher, PublishError, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
+from ..shotgrid import menu as SM
 from ..shotgrid import versions as V
 from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
@@ -375,6 +376,21 @@ class Farm:
                            "show": shows.pop() if len(shows) == 1 else None,
                            "ids": [v["id"] for v in found], "missing": [i for i in ids if i not in have]},
                 "rows": [{"version": v, "input": v["url"]} for v in found]}
+
+    def shotgrid_submit(self, workflow: str, link: str, user: str | None, publish: bool = False) -> dict:
+        """ShotGrid's right-click Submit (+ Publish) on one Version (comfyfarm.shotgrid.menu):
+        the job, with the workflow's defaults, as the ShotGrid user who clicked (else
+        anonymous). FarmError when a Version alone can't run the workflow, or it isn't
+        published; the job's own refusals as submit's (ParamError, SequenceError…)."""
+        wf = self.registry.get(workflow)
+        f = SM.fit(wf, self.publisher.publish_info(wf) is not None)
+        if not f["submit"]:
+            raise FarmError(f"{wf.label} can't be submitted from a Version alone: {f['why']}.")
+        if publish and not f["publish"]:
+            raise FarmError(self.publisher.not_published(wf) or f"{wf.label} isn't published: publishing isn't "
+                            "switched on (publish.enabled in the manager's config.yaml).")
+        return self.submit(wf.name, {wf.sequence_param: link}, (user or "").strip()[:64] or "anonymous",
+                           publish={} if publish else None)
 
     def _version_inputs(self, wf, values: dict) -> tuple[dict, dict, list[str]]:
         """ShotGrid Version links among a job's inputs (shotgrid.versions): (the values with

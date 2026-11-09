@@ -1,24 +1,31 @@
-"""Puts ComfyFarm into ShotGrid's right-click menu ("Send to ComfyFarm", an Action Menu
-Item; README: ShotGrid right-click), or takes it out again. It changes ShotGrid, so it only
-shows what it would do until it's run with --apply.
+"""Makes ShotGrid's right-click menu match the farm's (README: ShotGrid right-click):
 
-It needs a ShotGrid connection that may create Action Menu Items (an admin one: the
-manager's own read-only script can't, and doesn't need to). Two ways to get one:
+    ComfyFarm Submit ▸ / ComfyFarm Submit + Publish ▸ / ComfyFarm Open ▸ <workflow>
+
+on the Versions (and, for Open, the Playlists) of the shows in deploy/shotgrid/menu.yaml.
+The farm says what the menu should be (GET <farm>/api/v1/shotgrid/menu: which workflow
+goes in which folder, worked out from their manifests); this makes ShotGrid's Action Menu
+Items match it: it creates the missing ones, changes those that differ, and deletes the
+ones the farm doesn't have any more (any item posting to the farm). It changes ShotGrid, so
+it only shows what it would do until it's run with --apply. Run it again after adding a
+workflow or a show (and deploying the manager).
+
+It needs a ShotGrid connection that may create Action Menu Items (the manager's own
+read-only script can't, and doesn't need to). Two ways to get one:
 
 The pipeline's own (--pipeline): rdo_publish_pipeline's client, with its permissions, so no
 script or key is handled here. Run it where that module is: a rez environment that has it,
 or Maya. This file is standalone (standard library only, Python 3.7+): run it from the
 farm's checkout, or copy it anywhere.
 
-    cd /mntx/raid/pdominik/comfyui-farm
-    rez env <the package with it> -- python tools/sg_ami.py --pipeline --farm http://wrk1125l:9090 --show bri3
-    (the same with --apply does it)
-
     # Maya's Script Editor (Python):
     import sys; sys.path.insert(0, "/mntx/raid/pdominik/comfyui-farm/tools")
     import sg_ami
-    sg_ami.main(["--pipeline", "--farm", "http://wrk1125l:9090", "--show", "bri3"])
-    # then the same list with "--apply" added
+    sg_ami.main(["--pipeline", "--farm", "http://wrk1125l.rodeofx.com:9090"])
+    # then the same list with "--apply" added (after changing this file: importlib.reload(sg_ami))
+
+    cd /mntx/raid/pdominik/comfyui-farm
+    rez env <the package with it> -- python tools/sg_ami.py --pipeline --farm http://wrk1125l.rodeofx.com:9090
 
 --pipeline-path <folder> imports the module from that folder instead (outside rez; its own
 dependencies have to be importable too).
@@ -27,38 +34,32 @@ An admin script (the manager, where shotgun_api3 is):
 
     cd /mntx/raid/pdominik/comfyui-farm
     export SG_ADMIN_SCRIPT_NAME=<the admin script's name>
-    PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3
-    PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3 --apply
+    PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l.rodeofx.com:9090 [--apply]
 
 The script's key is SG_ADMIN_SCRIPT_KEY if it's set, else it's asked for (not shown as it's
 typed). It's used for this run only: never written anywhere, never printed.
 
-What it makes: an item on Versions and one on Playlists ("Send to ComfyFarm"), each
-POSTing the selection to <farm>/api/v1/shotgrid/ami, which opens the dashboard (one
-Version: the Submit form; a Playlist or several Versions: Batch Submit). Limited to
---show's projects (their tank_name) and/or --group's people (a permission group);
-neither means everyone on the site, which it refuses without --everywhere.
+--remove deletes every item posting to the farm instead (with --apply).
 
-Running it again changes the items it made (found by entity type and URL) rather than
-making more; --remove deletes them (with --apply). --workflow <name> makes items that open
-that workflow (URL …/ami?workflow=<name>), alongside the plain ones.
-
-Before writing, it reads ActionMenuItem's fields from ShotGrid and sets only those the site
-has; a limit it can't set (no projects field, say) stops it."""
+Before writing, it reads ActionMenuItem's fields from ShotGrid and stops if the site can't
+hold what the menu needs (folders, projects)."""
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
-import re
 import sys
-from urllib.parse import urlencode, urlsplit
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
 
 ENTITY = "ActionMenuItem"
-TYPES = ("Version", "Playlist")
 NAME_ENV, KEY_ENV = "SG_ADMIN_SCRIPT_NAME", "SG_ADMIN_SCRIPT_KEY"
 PIPELINE = "rdo_publish_pipeline"
+AMI_PATH = "/api/v1/shotgrid/ami"
+FIELDS = ("title", "url", "entity_type", "folder", "list_order", "selection_required", "projects")
 
 
 class Stop(Exception):
@@ -68,37 +69,41 @@ class Stop(Exception):
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="sg_ami.py", description=__doc__.split("\n\n")[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--farm", required=True, help="the manager's address as people's browsers reach it (http://wrk1125l:9090)")
-    p.add_argument("--show", action="append", default=[], help="only in this show's project (its tank_name); repeat for more")
-    p.add_argument("--group", help="only for this permission group (its name in ShotGrid)")
-    p.add_argument("--everywhere", action="store_true", help="every project, everyone: needed when neither --show nor --group is given")
-    p.add_argument("--workflow", help="items that open this workflow (its name, as in workflows/)")
-    p.add_argument("--title", help='the menu entry (default "Send to ComfyFarm"; with --workflow, "Send to ComfyFarm: <name>")')
-    p.add_argument("--folder", help="a folder in the menu to put them in")
-    p.add_argument("--types", default=",".join(TYPES), help="the entity types to add it to (default Version,Playlist)")
-    p.add_argument("--remove", action="store_true", help="delete the items instead")
+    p.add_argument("--farm", required=True, help="the manager's address (http://wrk1125l.rodeofx.com:9090): its menu is read "
+                                                 "from there")
+    p.add_argument("--remove", action="store_true", help="delete every item posting to the farm instead")
     p.add_argument("--apply", action="store_true", help="do it (without: only show what it would do)")
     p.add_argument("--pipeline", action="store_true",
                    help=f"use the pipeline's ShotGrid client ({PIPELINE}: in rez or Maya) instead of an admin script")
     p.add_argument("--pipeline-path", action="append", default=[], metavar="FOLDER",
                    help=f"import {PIPELINE} from this folder (implies --pipeline)")
-    p.add_argument("--site", help="the ShotGrid site (default: shotgrid.url in the manager's config.yaml; "
-                                  "with --pipeline, a check that the pipeline's client is on it)")
+    p.add_argument("--site", help="the ShotGrid site for an admin script (default: shotgrid.url in the manager's "
+                                  "config.yaml); with --pipeline, a check that the pipeline's client is on it")
     args = p.parse_args(argv)
     args.pipeline = args.pipeline or bool(args.pipeline_path)
     return args
 
 
-def item_url(farm: str, workflow: str | None) -> str:
+def farm_base(farm: str) -> str:
     u = urlsplit(farm)
     if u.scheme not in ("http", "https") or not u.netloc:
-        raise Stop(f"--farm {farm!r}: give the manager's address, like http://wrk1125l:9090")
-    url = f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}/api/v1/shotgrid/ami"
-    if workflow:
-        if not re.match(r"^[\w.-]{1,80}$", workflow):
-            raise Stop(f"--workflow {workflow!r} isn't a workflow name")
-        url += "?" + urlencode({"workflow": workflow})
-    return url
+        raise Stop(f"--farm {farm!r}: give the manager's address, like http://wrk1125l.rodeofx.com:9090")
+    return f"{u.scheme}://{u.netloc}{u.path.rstrip('/')}"
+
+
+def fetch_menu(farm: str) -> dict:
+    """The farm's menu (GET /api/v1/shotgrid/menu), straight (no proxy: it's on the studio's network)."""
+    url = farm_base(farm) + "/api/v1/shotgrid/menu"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise Stop(f"{url} isn't there: the farm doesn't have the menu yet (deploy the manager first).") from None
+        raise Stop(f"{url} answered {e.code}: {e.read()[:300].decode('utf-8', 'replace')}") from None
+    except (OSError, ValueError) as e:
+        raise Stop(f"The farm didn't answer at {url}: {e}") from None
 
 
 def credentials(env, ask_name, ask_key) -> tuple[str, str]:
@@ -109,12 +114,19 @@ def credentials(env, ask_name, ask_key) -> tuple[str, str]:
     return name, key
 
 
-def valid_types(schema: dict, field: str) -> list[str]:
-    return ((schema.get(field) or {}).get("properties", {}).get("valid_types", {}) or {}).get("value") or []
+def url_of(item: dict) -> str:
+    u = item.get("url")
+    return (u.get("url") if isinstance(u, dict) else u) or ""
 
 
 def links(rows) -> set:
     return {(r.get("type"), r.get("id")) for r in rows or []}
+
+
+def same(want, have) -> bool:
+    if isinstance(want, list):
+        return links(want) == links(have)
+    return want == have
 
 
 def as_written(values: dict) -> dict:
@@ -124,18 +136,21 @@ def as_written(values: dict) -> dict:
 
 def describe(value) -> str:
     if isinstance(value, list):
-        return ", ".join(f"{r.get('name') or r.get('code') or ''} ({r['type']} {r['id']})".strip() for r in value) or "(none)"
+        return ", ".join(r.get("name") or f"{r['type']} {r['id']}" for r in value) or "(none)"
     return repr(value)
 
 
-def run(args, sg, show_field: str, out) -> int:
+def ours(sg, prefixes, fields) -> list[dict]:
+    """The items posting to the farm (any of its addresses), whatever made them."""
+    return sorted((r for r in sg.find(ENTITY, [], list(fields)) or []
+                   if any(url_of(r).startswith(p) for p in prefixes)), key=lambda r: r["id"])
+
+
+def run(args, sg, menu: dict | None, out) -> int:
     say = lambda *a: print(*a, file=out)      # noqa: E731
-    types = [t.strip() for t in args.types.split(",") if t.strip()]
-    bad = [t for t in types if t not in TYPES]
-    if bad or not types:
-        raise Stop(f"--types: ComfyFarm takes {' and '.join(TYPES)}, not {', '.join(bad) or 'nothing'}")
-    url = item_url(args.farm, args.workflow)
-    title = args.title or ("Send to ComfyFarm" + (f": {args.workflow}" if args.workflow else ""))
+    base = farm_base(args.farm)
+    farm_url = (menu or {}).get("farm_url") or base
+    prefixes = sorted({farm_url + AMI_PATH, base + AMI_PATH})
     try:
         schema = sg.schema_field_read(ENTITY)
     except Exception as e:  # noqa: BLE001 - say what ShotGrid said
@@ -143,98 +158,98 @@ def run(args, sg, show_field: str, out) -> int:
     for f in ("title", "url", "entity_type"):
         if f not in schema:
             raise Stop(f"This site's {ENTITY} has no {f} field: it can't be made from here.")
-    if args.folder and "folder" not in schema:
-        raise Stop(f"This site's {ENTITY} has no folder field.")
-    fields = [f for f in ("title", "url", "entity_type", "selection_required", "folder", "projects", "permissions_groups")
-              if f in schema]
-
-    # The existing ones: this farm's URL, on these types.
-    existing = {t: [] for t in types}
-    for row in sg.find(ENTITY, [["url", "is", url]], fields) or []:
-        if row.get("entity_type") in existing:
-            existing[row["entity_type"]].append(row)
+    fields = [f for f in FIELDS if f in schema]
+    existing = ours(sg, prefixes, fields)
 
     if args.remove:
-        doomed = [r for t in types for r in existing[t]]
-        if not doomed:
-            say(f"There's no {ENTITY} posting to {url} on {', '.join(types)}: nothing to remove.")
+        if not existing:
+            say(f"No {ENTITY} posts to {' or '.join(prefixes)}: nothing to remove.")
             return 0
-        for r in doomed:
-            say(f"{'Deleting' if args.apply else 'Would delete'} {ENTITY} {r['id']}: {r.get('title')!r} on {r.get('entity_type')}")
+        for r in existing:
+            say(f"{'Deleting' if args.apply else 'Would delete'} {ENTITY} {r['id']}: "
+                f"{(r['folder'] + ' ▸ ') if r.get('folder') else ''}{r.get('title')!r} on {r.get('entity_type')}")
             if args.apply:
                 sg.delete(ENTITY, r["id"])
         say("Done." if args.apply else "\nNothing was changed in ShotGrid. Run it again with --apply to do it.")
         return 0
 
-    # Who sees them.
-    limit = {}
-    if args.show:
-        if "projects" not in schema:
-            raise Stop(f"This site's {ENTITY} has no projects field, so it can't be limited to {', '.join(args.show)}.")
-        rows = sg.find("Project", [[show_field, "in", args.show]], ["name", show_field]) or []
-        found = {str(r.get(show_field)): r for r in rows}
-        missing = [s for s in args.show if s not in found]
-        if missing:
-            raise Stop(f"No ShotGrid project has {show_field} {', '.join(missing)}.")
-        limit["projects"] = [{"type": "Project", "id": found[s]["id"], "name": found[s].get("name") or s} for s in args.show]
-    if args.group:
-        if "permissions_groups" not in schema:
-            raise Stop(f"This site's {ENTITY} has no permissions_groups field, so it can't be limited to {args.group!r}.")
-        kind = (valid_types(schema, "permissions_groups") or ["PermissionRuleSet"])[0]
-        row = None
-        for name_field in ("display_name", "code"):
-            try:
-                row = sg.find_one(kind, [[name_field, "is", args.group]], ["display_name", "code"])
-            except Exception:  # noqa: BLE001 - a field this site doesn't have: try the other
-                row = None
-            if row:
-                break
-        if not row:
-            raise Stop(f"No ShotGrid permission group is called {args.group!r}.")
-        limit["permissions_groups"] = [{"type": kind, "id": row["id"], "name": row.get("display_name") or row.get("code")}]
-    if not limit and not args.everywhere:
-        raise Stop("Neither --show nor --group: that's everyone in every project. Say --everywhere if that's meant.")
+    if menu.get("problems"):
+        raise Stop("The farm's menu has problems; fix them first (deploy/shotgrid/menu.yaml, the manifests):\n  "
+                   + "\n  ".join(menu["problems"]))
+    items = menu.get("items") or []
+    for f, why in (("folder", "its folders"), ("projects", "the shows it's for")):
+        if items and f not in schema:
+            raise Stop(f"This site's {ENTITY} has no {f} field, so it can't hold {why}.")
 
-    say(f"ShotGrid {ENTITY}s posting to {url}")
-    if not limit:
-        say("  for everyone, in every project (--everywhere)")
-    changes = 0
-    for t in types:
-        want = {"title": title, "url": url, "entity_type": t}
-        if "selection_required" in schema:
-            want["selection_required"] = True
-        if args.folder:
-            want["folder"] = args.folder
-        for f in ("projects", "permissions_groups"):
-            if f in schema:
-                want[f] = limit.get(f, [])
-        have = existing[t][0] if existing[t] else None
-        if have is None:
-            say(f"\n{'Creating' if args.apply else 'Would create'} one on {t}:")
-            for k, v in want.items():
-                say(f"  {k}: {describe(v)}")
+    # The shows' projects (their tank_name: the menu's show codes).
+    codes = sorted({c for it in items for c in it["shows"]})
+    projects = {}
+    if codes:
+        rows = sg.find("Project", [["tank_name", "in", codes]], ["name", "tank_name"]) or []
+        projects = {str(r.get("tank_name")): {"type": "Project", "id": r["id"], "name": r.get("tank_name") or r.get("name")}
+                    for r in rows}
+        missing = [c for c in codes if c not in projects]
+        if missing:
+            raise Stop(f"No ShotGrid project has tank_name {', '.join(missing)} (deploy/shotgrid/menu.yaml).")
+
+    say(f"ShotGrid's ComfyFarm menu, posting to {farm_url}{AMI_PATH}")
+    by_key = {}
+    for r in existing:
+        by_key.setdefault((r.get("entity_type"), url_of(r)), []).append(r)
+    counts = {"create": 0, "change": 0, "delete": 0, "keep": 0}
+    folder = None
+    for it in sorted(items, key=lambda i: (i["list_order"], i["entity_type"] != "Version")):
+        want = {"title": it["title"], "url": it["url"], "entity_type": it["entity_type"], "folder": it["folder"],
+                "list_order": it["list_order"], "selection_required": True,
+                "projects": [projects[c] for c in it["shows"]]}
+        want = {k: v for k, v in want.items() if k in schema}
+        if it["folder"] != folder:
+            folder = it["folder"]
+            say(f"\n{folder} ▸")
+        have = by_key.pop((it["entity_type"], it["url"]), [])
+        label = f"  {it['title']}  on {it['entity_type']}  [{', '.join(it['shows'])}]"
+        if not have:
+            counts["create"] += 1
+            say(f"{label}: {'creating' if args.apply else 'would create'}")
             if args.apply:
                 made = sg.create(ENTITY, as_written(want))
-                say(f"  made: {ENTITY} {made['id']}")
-            changes += 1
-            continue
-        diff = {k: v for k, v in want.items()
-                if (links(v) != links(have.get(k)) if isinstance(v, list) else v != have.get(k))}
-        if not diff:
-            say(f"\nOn {t}: {ENTITY} {have['id']} is already so.")
+                say(f"    made {ENTITY} {made['id']}")
         else:
-            say(f"\n{'Changing' if args.apply else 'Would change'} {ENTITY} {have['id']} on {t}:")
-            for k, v in diff.items():
-                say(f"  {k}: {describe(have.get(k))} -> {describe(v)}")
-            if args.apply:
-                sg.update(ENTITY, have["id"], as_written(diff))
-            changes += 1
-        for extra in existing[t][1:]:
-            say(f"  (another one, {ENTITY} {extra['id']}, posts there too: --remove takes them all away)")
+            diff = {k: v for k, v in want.items() if not same(v, have[0].get(k))}
+            if diff:
+                counts["change"] += 1
+                say(f"{label}: {'changing' if args.apply else 'would change'} {ENTITY} {have[0]['id']} ("
+                    + "; ".join(f"{k} {describe(have[0].get(k))} -> {describe(v)}" for k, v in diff.items()) + ")")
+                if args.apply:
+                    sg.update(ENTITY, have[0]["id"], as_written(diff))
+            else:
+                counts["keep"] += 1
+                say(f"{label}: as it is ({ENTITY} {have[0]['id']})")
+            for extra in have[1:]:                     # a second one for the same: one is enough
+                by_key.setdefault(("", ""), []).append(extra)
+    stale = sorted((r for rows in by_key.values() for r in rows), key=lambda r: r["id"])
+    if stale:
+        say("\nNot in the farm's menu (any more):")
+    for r in stale:
+        counts["delete"] += 1
+        say(f"  {(r['folder'] + ' ▸ ') if r.get('folder') else ''}{r.get('title')!r} on {r.get('entity_type')}: "
+            f"{'deleting' if args.apply else 'would delete'} {ENTITY} {r['id']}")
+        if args.apply:
+            sg.delete(ENTITY, r["id"])
+    left = [w for w in menu.get("workflows") or [] if not w.get("submit") and w.get("open")]
+    if left:
+        say("\nOnly in Open (a Version alone can't run them): "
+            + "; ".join(f"{w['label']} ({w['why']})" for w in left))
+    out_ = [w for w in menu.get("workflows") or [] if not w.get("open")]
+    if out_:
+        say("Not in the menu: " + "; ".join(f"{w['label']} ({w['why']})" for w in out_))
+    changes = counts["create"] + counts["change"] + counts["delete"]
+    say(f"\n{counts['create']} to create, {counts['change']} to change, {counts['delete']} to delete, "
+        f"{counts['keep']} as they are." if not args.apply else
+        f"\nDone: {counts['create']} created, {counts['change']} changed, {counts['delete']} deleted. Reload "
+        "ShotGrid's page to see them.")
     if not args.apply and changes:
-        say("\nNothing was changed in ShotGrid. Run it again with --apply to do it.")
-    elif changes:
-        say("\nDone. It's in the right-click menu of the Versions and Playlists it's for (reload ShotGrid's page).")
+        say("Nothing was changed in ShotGrid. Run it again with --apply to do it.")
     return 0
 
 
@@ -269,7 +284,7 @@ def _host(url: str) -> str:
 
 
 def main(argv=None, env=None, ask_name=input, ask_key=getpass.getpass, connect=connect, pipeline=pipeline_client,
-         out=None) -> int:
+         fetch=fetch_menu, out=None) -> int:
     """The command line; from Maya: main(["--pipeline", "--farm", …]). 0 when done, 1 when not."""
     out = out or sys.stdout
     args = parse_args(sys.argv[1:] if argv is None else argv)
@@ -277,6 +292,7 @@ def main(argv=None, env=None, ask_name=input, ask_key=getpass.getpass, connect=c
     secret = []                               # the key, to keep it out of ShotGrid's errors
     scrub = lambda text: text.replace(secret[0], "<key>") if secret and secret[0] else text     # noqa: E731
     try:
+        menu = None if args.remove else fetch(args.farm)
         if args.pipeline:
             sg = pipeline(args.pipeline_path)
             conf = getattr(sg, "config", None)
@@ -287,19 +303,18 @@ def main(argv=None, env=None, ask_name=input, ask_key=getpass.getpass, connect=c
             who = getattr(conf, "script_name", None) or getattr(conf, "user_login", None)
             print(f"ShotGrid {site.rstrip('/') or '(its site)'} through {PIPELINE}"
                   + (f", as {who}" if who else ""), file=out)
-            return run(args, sg, "tank_name", out)
-        site, show_field = args.site, "tank_name"
+            return run(args, sg, menu, out)
+        site = args.site
         if not site:
             try:
                 from comfyfarm.config import load_config
-                sgc = load_config().shotgrid
-                site, show_field = sgc.url, sgc.show_field or show_field
+                site = load_config().shotgrid.url
             except Exception as e:  # noqa: BLE001
                 raise Stop(f"No --site, and the manager's config.yaml couldn't be read ({e}).") from None
         name, key = credentials(env, ask_name, ask_key)
         secret.append(key)
         print(f"ShotGrid {site.rstrip('/')} as the script {name}", file=out)
-        return run(args, connect(site, name, key), show_field, out)
+        return run(args, connect(site, name, key), menu, out)
     except Stop as e:
         print(scrub(str(e)), file=sys.stderr)
         return 1

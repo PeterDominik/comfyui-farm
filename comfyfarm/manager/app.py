@@ -19,6 +19,7 @@ from ..config import Config
 from ..fileio.errors import SequenceError
 from ..fileio.naming import default_output_dir_display
 from ..publish.publisher import PublishError
+from ..shotgrid import menu as SM
 from ..shotgrid import versions as SV
 from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
@@ -31,13 +32,15 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 
 
-def _ami_page(message: str) -> str:
-    """The small page ShotGrid's right-click shows when it can't open the dashboard."""
+def _ami_page(message: str, link: tuple[str, str] = ("/", "Open the farm's dashboard"), title: str = "ComfyFarm") -> str:
+    """The small page ShotGrid's right-click shows when it doesn't go straight to the
+    dashboard: why, and a link on (`message` is HTML)."""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>ComfyFarm</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)}</title>
 <style>body {{ font: 15px/1.5 system-ui, sans-serif; background: #141517; color: #e6e6e6; margin: 0; padding: 48px 16px; }}
-main {{ max-width: 560px; margin: 0 auto; }} h1 {{ font-size: 18px; }} a {{ color: #6fb3ff; }}</style></head>
-<body><main><h1>ComfyFarm</h1><p>{message}</p><p><a href="/">Open the farm's dashboard</a></p></main></body></html>"""
+main {{ max-width: 620px; margin: 0 auto; }} h1 {{ font-size: 18px; }} a {{ color: #6fb3ff; }}
+code {{ font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }}</style></head>
+<body><main><h1>{html.escape(title)}</h1><p>{message}</p><p><a href="{html.escape(link[0])}">{html.escape(link[1])}</a></p></main></body></html>"""
 
 
 @dataclass
@@ -273,10 +276,25 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """Batch Submit: Versions picked in ShotGrid (ids, comma-separated), each a row."""
         return farm.batch_versions(ids)
 
-    # ShotGrid's right-click (an Action Menu Item, README: ShotGrid right-click): ShotGrid
-    # opens a new tab POSTing the selection here, which is sent on to the dashboard's deep
-    # link. It only redirects (nothing is read or changed, no key needed): the dashboard
-    # then asks ShotGrid and checks the job as usual, and nothing is sent without a click.
+    def _menu(base_url: str) -> dict:
+        menu_file = Path(cfg.shotgrid.menu_file)
+        shows, farm_url, problems = SM.load_shows(menu_file if menu_file.is_absolute() else REPO / menu_file)
+        out = SM.build(list(registry.workflows.values()), farm.publisher.publish_info, shows, farm_url or base_url)
+        out["problems"] = problems + out["problems"]
+        return out
+
+    @app.get("/api/v1/shotgrid/menu")
+    def shotgrid_menu(request: Request):
+        """ShotGrid's right-click menu as it should be (comfyfarm.shotgrid.menu): its items,
+        which workflow goes in which folder and why; tools/sg_ami.py --sync makes ShotGrid's
+        match it. Read only, like the dashboard itself."""
+        return _menu(str(request.base_url))
+
+    # ShotGrid's right-click (Action Menu Items, README: ShotGrid right-click): ShotGrid opens a
+    # new tab POSTing the selection here. Open, and Submit on several Versions, are sent on to
+    # the dashboard's deep link (nothing read or changed here; Batch Submit asks before sending).
+    # Submit on one Version submits it, as the ShotGrid user who clicked (else anonymous), then
+    # shows the job in the dashboard; when it can't, the page says why, with the form to fix it.
     @app.api_route("/api/v1/shotgrid/ami", methods=["GET", "POST"], include_in_schema=False)
     async def shotgrid_ami(request: Request):
         form = dict(request.query_params)
@@ -285,15 +303,34 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             if len(body) > 8 << 20:
                 return HTMLResponse(_ami_page("That's more than ShotGrid should send: select fewer."), status_code=413)
             form.update({k: v for k, v in SV.form_fields(request.headers.get("content-type", ""), body).items()
-                         if k != "workflow"})
+                         if k not in ("workflow", "action")})       # those are the menu item's own
         if not (form.get("entity_type") or form.get("selected_ids")):
-            return HTMLResponse(_ami_page("This is where ShotGrid's <b>Send to ComfyFarm</b> right-click item sends "
-                                          "the Versions or Playlist you picked: it opens them in the farm's dashboard."))
+            return HTMLResponse(_ami_page("This is where ShotGrid's <b>ComfyFarm</b> right-click menu sends the Versions "
+                                          "or Playlist you picked: it submits them, or opens them in the farm's dashboard."))
         try:
-            target = SV.action_target(form, cfg.shotgrid.url)
+            p = SV.picked(form, cfg.shotgrid.url)
         except ValueError as e:
             return HTMLResponse(_ami_page(html.escape(str(e))), status_code=400)
-        return RedirectResponse("/" + target, status_code=303)
+        open_link = "/" + SV.deep_link({**p, "action": "open"})
+        wf = registry.workflows.get(p["workflow"] or "")
+        if p["workflow"] and wf is None:
+            return HTMLResponse(_ami_page(f"There's no workflow <code>{html.escape(p['workflow'])}</code> on the farm "
+                                          "(ShotGrid's menu is older than the farm's: sync it again)."), status_code=404)
+        one = p["kind"] == "Version" and len(p["ids"]) == 1
+        if p["action"] == "open" or not one or wf is None:
+            return RedirectResponse("/" + SV.deep_link(p), status_code=303)
+        # Submit, one Version: straight to the queue.
+        if request.method != "POST" or cfg.auth.api_keys:
+            # Only ShotGrid's own POST submits (a link can't); with API keys, the dashboard asks for one.
+            return RedirectResponse("/" + SV.deep_link(p), status_code=303)
+        try:
+            job = await asyncio.to_thread(farm.shotgrid_submit, wf.name, p["links"][0], p["user"], p["action"] == "publish")
+        except (ParamError, SequenceError, FarmError, PublishError) as e:
+            why = str(e) if str(e).startswith(wf.label) else f"{wf.label} wasn't submitted: {e}"
+            return HTMLResponse(_ami_page(html.escape(why),
+                                          (open_link, "Open it in the dashboard"), "ComfyFarm: not submitted"),
+                                status_code=400)
+        return RedirectResponse(f"/#queue?job={job['id']}", status_code=303)
 
     @app.get("/api/v1/shotgrid/projects/{show}/shots")
     def shotgrid_shots(show: str, refresh: bool = False, ident: Identity = Depends(identity)):
