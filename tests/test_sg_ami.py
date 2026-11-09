@@ -10,6 +10,8 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
+import shutil
 import sys
 import tempfile
 import types
@@ -199,6 +201,32 @@ class Sync(unittest.TestCase):
         sg.find = lambda *a, **k: (_ for _ in ()).throw(RuntimeError(f"Fault: bad key {KEY}"))
         code, text = self.run_it(sg=sg, pipeline=True)
         self.assertIn("ShotGrid said: RuntimeError: Fault: bad key <key>", text)      # the pipeline's key isn't shown
+
+
+class MenuFile(unittest.TestCase):
+    """--menu-json: the menu the manager wrote, rather than asking --farm (its own sync)."""
+
+    def test_from_a_file(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "m.json").write_text(json.dumps(menu(menus=("open",))), encoding="utf-8")
+        (d / "bad.json").write_text("{\"items\": 3}", encoding="utf-8")
+        (d / "nofarm.json").write_text(json.dumps(dict(menu(), farm_url=None)), encoding="utf-8")
+        sg, out, err = FakeShotGrid(), io.StringIO(), io.StringIO()
+
+        def go(*argv):
+            def no_fetch(farm):
+                raise AssertionError("the menu comes from the file")
+            with contextlib.redirect_stderr(err):
+                return ami.main(["--pipeline", *argv], env={}, pipeline=lambda p: sg, fetch=no_fetch, out=out)
+        self.assertEqual(go("--menu-json", str(d / "m.json"), "--apply"), 0)
+        self.assertIn("Done: 8 created, 0 changed, 2 deleted.", out.getvalue())   # the farm from the file's farm_url
+        self.assertEqual(go("--menu-json", str(d / "bad.json")), 1)
+        self.assertIn("isn't the farm's menu", err.getvalue())
+        self.assertEqual(go("--menu-json", str(d / "nofarm.json")), 1)
+        self.assertIn("has no farm_url: give --farm", err.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            ami.parse_args(["--apply"])                                        # neither --farm nor --menu-json
 
 
 class Pipeline(unittest.TestCase):

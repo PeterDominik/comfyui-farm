@@ -20,6 +20,7 @@ from ..fileio.errors import SequenceError
 from ..fileio.naming import default_output_dir_display
 from ..publish.publisher import PublishError
 from ..shotgrid import menu as SM
+from ..shotgrid.menusync import MenuSync
 from ..shotgrid import versions as SV
 from ..workflows import ParamError, WorkflowRegistry
 from .db import ACTIVE, JobStore
@@ -112,7 +113,9 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         await farm.start()
         for a in agents:
             a.start()
+        menu_sync.start()                             # ShotGrid's menu kept in step (shotgrid.menu_sync)
         yield
+        await menu_sync.stop()
         for a in agents:
             await a.stop()
         await farm.stop()
@@ -288,12 +291,28 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         out["publish"] = s["publish"]
         return out
 
+    # ShotGrid's menu made to match by the manager itself (shotgrid.menu_sync): when it
+    # starts, when the menu changes, daily; with the menu as it is without a request.
+    menu_sync = MenuSync(cfg.shotgrid.menu_sync, lambda: _menu(""), REPO / "tools" / "sg_ami.py",
+                         cfg.resolve(cfg.database).parent)
+
     @app.get("/api/v1/shotgrid/menu")
     def shotgrid_menu(request: Request):
         """ShotGrid's right-click menu as it should be (comfyfarm.shotgrid.menu): its items,
-        which workflow goes in which folder and why; tools/sg_ami.py --sync makes ShotGrid's
-        match it. Read only, like the dashboard itself."""
-        return _menu(str(request.base_url))
+        which workflow goes in which folder and why, and how the manager's own syncing of it
+        went (`sync`); tools/sg_ami.py makes ShotGrid's match it. Read only."""
+        return {**_menu(str(request.base_url)), "sync": menu_sync.status()}
+
+    @app.post("/api/v1/shotgrid/menu/sync")
+    async def shotgrid_menu_sync(ident: Identity = Depends(identity)):
+        """Make ShotGrid's menu match the farm's now (shotgrid.menu_sync), rather than at the
+        next check: how it went."""
+        if not cfg.shotgrid.menu_sync.enabled:
+            raise FarmError("The manager doesn't sync ShotGrid's menu: shotgrid.menu_sync.enabled is off in its "
+                            "config.yaml (run tools/sg_ami.py instead).", 409)
+        if cfg.auth.api_keys and not ident.admin:
+            raise HTTPException(403, "Only admins can sync ShotGrid's menu.")
+        return {"sync": await menu_sync.check(force=True) or menu_sync.last, **menu_sync.status()}
 
     # ShotGrid's right-click (Action Menu Items, README: ShotGrid right-click): ShotGrid opens a
     # new tab POSTing the selection here. Open is sent on to the dashboard's deep link, Publish
