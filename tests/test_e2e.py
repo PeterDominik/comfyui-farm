@@ -675,7 +675,7 @@ convert:
         wf = {w["name"]: w for w in farm.workflows()}["ltx25_alpha_gen"]
         self.assertIsNone(wf["publish"])
         opts = farm.publish_options("ltx25_alpha_gen")
-        self.assertEqual((opts["step"], opts["templates"]), ("lay", []))
+        self.assertEqual((opts["step"], opts["templates"]), ("ai", []))
         self.assertIn("isn't switched on", opts["why"])
         self.assertIn("isn't switched on", farm.publish_options("wan22_i2i")["why"])     # Wan publishes too (chunk 9)
         self.assertIn("texture publisher", farm.publish_options("chord_pbr")["why"])

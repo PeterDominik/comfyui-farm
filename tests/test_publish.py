@@ -233,7 +233,8 @@ class PublisherTests(unittest.TestCase):
 
     def test_options(self):
         o = self.pub.options("ltx25_alpha_gen")
-        self.assertEqual((o["why"], o["templates"], o["template"], o["step"]), (None, ["default"], "default", "lay"))
+        self.assertEqual((o["why"], o["templates"], o["template"], o["step"]), (None, ["default"], "default", "ai"))
+        self.assertEqual(o["steps"][:3], ["ai", "ani", "bmm"])                 # ai: the farm's own step, the default
         self.assertIn("lay", o["steps"])
         self.assertIn("texture publisher", self.pub.options("chord_pbr")["why"])      # textures: not from the farm
         self.assertIn("No usable template for Wan", self.pub.options("wan22_i2i")["why"])   # published, no template yet
@@ -258,7 +259,7 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("reference", o["unusable"]["_global/with_input"])     # LTX alpha has no reference input
         # Without its own: the global default; Wan (no publish section) publishes too, at the default step.
         o = self.pub.options("wan22_i2i")
-        self.assertEqual((o["why"], o["template"], o["step"]), (None, "_global/default", "lay"))
+        self.assertEqual((o["why"], o["template"], o["step"]), (None, "_global/default", "ai"))
         own = root / "wan22_i2i"
         own.mkdir()
         shutil.copy(TEMPLATE, own / "still.nk")
@@ -274,7 +275,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(old["template"], "_global/over_plate")
         self.assertEqual(self.calls_made()[-1][-3], "1001-1050")
         info = self.pub.publish_info(self.farm.registry.get("wan22_i2i"))
-        self.assertEqual(info, {"step": "lay", "graph": "update_and_render_nuke"})
+        self.assertEqual(info, {"step": "ai", "graph": "update_and_render_nuke"})
         self.assertIsNone(self.pub.publish_info(self.farm.registry.get("chord_pbr")))
 
     def test_check(self):
@@ -282,7 +283,7 @@ class PublisherTests(unittest.TestCase):
             self.pub.check("ltx25_alpha_gen", {"show": "bc1"}, show="bri3", shot="305046_0010")
         self.assertIn("Show bc1 has no folder on disk", str(e.exception))
         r = self.pub.check("ltx25_alpha_gen", {}, show="bri3", shot="305046_0010")
-        self.assertEqual(r, {"show": "bri3", "shot": "305046_0010", "step": "lay", "template": "default",
+        self.assertEqual(r, {"show": "bri3", "shot": "305046_0010", "step": "ai", "template": "default",
                              "description": "Auto Publish"})
         self.assertEqual(self.pub.check("ltx25_alpha_gen", {"step": "comp", "shot": "305046_0020"}, show="bri3",
                                         shot="305046_0010")["shot"], "305046_0020")
@@ -302,7 +303,7 @@ class PublisherTests(unittest.TestCase):
         checks it, nothing queued."""
         plan = {"wf": self.farm.registry.get("ltx25_alpha_gen"), "show": "bri3", "shot": "305046_0010"}
         self.assertEqual(self.farm.publish_preview(plan, {"dry_run": True}),
-                         {"request": {"show": "bri3", "shot": "305046_0010", "step": "lay", "template": "default",
+                         {"request": {"show": "bri3", "shot": "305046_0010", "step": "ai", "template": "default",
                                       "description": "Auto Publish", "dry_run": True}})
         for p, req, why in (({**plan, "show": "bc1"}, {}, "Show bc1 has no folder on disk"),
                             (plan, {"step": "nope"}, "isn't one of the studio's"),
@@ -323,7 +324,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(t.knob(t.output_reads()[0], "file"), OUT)
         [call] = self.calls_made()
         want = ["update_and_render_nuke", "--description", f'Looks "good" (ComfyFarm {job["id"][:8]}, jdoe)',
-                "--step", "lay", "--entities", "305046_0010", "--workfile", str(staged), "--frameRange", "1001-1050",
+                "--step", "ai", "--entities", "305046_0010", "--workfile", str(staged), "--frameRange", "1001-1050",
                 "--show", "bri3"]
         self.assertEqual(call, want)
         self.assertEqual(self.farm.annotate([self.store.get(job["id"])])[0]["publish"]["tractor_id"], "6501887")
