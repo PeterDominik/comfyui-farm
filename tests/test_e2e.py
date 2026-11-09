@@ -750,7 +750,7 @@ convert:
         self.assertEqual(menu["farm_url"], "http://wrk1125l.rodeofx.com:9090")
         self.assertEqual(sorted({(i["folder"], i["workflow"]) for i in menu["items"] if i["entity_type"] == "Version"}),
                          [("ComfyFarm Open", w) for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "wan22_i2i")]
-                         + [("ComfyFarm Submit", "chord_pbr"), ("ComfyFarm Submit", "ltx25_alpha_gen")])
+                         + [("ComfyFarm Submit", "ltx25_alpha_gen")])
         self.assertEqual({i["entity_type"] for i in menu["items"] if i["folder"] != "ComfyFarm Open"}, {"Version"})
         # Submit on one Version submits it there and then; here ShotGrid's lookups are off, so
         # the page says why, with the form to fix it.

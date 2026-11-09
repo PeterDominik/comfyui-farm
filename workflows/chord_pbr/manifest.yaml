@@ -18,6 +18,10 @@ template: workflow_api.json
 # come out at 1024. Textures of 1024 or less are used as they are. Leave out to keep
 # the input's size (the maps then come back at it, with 1024 worth of detail).
 work_resolution: 1024
+# ShotGrid's right-click menu (README: ShotGrid right-click): Open only. Versions in
+# ShotGrid are mostly plates and precomps, whose frames CHORD would read as UDIM tiles, so
+# it isn't submitted from a Version without a look at the form first.
+shotgrid: {submit: false}
 
 params:
   input:

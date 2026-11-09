@@ -26,11 +26,12 @@ class Fit(unittest.TestCase):
         got = {wf.name: M.fit(wf, publishes(wf) is not None) for wf in REGISTRY.workflows.values()}
         self.assertEqual({n: (f["open"], f["submit"], f["publish"]) for n, f in got.items()},
                          {"ltx25_alpha_gen": (True, True, True),          # one input, frames, nothing else needed
-                          "chord_pbr": (True, True, False),               # one input; textures aren't published
+                          "chord_pbr": (True, False, False),              # Open only: says its manifest
                           "ltx25_layout_render": (True, False, False),    # two inputs and a prompt
                           "wan22_i2i": (True, False, False)})             # one image: its frame has to be picked
         self.assertEqual(got["ltx25_layout_render"]["why"], "it also needs Reference frame; it needs Prompt")
         self.assertEqual(got["wan22_i2i"]["why"], "it takes one image, so a Version's frame has to be picked")
+        self.assertEqual(got["chord_pbr"]["why"], "shotgrid: {submit: false} in its manifest")   # plates aren't UDIMs
         self.assertFalse(M.fit(REGISTRY.workflows["ltx25_alpha_gen"], False)["publish"])    # publishing off
 
     def manifest(self, extra: str) -> Workflow:
@@ -79,7 +80,6 @@ class Items(unittest.TestCase):
         self.assertEqual(m["problems"], ["show bri3: there's no workflow nope"])
         rows = [(i["folder"], i["title"], i["entity_type"], ",".join(i["shows"])) for i in m["items"]]
         self.assertEqual(rows, [
-            ("ComfyFarm Submit", "CHORD PBR maps from a diffuse texture", "Version", "raa"),
             ("ComfyFarm Submit", "LTX 2.5 alpha generation", "Version", "raa,bri3"),
             ("ComfyFarm Submit + Publish", "LTX 2.5 alpha generation", "Version", "raa,bri3"),
             ("ComfyFarm Open", "CHORD PBR maps from a diffuse texture", "Version", "raa"),
@@ -90,8 +90,8 @@ class Items(unittest.TestCase):
             ("ComfyFarm Open", "LTX 2.5 layout to render", "Playlist", "raa"),
             ("ComfyFarm Open", "Wan 2.2 image to image", "Version", "raa"),
             ("ComfyFarm Open", "Wan 2.2 image to image", "Playlist", "raa")])
-        self.assertEqual(m["items"][2]["url"], FARM + "/api/v1/shotgrid/ami?action=publish&workflow=ltx25_alpha_gen")
-        self.assertEqual([i["list_order"] for i in m["items"][:4]], [100, 101, 201, 300])     # Submit, + Publish, Open
+        self.assertEqual(m["items"][1]["url"], FARM + "/api/v1/shotgrid/ami?action=publish&workflow=ltx25_alpha_gen")
+        self.assertEqual([i["list_order"] for i in m["items"][:3]], [101, 201, 300])          # Submit, + Publish, Open
         self.assertEqual(m["folders"], ["ComfyFarm Submit", "ComfyFarm Submit + Publish", "ComfyFarm Open"])
         self.assertEqual(M.build(wfs, publishes, {}, FARM)["items"], [])                      # no shows: no menu
 
