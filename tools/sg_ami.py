@@ -2,9 +2,28 @@
 Item; README: ShotGrid right-click), or takes it out again. It changes ShotGrid, so it only
 shows what it would do until it's run with --apply.
 
-Run it once, where shotgun_api3 is (the manager), with a ShotGrid script that may create
-Action Menu Items (an admin script: the manager's own read-only script can't, and doesn't
-need to):
+It needs a ShotGrid connection that may create Action Menu Items (an admin one: the
+manager's own read-only script can't, and doesn't need to). Two ways to get one:
+
+The pipeline's own (--pipeline): rdo_publish_pipeline's client, with its permissions, so no
+script or key is handled here. Run it where that module is: a rez environment that has it,
+or Maya. This file is standalone (standard library only, Python 3.7+): run it from the
+farm's checkout, or copy it anywhere.
+
+    cd /mntx/raid/pdominik/comfyui-farm
+    rez env <the package with it> -- python tools/sg_ami.py --pipeline --farm http://wrk1125l:9090 --show bri3
+    (the same with --apply does it)
+
+    # Maya's Script Editor (Python):
+    import sys; sys.path.insert(0, "/mntx/raid/pdominik/comfyui-farm/tools")
+    import sg_ami
+    sg_ami.main(["--pipeline", "--farm", "http://wrk1125l:9090", "--show", "bri3"])
+    # then the same list with "--apply" added
+
+--pipeline-path <folder> imports the module from that folder instead (outside rez; its own
+dependencies have to be importable too).
+
+An admin script (the manager, where shotgun_api3 is):
 
     cd /mntx/raid/pdominik/comfyui-farm
     export SG_ADMIN_SCRIPT_NAME=<the admin script's name>
@@ -39,6 +58,7 @@ from urllib.parse import urlencode, urlsplit
 ENTITY = "ActionMenuItem"
 TYPES = ("Version", "Playlist")
 NAME_ENV, KEY_ENV = "SG_ADMIN_SCRIPT_NAME", "SG_ADMIN_SCRIPT_KEY"
+PIPELINE = "rdo_publish_pipeline"
 
 
 class Stop(Exception):
@@ -58,8 +78,15 @@ def parse_args(argv):
     p.add_argument("--types", default=",".join(TYPES), help="the entity types to add it to (default Version,Playlist)")
     p.add_argument("--remove", action="store_true", help="delete the items instead")
     p.add_argument("--apply", action="store_true", help="do it (without: only show what it would do)")
-    p.add_argument("--site", help="the ShotGrid site (default: shotgrid.url in the manager's config.yaml)")
-    return p.parse_args(argv)
+    p.add_argument("--pipeline", action="store_true",
+                   help=f"use the pipeline's ShotGrid client ({PIPELINE}: in rez or Maya) instead of an admin script")
+    p.add_argument("--pipeline-path", action="append", default=[], metavar="FOLDER",
+                   help=f"import {PIPELINE} from this folder (implies --pipeline)")
+    p.add_argument("--site", help="the ShotGrid site (default: shotgrid.url in the manager's config.yaml; "
+                                  "with --pipeline, a check that the pipeline's client is on it)")
+    args = p.parse_args(argv)
+    args.pipeline = args.pipeline or bool(args.pipeline_path)
+    return args
 
 
 def item_url(farm: str, workflow: str | None) -> str:
@@ -216,22 +243,61 @@ def connect(site: str, name: str, key: str):
     return shotgun_api3.Shotgun(site, script_name=name, api_key=key)
 
 
-def main(argv=None, env=None, ask_name=input, ask_key=getpass.getpass, connect=connect, out=sys.stdout) -> int:
+def pipeline_client(paths=()):
+    """The pipeline's own ShotGrid connection, as its tools get it:
+    rdo_publish_pipeline.manager.ClientRegistry().get_client().sg. `paths`: folders to
+    import it from first (outside rez)."""
+    for folder in reversed(list(paths)):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+    try:
+        from rdo_publish_pipeline import manager
+    except ImportError as e:
+        raise Stop(f"{PIPELINE} can't be imported here ({e}). Run it in a rez environment that has it, or in "
+                   "Maya, or give --pipeline-path <the folder holding it>.") from None
+    try:
+        sg = manager.ClientRegistry().get_client().sg
+    except Exception as e:  # noqa: BLE001 - whatever the pipeline says
+        raise Stop(f"{PIPELINE} couldn't make its ShotGrid client: {type(e).__name__}: {e}") from None
+    if sg is None:
+        raise Stop(f"{PIPELINE}'s client has no ShotGrid connection (its sg is None).")
+    return sg
+
+
+def _host(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
+def main(argv=None, env=None, ask_name=input, ask_key=getpass.getpass, connect=connect, pipeline=pipeline_client,
+         out=None) -> int:
+    """The command line; from Maya: main(["--pipeline", "--farm", …]). 0 when done, 1 when not."""
+    out = out or sys.stdout
     args = parse_args(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
-    site, show_field = args.site, "tank_name"
-    if not site:
-        try:
-            from comfyfarm.config import load_config
-            sgc = load_config().shotgrid
-            site, show_field = sgc.url, sgc.show_field or show_field
-        except Exception as e:  # noqa: BLE001
-            print(f"No --site, and the manager's config.yaml couldn't be read ({e}).", file=sys.stderr)
-            return 1
-    key = ""
-    scrub = lambda text: text.replace(key, "<key>") if key else text     # noqa: E731 - ShotGrid's errors can quote it
+    secret = []                               # the key, to keep it out of ShotGrid's errors
+    scrub = lambda text: text.replace(secret[0], "<key>") if secret and secret[0] else text     # noqa: E731
     try:
+        if args.pipeline:
+            sg = pipeline(args.pipeline_path)
+            conf = getattr(sg, "config", None)
+            secret.append(str(getattr(conf, "api_key", None) or ""))
+            site = str(getattr(sg, "base_url", None) or "")
+            if args.site and _host(site) != _host(args.site):
+                raise Stop(f"{PIPELINE}'s ShotGrid is {site or 'unknown'}, not {args.site}: nothing done.")
+            who = getattr(conf, "script_name", None) or getattr(conf, "user_login", None)
+            print(f"ShotGrid {site.rstrip('/') or '(its site)'} through {PIPELINE}"
+                  + (f", as {who}" if who else ""), file=out)
+            return run(args, sg, "tank_name", out)
+        site, show_field = args.site, "tank_name"
+        if not site:
+            try:
+                from comfyfarm.config import load_config
+                sgc = load_config().shotgrid
+                site, show_field = sgc.url, sgc.show_field or show_field
+            except Exception as e:  # noqa: BLE001
+                raise Stop(f"No --site, and the manager's config.yaml couldn't be read ({e}).") from None
         name, key = credentials(env, ask_name, ask_key)
+        secret.append(key)
         print(f"ShotGrid {site.rstrip('/')} as the script {name}", file=out)
         return run(args, connect(site, name, key), show_field, out)
     except Stop as e:

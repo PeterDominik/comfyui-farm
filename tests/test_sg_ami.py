@@ -1,12 +1,17 @@
 """tools/sg_ami.py, which puts "Send to ComfyFarm" into ShotGrid's right-click menu (an
 Action Menu Item): a dry run changes nothing, --apply makes, changes or removes the items,
 running it again doesn't double them, they're limited to shows or a group, and the
-script's key is never printed. Against a stand-in ShotGrid only."""
+script's key is never printed; with an admin script, or the pipeline's own client
+(--pipeline). Against a stand-in ShotGrid and a stand-in rdo_publish_pipeline only."""
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
+import sys
+import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -91,7 +96,6 @@ class Tool(unittest.TestCase):
         def connect(site, name, key):
             self.seen.append((site, name, key))
             return sg
-        import contextlib
         with contextlib.redirect_stderr(err):
             code = ami.main(["--site", SITE, "--farm", FARM, *argv],
                             env={"SG_ADMIN_SCRIPT_NAME": "comfyfarm_admin", "SG_ADMIN_SCRIPT_KEY": KEY} if env is None else env,
@@ -173,6 +177,82 @@ class Tool(unittest.TestCase):
         code, text = self.run_it("--show", "bri3", sg=Refusing())
         self.assertEqual(code, 1)
         self.assertIn("wouldn't show the ActionMenuItem fields", text)        # and the key isn't in it (run_it checks)
+
+
+
+class Pipeline(unittest.TestCase):
+    """--pipeline: the pipeline's own ShotGrid client (rdo_publish_pipeline, in rez or Maya)."""
+
+    def fake(self, site=SITE):
+        sg = FakeShotGrid()
+        sg.base_url = site.rstrip("/")
+        sg.config = types.SimpleNamespace(script_name="pipeline_admin", api_key=KEY)
+        return sg
+
+    def run_it(self, *argv, sg=None):
+        out, err = io.StringIO(), io.StringIO()
+        sg = sg or self.fake()
+        self.sg = sg
+
+        def nothing_asked(*a):
+            raise AssertionError("no script or key is asked for with --pipeline")
+        with contextlib.redirect_stderr(err):
+            code = ami.main(["--farm", FARM, "--pipeline", *argv], env={}, ask_name=nothing_asked, ask_key=nothing_asked,
+                            connect=nothing_asked, pipeline=lambda paths: sg, out=out)
+        text = out.getvalue() + err.getvalue()
+        self.assertNotIn(KEY, text)
+        return code, text
+
+    def test_through_the_pipelines_client(self):
+        code, text = self.run_it("--show", "bri3")
+        self.assertEqual(code, 0, text)
+        self.assertIn("ShotGrid https://rodeofx.shotgrid.autodesk.com through rdo_publish_pipeline, as pipeline_admin", text)
+        self.assertIn("Would create one on Version", text)
+        self.assertEqual(self.sg.writes, [])
+        code, text = self.run_it("--show", "bri3", "--apply", sg=self.sg)
+        self.assertEqual([w[1]["entity_type"] for w in self.sg.writes], ["Version", "Playlist"])
+        self.assertEqual(self.sg.writes[0][1]["projects"], [{"type": "Project", "id": 6351}])   # Rodeo's tank_name
+
+    def test_another_site_and_errors(self):
+        code, text = self.run_it("--show", "bri3", "--site", "https://rodeofx-staging.shotgrid.autodesk.com", "--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("rdo_publish_pipeline's ShotGrid is https://rodeofx.shotgrid.autodesk.com, not "
+                      "https://rodeofx-staging.shotgrid.autodesk.com: nothing done", text)
+        self.assertEqual(self.sg.writes, [])
+        sg = self.fake()
+        sg.find = lambda *a, **k: (_ for _ in ()).throw(RuntimeError(f"Fault: bad key {KEY}"))
+        code, text = self.run_it("--show", "bri3", sg=sg)
+        self.assertEqual(code, 1)
+        self.assertIn("ShotGrid said: RuntimeError: Fault: bad key <key>", text)   # the pipeline's key isn't shown either
+
+    def test_the_module_itself(self):
+        def forget():
+            for name in [m for m in sys.modules if m.startswith("rdo_publish_pipeline")]:
+                del sys.modules[name]
+        forget()
+        with self.assertRaisesRegex(ami.Stop, "rdo_publish_pipeline can't be imported here.*--pipeline-path"):
+            ami.pipeline_client([])
+        with tempfile.TemporaryDirectory() as d:
+            pkg = Path(d, "rdo_publish_pipeline")
+            pkg.mkdir()
+            (pkg / "__init__.py").write_bytes(b"")
+            (pkg / "manager.py").write_bytes(
+                b"import types\n"
+                b"class Shotgun:\n    base_url = 'https://rodeofx.shotgrid.autodesk.com'\n"
+                b"class ClientRegistry:\n"
+                b"    def get_client(self):\n        return types.SimpleNamespace(sg=Shotgun())\n")
+            self.addCleanup(forget)
+            self.addCleanup(lambda: sys.path.remove(d) if d in sys.path else None)
+            sg = ami.pipeline_client([d])
+            self.assertEqual((type(sg).__name__, sg.base_url), ("Shotgun", "https://rodeofx.shotgrid.autodesk.com"))
+            self.assertEqual(sys.path[0], d)
+            sys.modules["rdo_publish_pipeline.manager"].ClientRegistry.get_client = lambda self: 1 / 0
+            with self.assertRaisesRegex(ami.Stop, "couldn't make its ShotGrid client: ZeroDivisionError"):
+                ami.pipeline_client([d])
+
+    def test_pipeline_path_means_pipeline(self):
+        self.assertTrue(ami.parse_args(["--farm", FARM, "--pipeline-path", "/rdo/x"]).pipeline)
+        self.assertFalse(ami.parse_args(["--farm", FARM]).pipeline)
 
 
 if __name__ == "__main__":

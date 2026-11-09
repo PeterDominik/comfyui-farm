@@ -1063,15 +1063,33 @@ nothing is sent until you submit.
   secure the first time: *Send anyway*.
 
 Setting the right-click up is a ShotGrid admin's change (it's in everyone's menu where it
-applies), made once with `tools/sg_ami.py` and a ShotGrid script allowed to create Action
-Menu Items (not the manager's read-only one). It only shows what it would do until `--apply`:
+applies), made once with `tools/sg_ami.py` and a ShotGrid connection allowed to create
+Action Menu Items (not the manager's read-only script). It only shows what it would do
+until `--apply`. The connection is either the pipeline's own client (`--pipeline`:
+`rdo_publish_pipeline`, so it runs in a rez environment that has it, or in Maya; the file is
+standalone, standard library only, Python 3.7+) or an admin script:
 
 ```bash
 cd /mntx/raid/pdominik/comfyui-farm
-export SG_ADMIN_SCRIPT_NAME=<the admin script's name>   # the key: SG_ADMIN_SCRIPT_KEY, or it asks
-PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3           # what it would do
-PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3 --apply   # do it
+# the pipeline's client
+rez env <the package with rdo_publish_pipeline> -- python tools/sg_ami.py --pipeline --farm http://wrk1125l:9090 --show bri3
+# or an admin script (the key: SG_ADMIN_SCRIPT_KEY, or it asks)
+export SG_ADMIN_SCRIPT_NAME=<the admin script's name>
+PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3
+# then the same with --apply to do it
 ```
+
+From Maya's Script Editor (Python):
+
+```python
+import sys; sys.path.insert(0, "/mntx/raid/pdominik/comfyui-farm/tools")
+import sg_ami
+sg_ami.main(["--pipeline", "--farm", "http://wrk1125l:9090", "--show", "bri3"])   # then with "--apply"
+```
+
+`--pipeline-path <folder>` imports `rdo_publish_pipeline` from that folder instead of rez
+(its own dependencies have to be importable too). With `--pipeline`, `--site` is a check that
+the pipeline's client is on that site.
 
 - It makes one item on Version and one on Playlist, *Send to ComfyFarm*, posting to
   `<farm>/api/v1/shotgrid/ami`, selection required. It reads ActionMenuItem's fields from the
@@ -1082,7 +1100,7 @@ PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --sho
   more. `--remove --apply` deletes them. `--workflow <name>` makes items that open that
   workflow (`…/ami?workflow=<name>`), `--folder` puts them in a menu folder.
 - The key is used for that run only: never written, never printed (not even in ShotGrid's
-  error messages).
+  error messages). With `--pipeline` no key passes through it at all.
 
 ## Adding or updating a workflow
 
