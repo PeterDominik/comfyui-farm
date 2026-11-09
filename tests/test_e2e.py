@@ -752,6 +752,12 @@ convert:
         self.assertEqual(sorted({(i["entity_type"], i["workflow"]) for i in menu["items"]}),
                          [(t, w) for t in ("Playlist", "Version")
                           for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "wan22_i2i")])
+        self.assertEqual((menu["sync"]["enabled"], menu["sync"]["last"]), (False, None))  # the manager doesn't sync it here
+        req = urllib.request.Request(f"{base}/api/v1/shotgrid/menu/sync", data=b"", method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req)
+        self.assertEqual(e.exception.code, 409)
+        self.assertIn("shotgrid.menu_sync.enabled is off", e.exception.read().decode())
         ltx = next(w for w in menu["workflows"] if w["name"] == "ltx25_alpha_gen")
         self.assertEqual((ltx["submit"], ltx["publish"]), (True, False))      # it could submit; publishing is off here
         # The Submit folders, when they're on: one Version is submitted there and then. Here

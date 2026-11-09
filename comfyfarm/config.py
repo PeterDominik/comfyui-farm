@@ -228,6 +228,23 @@ class PublishConfig(BaseModel):
     workers: int = 2                    # publishes dispatched at once
 
 
+class MenuSyncConfig(BaseModel):
+    """ShotGrid's right-click menu kept in step with the farm's by the manager itself
+    (comfyfarm.shotgrid.menusync): tools/sg_ami.py --apply, run when the manager starts,
+    when the menu changes (deploy/shotgrid/menu.yaml, the workflows) and once a day, in the
+    pipeline's environment so it has rdo_publish_pipeline's ShotGrid client (which may
+    create menu items; the manager's own script can't). Off until enabled."""
+    enabled: bool = False
+    # A clean login shell: the pipeline's environment, not the farm's. {home} {user}
+    shell: list[str] = Field(default_factory=lambda: ["env", "-i", "HOME={home}", "USER={user}", "LOGNAME={user}",
+                                                      "/bin/bash", "-lc"])
+    # {tool} (tools/sg_ami.py) {menu} (the menu, as JSON) {farm} (its farm_url), each shell-quoted
+    command: str = "rez env rdo_publish_pipeline -- python {tool} --pipeline --menu-json {menu} --apply"
+    check_minutes: float = 5.0           # how often the manager looks whether the menu changed
+    every_hours: float = 24.0            # synced again even when unchanged (an item changed by hand)
+    timeout: float = 600.0
+
+
 class ShotGridConfig(BaseModel):
     """The manager's read-only ShotGrid lookups for the publish fields (comfyfarm.shotgrid):
     active shows, their sequences and shots. Off until enabled; the script's name and key
@@ -254,6 +271,7 @@ class ShotGridConfig(BaseModel):
     # ShotGrid's right-click menu (README: ShotGrid right-click): which shows have it, and
     # the address it posts to. Relative to the repo.
     menu_file: str = "deploy/shotgrid/menu.yaml"
+    menu_sync: MenuSyncConfig = Field(default_factory=MenuSyncConfig)
 
 
 class Config(BaseModel):

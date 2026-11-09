@@ -41,6 +41,10 @@ typed). It's used for this run only: never written anywhere, never printed.
 
 --remove deletes every item posting to the farm instead (with --apply).
 
+The manager can run it itself (shotgrid.menu_sync in its config.yaml: when it starts, when
+the menu changes, daily), in the pipeline's rez environment, with the menu it writes to a
+file: --menu-json <file> instead of asking --farm for it.
+
 Before writing, it reads ActionMenuItem's fields from ShotGrid and stops if the site can't
 hold what the menu needs (folders, projects)."""
 
@@ -69,8 +73,9 @@ class Stop(Exception):
 def parse_args(argv):
     p = argparse.ArgumentParser(prog="sg_ami.py", description=__doc__.split("\n\n")[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--farm", required=True, help="the manager's address (http://wrk1125l.rodeofx.com:9090): its menu is read "
-                                                 "from there")
+    p.add_argument("--farm", help="the manager's address (http://wrk1125l.rodeofx.com:9090): its menu is read from there")
+    p.add_argument("--menu-json", metavar="FILE", help="the farm's menu from this file instead (what the manager writes "
+                                                        "when it syncs the menu itself); --farm defaults to its farm_url")
     p.add_argument("--remove", action="store_true", help="delete every item posting to the farm instead")
     p.add_argument("--apply", action="store_true", help="do it (without: only show what it would do)")
     p.add_argument("--pipeline", action="store_true",
@@ -81,6 +86,8 @@ def parse_args(argv):
                                   "config.yaml); with --pipeline, a check that the pipeline's client is on it")
     args = p.parse_args(argv)
     args.pipeline = args.pipeline or bool(args.pipeline_path)
+    if not (args.farm or args.menu_json):
+        p.error("give --farm (the manager's address), or --menu-json")
     return args
 
 
@@ -104,6 +111,18 @@ def fetch_menu(farm: str) -> dict:
         raise Stop(f"{url} answered {e.code}: {e.read()[:300].decode('utf-8', 'replace')}") from None
     except (OSError, ValueError) as e:
         raise Stop(f"The farm didn't answer at {url}: {e}") from None
+
+
+def read_menu(path: str) -> dict:
+    """The farm's menu from a file (as GET /api/v1/shotgrid/menu gives it)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            menu = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Stop(f"The menu in {path} can't be read: {e}") from None
+    if not isinstance(menu, dict) or not isinstance(menu.get("items"), list):
+        raise Stop(f"{path} isn't the farm's menu (GET /api/v1/shotgrid/menu).")
+    return menu
 
 
 def credentials(env, ask_name, ask_key) -> tuple[str, str]:
@@ -292,7 +311,14 @@ def main(argv=None, env=None, ask_name=input, ask_key=getpass.getpass, connect=c
     secret = []                               # the key, to keep it out of ShotGrid's errors
     scrub = lambda text: text.replace(secret[0], "<key>") if secret and secret[0] else text     # noqa: E731
     try:
-        menu = None if args.remove else fetch(args.farm)
+        if args.menu_json:
+            menu = read_menu(args.menu_json)
+            args.farm = args.farm or menu.get("farm_url")
+            if not args.farm:
+                raise Stop(f"{args.menu_json} has no farm_url: give --farm.")
+            menu = None if args.remove else menu
+        else:
+            menu = None if args.remove else fetch(args.farm)
         if args.pipeline:
             sg = pipeline(args.pipeline_path)
             conf = getattr(sg, "config", None)

@@ -27,13 +27,13 @@ import subprocess
 __all__ = ["command", "run", "parse"]
 
 
-def command(shell: list[str], template: str, values: dict) -> list[str]:
+def command(shell: list[str], template: str, values: dict, setting: str = "publish.command") -> list[str]:
     """The argv to run: the shell, then the command with every value quoted."""
     quoted = {k: shlex.quote(str(v)) for k, v in values.items()}
     try:
         text = template.format(**quoted)
     except KeyError as e:
-        raise ValueError(f"publish.command uses {{{e.args[0]}}}, which isn't one of {', '.join(sorted(values))}") from None
+        raise ValueError(f"{setting} uses {{{e.args[0]}}}, which isn't one of {', '.join(sorted(values))}") from None
     env = {"home": os.path.expanduser("~"), "user": getpass.getuser()}
     return [part.format(**env) for part in shell] + [text]
 

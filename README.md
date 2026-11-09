@@ -612,7 +612,8 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
 | GET | `/api/v1/shotgrid/playlist?link=` | Batch Submit's rows from a Playlist (link or id): `playlist` and `rows` `[{version, input}]`, in its order |
 | GET | `/api/v1/shotgrid/versions?ids=` | Batch Submit's rows from Versions (ids, comma-separated), in that order: `source` (`code`, `show`, `ids`, `missing`) and `rows` |
-| GET | `/api/v1/shotgrid/menu` | ShotGrid's right-click menu as the farm makes it: `items` (folder, title, entity type, url, shows), `workflows` (where each goes, and why), `problems` |
+| GET | `/api/v1/shotgrid/menu` | ShotGrid's right-click menu as the farm makes it: `items` (folder, title, entity type, url, shows), `workflows` (where each goes, and why), `problems`, `sync` (the manager's own syncing of it) |
+| POST | `/api/v1/shotgrid/menu/sync` | Make ShotGrid's menu match now (`shotgrid.menu_sync` on; with API keys, admins) |
 | POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
@@ -1126,6 +1127,38 @@ PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l.rodeofx.co
   checks the client is on that site.
 - An admin script's key is used for that run only: never written, never printed (not even
   in ShotGrid's error messages). With `--pipeline` no key passes through it at all.
+
+#### The manager keeping it in step
+
+With `shotgrid.menu_sync.enabled: true` in its `config.yaml`, the manager runs that sync
+itself, so nobody has to after a change:
+
+- **When:** 20 s after it starts, then every `check_minutes` (5) when the menu differs from
+  the one it last synced (`menu.yaml` edited, a workflow added or changed), and every
+  `every_hours` (24) anyway, which puts back an item changed by hand in ShotGrid.
+  `POST /api/v1/shotgrid/menu/sync` runs it now.
+- **How:** it can't make the items with its own read-only script, and the pipeline's client
+  lives in the studio's rez environment, not in the farm's Python. So, as publishing runs
+  dispatchGraph, it runs `shotgrid.menu_sync.command` in a clean login shell:
+  `rez env rdo_publish_pipeline -- python tools/sg_ami.py --pipeline --menu-json <menu> --apply`,
+  with the menu written to `<data>/shotgrid_menu.json` first (`{tool}`, `{menu}`, `{farm}`).
+- **When it doesn't:** a menu with problems, without a `farm_url`, or with no items while
+  it names shows (the workflows didn't load) isn't synced. A failed run is tried again at
+  the next check. `GET /api/v1/shotgrid/menu`'s `sync` says how the last one went (when,
+  why, created / changed / deleted, the tool's output), and the manager's log too.
+
+Try the command by hand on the manager first, as the manager will run it (a clean login
+shell), without `--apply`:
+
+```bash
+cd /mntx/raid/pdominik/comfyui-farm
+env -i HOME=$HOME USER=$USER LOGNAME=$USER /bin/bash -lc \
+  "rez env rdo_publish_pipeline -- python $PWD/tools/sg_ami.py --pipeline --farm http://wrk1125l.rodeofx.com:9090"
+```
+
+When that shows the menu ("… as they are"), switch it on and restart the manager. If `rez`
+isn't found there, or the pipeline needs more packages, change `menu_sync.command` to what
+works.
 
 ## Adding or updating a workflow
 
