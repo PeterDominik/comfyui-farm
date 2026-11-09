@@ -15,10 +15,10 @@ template: workflow_api.json
 # The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
 # 32 GB 5090 and up, so the 24 GB 3090 never gets it.
 requires: {vram_gb: 32}
-# Published through Daiquiri's update_and_render_nuke (README: Publishing): the step it goes
-# to unless the artist picks another, with a template from
-# /rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/.
-publish: {step: lay}
+# Published through Daiquiri's update_and_render_nuke (README: Publishing), with a template
+# from /rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/; to the farm's step
+# (publish.default_step, ai) unless the artist picks another. publish: {step: <step>} here
+# would offer another first.
 
 params:
   # The images the workflow takes: a batch of frames (takes: images), read by the

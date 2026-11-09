@@ -178,7 +178,7 @@ class ShareConfig(BaseModel):
 
 
 # The studio's steps, as Daiquiri takes them (--step).
-PUBLISH_STEPS = ["ani", "bmm", "cfx", "cmm", "comp", "crw", "env", "flo", "fx", "hair", "lay", "lig", "lin", "md",
+PUBLISH_STEPS = ["ai", "ani", "bmm", "cfx", "cmm", "comp", "crw", "env", "flo", "fx", "hair", "lay", "lig", "lin", "md",
                  "mcp", "mod", "mp", "mptd", "paint", "pnt", "prep", "pre", "pub", "qcenv", "rig", "roto", "std",
                  "shd", "tex", "uv"]
 _LAUNCHER = "/rdo/rodeo/setup/rdo_rez_launcher/current"
@@ -204,7 +204,7 @@ class PublishConfig(BaseModel):
     dry_run: bool = True
     templates: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke"        # <templates>/<workflow>/<name>.nk
     # (and <templates>/_global/<name>.nk for every workflow; .history/ keeps every version)
-    default_step: str = "lay"            # for workflows whose manifest names none
+    default_step: str = "ai"             # for workflows whose manifest names none (ai: the farm's outputs)
     staging: str = "/rdo/bank/comfy_farm/publishTemplates/Nuke/.staging"  # <staging>/<job id>/<name>.nk
     # A show is published to only when it has this folder (on the manager); the ShotGrid
     # show list leaves out projects without one. Empty: no such check.

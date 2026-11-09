@@ -657,7 +657,7 @@ Two ways to ask for it:
 |---|---|
 | Show, shot | Filled in from the input path until you type in them, and again (with the sequence) when a new input path names another show or shot (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
 | Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
-| Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step`, else `publish.default_step` (`lay`) |
+| Step | One of the studio's steps (`publish.steps`, `ai` among them); the default is the manifest's `publish.step`, else `publish.default_step` (`ai`) |
 | Nuke template | The workflow's own templates, then the global ones, each named where it comes from (`LTX 2.5 alpha generation / default`, `global / default`); it starts on the workflow's `default`, else its first, else the global `default`. **↻** reloads the list after a template is published |
 | Description | Default `Auto Publish`; ` (ComfyFarm <job>, <user>)` is added to it |
 | Dry run | dispatchGraph `--dry-run`: Daiquiri checks the context and the script, nothing goes to Tractor |
@@ -1212,7 +1212,7 @@ params:                        # becomes the form in the dashboard, in this orde
 # requires: {vram_gb: 32, tags: [nightly]}   # optional: the machines that may run it: the
                                # least GPU memory (GB, as the card is sold: a 5090 is 32) and
                                # labels from their agent.yaml `tags` (linux / windows always set)
-# publish: {step: lay}         # optional: the step publishing offers first (see Publishing);
+# publish: {step: comp}        # optional: the step publishing offers first, else publish.default_step (ai);
                                # publish: false keeps a video/image workflow from being published
 # preview: false               # optional: no preview movie of the frames (see Preview movies)
 # shotgrid: {submit: false}    # optional: ShotGrid's right-click menu (see ShotGrid right-click): false keeps
