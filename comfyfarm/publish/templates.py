@@ -59,10 +59,13 @@ def canonical(key: str) -> str:
     return key_of(*split_key(key, "")) if key.startswith(LEGACY + "/") else key
 
 
-def label(key: str) -> str:
-    """How a template shows in the forms: default, or default (global)."""
+def label(key: str, owner: str = "") -> str:
+    """How a template shows in the forms, where it comes from first: global / default, or
+    <the workflow's label> / default (`owner`; without it, the name alone)."""
     scope, name = split_key(key, "")
-    return f"{name} (global)" if scope == GLOBAL else key
+    if scope == GLOBAL:
+        return f"global / {name}"
+    return f"{owner} / {key}" if owner else key
 
 
 def valid_name(name: str) -> bool:

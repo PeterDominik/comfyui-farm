@@ -392,8 +392,8 @@ it, as before. `agent --check` lists the differences as warnings.
   `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in.
 - **Batch Submit:** many jobs from one table, e.g. one per Version of a ShotGrid playlist (see
   *Batch Submit*).
-- **From ShotGrid** (top right): the ComfyFarm button for the bookmarks bar, and how to drag
-  Versions and Playlists here or right-click them in ShotGrid (see *ShotGrid right-click*).
+- **From ShotGrid:** `/#shotgrid` opens the ComfyFarm button for the bookmarks bar, and how to
+  drag Versions and Playlists here or right-click them in ShotGrid (see *ShotGrid right-click*).
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
   queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
   should be done, or the time left once running. Click a
@@ -657,7 +657,7 @@ Two ways to ask for it:
 | Show, shot | Filled in from the input path until you type in them, and again (with the sequence) when a new input path names another show or shot (in Nuke, the session's `RDO_CURRENT_*` when the path names none); empty: the ones the input path names. With ShotGrid lookups on, both suggest from ShotGrid. The shot is Daiquiri's `--entities`. Only shows with a folder on disk (`publish.show_folder`, `/rdo/shows/<show>`) are published to |
 | Sequence | With ShotGrid lookups on: narrows the shot suggestions down (not sent to Daiquiri) |
 | Step | One of the studio's steps (`publish.steps`); the default is the manifest's `publish.step`, else `publish.default_step` (`lay`) |
-| Nuke template | The workflow's own templates, then the global ones (`default (global)`); it starts on the workflow's `default`, else its first, else the global `default`. **↻** reloads the list after a template is published |
+| Nuke template | The workflow's own templates, then the global ones, each named where it comes from (`LTX 2.5 alpha generation / default`, `global / default`); it starts on the workflow's `default`, else its first, else the global `default`. **↻** reloads the list after a template is published |
 | Description | Default `Auto Publish`; ` (ComfyFarm <job>, <user>)` is added to it |
 | Dry run | dispatchGraph `--dry-run`: Daiquiri checks the context and the script, nothing goes to Tractor |
 
@@ -1039,7 +1039,7 @@ and `GET /api/v1/shotgrid/versions?ids=` give the rows
 ### ShotGrid right-click
 
 Three ways to bring a Version or a Playlist from ShotGrid to the farm (the dashboard's
-*From ShotGrid* button, top right, explains the first two and the menu).
+*From ShotGrid* dialog, at `/#shotgrid`, explains the first two and the menu).
 
 **ShotGrid's right-click menu**, on the Versions and Playlists of the shows in
 `deploy/shotgrid/menu.yaml`: a submission form, like the Nuke panel's, shaped by what a menu

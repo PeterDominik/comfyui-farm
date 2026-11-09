@@ -56,7 +56,7 @@ function bPubCols(wf) {
       help: "Publish it when it's done: a Nuke template rendered with the frames on Tractor (Daiquiri), to the row's own show and shot" },
     { name: "$step", type: "choice", label: "Step", choices: o.steps, default: o.step },
     { name: "$template", type: "choice", label: "Nuke template", choices: o.templates, default: o.template,
-      labels: Object.fromEntries(o.templates.map(k => [k, (o.labels || {})[k] || tplLabel(k)])) },
+      labels: Object.fromEntries(o.templates.map(k => [k, (o.labels || {})[k] || tplLabel(k, wf.name)])) },
     { name: "$description", type: "string", label: "Description", default: "", placeholder: o.description },
     { name: "$dry", type: "bool", label: "Dry run", default: !!o.dry_run, locked: !!o.dry_run,
       help: o.dry_run ? "publish.dry_run is on in the manager's config" : "Daiquiri checks it, nothing goes to Tractor" },
@@ -318,7 +318,7 @@ async function bSend(rows) {
       bCheck(row);                              // its Writes: the version after the one just taken
       const pr = job.info?.publish_request;
       bLog(shot, `job ${job.short_id} queued → ${bTail(job.info?.output_dir_posix || job.info?.output_dir)}/ ${bVer(job.info?.version)}`
-        + (pr ? `, publishes when done (${[pr.step, tplLabel(pr.template || "")].filter(Boolean).join(" · ")}${pr.dry_run ? ", dry run" : ""})` : ""),
+        + (pr ? `, publishes when done (${[pr.step, tplLabel(pr.template || "", wf.name)].filter(Boolean).join(" · ")}${pr.dry_run ? ", dry run" : ""})` : ""),
         "ok", job.id);
     } catch (err) {
       row.error = err.message;                  // stays ticked, says why
