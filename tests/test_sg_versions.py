@@ -284,6 +284,9 @@ class Picked(unittest.TestCase):
         self.assertEqual(V.deep_link({**p, "action": "submit"}),
                          "#batch?workflow=ltx25_alpha_gen&user=jminett&send=1&versions=11,12")
         self.assertEqual(V.deep_link({**p, "action": "open"}), "#batch?workflow=ltx25_alpha_gen&user=jminett&versions=11,12")
+        self.assertEqual(V.deep_link({**p, "action": "open", "publish": True}),            # Open, Publish ticked
+                         "#batch?workflow=ltx25_alpha_gen&user=jminett&publish=1&versions=11,12")
+        self.assertFalse(p["publish"])                                         # the manager decides that
         one = V.picked({"entity_type": "Version", "selected_ids": "11", "action": "publish", "workflow": "x"}, SITE)
         self.assertEqual(V.deep_link(one), "#submit?workflow=x&publish=1&input=" + f"{SITE}detail/Version/11".replace(
             ":", "%3A").replace("/", "%2F"))                                   # the form, when the manager can't send it

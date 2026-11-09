@@ -9,8 +9,8 @@
 // write" line does, its publish included (POST /api/v1/plan), a few at a time.
 //
 // Submit sends the ticked ready rows as ordinary jobs, one request each, in the table's
-// order (so rows going into the same folder take the next versions in that order), always
-// after a confirm; a refused row doesn't stop the others. A sent row shows its job live,
+// order (so rows going into the same folder take the next versions in that order), asking
+// first when there are more than 20; a refused row doesn't stop the others. A sent row shows its job live,
 // and the log keeps what was sent.
 //
 // The table and the log live in this browser only (localStorage): they survive a reload,
@@ -26,6 +26,7 @@
 const BATCH_KEY = "comfyfarm.batch";
 const BATCH_CHECKS = 3;                    // rows checked at once
 const BATCH_LOG = 200;                     // log lines kept
+const BATCH_ASK_OVER = 20;                 // more jobs than this at once: asks first
 const batch = {
   workflow: "", link: "", playlist: null,  // the workflow's name; the source ("versions:<ids>" for picked
                                            // Versions, else the playlist's link) and {code, url, show, missing}
@@ -154,8 +155,9 @@ function batchDeepLink() {
   if (q.get("playlist")) { $("#plLink").value = q.get("playlist"); batchLoadPlaylist(q.get("playlist")); }
   else if (q.get("versions")) { $("#plLink").value = ""; batchLoadPlaylist("versions:" + q.get("versions")); }
 }
-// Publish asked for by the deep link (ShotGrid's Submit + Publish): ticked on every row once
-// the publish columns are there; when the workflow can't publish, it says so and sends nothing.
+// Publish asked for by the deep link (ShotGrid's Open ticks it, Submit + Publish too): ticked
+// on every row once the publish columns are there. A workflow that can't publish: left as it
+// is, except that Submit + Publish then says so and sends nothing.
 function bApplyWanted() {
   const wf = bWf();
   if (!batch.wantPublish || !wf) return bMaybeSend();
@@ -163,9 +165,11 @@ function bApplyWanted() {
   if (wf.publish && (o === undefined || o === null)) return;          // still asking
   batch.wantPublish = false;
   if (!wf.publish || o.why) {
-    batch.autoSend = false;
-    batch.footMsg = `Not sent: ${wf.label} can't be published (${(o && o.why) || "publishing is off"}).`;
-    bRenderFoot();
+    if (batch.autoSend) {
+      batch.autoSend = false;
+      batch.footMsg = `Not sent: ${wf.label} can't be published (${(o && o.why) || "publishing is off"}).`;
+      bRenderFoot();
+    }
     return;
   }
   batch.fill.$publish = true;
@@ -294,8 +298,8 @@ async function bSend(rows) {
     batch.footMsg = "Enter your user name (top right) first."; bRenderFoot(); return;
   }
   const pubN = rows.filter(r => bPublish(r)).length;
-  const what = rows.length === 1 ? `${rows[0].version?.shot || "this row"} (${wf.label})` : `${rows.length} jobs of ${wf.label}`;
-  if (!confirm(`Submit ${what} to the farm?` + (pubN ? `\n${pubN === rows.length ? (rows.length === 1 ? "It publishes" : "All publish") : pubN + " publish"} when done.` : "")))
+  if (rows.length > BATCH_ASK_OVER && !confirm(`Submit ${rows.length} jobs of ${wf.label} to the farm?`
+      + (pubN ? `\n${pubN === rows.length ? "All publish" : pubN + " publish"} when done.` : "")))
     return;
   batch.footMsg = "";
   batch.sending = { done: 0, of: rows.length, stop: false };

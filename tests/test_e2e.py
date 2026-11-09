@@ -743,17 +743,19 @@ convert:
         self.assertIn("<b>ComfyFarm</b> right-click menu", page)
         self.assertEqual(ami(None, "?entity_type=Version&selected_ids=7")[:2], (303, "/#submit?input=" + urllib.parse.quote(
             f"{site}/detail/Version/7", safe="")))
-        # The menu (chunk 13c): the items for deploy/shotgrid/menu.yaml's shows, as the farm's
-        # workflows fit (publishing is off here: no Submit + Publish).
+        # The menu (chunk 13c): deploy/shotgrid/menu.yaml's shows, ComfyFarm Open ▸ with every
+        # workflow that has an image input (the Submit folders are off there).
         with urllib.request.urlopen(f"{base}/api/v1/shotgrid/menu") as r:
             menu = json.loads(r.read())
-        self.assertEqual(menu["farm_url"], "http://wrk1125l.rodeofx.com:9090")
-        self.assertEqual(sorted({(i["folder"], i["workflow"]) for i in menu["items"] if i["entity_type"] == "Version"}),
-                         [("ComfyFarm Open", w) for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "wan22_i2i")]
-                         + [("ComfyFarm Submit", "ltx25_alpha_gen")])
-        self.assertEqual({i["entity_type"] for i in menu["items"] if i["folder"] != "ComfyFarm Open"}, {"Version"})
-        # Submit on one Version submits it there and then; here ShotGrid's lookups are off, so
-        # the page says why, with the form to fix it.
+        self.assertEqual((menu["farm_url"], menu["folders"], menu["publish"]),
+                         ("http://wrk1125l.rodeofx.com:9090", ["ComfyFarm Open"], True))
+        self.assertEqual(sorted({(i["entity_type"], i["workflow"]) for i in menu["items"]}),
+                         [(t, w) for t in ("Playlist", "Version")
+                          for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "wan22_i2i")])
+        ltx = next(w for w in menu["workflows"] if w["name"] == "ltx25_alpha_gen")
+        self.assertEqual((ltx["submit"], ltx["publish"]), (True, False))      # it could submit; publishing is off here
+        # The Submit folders, when they're on: one Version is submitted there and then. Here
+        # ShotGrid's lookups are off, so the page says why, with the form to fix it.
         sel = b"entity_type=Version&selected_ids=4865327&user_login=ann"
         status, _, page = ami(sel, "?action=submit&workflow=ltx25_alpha_gen")
         self.assertEqual(status, 400)

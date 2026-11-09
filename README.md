@@ -613,7 +613,7 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/shotgrid/playlist?link=` | Batch Submit's rows from a Playlist (link or id): `playlist` and `rows` `[{version, input}]`, in its order |
 | GET | `/api/v1/shotgrid/versions?ids=` | Batch Submit's rows from Versions (ids, comma-separated), in that order: `source` (`code`, `show`, `ids`, `missing`) and `rows` |
 | GET | `/api/v1/shotgrid/menu` | ShotGrid's right-click menu as the farm makes it: `items` (folder, title, entity type, url, shows), `workflows` (where each goes, and why), `problems` |
-| POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: Submit (+ Publish) on one Version submits it and redirects to the job; otherwise a redirect to the dashboard's deep link (see *ShotGrid right-click*) |
+| POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
@@ -1018,7 +1018,8 @@ and each of its Versions becomes a row, in the playlist's order, its link the in
 - **Publishing:** each row publishes to its own Version's show and shot; step, template,
   description and dry run come from the columns (fill them for all, change them per row).
 - **Submit:** *Submit N jobs* sends the ticked ready rows, one ordinary job each, one at a
-  time in the table's order; each row also has its own *Submit*. It always asks first. A
+  time in the table's order; each row also has its own *Submit*. It asks first when that's
+  more than 20 jobs. A
   refused row says why and stays ticked; the others go on. *Stop* sends no more.
 - **After sending:** a sent row is unticked and follows its job live (queued, running with its
   progress, done, its publish), its id opening it in the queue; *Submit again* sends it once
@@ -1040,39 +1041,37 @@ and `GET /api/v1/shotgrid/versions?ids=` give the rows
 Three ways to bring a Version or a Playlist from ShotGrid to the farm (the dashboard's
 *From ShotGrid* button, top right, explains the first two and the menu).
 
-**ShotGrid's right-click menu**, on the Versions (and for *Open*, the Playlists) of the
-shows in `deploy/shotgrid/menu.yaml`. It's a submission form, like the Nuke panel's, shaped
-by what a menu can do: it can't ask for anything, so a workflow only submits from it when a
-Version is all it needs.
+**ShotGrid's right-click menu**, on the Versions and Playlists of the shows in
+`deploy/shotgrid/menu.yaml`: a submission form, like the Nuke panel's, shaped by what a menu
+can do.
 
 ```
-right-click ▸ ComfyFarm Submit ▸            LTX 2.5 alpha generation …
-            ▸ ComfyFarm Submit + Publish ▸  LTX 2.5 alpha generation …
-            ▸ ComfyFarm Open ▸              every workflow with an image input
+right-click ▸ ComfyFarm Open ▸   every workflow with an image input
 ```
 
-| Picked in ShotGrid | Submit, Submit + Publish | Open |
-|---|---|---|
-| one Version | submitted at once, with the workflow's defaults, as the ShotGrid user who clicked; the tab then shows the job in the dashboard's queue | the **Submit** form, the workflow picked, the Version as its input |
-| several Versions | **Batch Submit**, a row each (Publish ticked for + Publish), asking to send them once they're checked | **Batch Submit**, a row each |
-| a Playlist | (not offered) | **Batch Submit**, a row per Version, in the playlist's order |
+| Picked in ShotGrid | Opens |
+|---|---|
+| one Version | the **Submit** form, the workflow picked, the Version as its input |
+| several Versions | **Batch Submit**, a row each |
+| a Playlist | **Batch Submit**, a row per Version, in the playlist's order |
 
-- **Which folder a workflow goes in** is worked out from its manifest (`comfyfarm/shotgrid/menu.py`):
-  *Open* takes every workflow with an image input; *Submit* those a Version alone can run
-  (one required input, taking frames rather than one image, and every other field optional:
-  LTX 2.5 alpha generation); *Submit + Publish* those of them that publish. CHORD is Open
-  only (its manifest says so): ShotGrid's Versions are mostly plates and precomps, not UDIM
-  tiles.
-  `shotgrid: false` in a manifest leaves a workflow out, `shotgrid: {submit: false}` out of
-  the Submit folders, `shotgrid: {title: …}` names it in the menu.
-- **When it can't submit** (frames not on disk, ShotGrid not answering, publishing off) the
-  tab says why, with a link that opens it in the dashboard to fix. Only ShotGrid's own POST
-  submits (a link to the same address opens the form instead), and with `auth.api_keys`
-  set it opens the form too (the dashboard asks for the key). The job's user is ShotGrid's
-  `user_login`, else `anonymous`; it's taken as ShotGrid sends it (not checked yet: proof of
-  concept).
-- **The dashboard** follows: `#queue?job=<id>` shows a job, `user=<login>` fills the user
-  when none is entered, Batch Submit's `publish=1` ticks Publish and `send=1` asks to send.
+- *Publish when done* is ticked (the form's checkbox, Batch Submit's Publish column) for a
+  workflow that publishes (`publish: false` in `menu.yaml` leaves it unticked). The dashboard's
+  user is ShotGrid's login when none is entered yet. Nothing is sent until you submit.
+- **Which workflows** is worked out from their manifests (`comfyfarm/shotgrid/menu.py`):
+  those with an image input. `shotgrid: false` in a manifest leaves a workflow out,
+  `shotgrid: {title: …}` names it in the menu.
+- **Submit folders, off for now.** `menus: [open, submit, publish]` in `menu.yaml` adds
+  *ComfyFarm Submit ▸* and *ComfyFarm Submit + Publish ▸*, for the workflows a Version alone
+  can run (one required input taking frames, every other field optional: LTX 2.5 alpha
+  generation; CHORD's manifest keeps it out with `shotgrid: {submit: false}`, as Versions are
+  mostly plates and precomps, not UDIM tiles). One Version is then submitted at once with the
+  workflow's defaults, as ShotGrid's `user_login` (else `anonymous`, not checked yet), and the
+  tab shows the job (`#queue?job=<id>`); several open Batch Submit with `send=1`, which sends
+  them once checked; when it can't submit, the tab says why with a link to the form. Only
+  ShotGrid's own POST submits; with `auth.api_keys` set it opens the form. They're off while
+  every click opens a new tab anyway: they'll come back when the manager has https and
+  ShotGrid can show the result over its own page (its modal overlay).
 - ShotGrid is on https and the farm on http, so Chrome warns that the form isn't secure
   (*Send anyway*), every time, until the manager has https (planned).
 
@@ -1090,7 +1089,8 @@ dashboard, anywhere but a field (a field takes it as text, as before).
 #### Setting the menu up
 
 `deploy/shotgrid/menu.yaml` says which shows have the menu (`raa: all`, or a list of
-workflows for a show) and `farm_url`, the manager's address as artists' browsers reach it.
+workflows for a show), `farm_url` (the manager's address as artists' browsers reach it),
+`publish` (Open ticks Publish when done) and `menus` (the folders: `[open]`).
 `GET /api/v1/shotgrid/menu` shows the menu the manager makes of it: the items, and why
 each workflow is where it is.
 

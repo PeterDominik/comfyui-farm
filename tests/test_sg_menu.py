@@ -61,22 +61,27 @@ class Shows(unittest.TestCase):
         return d / "menu.yaml"
 
     def test_the_repos_own(self):
-        shows, url, problems = M.load_shows(REPO / "deploy" / "shotgrid" / "menu.yaml")
-        self.assertEqual((shows, url, problems), ({"raa": "all"}, FARM, []))
+        self.assertEqual(M.load(REPO / "deploy" / "shotgrid" / "menu.yaml"),
+                         {"shows": {"raa": "all"}, "farm_url": FARM, "menus": ["open"], "publish": True, "problems": []})
 
     def test_forms_and_problems(self):
-        self.assertEqual(M.load_shows(self.write("shows: [raa, bri3]"))[:2], ({"raa": "all", "bri3": "all"}, None))
-        self.assertEqual(M.load_shows(self.write("farm_url: http://x:9090/\nshows: {raa: all, bri3: [ltx25_alpha_gen]}"))[:2],
-                         ({"raa": "all", "bri3": ["ltx25_alpha_gen"]}, "http://x:9090"))
-        _, _, problems = M.load_shows(self.write("farm_url: wrk1125l\nshows: {'bad code': all, raa: 3}"))
-        self.assertEqual(len(problems), 3, problems)
-        self.assertIn("isn't there", M.load_shows(self.write("").parent / "nope.yaml")[2][0])
+        s = M.load(self.write("shows: [raa, bri3]"))
+        self.assertEqual((s["shows"], s["farm_url"], s["menus"], s["publish"]), ({"raa": "all", "bri3": "all"}, None, ["open"], True))
+        s = M.load(self.write("farm_url: http://x:9090/\nshows: {raa: all, bri3: [ltx25_alpha_gen]}\n"
+                              "menus: [publish, open, submit]\npublish: false"))
+        self.assertEqual((s["shows"], s["farm_url"], s["menus"], s["publish"]),
+                         ({"raa": "all", "bri3": ["ltx25_alpha_gen"]}, "http://x:9090", ["submit", "publish", "open"], False))
+        s = M.load(self.write("farm_url: wrk1125l\nshows: {'bad code': all, raa: 3}\nmenus: [open, delete]\npublish: yes please"))
+        self.assertEqual(len(s["problems"]), 5, s["problems"])
+        self.assertEqual(s["menus"], ["open"])                                    # what it was given doesn't count
+        self.assertIn("isn't there", M.load(self.write("").parent / "nope.yaml")["problems"][0])
 
 
 class Items(unittest.TestCase):
     def test_the_menu(self):
         wfs = list(REGISTRY.workflows.values())
-        m = M.build(wfs, publishes, {"raa": "all", "bri3": ["ltx25_alpha_gen", "nope"]}, FARM + "/")
+        m = M.build(wfs, publishes, {"raa": "all", "bri3": ["ltx25_alpha_gen", "nope"]}, FARM + "/",
+                    menus=("open", "submit", "publish"))
         self.assertEqual(m["problems"], ["show bri3: there's no workflow nope"])
         rows = [(i["folder"], i["title"], i["entity_type"], ",".join(i["shows"])) for i in m["items"]]
         self.assertEqual(rows, [
@@ -94,6 +99,9 @@ class Items(unittest.TestCase):
         self.assertEqual([i["list_order"] for i in m["items"][:3]], [101, 201, 300])          # Submit, + Publish, Open
         self.assertEqual(m["folders"], ["ComfyFarm Submit", "ComfyFarm Submit + Publish", "ComfyFarm Open"])
         self.assertEqual(M.build(wfs, publishes, {}, FARM)["items"], [])                      # no shows: no menu
+        only = M.build(wfs, publishes, {"raa": "all"}, FARM)                                 # the default: Open only
+        self.assertEqual((only["folders"], len(only["items"])), (["ComfyFarm Open"], 8))
+        self.assertEqual([i["list_order"] for i in only["items"]][:2], [300, 300])          # as with the other folders on
 
 
 if __name__ == "__main__":

@@ -275,10 +275,9 @@
     <p>Drag a Version's or a Playlist's name from ShotGrid onto this page (onto its tab first, if they share a window).
       Dropped on a field, it's pasted there as its link.</p>
     <h3>Right-click in ShotGrid</h3>
-    <p>Where your show has it (README: ShotGrid right-click), a Version's right-click menu has <b>ComfyFarm Submit ▸</b>,
-      <b>ComfyFarm Submit + Publish ▸</b> and <b>ComfyFarm Open ▸</b>, each listing the workflows. Submit sends one Version
-      to the farm straight away and shows you the job; several selected open here in Batch Submit, asking before they're
-      sent. Open (also on Playlists) brings them here with the workflow picked.</p>
+    <p>Where your show has it (README: ShotGrid right-click), a Version's or a Playlist's right-click menu has
+      <b>ComfyFarm Open ▸</b> with the workflows: one Version opens the Submit form, several or a Playlist Batch Submit,
+      the workflow picked and <i>Publish when done</i> ticked (for a workflow that publishes).</p>
   </div>
 </dialog>
 
@@ -399,6 +398,7 @@ function applyDeepLink() {
   pendingDeep = null;
   state.wantPublish = d.publish;                      // the form's publish part loads after it
   if (d.workflow && state.workflows.some(w => w.name === d.workflow)) { $("#wfSelect").value = d.workflow; renderForm(); }
+  else if (d.publish && $("#pubToggle")) { state.wantPublish = false; $("#pubToggle").checked = true; $("#pubBox").hidden = false; }
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value), inputs = (wf?.params || []).filter(p => p.type === "sequence");
   const seqP = inputs.find(p => p.primary) || inputs[0], el = seqP && $("#p_" + seqP.name);
   if (el && d.input) { el.value = d.input; el.dispatchEvent(new Event("input", { bubbles: true })); el.focus(); }
@@ -564,6 +564,7 @@ function renderForm() {
     if (p) $("#p_" + p.name).addEventListener(p.type === "choice" ? "change" : "input", () => scheduleDest(wf, seqP, outP));
   f.onclick = e => { if (e.target.dataset.showjob) { state.open.add(e.target.dataset.showjob); showTab("queue"); render(); } };
   if (wf.publish) loadPublishForm(wf);
+  else state.wantPublish = false;              // a deep link's publish=1: nothing to tick here
   f.onsubmit = async e => {
     e.preventDefault();
     const params = {};
@@ -1011,7 +1012,7 @@ async function loadPublishForm(wf) {
   let o;
   try { o = await pubOptions(wf.name); } catch (err) { o = { why: err.message }; }
   if (!slot || $("#pubSlot") !== slot) return;   // the form was redrawn meanwhile
-  if (o.why) { slot.innerHTML = `<div class="help">Publishing: ${esc(o.why)}</div>`; return; }
+  if (o.why) { state.wantPublish = false; slot.innerHTML = `<div class="help">Publishing: ${esc(o.why)}</div>`; return; }
   slot.innerHTML = `<label class="check flat"><input type="checkbox" id="pubToggle"> Publish when done
       <span class="help">a Nuke template rendered with the frames on Tractor (Daiquiri), with a daily in Artist Review</span></label>
     <div class="pubbox" id="pubBox" hidden>${publishFields(o, "sp_", state.planHint || {}, state.planHint || {})}</div>`;

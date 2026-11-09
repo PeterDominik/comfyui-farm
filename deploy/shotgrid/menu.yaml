@@ -1,11 +1,10 @@
 # The farm in ShotGrid's right-click menu (README: ShotGrid right-click): which shows have it.
 #
-#   ComfyFarm Submit ▸ / ComfyFarm Submit + Publish ▸ / ComfyFarm Open ▸ <workflow>
+#   ComfyFarm Open ▸ <workflow>
 #
-# Which workflows go in which folder is worked out from their manifests (a workflow a
-# Version alone can run goes in Submit; every workflow with an image input in Open). After
-# changing this file (or adding a workflow), deploy the manager, then make ShotGrid's
-# menu match it with tools/sg_ami.py --sync (with a script that may: --pipeline in Maya).
+# Its workflows are those with an image input (worked out from their manifests). After
+# changing this file (or adding a workflow), deploy the manager, then make ShotGrid's menu
+# match it with tools/sg_ami.py (with a script that may: --pipeline in Maya).
 
 # What ShotGrid's menu posts to: the manager's address as artists' browsers reach it
 # (manager.json's). Changing it later means syncing again (the old items are removed).
@@ -16,3 +15,12 @@ farm_url: http://wrk1125l.rodeofx.com:9090
 shows:
   raa: all
   # bri3: [ltx25_alpha_gen]
+
+# Open ticks "Publish when done" for a workflow that publishes (the form and Batch Submit).
+publish: true
+
+# The folders. open: the dashboard, filled in. submit / publish (ComfyFarm Submit ▸,
+# ComfyFarm Submit + Publish ▸) send a Version straight to the farm; kept off while every
+# click opens a new tab anyway (until the manager has https and ShotGrid can show the
+# result over its own page, chunk 16).
+menus: [open]
