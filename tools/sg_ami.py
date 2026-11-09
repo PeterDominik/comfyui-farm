@@ -238,7 +238,7 @@ def run(args, sg, menu: dict | None, out) -> int:
             sg.delete(ENTITY, r["id"])
     left = [w for w in menu.get("workflows") or [] if not w.get("submit") and w.get("open")]
     if left:
-        say("\nOnly in Open (a Version alone can't run them): "
+        say("\nOnly in Open: "
             + "; ".join(f"{w['label']} ({w['why']})" for w in left))
     out_ = [w for w in menu.get("workflows") or [] if not w.get("open")]
     if out_:

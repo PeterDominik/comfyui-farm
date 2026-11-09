@@ -1060,7 +1060,9 @@ right-click ▸ ComfyFarm Submit ▸            LTX 2.5 alpha generation …
 - **Which folder a workflow goes in** is worked out from its manifest (`comfyfarm/shotgrid/menu.py`):
   *Open* takes every workflow with an image input; *Submit* those a Version alone can run
   (one required input, taking frames rather than one image, and every other field optional:
-  LTX 2.5 alpha generation, CHORD); *Submit + Publish* those of them that publish.
+  LTX 2.5 alpha generation); *Submit + Publish* those of them that publish. CHORD is Open
+  only (its manifest says so): ShotGrid's Versions are mostly plates and precomps, not UDIM
+  tiles.
   `shotgrid: false` in a manifest leaves a workflow out, `shotgrid: {submit: false}` out of
   the Submit folders, `shotgrid: {title: …}` names it in the menu.
 - **When it can't submit** (frames not on disk, ShotGrid not answering, publishing off) the
