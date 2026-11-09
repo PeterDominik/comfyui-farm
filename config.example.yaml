@@ -196,3 +196,6 @@ shotgrid:
   # fields with its frames (used first), its movie (when there are no frames) and its range.
   version_fields: {frames: sg_path_to_frames, movie: sg_path_to_movie, first: sg_first_frame, last: sg_last_frame}
   version_ttl: 120         # seconds a Version's paths are used before ShotGrid is asked again
+  # ShotGrid's right-click menu (README: ShotGrid right-click): which shows have it, and the
+  # address it posts to. Relative to the repo.
+  menu_file: deploy/shotgrid/menu.yaml

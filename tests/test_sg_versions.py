@@ -275,6 +275,24 @@ class Picked(unittest.TestCase):
                 V.action_target(form, SITE)
             self.assertIn(why, str(e.exception))
 
+    def test_the_menus_actions(self):
+        """The item's own action (comfyfarm.shotgrid.menu) and ShotGrid's user (chunk 13c)."""
+        p = V.picked({"entity_type": "Version", "selected_ids": "11,12", "action": "publish", "workflow": "ltx25_alpha_gen",
+                      "user_login": "jminett"}, SITE)
+        self.assertEqual((p["action"], p["user"], p["links"][1]), ("publish", "jminett", f"{SITE}detail/Version/12"))
+        self.assertEqual(V.deep_link(p), "#batch?workflow=ltx25_alpha_gen&user=jminett&publish=1&send=1&versions=11,12")
+        self.assertEqual(V.deep_link({**p, "action": "submit"}),
+                         "#batch?workflow=ltx25_alpha_gen&user=jminett&send=1&versions=11,12")
+        self.assertEqual(V.deep_link({**p, "action": "open"}), "#batch?workflow=ltx25_alpha_gen&user=jminett&versions=11,12")
+        one = V.picked({"entity_type": "Version", "selected_ids": "11", "action": "publish", "workflow": "x"}, SITE)
+        self.assertEqual(V.deep_link(one), "#submit?workflow=x&publish=1&input=" + f"{SITE}detail/Version/11".replace(
+            ":", "%3A").replace("/", "%2F"))                                   # the form, when the manager can't send it
+        pl = V.picked({"entity_type": "Playlist", "selected_ids": "265346", "action": "submit"}, SITE)
+        self.assertEqual(pl["action"], "open")                                # a Playlist only opens
+        self.assertNotIn("send", V.deep_link(pl))
+        odd = V.picked({"entity_type": "Version", "selected_ids": "1", "action": "delete", "user_login": "a b"}, SITE)
+        self.assertEqual((odd["action"], odd["user"]), ("open", None))
+
     def test_ids(self):
         self.assertEqual(V.version_ids("3, 1 2,3"), [3, 1, 2])
         self.assertEqual(V.version_ids([5, "6"]), [5, 6])
@@ -426,6 +444,23 @@ class Jobs(unittest.TestCase):
         with self.assertRaises(FarmError) as e:
             self.farm.batch_versions("13")
         self.assertEqual(e.exception.status, 503)
+
+    def test_submitted_from_shotgrids_menu(self):
+        """Its right-click Submit on one Version (chunk 13c): as the ShotGrid user, defaults."""
+        from comfyfarm.manager.farm import FarmError
+        job = self.farm.shotgrid_submit("ltx25_alpha_gen", LINK, "jminett")
+        self.assertEqual((job["user"], job["params"]["input"], job["info"]["shot"]), ("jminett", LINK, "abc_0010"))
+        self.assertIsNone(job["info"].get("publish_request"))
+        self.assertEqual(self.farm.shotgrid_submit("ltx25_alpha_gen", LINK, None)["user"], "anonymous")
+        for wf, why in (("ltx25_layout_render", "can't be submitted from a Version alone: it also needs Reference"),
+                        ("wan22_i2i", "it takes one image, so a Version's frame has to be picked")):
+            with self.assertRaisesRegex(FarmError, why):
+                self.farm.shotgrid_submit(wf, LINK, "jminett")
+        with self.assertRaisesRegex(FarmError, "publishing isn't switched on"):        # Submit + Publish, publishing off
+            self.farm.shotgrid_submit("ltx25_alpha_gen", LINK, "jminett", publish=True)
+        self.use({})                                                            # a Version ShotGrid doesn't have
+        with self.assertRaisesRegex(SequenceError, "There's no Version 4865327"):     # the job's own refusals
+            self.farm.shotgrid_submit("ltx25_alpha_gen", LINK, "jminett")
 
     def test_submitted_the_link_stays(self):
         job = self.farm.submit("ltx25_alpha_gen", {"input": LINK}, "ann")

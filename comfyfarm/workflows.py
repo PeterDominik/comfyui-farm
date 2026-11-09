@@ -220,6 +220,10 @@ class Workflow:
         # A preview movie of its frames, made by the agent (fileio.preview): every workflow
         # writing frames gets one unless `preview: false`.
         self.preview_movie = m.get("preview", True)
+        # ShotGrid's right-click menu (comfyfarm.shotgrid.menu): where it goes is worked out
+        # from its inputs; `shotgrid: false` keeps it out, `shotgrid: {submit: false}` out of
+        # the Submit folders, `title:` names it there (default: its label).
+        self.shotgrid = m.get("shotgrid", True)
         self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
@@ -321,6 +325,11 @@ class Workflow:
             problems.append("publish: needs to be a section like {step: lay}")
         if not isinstance(self.preview_movie, bool):
             problems.append("preview: needs to be true or false (false: no preview movie of the frames)")
+        sg = self.shotgrid
+        if not (isinstance(sg, bool) or (isinstance(sg, dict) and set(sg) <= {"submit", "title"}
+                                          and isinstance(sg.get("submit", True), bool)
+                                          and isinstance(sg.get("title", ""), str))):
+            problems.append("shotgrid: needs to be false, or a section like {submit: false, title: <its name in the menu>}")
         for p in self.params.values():
             if p.type in GATEWAY_TYPES or p.naming:
                 if p.targets:

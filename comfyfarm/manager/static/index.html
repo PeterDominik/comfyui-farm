@@ -275,8 +275,10 @@
     <p>Drag a Version's or a Playlist's name from ShotGrid onto this page (onto its tab first, if they share a window).
       Dropped on a field, it's pasted there as its link.</p>
     <h3>Right-click in ShotGrid</h3>
-    <p><b>Send to ComfyFarm</b> in a Version's or a Playlist's right-click menu, where it's been set up for your show
-      (README: ShotGrid right-click). Several Versions selected go to Batch Submit together.</p>
+    <p>Where your show has it (README: ShotGrid right-click), a Version's right-click menu has <b>ComfyFarm Submit ▸</b>,
+      <b>ComfyFarm Submit + Publish ▸</b> and <b>ComfyFarm Open ▸</b>, each listing the workflows. Submit sends one Version
+      to the farm straight away and shows you the job; several selected open here in Batch Submit, asking before they're
+      sent. Open (also on Playlists) brings them here with the workflow picked.</p>
   </div>
 </dialog>
 
@@ -356,26 +358,46 @@ $("#tabs").addEventListener("click", e => { const b = e.target.closest("button")
 window.addEventListener("hashchange", () => { if (!deepLink(location.hash)) showTab(location.hash.slice(1)); });
 
 // Deep links: /#submit?workflow=<name>&input=<path or ShotGrid Version link> opens the
-// Submit tab with them filled in; /#batch?playlist=<link or id>&workflow=<name> opens Batch
-// Submit with the playlist loaded, ?versions=<id>,<id>… with those Versions. ShotGrid's
-// right-click, the ComfyFarm button and links dropped on the page come this way
+// Submit tab with them filled in (publish=1: Publish when done ticked); /#batch?playlist=
+// <link or id>&workflow=<name> opens Batch Submit with the playlist loaded, ?versions=<id>,…
+// with those Versions (publish=1: Publish ticked; send=1: asks to send them once checked);
+// /#queue?job=<id> shows a job. user=<login> is the user when none is entered yet.
+// ShotGrid's right-click, the ComfyFarm button and links dropped on the page come this way
 // (shotgrid.js), as do links in messages.
 let pendingDeep = null, pendingBatch = null;
 function deepLink(hash) {
-  const b = /^#batch\?(.*)$/.exec(hash || "");
-  if (b) { pendingBatch = new URLSearchParams(b[1]); showTab("batch"); window.batchDeepLink?.(); return true; }
-  const m = /^#submit\?(.*)$/.exec(hash || "");
-  if (!m) return false;
-  const q = new URLSearchParams(m[1]);
-  pendingDeep = { workflow: q.get("workflow"), input: q.get("input") };
+  const [, tab, query] = /^#(submit|batch|queue)\?(.*)$/.exec(hash || "") || [];
+  if (!tab) return false;
+  const q = new URLSearchParams(query);
+  const login = (q.get("user") || "").trim();
+  if (login && !state.auth && !$("#user").value.trim() && /^[\w.@+-]{1,64}$/.test(login)) {
+    $("#user").value = login; store.set("comfyfarm.user", login);
+  }
+  if (tab === "batch") { pendingBatch = q; showTab("batch"); window.batchDeepLink?.(); return true; }
+  if (tab === "queue") { showJob(q.get("job")); return true; }
+  pendingDeep = { workflow: q.get("workflow"), input: q.get("input"), publish: q.get("publish") === "1" };
   showTab("submit");
   applyDeepLink();
   return true;
+}
+// A job in the queue, opened and in view (one just submitted from ShotGrid's right-click):
+// whoever's it is, whatever the filter.
+async function showJob(id) {
+  showTab("queue");
+  if (!id) return;
+  state.open.add(id);
+  const seg = (sel, key, v) => { state[key] = v; $(sel).querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === v)); };
+  seg("#scope", "scope", "all");
+  try { upsert(await api(`/api/v1/jobs/${encodeURIComponent(id)}`)); } catch { /* not there (any more) */ }
+  if (state.jobs.has(id) && !visible().some(j => j.id === id)) seg("#filter", "filter", "all");   // done already
+  render();
+  document.querySelector(`#jobs tr[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center" });
 }
 function applyDeepLink() {
   const d = pendingDeep;
   if (!d || !state.workflows.length) return;          // the workflows aren't loaded yet: boot() applies it
   pendingDeep = null;
+  state.wantPublish = d.publish;                      // the form's publish part loads after it
   if (d.workflow && state.workflows.some(w => w.name === d.workflow)) { $("#wfSelect").value = d.workflow; renderForm(); }
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value), inputs = (wf?.params || []).filter(p => p.type === "sequence");
   const seqP = inputs.find(p => p.primary) || inputs[0], el = seqP && $("#p_" + seqP.name);
@@ -474,8 +496,34 @@ function requiresText(r) {
   const parts = [r.vram_gb ? `at least ${r.vram_gb} GB of VRAM` : "", (r.tags || []).length ? `the tag${r.tags.length > 1 ? "s" : ""} ${r.tags.join(", ")}` : ""];
   return ` Runs on machines with ${parts.filter(Boolean).join(" and ")}.`;
 }
+// Another workflow: the inputs typed (a ShotGrid Version opened from its right-click, a
+// path) stay. The main input goes to the new one's main input, other inputs and fields with
+// the same name stay as they are, and so do the output folder and the job name.
+function switchWorkflow() {
+  const old = state.workflows.find(w => w.name === state.formWf), kept = {};
+  const mainOf = wf => { const i = wf.params.filter(p => p.type === "sequence"); return (i.find(p => p.primary) || i[0])?.name; };
+  if (old) {
+    for (const p of old.params) {
+      const el = $("#p_" + p.name);
+      if (el && p.type !== "bool" && el.value.trim()) kept[p.name === mainOf(old) ? "$main" : p.name] = { type: p.type, value: el.value };
+    }
+    if ($("#jobname")?.value.trim()) kept.$name = { value: $("#jobname").value };
+  }
+  renderForm();
+  const wf = state.workflows.find(w => w.name === state.formWf);
+  if (!wf) return;
+  const put = (el, v) => { if (el) { el.value = v; el.dispatchEvent(new Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true })); } };
+  for (const p of wf.params) {
+    const k = p.name === mainOf(wf) ? "$main" : p.name, v = kept[k];
+    if (!v || (k !== "$main" && v.type !== p.type)) continue;
+    if (p.type === "choice" && !(p.choices || []).map(String).includes(v.value)) continue;
+    put($("#p_" + p.name), v.value);
+  }
+  if (kept.$name) put($("#jobname"), kept.$name.value);
+}
 function renderForm() {
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value) || state.workflows[0];
+  state.formWf = wf?.name;
   const f = $("#form");
   if (!wf) { f.innerHTML = '<div class="empty">No workflows loaded.</div>'; return; }
   // The primary input names the outputs (older farms send no `primary`: the first input).
@@ -968,6 +1016,7 @@ async function loadPublishForm(wf) {
       <span class="help">a Nuke template rendered with the frames on Tractor (Daiquiri), with a daily in Artist Review</span></label>
     <div class="pubbox" id="pubBox" hidden>${publishFields(o, "sp_", state.planHint || {}, state.planHint || {})}</div>`;
   $("#pubToggle").onchange = e => { $("#pubBox").hidden = !e.target.checked; };
+  if (state.wantPublish) { state.wantPublish = false; $("#pubToggle").checked = true; $("#pubBox").hidden = false; }
   wireShotGrid("sp_");
   wireTemplateReload("sp_", wf.name);
 }
@@ -1186,7 +1235,7 @@ async function boot() {
     state.workflows = wfs.workflows;
     $("#templatesTab").hidden = !state.workflows.some(w => w.publish);   // publishing is on
     $("#wfSelect").innerHTML = state.workflows.map(w => `<option value="${esc(w.name)}">${esc(w.label)}</option>`).join("");
-    $("#wfSelect").onchange = renderForm;
+    $("#wfSelect").onchange = switchWorkflow;
     renderForm();
     applyDeepLink();
     window.batchInit?.();                     // batch.js: its workflow list, the table kept from before

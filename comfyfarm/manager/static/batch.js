@@ -79,6 +79,7 @@ function bLoadPub(wf) {
         for (const r of batch.rows) if (!(c.name in r.values)) r.values[c.name] = batch.fill[c.name];
       }
       batchRender();
+      bApplyWanted();
     });
 }
 
@@ -139,14 +140,51 @@ function batchJobs() {                          // jobs changed (live events): t
 }
 // /#batch?playlist=<link or id>&workflow=<name>, or ?versions=<id>,<id>,…: opened from
 // ShotGrid (its right-click, the ComfyFarm button, a link dropped on the page) or a message.
+// publish=1 ticks Publish on every row; send=1 (ShotGrid's Submit on several Versions)
+// asks to send the ready rows as soon as they're checked.
 function batchDeepLink() {
   const q = typeof pendingBatch !== "undefined" ? pendingBatch : null;
   if (!q || !state.workflows.length) return;
   pendingBatch = null;
+  batch.wantPublish = q.get("publish") === "1";
+  batch.autoSend = q.get("send") === "1";
+  batch.footMsg = "";
   if (q.get("workflow") && state.workflows.some(w => w.name === q.get("workflow"))) batchSetWorkflow(q.get("workflow"), false);
+  bApplyWanted();
   if (q.get("playlist")) { $("#plLink").value = q.get("playlist"); batchLoadPlaylist(q.get("playlist")); }
   else if (q.get("versions")) { $("#plLink").value = ""; batchLoadPlaylist("versions:" + q.get("versions")); }
 }
+// Publish asked for by the deep link (ShotGrid's Submit + Publish): ticked on every row once
+// the publish columns are there; when the workflow can't publish, it says so and sends nothing.
+function bApplyWanted() {
+  const wf = bWf();
+  if (!batch.wantPublish || !wf) return bMaybeSend();
+  const o = batch.pub[wf.name];
+  if (wf.publish && (o === undefined || o === null)) return;          // still asking
+  batch.wantPublish = false;
+  if (!wf.publish || o.why) {
+    batch.autoSend = false;
+    batch.footMsg = `Not sent: ${wf.label} can't be published (${(o && o.why) || "publishing is off"}).`;
+    bRenderFoot();
+    return;
+  }
+  batch.fill.$publish = true;
+  for (const r of batch.rows) if (!r.job) { r.values.$publish = true; }
+  batchSave(); batchRender();
+  batch.rows.forEach(bCheck);
+}
+// Send asked for by the deep link (ShotGrid's Submit on several Versions): once every row
+// is loaded and checked, the usual confirm for the ready ones.
+function bMaybeSend() {
+  const wf = bWf();
+  if (!batch.autoSend || !wf || batch.loading || batch.wantPublish || !batch.rows.length) return;
+  if (batch.rows.some(r => r.checking) || batch.queue.length || batch.running) return;
+  batch.autoSend = false;
+  const ready = batch.rows.filter(r => r.ticked && bReady(r));
+  if (!ready.length) { batch.footMsg = "Not sent: none of the rows can run (each says why)."; bRenderFoot(); return; }
+  setTimeout(() => bSend(ready), 50);                                  // after the table's drawn
+}
+
 // What the source field holds: a Playlist (link or id) as it is; Version links (one or
 // more, pasted or dropped there) as the picked Versions they are.
 const bPicked = link => /^versions:/.test(link || "");
@@ -242,7 +280,7 @@ function bPump() {
           row.firstCheck = false;
           batchSave();
         }
-        bRenderRows(); bPump();
+        bRenderRows(); bPump(); bMaybeSend();
       });
   }
   bRenderFoot();
