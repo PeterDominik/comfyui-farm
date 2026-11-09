@@ -276,11 +276,16 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """Batch Submit: Versions picked in ShotGrid (ids, comma-separated), each a row."""
         return farm.batch_versions(ids)
 
-    def _menu(base_url: str) -> dict:
+    def _menu_settings() -> dict:
         menu_file = Path(cfg.shotgrid.menu_file)
-        shows, farm_url, problems = SM.load_shows(menu_file if menu_file.is_absolute() else REPO / menu_file)
-        out = SM.build(list(registry.workflows.values()), farm.publisher.publish_info, shows, farm_url or base_url)
-        out["problems"] = problems + out["problems"]
+        return SM.load(menu_file if menu_file.is_absolute() else REPO / menu_file)
+
+    def _menu(base_url: str) -> dict:
+        s = _menu_settings()
+        out = SM.build(list(registry.workflows.values()), farm.publisher.publish_info, s["shows"],
+                       s["farm_url"] or base_url, s["menus"])
+        out["problems"] = s["problems"] + out["problems"]
+        out["publish"] = s["publish"]
         return out
 
     @app.get("/api/v1/shotgrid/menu")
@@ -291,10 +296,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         return _menu(str(request.base_url))
 
     # ShotGrid's right-click (Action Menu Items, README: ShotGrid right-click): ShotGrid opens a
-    # new tab POSTing the selection here. Open, and Submit on several Versions, are sent on to
-    # the dashboard's deep link (nothing read or changed here; Batch Submit asks before sending).
-    # Submit on one Version submits it, as the ShotGrid user who clicked (else anonymous), then
-    # shows the job in the dashboard; when it can't, the page says why, with the form to fix it.
+    # new tab POSTing the selection here. Open is sent on to the dashboard's deep link, Publish
+    # when done ticked for a workflow that publishes (menu.yaml publish:); nothing is read or
+    # changed here. With the Submit folders on (menu.yaml menus:), Submit on several Versions
+    # opens Batch Submit to send them; on one it submits it, as the ShotGrid user who clicked
+    # (else anonymous), then shows the job; when it can't, the page says why, with the form.
     @app.api_route("/api/v1/shotgrid/ami", methods=["GET", "POST"], include_in_schema=False)
     async def shotgrid_ami(request: Request):
         form = dict(request.query_params)
@@ -316,6 +322,8 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         if p["workflow"] and wf is None:
             return HTMLResponse(_ami_page(f"There's no workflow <code>{html.escape(p['workflow'])}</code> on the farm "
                                           "(ShotGrid's menu is older than the farm's: sync it again)."), status_code=404)
+        if p["action"] == "open" and wf is not None:
+            p["publish"] = _menu_settings()["publish"] and farm.publisher.publish_info(wf) is not None
         one = p["kind"] == "Version" and len(p["ids"]) == 1
         if p["action"] == "open" or not one or wf is None:
             return RedirectResponse("/" + SV.deep_link(p), status_code=303)

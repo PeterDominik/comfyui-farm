@@ -1,10 +1,10 @@
 """Makes ShotGrid's right-click menu match the farm's (README: ShotGrid right-click):
 
-    ComfyFarm Submit ▸ / ComfyFarm Submit + Publish ▸ / ComfyFarm Open ▸ <workflow>
+    ComfyFarm Open ▸ <workflow>          (and Submit ▸ / Submit + Publish ▸ when menu.yaml has them)
 
-on the Versions (and, for Open, the Playlists) of the shows in deploy/shotgrid/menu.yaml.
-The farm says what the menu should be (GET <farm>/api/v1/shotgrid/menu: which workflow
-goes in which folder, worked out from their manifests); this makes ShotGrid's Action Menu
+on the Versions and Playlists of the shows in deploy/shotgrid/menu.yaml. The farm says what
+the menu should be (GET <farm>/api/v1/shotgrid/menu: which workflow goes in which folder,
+worked out from their manifests); this makes ShotGrid's Action Menu
 Items match it: it creates the missing ones, changes those that differ, and deletes the
 ones the farm doesn't have any more (any item posting to the farm). It changes ShotGrid, so
 it only shows what it would do until it's run with --apply. Run it again after adding a
@@ -237,7 +237,7 @@ def run(args, sg, menu: dict | None, out) -> int:
         if args.apply:
             sg.delete(ENTITY, r["id"])
     left = [w for w in menu.get("workflows") or [] if not w.get("submit") and w.get("open")]
-    if left:
+    if left and any(f != "ComfyFarm Open" for f in menu.get("folders") or []):       # the Submit folders are on
         say("\nOnly in Open: "
             + "; ".join(f"{w['label']} ({w['why']})" for w in left))
     out_ = [w for w in menu.get("workflows") or [] if not w.get("open")]

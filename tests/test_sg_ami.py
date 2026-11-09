@@ -31,9 +31,9 @@ KEY = "s3cr3t-k3y"
 REGISTRY = WorkflowRegistry(REPO / "workflows")
 
 
-def menu(shows=None):
+def menu(shows=None, menus=("open", "submit", "publish")):
     pub = lambda wf: None if wf.textures else {"step": "lay"}        # noqa: E731
-    return M.build(list(REGISTRY.workflows.values()), pub, {"raa": "all"} if shows is None else shows, FARM)
+    return M.build(list(REGISTRY.workflows.values()), pub, {"raa": "all"} if shows is None else shows, FARM, menus)
 
 
 def field(kind="text", types=None):
@@ -155,6 +155,19 @@ class Sync(unittest.TestCase):
         self.assertIn("Would delete ActionMenuItem", text)
         code, text = self.run_it("--remove", "--apply")
         self.assertEqual(list(self.sg.items), [12])
+
+    def test_down_to_open_only(self):
+        """Peter's menu on 2026-11-08 (three folders), then menu.yaml's menus: [open]."""
+        self.run_it("--apply")
+        n = len(self.sg.writes)
+        self.menu = menu(menus=("open",))
+        code, text = self.run_it()
+        self.assertIn("0 to create, 0 to change, 2 to delete, 8 as they are.", text)
+        self.assertIn("ComfyFarm Submit ▸ 'LTX 2.5 alpha generation' on Version: would delete", text)
+        self.assertNotIn("Only in Open", text)                                # no Submit folders to be left out of
+        code, text = self.run_it("--apply")
+        self.assertEqual(sorted({i.get("folder") for i in self.sg.items.values()} - {None}), ["ComfyFarm Open"])
+        self.assertEqual([w[0] for w in self.sg.writes[n:]], ["delete", "delete"])
 
     def test_refused(self):
         self.menu = menu({"nope": "all"})

@@ -92,7 +92,7 @@ ACTIONS = ("open", "submit", "publish")
 
 def picked(form: dict, site_url: str) -> dict:
     """What ShotGrid's right-click (an Action Menu Item posting to /api/v1/shotgrid/ami)
-    picked: {kind, ids, links, action, workflow, user}. `form` is what ShotGrid posts
+    picked: {kind, ids, links, action, workflow, user, publish}. `form` is what ShotGrid posts
     (entity_type, selected_ids, server_hostname, user_login…; README: ShotGrid right-click),
     plus the item's own URL's action (open, submit, publish: submit and publish when
     done) and workflow (comfyfarm.shotgrid.menu). The links are to the farm's ShotGrid
@@ -117,7 +117,8 @@ def picked(form: dict, site_url: str) -> dict:
     return {"kind": kind, "ids": ids, "links": [f"{site}/detail/{kind}/{i}" for i in ids],
             "action": "open" if kind == "Playlist" else action,          # a Playlist only opens
             "workflow": get("workflow") if _WORKFLOW.match(get("workflow")) else None,
-            "user": get("user_login") if _LOGIN.match(get("user_login")) else None}
+            "user": get("user_login") if _LOGIN.match(get("user_login")) else None,
+            "publish": False}                    # Publish when done ticked: the manager decides
 
 
 def deep_link(p: dict) -> str:
@@ -128,13 +129,14 @@ def deep_link(p: dict) -> str:
       a Playlist          #batch?playlist=<its link>               Batch Submit, its Versions
 
     with the workflow, and the ShotGrid login as the dashboard's user when it has none.
-    Submit (+ Publish) on several Versions also ticks Publish and asks to send them
-    (send=1); on one, the manager submits it itself (here: when it can't, the form)."""
+    publish=1 ticks Publish when done (`publish`, or Submit + Publish). Submit (+ Publish)
+    on several Versions also asks to send them (send=1); on one, the manager submits it
+    itself (here: when it can't, the form)."""
     q = {"workflow": p["workflow"]} if p.get("workflow") else {}
     if p.get("user"):
         q["user"] = p["user"]
     submit = p.get("action") in ("submit", "publish")
-    if submit and p.get("action") == "publish":
+    if p.get("publish") or p.get("action") == "publish":
         q["publish"] = "1"
     if p["kind"] == "Playlist":
         return "#batch?" + urlencode({**q, "playlist": p["links"][0]})
