@@ -146,7 +146,6 @@
   #batchLog:empty { display: none; }
   /* From ShotGrid (shotgrid.js): the dialog with the ComfyFarm button, the hint while a link is dragged over */
   #sgDialog { max-width: 620px; }
-  #sgOpen { white-space: nowrap; }
   .sgbody { padding: 4px 18px 14px; font-size: 13px; }
   .sgbody h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 16px 0 4px; }
   .sgbody p { margin: 6px 0; }
@@ -167,7 +166,6 @@
   <h1>ComfyUI <span>farm</span></h1>
   <div class="spacer"></div>
   <div class="ident">
-    <button id="sgOpen" class="small" type="button" hidden title="Bring Versions and Playlists from ShotGrid: its right-click, the ComfyFarm button, drag and drop">From ShotGrid</button>
     <span id="live" class="chip"><span class="dot"></span>connecting</span>
     <label id="userBox">user <input id="user" size="12" placeholder="your login"></label>
     <label id="keyBox" hidden>API key <input id="key" type="password" size="16"></label>
@@ -365,6 +363,10 @@ window.addEventListener("hashchange", () => { if (!deepLink(location.hash)) show
 // (shotgrid.js), as do links in messages.
 let pendingDeep = null, pendingBatch = null;
 function deepLink(hash) {
+  if (hash === "#shotgrid") {                       // the From ShotGrid dialog (shotgrid.js): the ComfyFarm button
+    state.sgDialog = true; showTab(store.get("comfyfarm.tab") || "submit"); window.sgOpen?.();
+    return true;
+  }
   const [, tab, query] = /^#(submit|batch|queue)\?(.*)$/.exec(hash || "") || [];
   if (!tab) return false;
   const q = new URLSearchParams(query);
@@ -854,8 +856,15 @@ for (const [id, key] of [["#scope", "scope"], ["#filter", "filter"]]) {
 const pubOptions = name => api(`/api/v1/workflows/${encodeURIComponent(name)}/publish`);
 const wfPublish = name => state.workflows.find(w => w.name === name)?.publish;
 const fromPath = v => v ? `${v} (from the input path)` : "from the input path";
-// default, default (global); _generic/ is what the global ones were called at first
-const tplLabel = k => { const m = /^_(?:global|generic)\/(.*)$/.exec(k); return m ? `${m[1]} (global)` : k; };
+// A template where it comes from first: global / default, or <the workflow's label> / default
+// (`wf`: the workflow's name; without it, the name alone). _generic/ is what the global ones
+// were called at first.
+const tplLabel = (k, wf) => {
+  const m = /^_(?:global|generic)\/(.*)$/.exec(k || "");
+  if (m) return `global / ${m[1]}`;
+  const w = wf && (state.workflows.find(x => x.name === wf)?.label || wf);
+  return w ? `${w} / ${k}` : (k || "");
+};
 
 // ↻ next to the template list: what's published now, keeping the pick when it's still there.
 function wireTemplateReload(px, workflow) {
@@ -866,10 +875,10 @@ function wireTemplateReload(px, workflow) {
     try {
       const o = await pubOptions(workflow), sel = $("#" + px + "template"), cur = sel.value;
       const pick = o.templates.includes(cur) ? cur : o.template;
-      sel.innerHTML = (o.templates || []).map(k => `<option value="${esc(k)}" ${k === pick ? "selected" : ""}>${esc((o.labels || {})[k] || tplLabel(k))}</option>`).join("");
+      sel.innerHTML = (o.templates || []).map(k => `<option value="${esc(k)}" ${k === pick ? "selected" : ""}>${esc((o.labels || {})[k] || tplLabel(k, workflow))}</option>`).join("");
       const bad = Object.entries(o.unusable || {}), help = $("#" + px + "tplHelp");
-      help.textContent = bad.length ? `Not usable: ${bad.map(([n]) => tplLabel(n)).join(", ")} (hover for why)` : "";
-      help.title = bad.map(([n, w]) => `${tplLabel(n)}: ${w}`).join("\n");
+      help.textContent = bad.length ? `Not usable: ${bad.map(([n]) => tplLabel(n, workflow)).join(", ")} (hover for why)` : "";
+      help.title = bad.map(([n, w]) => `${tplLabel(n, workflow)}: ${w}`).join("\n");
     } catch (err) { $("#" + px + "tplHelp").textContent = err.message; }
     finally { b.disabled = false; }
   };
@@ -987,10 +996,10 @@ function publishFields(o, px, v = {}, hint = {}) {
   const opts = (list, cur) => list.map(x => `<option ${x === cur ? "selected" : ""}>${esc(x)}</option>`).join("");
   const unusable = Object.entries(o.unusable || {});
   const tplOpts = (o, cur) => o.templates.map(k =>
-    `<option value="${esc(k)}" ${k === cur ? "selected" : ""}>${esc((o.labels || {})[k] || tplLabel(k))}</option>`).join("");
+    `<option value="${esc(k)}" ${k === cur ? "selected" : ""}>${esc((o.labels || {})[k] || tplLabel(k, o.workflow))}</option>`).join("");
   // Templates that can't be used: named, why in the tooltip.
-  const tplHelp = unusable.length ? `Not usable: ${unusable.map(([n]) => tplLabel(n)).join(", ")} (hover for why)` : "";
-  const tplTip = unusable.length ? unusable.map(([n, w]) => `${tplLabel(n)}: ${w}`).join("\n") : "";
+  const tplHelp = unusable.length ? `Not usable: ${unusable.map(([n]) => tplLabel(n, o.workflow)).join(", ")} (hover for why)` : "";
+  const tplTip = unusable.length ? unusable.map(([n, w]) => `${tplLabel(n, o.workflow)}: ${w}`).join("\n") : "";
   return `<label>Show<input id="${px}show" list="${px}showList" autocomplete="off" value="${esc(v.show || "")}" placeholder="${esc(fromPath(hint.show))}"><datalist id="${px}showList"></datalist></label>
     <label id="${px}seqBox" hidden>Sequence<input id="${px}seq" list="${px}seqList" autocomplete="off" placeholder="all"><datalist id="${px}seqList"></datalist><span class="help">narrows the shot list</span></label>
     <label>Shot<span class="inrow"><input id="${px}shot" list="${px}shotList" autocomplete="off" value="${esc(v.shot || "")}" placeholder="${esc(fromPath(hint.shot))}"><button type="button" class="small" id="${px}sgRefresh" hidden title="Reload the shows and shots from ShotGrid (a shot was just created)">↻</button></span><datalist id="${px}shotList"></datalist><span class="help" id="${px}sgNote"></span></label>
@@ -1026,7 +1035,7 @@ async function loadPublishForm(wf) {
 function publishRows(j) {
   const p = j.publish, ask = j.info?.publish_request;
   if (!p && !ask) return "";
-  const to = x => esc([x.show, x.shot, x.step].filter(Boolean).join(" · ")) + (x.template ? ` with ${esc(tplLabel(x.template))}` : "");
+  const to = x => esc([x.show, x.shot, x.step].filter(Boolean).join(" · ")) + (x.template ? ` with ${esc(tplLabel(x.template, j.workflow))}` : "");
   if (!p) return `<div>Publish</div><div class="muted">When it's done: ${to(ask)}${ask.dry_run ? " (dry run)" : ""}</div>`;
   const [label, cls] = PUB_STATE[p.state] || [p.state, "muted"];
   const notes = (p.notes || []).filter(n => !(p.state === "dry_run" && n.startsWith("dry run")));
@@ -1094,7 +1103,7 @@ async function openPublishLog(id) {
     return `<div class="kv">
       <div>When</div><div>${new Date(p.created_at * 1000).toLocaleString()}${p.user ? ` · ${esc(p.user)}` : ""}</div>
       <div>State</div><div><span class="${cls}">${esc(label)}</span>${p.tractor_id ? ` · Tractor job <code>${esc(p.tractor_id)}</code>` : ""}${p.title ? `<br><span class="mono">${esc(p.title)}</span>` : ""}</div>
-      <div>To</div><div>${esc([p.show, p.shot, p.step].filter(Boolean).join(" · "))}${p.template ? ` with ${esc(tplLabel(p.template))}` : ""} · frames ${esc(p.frames || "forceInput")}</div>
+      <div>To</div><div>${esc([p.show, p.shot, p.step].filter(Boolean).join(" · "))}${p.template ? ` with ${esc(tplLabel(p.template, j.workflow))}` : ""} · frames ${esc(p.frames || "forceInput")}</div>
       ${p.description ? `<div>Description</div><div>${esc(p.description)}</div>` : ""}
       ${p.error ? `<div>Error</div><div class="err">${esc(p.error)}</div>` : ""}
       ${(p.notes || []).map(n => `<div>Note</div><div class="warn">${esc(n)}</div>`).join("")}
@@ -1240,7 +1249,7 @@ async function boot() {
     renderForm();
     applyDeepLink();
     window.batchInit?.();                     // batch.js: its workflow list, the table kept from before
-    window.sgInit?.();                        // shotgrid.js: the From ShotGrid button
+    window.sgInit?.();                        // shotgrid.js: the From ShotGrid dialog (/#shotgrid), the drop zone
     await refreshJobs();
     if (ws) { ws.onclose = null; ws.close(); }
     connect();

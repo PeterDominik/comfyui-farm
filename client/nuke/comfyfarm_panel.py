@@ -347,12 +347,12 @@ class PanelModel:
 
     @staticmethod
     def template_label(key: str | None) -> str:
-        """A template as the forms show it: default, or default (global). (_generic/ is
-        what the global ones were called at first.)"""
+        """A template as the forms show it when the manager doesn't say: global / default,
+        or the name alone. (_generic/ is what the global ones were called at first.)"""
         key = key or ""
         for prefix in ("_global/", "_generic/"):
             if key.startswith(prefix):
-                return f"{key[len(prefix):]} (global)"
+                return f"global / {key[len(prefix):]}"
         return key
 
     @staticmethod

@@ -145,7 +145,8 @@ class Publisher:
         own, then the global ones; and why any can't be used), the steps and defaults."""
         wf = self.farm.registry.get(workflow)
         store = self.templates
-        out = {"workflow": wf.name, "enabled": self.cfg.enabled, "dry_run": self.cfg.dry_run, "steps": self.cfg.steps,
+        out = {"workflow": wf.name, "workflow_label": wf.label, "enabled": self.cfg.enabled, "dry_run": self.cfg.dry_run,
+               "steps": self.cfg.steps,
                "step": (wf.publish or {}).get("step") or self.cfg.default_step, "description": self.cfg.description,
                "folder": str(store.folder(wf.name)), "global_folder": str(store.folder(GLOBAL)),
                "templates": [], "labels": {}, "template": None, "unusable": {}, "why": None}
@@ -165,11 +166,11 @@ class Publisher:
                     out["unusable"][key] = "; ".join(probs)
                 else:
                     out["templates"].append(key)
-                    out["labels"][key] = label(key)
+                    out["labels"][key] = label(key, wf.label)
         out["template"] = self._default_template(out["templates"])
         if not out["templates"]:
             out["why"] = (f"No usable template for {wf.label} in {out['folder']} or {out['global_folder']}" +
-                          (f" ({'; '.join(f'{label(k)}: {w}' for k, w in out['unusable'].items())})"
+                          (f" ({'; '.join(f'{label(k, wf.label)}: {w}' for k, w in out['unusable'].items())})"
                            if out["unusable"] else "") + ": save one (README, Publishing).")
         return out
 
@@ -200,9 +201,10 @@ class Publisher:
         template = canonical(str(req.get("template") or "").strip()) or opts["template"]
         if template not in opts["templates"]:
             why = opts["unusable"].get(template)
-            raise ParamError(f"Template {label(template)} can't be used: {why}." if why else
-                             f"There's no template {label(template)} for {workflow} "
-                             f"({', '.join(label(k) for k in opts['templates'])}).")
+            own = opts["workflow_label"]
+            raise ParamError(f"Template {label(template, own)} can't be used: {why}." if why else
+                             f"There's no template {label(template, own)} "
+                             f"({', '.join(label(k, own) for k in opts['templates'])}).")
         show_ = str(req.get("show") or show or "").strip()
         shot_ = str(req.get("shot") or shot or "").strip()
         if not show_ or not _CODE.fullmatch(show_):

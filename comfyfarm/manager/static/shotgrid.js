@@ -13,7 +13,8 @@
 //
 // Nothing is sent from here: the form or the table opens filled in, checked as ever.
 // Loaded after the dashboard's own script, whose helpers it uses ($, esc, api, deepLink).
-// Its entry point: sgInit() once the dashboard is up.
+// Its entry point: sgInit() once the dashboard is up. The dialog with the ComfyFarm button
+// opens at /#shotgrid (no button for it on the page).
 "use strict";
 
 // The button's code. It runs on the ShotGrid page, so it uses nothing of the dashboard's,
@@ -100,17 +101,21 @@ document.addEventListener("drop", e => {
   sgHideHint(3000);
 });
 
-// ------------------------------------------------------------- the From ShotGrid dialog
+// ------------------------------------------------------------- the From ShotGrid dialog (/#shotgrid)
+function sgOpen() {
+  const dlg = $("#sgDialog");
+  if (!dlg || dlg.open) return;
+  $("#sgButtonMsg").textContent = "";
+  dlg.showModal();
+}
 function sgInit() {
-  const btn = $("#sgOpen"), dlg = $("#sgDialog"), link = $("#sgButton");
+  const dlg = $("#sgDialog"), link = $("#sgButton");
   link.href = sgButtonHref();
   link.onclick = e => {                          // it's for the bookmarks bar, not for here
     e.preventDefault();
     $("#sgButtonMsg").textContent = "Drag it onto your bookmarks bar, then click it on a ShotGrid page.";
   };
   $("#sgFarm").textContent = location.origin;
-  btn.onclick = () => { $("#sgButtonMsg").textContent = ""; dlg.showModal(); };
   dlg.addEventListener("click", e => { if (e.target === dlg || e.target.dataset.close != null) dlg.close(); });
-  // Only where the manager has its ShotGrid lookups: the links need them.
-  api("/api/v1/shotgrid").then(s => { btn.hidden = s.set_up === false; }).catch(() => {});
+  if (state.sgDialog) { state.sgDialog = false; sgOpen(); }     // opened at /#shotgrid, before this loaded
 }

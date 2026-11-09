@@ -252,7 +252,8 @@ class PublisherTests(unittest.TestCase):
         # A workflow with its own: its own default first, the global ones after.
         o = self.pub.options("ltx25_alpha_gen")
         self.assertEqual(o["templates"], ["default", "_global/default", "_global/over_plate"])
-        self.assertEqual((o["template"], o["labels"]["_global/default"]), ("default", "default (global)"))
+        self.assertEqual((o["template"], o["labels"]["_global/default"], o["labels"]["default"]),
+                         ("default", "global / default", "LTX 2.5 alpha generation / default"))
         self.assertTrue(o["global_folder"].endswith("_global"))
         self.assertIn("reference", o["unusable"]["_global/with_input"])     # LTX alpha has no reference input
         # Without its own: the global default; Wan (no publish section) publishes too, at the default step.
@@ -285,9 +286,9 @@ class PublisherTests(unittest.TestCase):
                              "description": "Auto Publish"})
         self.assertEqual(self.pub.check("ltx25_alpha_gen", {"step": "comp", "shot": "305046_0020"}, show="bri3",
                                         shot="305046_0010")["shot"], "305046_0020")
-        for req, why in (({"step": "nope"}, "isn't one of the studio's"), ({"template": "other"}, "no template other"),
-                         ({"template": "_global/default"}, "no template default (global)"),
-                         ({"template": "_generic/default"}, "no template default (global)"),
+        for req, why in (({"step": "nope"}, "isn't one of the studio's"), ({"template": "other"}, "no template LTX 2.5 alpha generation / other ("),
+                         ({"template": "_global/default"}, "no template global / default"),
+                         ({"template": "_generic/default"}, "no template global / default"),
                          ({"shot": "a b"}, "isn't a shot code")):
             with self.assertRaises(ParamError) as e:
                 self.pub.check("ltx25_alpha_gen", req, show="bri3", shot="305046_0010")
@@ -362,7 +363,7 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(sorted(c[-1] == "--dry-run" for c in calls), [False, True])
         failed = self.store.publishes(bad["id"])[0]
         self.assertEqual(failed["state"], "failed")
-        self.assertIn("no template gone", failed["error"])
+        self.assertIn("no template LTX 2.5 alpha generation / gone", failed["error"])
         self.pub.publish_requested()                                      # each is tried once
         self.assertEqual(len(self.calls_made()), 2)
 

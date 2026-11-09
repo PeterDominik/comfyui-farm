@@ -35,11 +35,12 @@ class StoreTests(unittest.TestCase):
         self.assertEqual((T.key_of("_global", "default"), T.key_of("ltx", "default")), ("_global/default", "default"))
         self.assertEqual(T.split_key("_global/over", "ltx"), ("_global", "over"))
         self.assertEqual(T.split_key("default", "ltx"), ("ltx", "default"))
-        self.assertEqual(T.label("_global/default"), "default (global)")
+        self.assertEqual((T.label("_global/default"), T.label("default", "LTX 2.5 alpha generation"), T.label("default")),
+                         ("global / default", "LTX 2.5 alpha generation / default", "default"))   # where it comes from
         # What the global ones were called at first is still understood.
         self.assertEqual(T.split_key("_generic/over", "ltx"), ("_global", "over"))
         self.assertEqual((T.label("_generic/over"), T.canonical("_generic/over"), T.canonical("default")),
-                         ("over (global)", "_global/over", "default"))
+                         ("global / over", "_global/over", "default"))
         self.assertEqual((T.scope_of("_generic"), T.scope_of("ltx"), T.key_of("_generic", "x")), ("_global", "ltx", "_global/x"))
         for good in ("default", "alpha_over-plate.v2"):
             self.assertTrue(T.valid_name(good), good)
