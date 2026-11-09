@@ -1,7 +1,8 @@
 // Batch Submit (README, Batch Submit): many jobs from one table, one workflow per table.
 //
 // A source fills the rows: a ShotGrid Playlist now (each Version a row, its link the
-// input); a ShotGrid query and Variations later. The columns are the workflow's own form
+// input), or Versions picked in ShotGrid (its right-click on a selection, Version links
+// pasted or dropped); a ShotGrid query and Variations later. The columns are the workflow's own form
 // fields, then (for a workflow that publishes) the publish ones, each with a fill cell
 // under its header (sets the column for the ticked rows); any cell is editable per row
 // (changed ones are outlined). The manager checks every row as the Submit form's "Will
@@ -18,14 +19,16 @@
 // Loaded after the dashboard's own script, whose helpers it uses ($, esc, api, store,
 // state, showTab, upsert, render, pubOptions, pubMark, tplLabel). Its entry points:
 // batchInit() once the workflows are loaded, batchShown() when the tab opens,
-// batchDeepLink() for /#batch?playlist=…&workflow=…, batchJobs() when jobs change.
+// batchDeepLink() for /#batch?playlist=…&workflow=… or ?versions=<id>,<id>…, batchJobs()
+// when jobs change.
 "use strict";
 
 const BATCH_KEY = "comfyfarm.batch";
 const BATCH_CHECKS = 3;                    // rows checked at once
 const BATCH_LOG = 200;                     // log lines kept
 const batch = {
-  workflow: "", link: "", playlist: null,  // the workflow's name; the playlist's link and {id, code, url, show}
+  workflow: "", link: "", playlist: null,  // the workflow's name; the source ("versions:<ids>" for picked
+                                           // Versions, else the playlist's link) and {code, url, show, missing}
   rows: [],                                // {key, version, values, ticked, touched, firstCheck, plan, error, checking, gen, job}
   fill: {},                                // column -> the value it fills in
   pub: {},                                 // workflow -> its publish options ({why} when it can't publish)
@@ -111,8 +114,8 @@ function batchInit() {
   sel.innerHTML = usable.map(w => `<option value="${esc(w.name)}">${esc(w.label)}</option>`).join("");
   sel.value = batch.workflow;
   sel.onchange = () => batchSetWorkflow(sel.value);
-  $("#plLink").value = batch.link;
-  $("#plLoad").onclick = () => batchLoadPlaylist($("#plLink").value.trim());
+  $("#plLink").value = bPicked(batch.link) ? "" : batch.link;
+  $("#plLoad").onclick = () => batchLoadPlaylist(bSource($("#plLink").value));
   $("#plLink").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $("#plLoad").click(); } };
   $("#plClear").onclick = () => { batch.rows = []; batch.playlist = null; batch.why = ""; batchSave(); batchRender(); };
   bindTable();
@@ -134,13 +137,24 @@ function batchShown() {
 function batchJobs() {                          // jobs changed (live events): the sent rows' state
   if (!$("#tab-batch").hidden && batch.rows.some(r => r.job)) bRenderRows();
 }
-// /#batch?playlist=<link or id>&workflow=<name>: opened from ShotGrid or a message.
+// /#batch?playlist=<link or id>&workflow=<name>, or ?versions=<id>,<id>,…: opened from
+// ShotGrid (its right-click, the ComfyFarm button, a link dropped on the page) or a message.
 function batchDeepLink() {
   const q = typeof pendingBatch !== "undefined" ? pendingBatch : null;
   if (!q || !state.workflows.length) return;
   pendingBatch = null;
   if (q.get("workflow") && state.workflows.some(w => w.name === q.get("workflow"))) batchSetWorkflow(q.get("workflow"), false);
   if (q.get("playlist")) { $("#plLink").value = q.get("playlist"); batchLoadPlaylist(q.get("playlist")); }
+  else if (q.get("versions")) { $("#plLink").value = ""; batchLoadPlaylist("versions:" + q.get("versions")); }
+}
+// What the source field holds: a Playlist (link or id) as it is; Version links (one or
+// more, pasted or dropped there) as the picked Versions they are.
+const bPicked = link => /^versions:/.test(link || "");
+function bSource(text) {
+  text = String(text || "").trim();
+  if (/^\d+$/.test(text) || /(?:\/detail\/Playlist\/|#Playlist_)\d+/i.test(text)) return text;
+  const ids = [...text.matchAll(/(?:\/detail\/Version\/|#Version_)(\d+)/gi)].map(m => m[1]);
+  return ids.length ? "versions:" + [...new Set(ids)].join(",") : text;
 }
 
 function batchSetWorkflow(name, recheck = true) {
@@ -167,11 +181,12 @@ async function batchLoadPlaylist(link) {
   if (!wf) return;
   batch.loading = true; batch.why = ""; batchRender();
   try {
-    const r = await api("/api/v1/shotgrid/playlist?link=" + encodeURIComponent(link));
+    const r = bPicked(link) ? await api("/api/v1/shotgrid/versions?ids=" + encodeURIComponent(link.slice(9)))
+      : await api("/api/v1/shotgrid/playlist?link=" + encodeURIComponent(link));
     const keep = new Map(batch.link === link ? batch.rows.map(x => [x.key, x]) : []);   // reloaded: keep the edits
     const p = bPrimary(wf);
     if (!Object.keys(batch.fill).length) batch.fill = Object.fromEntries(bCols(wf).map(x => [x.name, bDefault(x)]));
-    batch.link = link; batch.playlist = r.playlist;
+    batch.link = link; batch.playlist = r.playlist || { ...r.source, url: null };
     batch.rows = r.rows.map(row => {
       const key = String(row.version.id), was = keep.get(key);
       return was ? { ...was, version: row.version, firstCheck: false }
@@ -351,18 +366,23 @@ function bGroups() {                            // ticked rows going into the sa
 function batchRender() {
   const wf = bWf(), pl = batch.playlist, sg = batch.sg;
   const sgWhy = sg && sg.set_up === false ? sg.why : "";
-  $("#plInfo").innerHTML = batch.loading ? '<span class="muted">Loading the playlist from ShotGrid…</span>'
+  const picked = bPicked(batch.link), missing = pl?.missing || [];
+  $("#plInfo").innerHTML = batch.loading ? `<span class="muted">Loading ${picked ? "the Versions" : "the playlist"} from ShotGrid…</span>`
     : batch.why ? `<span class="err">${esc(batch.why)}</span>`
     : sgWhy ? `<span class="warn">${esc(sgWhy)}</span>`
-    : pl ? `<a href="${esc(pl.url)}" target="_blank" rel="noopener">${esc(pl.code)}</a> · ${batch.rows.length} Version${batch.rows.length === 1 ? "" : "s"}${pl.show ? ` · show <code>${esc(pl.show)}</code>` : ""}`
-      + ` <button class="small" type="button" id="plReload" title="Load the playlist from ShotGrid again (keeps your edits)">↻</button>`
+    : pl ? (pl.url ? `<a href="${esc(pl.url)}" target="_blank" rel="noopener">${esc(pl.code)}</a> · ${batch.rows.length} Version${batch.rows.length === 1 ? "" : "s"}`
+                   : `<b>${esc(pl.code)}</b>`)
+      + (pl.show ? ` · show <code>${esc(pl.show)}</code>` : "")
+      + (missing.length ? ` · <span class="warn" title="${esc(missing.join(", "))}">${missing.length} not in ShotGrid</span>` : "")
+      + ` <button class="small" type="button" id="plReload" title="Load ${picked ? "these Versions" : "the playlist"} from ShotGrid again (keeps your edits)">↻</button>`
     : "";
   if ($("#plReload")) $("#plReload").onclick = () => batchLoadPlaylist(batch.link);
   const t = $("#batchTable");
   if (!wf || !batch.rows.length) {
     t.innerHTML = `<tbody><tr><td class="empty">Paste a ShotGrid Playlist link and Load: each of its Versions becomes a row of
       ${wf ? `<b>${esc(wf.label)}</b>` : "the workflow"}, its link the input, checked as the Submit form checks one job.
-      Change any cell, or a whole column with the fill cell under its header, then Submit the ticked rows.</td></tr></tbody>`;
+      Change any cell, or a whole column with the fill cell under its header, then Submit the ticked rows.
+      <span class="muted">Versions picked in ShotGrid come here too: its right-click on several, or Version links pasted above.</span></td></tr></tbody>`;
     bRenderFoot();
     return;
   }

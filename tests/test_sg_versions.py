@@ -1,7 +1,8 @@
 """A ShotGrid Version link as a job's input (comfyfarm.shotgrid.versions, ShotGrid.version,
 Farm._version_inputs): recognising links, ShotGrid's lone # padding, the Version lookup
 and its cache, and jobs planned and submitted from a link (frames first, the movie when
-they're gone, the Version's show and shot). Against a stand-in ShotGrid only."""
+they're gone, the Version's show and shot); playlists and picked Versions as Batch
+Submit's rows, and where ShotGrid's right-click goes. Against a stand-in ShotGrid only."""
 
 from __future__ import annotations
 
@@ -249,6 +250,63 @@ class Playlists(unittest.TestCase):
             self.assertIsNone(V.parse_playlist(not_one), not_one)
 
 
+class Picked(unittest.TestCase):
+    """Versions picked in ShotGrid (its right-click on a selection, chunk 13): where the
+    right-click opens the dashboard, and the Versions looked up together."""
+
+    def test_where_the_right_click_goes(self):
+        go = lambda **f: V.action_target(f, SITE)      # noqa: E731
+        self.assertEqual(go(entity_type="Version", selected_ids="4865327", server_hostname="rodeofx.shotgrid.autodesk.com"),
+                         "#submit?input=" + LINK.replace(":", "%3A").replace("/", "%2F"))
+        self.assertEqual(go(entity_type="Version", selected_ids="13,11,12,11", workflow="ltx25_alpha_gen"),
+                         "#batch?workflow=ltx25_alpha_gen&versions=13,11,12")      # in ShotGrid's order, each once
+        self.assertEqual(go(entity_type="Playlist", selected_ids="265346,265342"),
+                         "#batch?playlist=https%3A%2F%2Frodeofx.shotgrid.autodesk.com%2Fdetail%2FPlaylist%2F265346")
+        self.assertEqual(go(entity_type="Version", ids="7"), "#submit?input=" + f"{SITE}detail/Version/7".replace(
+            ":", "%3A").replace("/", "%2F"))                                     # selection not required: the page's
+        self.assertNotIn("workflow", go(entity_type="Version", selected_ids="7", workflow="../x y"))
+        for form, why in (({"entity_type": "Shot", "selected_ids": "258776"}, "that was a Shot"),
+                          ({"entity_type": "Version"}, "Nothing was selected: select a Version"),
+                          ({"entity_type": "Version", "selected_ids": "1", "server_hostname": "x.shotgunstudio.com"},
+                           "came from x.shotgunstudio.com; this farm uses https://rodeofx.shotgrid.autodesk.com"),
+                          ({"entity_type": "Playlist", "selected_ids": "a1"}, "'a1' isn't a Playlist id"),
+                          ({"entity_type": "Version", "selected_ids": ",".join(map(str, range(1, 502)))}, "up to 500")):
+            with self.assertRaises(ValueError) as e:
+                V.action_target(form, SITE)
+            self.assertIn(why, str(e.exception))
+
+    def test_ids(self):
+        self.assertEqual(V.version_ids("3, 1 2,3"), [3, 1, 2])
+        self.assertEqual(V.version_ids([5, "6"]), [5, 6])
+        for bad in ("", "1,x", "0", None):
+            with self.assertRaises(ValueError):
+                V.version_ids(bad)
+
+    def test_the_form_shotgrid_posts(self):
+        body = b"user_login=pdominik&entity_type=Version&selected_ids=11%2C12&cols=code&cols=entity&project_name=bc1"
+        self.assertEqual(V.form_fields("application/x-www-form-urlencoded", body),
+                         {"user_login": "pdominik", "entity_type": "Version", "selected_ids": "11,12", "cols": "entity",
+                          "project_name": "bc1"})
+        multi = (b"--XyZ\r\nContent-Disposition: form-data; name=\"entity_type\"\r\n\r\nPlaylist\r\n"
+                 b"--XyZ\r\nContent-Disposition: form-data; name=\"selected_ids\"\r\n\r\n265346\r\n--XyZ--\r\n")
+        self.assertEqual(V.form_fields("multipart/form-data; boundary=XyZ", multi),
+                         {"entity_type": "Playlist", "selected_ids": "265346"})
+        self.assertEqual(V.form_fields("text/plain", b""), {})
+
+    def test_looked_up_together(self):
+        sg, fake = lookups()
+        got = sg.versions([13, 99, 11])
+        self.assertEqual([v["code"] for v in got], ["abc_0030.lineup.v2", "abc_0010.lineup.v1"])    # in the order asked
+        self.assertEqual([c[:2] for c in fake.calls if c[1] == "Version"], [("find", "Version")])  # one request
+        n = len(fake.calls)
+        self.assertEqual(sg.version(13)["shot"], "abc_0030")                     # the rows' checks: cached
+        self.assertEqual([v["id"] for v in sg.versions([11, 13])], [11, 13])
+        self.assertEqual(len(fake.calls), n)
+        sg.versions([12, 11])
+        self.assertEqual(fake.calls[-1][:2], ("find", "Version"))               # only 12 asked for
+        self.assertEqual(sg.versions([99]), [])
+
+
 class Jobs(unittest.TestCase):
     """Planned and submitted from a link, on frames laid out like a published render."""
 
@@ -351,6 +409,23 @@ class Jobs(unittest.TestCase):
             self.farm.batch_playlist("265342")
         self.assertEqual(e.exception.status, 503)
         self.assertIn("lookups are off", str(e.exception))
+
+    def test_picked_versions_as_batch_rows(self):
+        from comfyfarm.manager.farm import FarmError
+        out = self.farm.batch_versions("13, 99,11")
+        self.assertEqual(out["source"], {"code": "2 Versions picked in ShotGrid", "show": "xyz", "ids": [13, 11], "missing": [99]})
+        self.assertEqual([r["input"] for r in out["rows"]], [f"{SITE}detail/Version/{i}" for i in (13, 11)])
+        self.assertEqual(self.plan(out["rows"][0]["input"])["shot"], "abc_0030")
+        for ids, why, status in (("x", "isn't a Version id", 400), ("", "No Versions given", 400),
+                                 ("98,99", "There's no Version 98, 99", 404)):
+            with self.assertRaises(FarmError) as e:
+                self.farm.batch_versions(ids)
+            self.assertIn(why, str(e.exception))
+            self.assertEqual(e.exception.status, status)
+        self.farm.shotgrid = ShotGrid(Config.model_validate({"workers": []}).shotgrid, connect=lambda: self.fake)
+        with self.assertRaises(FarmError) as e:
+            self.farm.batch_versions("13")
+        self.assertEqual(e.exception.status, 503)
 
     def test_submitted_the_link_stays(self):
         job = self.farm.submit("ltx25_alpha_gen", {"input": LINK}, "ann")

@@ -144,6 +144,19 @@
   #batchTable .b-job .badge { font-size: 10px; padding: 1px 6px; }
   #batchLog { border-top: 1px solid var(--line); font-size: 12px; max-height: 260px; overflow-y: auto; }
   #batchLog:empty { display: none; }
+  /* From ShotGrid (shotgrid.js): the dialog with the ComfyFarm button, the hint while a link is dragged over */
+  #sgDialog { max-width: 620px; }
+  #sgOpen { white-space: nowrap; }
+  .sgbody { padding: 4px 18px 14px; font-size: 13px; }
+  .sgbody h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 16px 0 4px; }
+  .sgbody p { margin: 6px 0; }
+  .sgbody code { font-family: var(--mono); }
+  a.bookmarklet { display: inline-block; padding: 3px 12px; margin: 0 6px; border: 1px solid var(--accent); border-radius: 12px;
+                  color: var(--accent); font-weight: 600; text-decoration: none; cursor: grab; }
+  #dropHint { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50; pointer-events: none;
+              background: var(--panel2); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px 16px;
+              font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.5); max-width: calc(100vw - 32px); text-align: center; }
+  #dropHint.err { border-color: var(--bad); color: var(--bad); }
   .b-loghead { display: flex; align-items: center; padding: 8px 14px; position: sticky; top: 0; background: var(--panel); }
   .b-logline { padding: 3px 14px; border-top: 1px solid rgba(255,255,255,.03); }
   tr.tplver td { font-size: 12px; padding-left: 22px; }
@@ -154,6 +167,7 @@
   <h1>ComfyUI <span>farm</span></h1>
   <div class="spacer"></div>
   <div class="ident">
+    <button id="sgOpen" class="small" type="button" hidden title="Bring Versions and Playlists from ShotGrid: its right-click, the ComfyFarm button, drag and drop">From ShotGrid</button>
     <span id="live" class="chip"><span class="dot"></span>connecting</span>
     <label id="userBox">user <input id="user" size="12" placeholder="your login"></label>
     <label id="keyBox" hidden>API key <input id="key" type="password" size="16"></label>
@@ -189,7 +203,7 @@
       <select id="batchWf" title="The workflow every row runs"></select>
     </div>
     <div class="bsrc">
-      <label>Playlist<input id="plLink" class="mono" placeholder="https://rodeofx.shotgrid.autodesk.com/detail/Playlist/…" autocomplete="off"></label>
+      <label>Playlist<input id="plLink" class="mono" placeholder="https://rodeofx.shotgrid.autodesk.com/detail/Playlist/… (or Version links)" autocomplete="off"></label>
       <button type="button" id="plLoad">Load</button>
       <button type="button" id="plClear" title="Empty the table">Clear</button>
       <div id="plInfo"></div>
@@ -245,6 +259,26 @@
     </table>
   </section>
 </main>
+
+<dialog id="sgDialog">
+  <div class="sechead"><h2>From ShotGrid</h2><button class="small" type="button" data-close>Close</button></div>
+  <div class="sgbody">
+    <p>A ShotGrid Version opens the <b>Submit</b> form with it as the input; a Playlist, or several Versions, open
+      <b>Batch Submit</b> with a row each. Nothing is sent until you submit.</p>
+    <h3>The ComfyFarm button</h3>
+    <p>Drag this onto your browser's bookmarks bar (once): <a id="sgButton" class="bookmarklet" href="#" title="Drag me onto the bookmarks bar">ComfyFarm</a>
+      <span class="muted" id="sgButtonMsg"></span></p>
+    <p>Then on a ShotGrid page with a Version or a Playlist open (its own page, its overlay, the Media Center), click it.
+      It reads the page's address, so on a page that lists many, open the Version first, or drag it here instead.
+      It opens <code id="sgFarm"></code> in a tab of its own, reused the next time.</p>
+    <h3>Drag and drop</h3>
+    <p>Drag a Version's or a Playlist's name from ShotGrid onto this page (onto its tab first, if they share a window).
+      Dropped on a field, it's pasted there as its link.</p>
+    <h3>Right-click in ShotGrid</h3>
+    <p><b>Send to ComfyFarm</b> in a Version's or a Playlist's right-click menu, where it's been set up for your show
+      (README: ShotGrid right-click). Several Versions selected go to Batch Submit together.</p>
+  </div>
+</dialog>
 
 <dialog id="pubDialog">
   <div class="sechead"><h2 id="pubTitle">Publish</h2><button class="small" type="button" data-close>Close</button></div>
@@ -322,8 +356,10 @@ $("#tabs").addEventListener("click", e => { const b = e.target.closest("button")
 window.addEventListener("hashchange", () => { if (!deepLink(location.hash)) showTab(location.hash.slice(1)); });
 
 // Deep links: /#submit?workflow=<name>&input=<path or ShotGrid Version link> opens the
-// Submit tab with them filled in (ShotGrid's right-click, links in messages);
-// /#batch?playlist=<link or id>&workflow=<name> opens Batch Submit with the playlist loaded.
+// Submit tab with them filled in; /#batch?playlist=<link or id>&workflow=<name> opens Batch
+// Submit with the playlist loaded, ?versions=<id>,<id>… with those Versions. ShotGrid's
+// right-click, the ComfyFarm button and links dropped on the page come this way
+// (shotgrid.js), as do links in messages.
 let pendingDeep = null, pendingBatch = null;
 function deepLink(hash) {
   const b = /^#batch\?(.*)$/.exec(hash || "");
@@ -1154,6 +1190,7 @@ async function boot() {
     renderForm();
     applyDeepLink();
     window.batchInit?.();                     // batch.js: its workflow list, the table kept from before
+    window.sgInit?.();                        // shotgrid.js: the From ShotGrid button
     await refreshJobs();
     if (ws) { ws.onclose = null; ws.close(); }
     connect();
@@ -1166,6 +1203,8 @@ setInterval(refreshJobs, 15000);   // keeps queue positions / ETAs fresh
 setInterval(() => { if (visible().some(j => j.status === "running")) render(); }, 1000);
 boot();
 </script>
+<div id="dropHint" hidden></div>
 <script src="/batch.js"></script>
+<script src="/shotgrid.js"></script>
 </body>
 </html>

@@ -16,6 +16,8 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -703,6 +705,44 @@ convert:
         with urllib.request.urlopen(f"{base}/batch.js") as r:
             self.assertEqual(r.headers["Content-Type"].split(";")[0], "text/javascript")
             self.assertIn("function batchInit", r.read().decode())
+        with urllib.request.urlopen(f"{base}/shotgrid.js") as r:                # the From ShotGrid button, the drop zone
+            self.assertIn("function sgButton", r.read().decode())
+        with self.assertRaisesRegex(farm.FarmError, "lookups are off"):      # picked Versions need the lookups
+            farm.shotgrid_versions([4865327, 4865328])
+        # ShotGrid's right-click (an Action Menu Item) posts the selection; it's sent on to the
+        # dashboard's deep link, which needs no lookups to make.
+        def ami(body: bytes | None, query: str = "", ctype: str = "application/x-www-form-urlencoded"):
+            class Stay(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *a, **k):
+                    return None
+            req = urllib.request.Request(f"{base}/api/v1/shotgrid/ami{query}", data=body, headers={"Content-Type": ctype})
+            try:
+                with urllib.request.build_opener(Stay).open(req) as r:
+                    return r.status, r.headers.get("Location"), r.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.headers.get("Location"), e.read().decode()
+        site = "https://rodeofx.shotgrid.autodesk.com"
+        status, where, _ = ami(b"user_login=ann&entity_type=Version&selected_ids=4865327&ids=4865327%2C4865328"
+                               b"&server_hostname=rodeofx.shotgrid.autodesk.com&cols=code&project_id=6351")
+        self.assertEqual((status, urllib.parse.unquote(where)), (303, f"/#submit?input={site}/detail/Version/4865327"))
+        status, where, _ = ami(b"entity_type=Version&selected_ids=4865327%2C4865328", "?workflow=ltx25_alpha_gen")
+        self.assertEqual((status, where), (303, "/#batch?workflow=ltx25_alpha_gen&versions=4865327,4865328"))
+        status, where, _ = ami(b'--b\r\nContent-Disposition: form-data; name="entity_type"\r\n\r\nPlaylist\r\n'
+                               b'--b\r\nContent-Disposition: form-data; name="selected_ids"\r\n\r\n265346\r\n--b--\r\n',
+                               ctype="multipart/form-data; boundary=b")
+        self.assertEqual((status, urllib.parse.unquote(where)), (303, f"/#batch?playlist={site}/detail/Playlist/265346"))
+        status, where, page = ami(b"entity_type=Shot&selected_ids=258776")
+        self.assertEqual((status, where), (400, None))
+        self.assertIn("ComfyFarm takes Versions and Playlists; that was a Shot.", page)
+        self.assertIn('href="/"', page)
+        status, _, page = ami(b"entity_type=Version&selected_ids=1&server_hostname=evil.example.com")
+        self.assertIn("came from evil.example.com", page)
+        self.assertEqual(status, 400)
+        status, _, page = ami(None)                                         # opened by hand: what it's for
+        self.assertEqual(status, 200)
+        self.assertIn("Send to ComfyFarm", page)
+        self.assertEqual(ami(None, "?entity_type=Version&selected_ids=7")[:2], (303, "/#submit?input=" + urllib.parse.quote(
+            f"{site}/detail/Version/7", safe="")))
 
     def test_05_bad_input_rejected_at_submit(self):
         with self.assertRaisesRegex(farm.FarmError, "Missing frames.*1013"):

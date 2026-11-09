@@ -66,7 +66,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
-| `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check |
+| `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; where ShotGrid's right-click goes |
 | `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
@@ -77,6 +77,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
 | `deploy/comfyui/` | The farm's ComfyUI: `environment.yaml` (versions, node packs, models) and `extra_model_paths.yaml` (see *The farm's ComfyUI*) |
 | `tools/mock_comfyui.py` | Fake ComfyUI for testing without a GPU |
+| `tools/sg_probe.py`, `tools/sg_ami.py` | What ShotGrid holds for a Version (read only); ShotGrid's *Send to ComfyFarm* right-click item, made or removed by an admin script (see *ShotGrid right-click*) |
 | `tests/` | Unit tests + end-to-end tests against the mock |
 
 ## Deploying
@@ -390,6 +391,8 @@ it, as before. `agent --check` lists the differences as warnings.
   `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in.
 - **Batch Submit:** many jobs from one table, e.g. one per Version of a ShotGrid playlist (see
   *Batch Submit*).
+- **From ShotGrid** (top right): the ComfyFarm button for the bookmarks bar, and how to drag
+  Versions and Playlists here or right-click them in ShotGrid (see *ShotGrid right-click*).
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
   queued job, → the machine expected to take it). *Wait* shows its place in the queue and when it
   should be done, or the time left once running. Click a
@@ -607,6 +610,8 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/shotgrid/projects?refresh=` | The active shows `[{code, name}]`; `refresh=true` reloads them from ShotGrid |
 | GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
 | GET | `/api/v1/shotgrid/playlist?link=` | Batch Submit's rows from a Playlist (link or id): `playlist` and `rows` `[{version, input}]`, in its order |
+| GET | `/api/v1/shotgrid/versions?ids=` | Batch Submit's rows from Versions (ids, comma-separated), in that order: `source` (`code`, `show`, `ids`, `missing`) and `rows` |
+| POST | `/api/v1/shotgrid/ami` | ShotGrid's right-click posts here (an Action Menu Item): a redirect to the dashboard's deep link (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
@@ -1019,9 +1024,65 @@ and each of its Versions becomes a row, in the playlist's order, its link the in
 - **Kept in your browser:** the table, its sent jobs and the log survive a reload; nobody else
   sees them. ↻ loads the playlist again, keeping your edits.
 
-A link opens it with a playlist loaded:
-`/#batch?playlist=<link or id>&workflow=<name>`. `GET /api/v1/shotgrid/playlist?link=` gives
-the rows (`comfyfarm_client.shotgrid_playlist(link)` from Python).
+Versions picked in ShotGrid come to the table too (see *ShotGrid right-click*): several
+selected and right-clicked, or Version links pasted into the Playlist field (one or more).
+The info line says how many, and which ShotGrid doesn't have.
+
+A link opens it with a playlist loaded: `/#batch?playlist=<link or id>&workflow=<name>`,
+or with Versions: `/#batch?versions=<id>,<id>,…`. `GET /api/v1/shotgrid/playlist?link=`
+and `GET /api/v1/shotgrid/versions?ids=` give the rows
+(`comfyfarm_client.shotgrid_playlist(link)`, `shotgrid_versions(ids)` from Python).
+
+### ShotGrid right-click
+
+Three ways to bring a Version or a Playlist from ShotGrid to the farm (the dashboard's
+*From ShotGrid* button, top right, shows the first two). Each opens the dashboard filled in;
+nothing is sent until you submit.
+
+| From ShotGrid | Opens |
+|---|---|
+| one Version | the **Submit** form, the Version as its input |
+| a Playlist | **Batch Submit**, a row per Version, in the playlist's order |
+| several Versions (right-click) | **Batch Submit**, a row each |
+
+- **The ComfyFarm button:** a bookmarklet. Drag it from the *From ShotGrid* dialog onto the
+  browser's bookmarks bar once; then click it on a ShotGrid page with a Version or a Playlist
+  open. It reads the page's address: a Version's or Playlist's own page
+  (`/detail/Version/<id>`), one open over a page (`#Version_<id>`), the Media Center
+  (`type=Version&id=…`, or a playlist in its tree). A page that only lists them (a Shots or
+  Versions page) doesn't name one: open it, or drag it instead. The farm opens in a tab of its
+  own, reused by the next click.
+- **Drag and drop:** drag a Version's or Playlist's name (its link) from ShotGrid onto the
+  dashboard, anywhere but a field (a field takes it as text, as before).
+- **Right-click in ShotGrid:** *Send to ComfyFarm* in a Version's or a Playlist's menu (also on
+  several Versions selected in a list). It's an Action Menu Item: ShotGrid opens a tab posting
+  the selection to the manager's `/api/v1/shotgrid/ami`, which sends it on to the dashboard.
+  That endpoint reads and changes nothing (it only redirects, so it needs no key); a selection
+  from another ShotGrid site, nothing selected, or another entity type (a Shot) shows a page
+  saying so. ShotGrid is on https and the farm on http, so Chrome warns that the form isn't
+  secure the first time: *Send anyway*.
+
+Setting the right-click up is a ShotGrid admin's change (it's in everyone's menu where it
+applies), made once with `tools/sg_ami.py` and a ShotGrid script allowed to create Action
+Menu Items (not the manager's read-only one). It only shows what it would do until `--apply`:
+
+```bash
+cd /mntx/raid/pdominik/comfyui-farm
+export SG_ADMIN_SCRIPT_NAME=<the admin script's name>   # the key: SG_ADMIN_SCRIPT_KEY, or it asks
+PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3           # what it would do
+PYTHONPATH=. $(cat run/python) tools/sg_ami.py --farm http://wrk1125l:9090 --show bri3 --apply   # do it
+```
+
+- It makes one item on Version and one on Playlist, *Send to ComfyFarm*, posting to
+  `<farm>/api/v1/shotgrid/ami`, selection required. It reads ActionMenuItem's fields from the
+  site first and sets only those it has.
+- `--show` (repeatable) limits them to those shows' projects, `--group` to a permission group;
+  with neither it refuses unless `--everywhere`.
+- Run again, it changes the items it made (found by entity type and URL) instead of adding
+  more. `--remove --apply` deletes them. `--workflow <name>` makes items that open that
+  workflow (`…/ami?workflow=<name>`), `--folder` puts them in a menu folder.
+- The key is used for that run only: never written, never printed (not even in ShotGrid's
+  error messages).
 
 ## Adding or updating a workflow
 

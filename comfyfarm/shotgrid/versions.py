@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import os
 import re
-from urllib.parse import urlsplit
+from email.policy import default as email_default
+from email.parser import BytesParser
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from ..fileio import paths as P
 
-__all__ = ["parse", "parse_playlist", "same_site", "pad_hash", "input_text"]
+__all__ = ["parse", "parse_playlist", "version_ids", "action_target", "form_fields", "same_site", "pad_hash",
+           "input_text"]
 
 # http(s)://<site>/…/detail/Version/<id> or …#Version_<id>, then optional frames
 _LINK = re.compile(r"^(?P<link>https?://\S*?(?:/detail/Version/|#Version_)(?P<id>\d+)\S*?)"
@@ -60,6 +63,79 @@ def parse_playlist(raw) -> dict | None:
         return {"id": int(text), "link": text, "host": ""}
     m = _PLAYLIST.match(text)
     return {"id": int(m["id"]), "link": m["link"], "host": urlsplit(m["link"]).hostname or ""} if m else None
+
+
+MAX_PICKED = 500                 # Versions picked at once (a right-click on a selection)
+
+
+def version_ids(raw, what: str = "Version") -> list[int]:
+    """Ids as a list ('1,2, 3' or [1, 2, 3]), in order, each once; ValueError when one
+    isn't an id, or there are none or too many."""
+    parts = raw if isinstance(raw, list) else str(raw or "").replace(",", " ").split()
+    ids = []
+    for p in parts:
+        if not str(p).strip().isdigit() or int(p) <= 0:
+            raise ValueError(f"{p!r} isn't a {what} id.")
+        ids.append(int(p))
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        raise ValueError(f"No {what}s given.")
+    if len(ids) > MAX_PICKED:
+        raise ValueError(f"That's {len(ids)} {what}s; Batch Submit takes up to {MAX_PICKED} at once.")
+    return ids
+
+
+_WORKFLOW = re.compile(r"^[\w.-]{1,80}$")
+
+
+def action_target(form: dict, site_url: str) -> str:
+    """Where ShotGrid's right-click (an Action Menu Item posting to /api/v1/shotgrid/ami)
+    opens the dashboard, as its deep link ('#submit?…', '#batch?…'):
+
+      one Version         #submit?input=<its link>             the Submit form, its input filled
+      several Versions    #batch?versions=<id>,<id>,…          Batch Submit, a row each
+      a Playlist          #batch?playlist=<its link>           Batch Submit, its Versions
+
+    `form` is what ShotGrid posts (entity_type, selected_ids, server_hostname…; README:
+    ShotGrid right-click), plus `workflow` from the item's own URL (…/ami?workflow=<name>:
+    an item per workflow). The links are to the farm's ShotGrid (`site_url`). ValueError
+    with why, for the page the person sees instead (another site, nothing selected, a Shot)."""
+    get = lambda k: str(form.get(k) or "").strip()     # noqa: E731
+    host = (urlsplit(site_url).hostname or "").lower()
+    posted = get("server_hostname").lower()
+    if posted and host and posted != host:
+        raise ValueError(f"That came from {posted}; this farm uses {site_url.rstrip('/')}.")
+    kind = get("entity_type")
+    if kind not in ("Version", "Playlist"):
+        raise ValueError(f"ComfyFarm takes Versions and Playlists; that was {'a ' + kind if kind else 'something else'}.")
+    picked = get("selected_ids") or get("ids")
+    if not picked:
+        raise ValueError(f"Nothing was selected: select a {kind}, then right-click it.")
+    ids = version_ids(picked, kind)
+    site = site_url.rstrip("/") or f"https://{posted}"
+    q = {"workflow": get("workflow")} if _WORKFLOW.match(get("workflow")) else {}
+    if kind == "Playlist":                       # several: the first (one playlist per table)
+        return "#batch?" + urlencode({**q, "playlist": f"{site}/detail/Playlist/{ids[0]}"})
+    if len(ids) == 1:
+        return "#submit?" + urlencode({**q, "input": f"{site}/detail/Version/{ids[0]}"})
+    return "#batch?" + urlencode({**q, "versions": ",".join(map(str, ids))}, safe=",")
+
+
+def form_fields(content_type: str, body: bytes) -> dict[str, str]:
+    """A posted form's fields (what ShotGrid's right-click posts): url-encoded, or
+    multipart's plain fields, without needing python-multipart. The last value of a
+    repeated field."""
+    ctype = content_type.split(";")[0].strip().lower()
+    if ctype == "multipart/form-data":
+        msg = BytesParser(policy=email_default).parsebytes(b"Content-Type: " + content_type.encode("latin-1")
+                                                           + b"\r\n\r\n" + body)
+        out = {}
+        for part in msg.iter_parts() if msg.is_multipart() else []:
+            name = part.get_param("name", header="content-disposition")
+            if name and not part.get_filename():
+                out[name] = part.get_content() if part.get_content_maintype() == "text" else ""
+        return out
+    return {k: v[-1] for k, v in parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True).items()}
 
 
 def same_site(ref: dict, site_url: str) -> bool:
