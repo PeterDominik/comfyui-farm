@@ -8,8 +8,8 @@ a value it didn't offer is refused, and nothing else reaches ShotGrid.
 options(show), what the query panel offers for a show:
   sequences, shots  the show's, as the publish fields list them (the shots' hidden
                     statuses left out)
-  filters           status (sg_status_list), then shotgrid.query.fields (step, task, type,
-                    department), each a Version field the site has. Each offers the values
+  filters           status (sg_status_list), then shotgrid.query.fields (step and
+                    department by default), each a Version field the site has. Each offers the values
                     the show's Versions have, with how many (ShotGrid's summarize), labelled
                     as ShotGrid labels them; a linked field (a Task) by its linked name. A
                     text or linked field ShotGrid can't sum up, or with too many values to
