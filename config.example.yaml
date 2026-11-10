@@ -214,9 +214,10 @@ shotgrid:
   # on besides show, sequences, shots, name and date. Status comes first, then these; a
   # field the site doesn't have is left out (the query panel says so). Each offers the
   # values the show's Versions have, with how many. On Rodeo's site: step links to a Step,
-  # task to a Task, type and department are lists.
+  # department is a list (Plate marks plates). Any Version list, text or link field can be
+  # added, e.g. task: sg_task (a link, by the Task's name), type: sg_version_type.
   query:
-    fields: {step: sg_pipeline_step, task: sg_task, type: sg_version_type, department: sg_department}
+    fields: {step: sg_pipeline_step, department: sg_department}
     version_number: sg_version_number   # "latest" ranks by it (else the code's vN, else the newest)
     max_rows: 500          # rows a query gives at most
     scan: 5000             # Versions looked at, the newest first ("latest" picks among them)

@@ -206,8 +206,14 @@ class FakeShotGrid:
         return [c for c in self.calls if c[0] == method and c[1] == entity]
 
 
+# Every kind of field the query handles: a link (Pipeline Step), a link listed by name across
+# shots (Task), and lists (Type, Department). Rodeo's default is step and department only.
+FIELDS = {"step": "sg_pipeline_step", "task": "sg_task", "type": "sg_version_type", "department": "sg_department"}
+
+
 def lookups(**query):
     fake = FakeShotGrid()
+    query = {"fields": FIELDS, **query}
     conf = Config.model_validate({"workers": [], "shotgrid": {"enabled": True, "refresh_hold": 0, "query": query}}).shotgrid
     return ShotGrid(conf, connect=lambda: fake), fake
 
@@ -276,6 +282,19 @@ class Offered(unittest.TestCase):
         self.assertNotIn("values", f["layer"])
         # ShotGrid takes no "contains" on a list (Rodeo's Department is one): it stays picked from.
         self.assertEqual((f["department"]["kind"], len(f["department"]["values"])), ("choice", 303))
+
+    def test_the_default_filters(self):
+        """Rodeo's: status, Pipeline Step and Department (Task and Type weren't useful)."""
+        fake = FakeShotGrid()
+        sg = ShotGrid(Config.model_validate({"workers": [], "shotgrid": {"enabled": True, "refresh_hold": 0}}).shotgrid,
+                      connect=lambda: fake)
+        o = Q.options(sg, "bri3")
+        self.assertEqual([(f["key"], f["label"]) for f in o["filters"]],
+                         [("status", "Status"), ("step", "Pipeline Step"), ("department", "Department")])
+        self.assertEqual(o["left_out"], [])
+        with self.assertRaises(ValueError) as e:                                 # a saved query naming Task
+            Q.run(sg, {"show": "bri3", "filters": {"task": ["LINEUP (AUTO)"]}})
+        self.assertEqual(str(e.exception), "There's no filter task.")
 
     def test_no_show_or_no_shotgrid(self):
         sg, fake = lookups()

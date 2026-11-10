@@ -1082,15 +1082,20 @@ Pick a show, narrow it down, and *Search* (or Enter in a text field):
   of the sequences picked. Type in a long list to filter it, then *Tick shown*. None picked
   means all.
 - **Name contains:** words in the Version's name (`mp01`); several words find any of them.
-- **Status**, then **Pipeline Step**, **Task**, **Type** and **Department**: each a dropdown of
-  the values the show's Versions have, with how many, as ShotGrid labels them (a Task by its
-  name, `LINEUP (AUTO)`, across shots). Several picked find any of them. A text or linked field
-  ShotGrid can't list, or with more than 300 values, is typed instead ("contains"); a list
-  field always stays a dropdown, since ShotGrid takes no "contains" on one. A field the site
-  doesn't have, or none of the show's Versions fill in, is left out (*N not offered ⓘ* says
-  why). Which fields: `shotgrid.query.fields` in the manager's config. On Rodeo's site
-  (probed): Status is a status list, Pipeline Step a link to a Step, Task a link to a Task,
-  Type and Department lists, Version Number a number.
+- **Status**, **Pipeline Step** and **Department**: each a dropdown of the values the show's
+  Versions have, with how many, as ShotGrid labels them. Several picked find any of them. At
+  Rodeo, Department `Plate` marks plates (`Reference` the references).
+  - **Which fields:** `shotgrid.query.fields` in the manager's config. Any Version list, text
+    or link field can be added, e.g. `task: sg_task` (a link, listed by the Task's name across
+    shots, `LINEUP (AUTO)`) or `type: sg_version_type`. Task and Type are off by default: at
+    Rodeo they weren't useful in a query.
+  - A text or linked field ShotGrid can't list, or with more than 300 values, is typed instead
+    ("contains"); a list field always stays a dropdown, since ShotGrid takes no "contains" on
+    one.
+  - A field the site doesn't have, or none of the show's Versions fill in, is left out (*N not
+    offered ⓘ* says why).
+  - On Rodeo's site (probed): Status is a status list, Pipeline Step a link to a Step,
+    Department a list, Version Number a number.
 - **Created:** in the last day, week, month…
 - **Latest of each shot and name** (on by default): only the highest version of each Version
   name in each shot. The name is the Version's name without its version
