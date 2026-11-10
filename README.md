@@ -66,7 +66,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
-| `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; where ShotGrid's right-click goes |
+| `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; Batch Submit's ShotGrid query; where ShotGrid's right-click goes |
 | `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
@@ -418,8 +418,8 @@ it, as before. `agent --check` lists the differences as warnings.
 - **Submit:** pick the workflow, fill in the form, check the destination line, submit. An input
   takes a path or a ShotGrid Version link (see *ShotGrid Version links*). A link to
   `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in.
-- **Batch Submit:** many jobs from one table, e.g. one per Version of a ShotGrid playlist (see
-  *Batch Submit*).
+- **Batch Submit:** many jobs from one table, e.g. one per Version of a ShotGrid playlist, or
+  of a ShotGrid query (the latest `mp01` plates of a sequence; see *Batch Submit*).
 - **From ShotGrid:** `/#shotgrid` opens the ComfyFarm button for the bookmarks bar, and how to
   drag Versions and Playlists here or right-click them in ShotGrid (see *ShotGrid right-click*).
 - **Queue:** everyone's jobs, live, with the workflow each runs and the machine it runs on (for a
@@ -641,6 +641,8 @@ affects jobs submitted afterwards.
 | GET | `/api/v1/shotgrid/projects/{show}/shots?refresh=` | A show's `shots` `[{code, sequence, status}]` and `sequences` |
 | GET | `/api/v1/shotgrid/playlist?link=` | Batch Submit's rows from a Playlist (link or id): `playlist` and `rows` `[{version, input}]`, in its order |
 | GET | `/api/v1/shotgrid/versions?ids=` | Batch Submit's rows from Versions (ids, comma-separated), in that order: `source` (`code`, `show`, `ids`, `missing`) and `rows` |
+| GET | `/api/v1/shotgrid/query/options?show=&refresh=` | What Batch Submit's ShotGrid query offers for a show: `sequences` `[{code, shots}]`, `shots`, `filters` `[{key, field, label, kind (choice, text), values [{value, label, count}], note}]`, `left_out` `[{key, label, why}]`, or `why` not |
+| POST | `/api/v1/shotgrid/query` | Batch Submit's rows from a query `{show, sequences, shots, name, filters {key: [values] or "text"}, since_days, latest}`: `source` (`code`, `show`, `query`, `matched`, `latest`, `more`, `notes`) and `rows` |
 | GET | `/api/v1/shotgrid/menu` | ShotGrid's right-click menu as the farm makes it: `items` (folder, title, entity type, url, shows), `workflows` (where each goes, and why), `problems`, `sync` (the manager's own syncing of it) |
 | POST | `/api/v1/shotgrid/menu/sync` | Make ShotGrid's menu match now (`shotgrid.menu_sync` on; with API keys, admins) |
 | POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
@@ -1030,9 +1032,14 @@ hold the show and shot lists back; only a ShotGrid that doesn't answer is left a
 ### Batch Submit
 
 The dashboard's **Batch Submit** tab makes one job per row of a table, one workflow per table.
-**Playlist** fills the table from a ShotGrid Playlist: paste its link (or its id) and *Load*,
-and each of its Versions becomes a row, in the playlist's order, its link the input (see
-*ShotGrid Version links*). *ShotGrid query* and *Variations* are coming.
+Two sources fill it, each ShotGrid Version a row with its link as the input (see *ShotGrid
+Version links*):
+
+- **Playlist:** paste a ShotGrid Playlist's link (or its id) and *Load*; its Versions come in
+  the playlist's order.
+- **ShotGrid query:** a show's Versions found by a few filters (below), in shot order.
+
+*Variations* is coming.
 
 - **Columns:** the shot, the Version (a link to it) and its frames, then the workflow's own
   fields, as in the Submit form, then, for a workflow that publishes, *Publish*, *Step*,
@@ -1065,6 +1072,41 @@ A link opens it with a playlist loaded: `/#batch?playlist=<link or id>&workflow=
 or with Versions: `/#batch?versions=<id>,<id>,…`. `GET /api/v1/shotgrid/playlist?link=`
 and `GET /api/v1/shotgrid/versions?ids=` give the rows
 (`comfyfarm_client.shotgrid_playlist(link)`, `shotgrid_versions(ids)` from Python).
+
+#### The ShotGrid query
+
+Pick a show, narrow it down, and *Search* (or Enter in a text field):
+
+- **Sequences** and **Shots:** dropdowns of the show's, as the publish fields list them (shots
+  with a status the lists hide, `hld omt hdn void`, are left out). The shots offered are those
+  of the sequences picked. Type in a long list to filter it, then *Tick shown*. None picked
+  means all.
+- **Name contains:** words in the Version's name (`mp01`); several words find any of them.
+- **Status**, then **Pipeline Step**, **Task**, **Type** and **Department**: each a dropdown of
+  the values the show's Versions have, with how many, as ShotGrid labels them (a Task by its
+  name, `LINEUP (AUTO)`, across shots). Several picked find any of them. A text or linked field
+  ShotGrid can't list, or with more than 300 values, is typed instead ("contains"); a list
+  field always stays a dropdown, since ShotGrid takes no "contains" on one. A field the site
+  doesn't have, or none of the show's Versions fill in, is left out (*N not offered ⓘ* says
+  why). Which fields: `shotgrid.query.fields` in the manager's config. On Rodeo's site
+  (probed): Status is a status list, Pipeline Step a link to a Step, Task a link to a Task,
+  Type and Department lists, Version Number a number.
+- **Created:** in the last day, week, month…
+- **Latest of each shot and name** (on by default): only the highest version of each Version
+  name in each shot. The name is the Version's name without its version
+  (`yht_1040.lineup.autoLineup.v3` → `yht_1040.lineup.autoLineup`; a movie's extension goes
+  too); the highest is by `sg_version_number`, else the name's `vN`, else the newest.
+
+Only Versions of shots (not assets) with frames or a movie are found, since a row needs one.
+The newest 5000 are looked at and 500 rows given at most (`shotgrid.query.scan`,
+`max_rows`): when there are more, the info line says so. Hovering the info line shows the
+query the table came from; ↻ runs it again, keeping your edits. ↻ next to the filters asks
+ShotGrid again for the show's sequences, shots and values (they're kept 10 minutes).
+
+The browser never sends ShotGrid filters: it names a show and the values picked, and the
+manager builds the filters from what it offered for that show, refusing anything else. It's
+read only, with the manager's own ShotGrid script. `GET /api/v1/shotgrid/query/options?show=`
+gives what a show offers; `POST /api/v1/shotgrid/query` gives the rows.
 
 ### ShotGrid right-click
 

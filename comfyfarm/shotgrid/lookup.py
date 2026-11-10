@@ -26,7 +26,9 @@ version() is a Version link given as a job's input (comfyfarm.shotgrid.versions)
 frames and movie paths, frame range, and the show, sequence and shot it belongs to,
 cached for version_ttl seconds. playlist() is a Playlist's Versions in its order (the
 dashboard's Batch Submit), each cached the same way, so checking the rows one by one
-doesn't ask ShotGrid again; versions() is several Versions picked in ShotGrid, the same."""
+doesn't ask ShotGrid again; versions() is several Versions picked in ShotGrid, the same.
+Batch Submit's ShotGrid query is comfyfarm.shotgrid.query, on top of these (schema() is
+what it asks of a field)."""
 
 from __future__ import annotations
 
@@ -101,6 +103,8 @@ class ShotGrid:
         self._versions: dict[int, tuple[float, dict]] = {}
         self._playlists: dict[int, tuple[float, dict]] = {}
         self._show_codes: dict[int, str] = {}           # project id -> show code, for Versions
+        self._schemas: dict[str, tuple[float, dict]] = {}  # entity type -> its fields (schema_field_read)
+        self.query_options: dict[str, tuple[float, dict]] = {}   # show -> its query's filters (shotgrid.query)
         self._forced: dict[str, float] = {}
         self._down_until = 0.0
         self._down_why: str | None = None
@@ -403,6 +407,46 @@ class ShotGrid:
                 out[r["id"]] = d = self._version_dict(r)
                 self._versions[r["id"]] = (now, d)
         return [out[vid] for vid in dict.fromkeys(ids) if vid in out]
+
+    # ---------------------------------------------------------------- the site's fields
+    def schema(self, entity: str) -> dict:
+        """An entity type's fields as schema_field_read gives them ({field: {data_type,
+        name, properties}}), cached as long as the list of shows. Unavailable / Refused as
+        any request."""
+        why = self.why()
+        if why:
+            raise Unavailable(why)
+        cached = self._schemas.get(entity)
+        if cached and time.time() - cached[0] < self.cfg.projects_ttl:
+            return cached[1]
+        fields = self._ask("schema_field_read", entity) or {}
+        self._schemas[entity] = (time.time(), fields)
+        return fields
+
+    def remember(self, versions: list[dict]) -> None:
+        """Versions found otherwise (a query), cached as version() caches them, for the row
+        checks that follow."""
+        now = time.time()
+        for v in versions:
+            self._versions[v["id"]] = (now, v)
+
+    def ask(self, method: str, *args, **kwargs):
+        """A read made elsewhere in the package (the query): as the lookups' own, one at a
+        time, Refused or Unavailable when ShotGrid refuses or doesn't answer."""
+        why = self.why()
+        if why:
+            raise Unavailable(why)
+        return self._ask(method, *args, **kwargs)
+
+    def project(self, show: str, refresh: bool = False) -> dict | None:
+        """An active show's {code, name, id}, or None."""
+        return self._project(show, refresh)
+
+    def version_fields(self) -> list[str]:
+        return self._version_fields()
+
+    def version_dict(self, v: dict) -> dict:
+        return self._version_dict(v)
 
     def _show_of(self, project: dict) -> str | None:
         """A project's show code (tank_name): from the cached list of shows, else asked."""

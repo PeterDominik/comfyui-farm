@@ -30,6 +30,7 @@ from ..workflows import ParamError, WorkflowRegistry
 from ..publish.publisher import Publisher, PublishError, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
 from ..shotgrid import menu as SM
+from ..shotgrid import query as SQ
 from ..shotgrid import versions as V
 from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
@@ -376,6 +377,29 @@ class Farm:
                            "show": shows.pop() if len(shows) == 1 else None,
                            "ids": [v["id"] for v in found], "missing": [i for i in ids if i not in have]},
                 "rows": [{"version": v, "input": v["url"]} for v in found]}
+
+    def query_options(self, show: str, refresh: bool = False) -> dict:
+        """What Batch Submit's ShotGrid query offers for a show (shotgrid.query.options)."""
+        return SQ.options(self.shotgrid, show, refresh)
+
+    def batch_query(self, spec: dict) -> dict:
+        """Batch Submit's ShotGrid query (shotgrid.query): its Versions as rows, in shot and
+        code order: {source: {code, show, query, matched, latest, more, notes}, rows:
+        [{version, input}]}, as batch_playlist."""
+        try:
+            r = SQ.run(self.shotgrid, spec)
+        except ValueError as e:
+            raise FarmError(str(e)) from None
+        except Refused as e:
+            raise FarmError(f"ShotGrid refused the query: {e}", 502) from None
+        except Unavailable as e:
+            raise FarmError(f"The ShotGrid query needs the manager's ShotGrid lookups. {e}", 503) from None
+        n, q = len(r["rows"]), r["query"]
+        what = "latest Version" if q["latest"] else "Version"
+        code = f"{n} {what}{'' if n == 1 else 's'} in {r['show']}" if n else f"No Version in {r['show']} matches"
+        return {"source": {"code": code, "show": r["show"], "query": q, "matched": r["matched"], "latest": q["latest"],
+                           "more": r["more"], "notes": r["notes"]},
+                "rows": [{"version": v, "input": v["url"]} for v in r["rows"]]}
 
     def shotgrid_submit(self, workflow: str, link: str, user: str | None, publish: bool = False) -> dict:
         """ShotGrid's right-click Submit (+ Publish) on one Version (comfyfarm.shotgrid.menu):

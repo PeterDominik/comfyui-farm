@@ -111,9 +111,39 @@
   /* Batch Submit (batch.js): one row per job, the workflow's fields as columns */
   .seg button:disabled { opacity: .45; }
   .bsrc { display: flex; gap: 10px; align-items: center; padding: 12px 14px; flex-wrap: wrap; font-size: 13px; }
+  .bsrc[hidden] { display: none; }
   .bsrc label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; flex: 1; min-width: 260px; }
   .bsrc label input { flex: 1; min-width: 0; }
-  #plInfo { flex-basis: 100%; color: var(--muted); }
+  #plInfo { padding: 0 14px 12px; font-size: 13px; color: var(--muted); }
+  /* The ShotGrid query: dropdowns of checkboxes (show, sequences, shots, status, step…) */
+  .bq label { flex: none; min-width: 0; }
+  .bq label.qname { flex: 1; min-width: 220px; }
+  #qPlaces { display: contents; }
+  .bq label.qchk { gap: 6px; color: var(--text); }
+  .qfacets { flex-basis: 100%; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .qfacets:empty { display: none; }
+  .qfacets > label input { width: 140px; }
+  .qpick { position: relative; }
+  .qpick > summary { list-style: none; border: 1px solid var(--line); border-radius: 5px; padding: 5px 26px 5px 9px; background: var(--panel2);
+                     color: var(--muted); font-size: 12px; white-space: nowrap; position: relative; }
+  .qpick > summary::-webkit-details-marker { display: none; }
+  .qpick > summary::after { content: "▾"; position: absolute; right: 9px; top: 5px; }
+  .qpick > summary b { color: var(--text); font-weight: 600; margin-left: 4px; }
+  .qpick > summary b.any { color: var(--muted); font-weight: 400; }
+  .qpick[open] > summary { border-color: var(--accent); }
+  .qpop { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 6px; padding: 8px; min-width: 230px; max-width: min(420px, calc(100vw - 32px)); display: grid; gap: 6px;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+  .qpop .qfind { width: 100%; }
+  .qlist { max-height: 260px; overflow: auto; display: grid; gap: 1px; }
+  .qlist label { display: flex; gap: 7px; align-items: center; font-size: 12px; color: var(--text); white-space: nowrap; cursor: pointer;
+                 padding: 2px 4px; border-radius: 3px; flex: none; min-width: 0; }
+  .qlist label:hover { background: var(--panel2); }
+  .qlist label[hidden] { display: none; }
+  .qlist label input, .bq label.qchk input { flex: none; }
+  .qlist label .n { margin-left: auto; padding-left: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .qacts { display: flex; gap: 6px; justify-content: flex-end; }
+  .qnote { font-size: 12px; color: var(--muted); }
   #plInfo:empty { display: none; }
   #plInfo code { font-family: var(--mono); color: var(--text); }
   #tab-batch { min-width: 0; }   /* a grid item: without it the wide table would widen the page */
@@ -194,18 +224,31 @@
     <div class="sechead">
       <h2>Batch submit</h2>
       <div class="seg" id="batchSrc">
-        <button type="button" class="on">Playlist</button>
-        <button type="button" disabled title="Coming soon: rows from a ShotGrid search (show, sequences, shots, step, status…)">ShotGrid query</button>
+        <button type="button" class="on" data-src="playlist" title="Rows from a ShotGrid Playlist, or Versions picked in ShotGrid">Playlist</button>
+        <button type="button" data-src="query" title="Rows from a ShotGrid search: show, sequences, shots, name, status, step…">ShotGrid query</button>
         <button type="button" disabled title="Coming soon: one input, a row per set of parameter values (wedges)">Variations</button>
       </div>
       <select id="batchWf" title="The workflow every row runs"></select>
     </div>
-    <div class="bsrc">
+    <div class="bsrc" id="srcPlaylist">
       <label>Playlist<input id="plLink" class="mono" placeholder="https://rodeofx.shotgrid.autodesk.com/detail/Playlist/… (or Version links)" autocomplete="off"></label>
       <button type="button" id="plLoad">Load</button>
       <button type="button" id="plClear" title="Empty the table">Clear</button>
-      <div id="plInfo"></div>
     </div>
+    <div class="bsrc bq" id="srcQuery" hidden>
+      <label class="qshow">Show<select id="qShow"></select></label>
+      <span id="qPlaces"></span>
+      <label class="qname">Name contains<input id="qName" class="mono" placeholder="e.g. mp01 (several: any of them)" autocomplete="off"></label>
+      <label>Created<select id="qSince">
+        <option value="">any time</option><option value="1">in the last day</option><option value="3">in the last 3 days</option>
+        <option value="7">in the last week</option><option value="14">in the last 2 weeks</option><option value="30">in the last month</option>
+        <option value="90">in the last 3 months</option><option value="365">in the last year</option></select></label>
+      <label class="qchk" title="Of each shot and name (the code without its version), only the highest version"><input type="checkbox" id="qLatest"> Latest of each shot and name</label>
+      <button type="button" class="primary" id="qSearch">Search</button>
+      <button type="button" id="qClear" title="Empty the table">Clear</button>
+      <div class="qfacets" id="qFacets"></div>
+    </div>
+    <div id="plInfo"></div>
     <div class="btwrap"><table id="batchTable"></table></div>
     <div id="batchFoot"></div>
     <div id="batchLog" aria-live="polite"></div>
