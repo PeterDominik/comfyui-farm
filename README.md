@@ -104,8 +104,9 @@ requirements: `oiiotool` (OpenImageIO, with OpenColorIO) and `ffmpeg` (imageio-f
 | `deploy/linux/setup.sh manager\|agent` | Conda env (Python 3.12, your Miniconda), requirements (from pypi.org rather than the pipeline's package mirror; `--index-url` to change), `config.yaml` or `agent.yaml` from its example, the check |
 | `deploy/linux/farmctl.sh start\|stop\|restart\|status\|ensure\|log\|check manager\|agent` | Runs it in the background, with the pipeline's Python settings (`PYTHONPATH`, rez) removed |
 | `deploy/linux/install_cron.sh manager\|agent` | Your crontab starts it at boot and checks it every minute (`--remove` to undo) |
+| `deploy\windows\install_agent.ps1 [-Always]` | A GPU machine from nothing: Python, ComfyUI at the farm's commit with its torch, the agent, `comfyui sync`, started at logon or always (run in the folder to install into) |
 | `deploy\windows\setup.ps1 [-Agent]` | `.venv`, requirements, `agent.yaml` (`-Agent`) or `config.yaml`, the check |
-| `deploy\windows\install_startup.ps1` | Starts the agent when you log in, and again if it exits (Startup folder, no admin; `-Stop`, `-Remove`) |
+| `deploy\windows\install_startup.ps1 [-Always]` | Keeps the agent running, no admin: at logon (Startup folder), or with `-Always` whether or not you're logged in (a scheduled task); `-Stop`, `-Remove`, `-AtLogon` |
 | `deploy\windows\install_services.ps1` | `standalone` and ComfyUI as services (NSSM, admin) |
 | `deploy\windows\run_gateway.bat`, `update.ps1`, `open_firewall.ps1` | `standalone` in a console; update; open port 8000 (admin) |
 
@@ -205,7 +206,29 @@ agent starts it, `logs/comfyui-<name>.log`.
 
 ### An agent on a Windows GPU machine
 
-Needs **Git for Windows** and **Python 3.10+** (python.org, tick *Add to PATH*).
+**From nothing** (no Python, no ComfyUI yet; needs **Git for Windows**, whose *Only for me* install needs no admin):
+make a folder on the machine's own disk, clone the repo into it and run `install_agent.ps1` there. It asks for the
+manager's `agents.token` once, and with `-Always` for your Windows password (see *Keeping it running* below).
+
+```powershell
+mkdir D:\comfyfarm; cd D:\comfyfarm
+git clone https://github.com/PeterDominik/comfyui-farm.git
+powershell -ExecutionPolicy Bypass -File comfyui-farm\deploy\windows\install_agent.ps1 -Always
+```
+
+- **What it puts in that folder:**
+  - `python\`: Python from python.org, for you only, unless the machine already has the pinned version or `-Python`
+    names one;
+  - `comfyui\` at the environment file's commit, and `comfyui-env\`, its Python with the farm's torch;
+  - `comfyui-farm\` with its `.venv` and `agent.yaml` (readable by you only; a copy goes to
+    `%USERPROFILE%\.config\comfyfarm\agent-<name>.yaml`).
+- **Then it:** brings ComfyUI to the farm's (`comfyui sync`) and starts the agent.
+- **Checks first:** the driver against `driver_min`, a local drive with 40 GB free, `\\rodeofx.com\smb\shows`,
+  `B:\comfy_farm\manager.json` and the model libraries reachable, ComfyUI's port free.
+- **Re-running** keeps what's there. The agent is named `<computer>-<gpu>` (`wrk59467w-5090`) unless `-Name` says
+  otherwise. Everything it prints is also in `install_agent.log`. `-NoStart` stops before starting it.
+
+**With Python and ComfyUI already there** (needs **Python 3.10+** from python.org, tick *Add to PATH*):
 
 ```powershell
 git clone https://github.com/PeterDominik/comfyui-farm.git D:\comfyfarm
@@ -232,9 +255,28 @@ Then:
 powershell -ExecutionPolicy Bypass -File deploy\windows\install_startup.ps1 -StartNow
 ```
 
-It starts whenever you log in (locking the screen is fine, logging out stops it) and
-restarts the agent if it exits. `install_startup.ps1 -Stop` stops it; `-Remove` stops it
-starting at logon.
+**Keeping it running.** `install_startup.ps1` runs `run_agent.ps1`, which restarts the agent if it exits (one per
+`agent.yaml`, across login sessions). It does this in one of two ways, neither needing admin:
+
+| | at logon (default) | `-Always` |
+|---|---|---|
+| How | a shortcut in your Startup folder | a scheduled task every 5 minutes, run whether or not you're logged in (a run while the agent runs ends at once) |
+| Screen locked | keeps running | keeps running |
+| You sign out | stops | keeps running |
+| After a reboot | off until you log in | back within 5 minutes |
+| Needs | nothing | your Windows password, kept by Windows with the task (run `-Always` again after changing it), and the *Log on as a batch job* right on that machine; without it, Windows refuses the task and nothing changes |
+
+- **No mapped drives:** the task's background session has none. `-Always` records your network drives (`B:` for
+  `/rdo/bank`) in `run\drives.txt`, and `run_agent.ps1` maps any that are missing before starting the agent, so
+  `agent.yaml` and ComfyUI keep using `B:\...`.
+- **Switching:** `-Always` removes the logon shortcut; `-AtLogon` removes the task and puts the shortcut back.
+- **Stop, restart, remove:** `-Stop` stops the agent (with `-Always` it also pauses the task until `-StartNow`), and
+  `-Stop -StartNow` restarts it in whichever way is set up. `-Remove` stops it and removes both.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\windows\install_startup.ps1 -Always -StartNow   # whether or not you're logged in
+powershell -ExecutionPolicy Bypass -File deploy\windows\install_startup.ps1 -StartNow           # at logon
+```
 
 ### Artists (Nuke)
 

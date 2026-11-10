@@ -361,6 +361,32 @@ class WindowsDeployTests(unittest.TestCase):
         self.assertIn(str(REPO / "deploy/windows/run_agent.ps1"), r.stdout)
         self.assertIn("-WindowStyle Hidden", r.stdout)
         self.assertIn('-Config "D:\\farm\\agent.yaml"', r.stdout)
+        # Stop and Remove act on this checkout only: the live agent's task (another checkout)
+        # isn't this one's, so here they only touch the shortcut.
+        r = self.ps(f"& '{script}' -StartupDir '{tmp}' -Stop")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(link.is_file(), "-Stop keeps the shortcut")
+        r = self.ps(f"& '{script}' -StartupDir '{tmp}' -Remove")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(link.exists())
+        self.assertIn("no longer starts by itself", r.stdout)
+
+    def test_always_and_at_logon_are_one_or_the_other(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        script = REPO / "deploy/windows/install_startup.ps1"
+        r = self.ps(f"& '{script}' -StartupDir '{tmp}' -Always -AtLogon")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Pass -Always or -AtLogon, not both.", r.stdout + r.stderr)
+        self.assertEqual(list(tmp.iterdir()), [])
+
+    def test_install_agent_help(self):
+        """install_agent.ps1 parses and documents itself (it can't run here: it installs
+        Python, ComfyUI and torch)."""
+        r = self.ps(f"Get-Help '{REPO / 'deploy/windows/install_agent.ps1'}' -Full | Out-String -Width 200")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for word in ("-Always", "-NoStart", "-Python", "comfyui-env"):
+            self.assertIn(word, r.stdout)
 
 
 if __name__ == "__main__":
