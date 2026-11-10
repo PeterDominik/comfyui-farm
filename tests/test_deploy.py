@@ -178,6 +178,165 @@ class LinuxDeployTests(unittest.TestCase):
                       calls)                                            # pip's own setting
 
 
+# Stands in for both conda envs' Python in install_agent.sh: pip and the farm's commands
+# are recorded, torch "is" on a GPU once pip has installed it, and a script on stdin (the
+# environment file read) runs in the real Python.
+INSTALL_PYTHON = textwrap.dedent(f"""\
+    #!{sys.executable}
+    import json, os, sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "calls.jsonl"), "a") as fh:
+        fh.write(json.dumps({{"args": sys.argv[1:], "PYTHONPATH": os.environ.get("PYTHONPATH"),
+                             "cache": os.environ.get("PIP_CACHE_DIR")}}) + "\\n")
+    a = sys.argv[1:]
+    if a == ["-"]:
+        os.execv({sys.executable!r}, [{sys.executable!r}, "-"])
+    if a[:3] == ["-m", "pip", "install"] and any(x.startswith("torch==") for x in a):
+        open(os.path.join(here, "torch"), "w").write("2.13.0+cu130")
+    if a[:1] == ["-c"] and "importlib.metadata" in a[1]:
+        t = os.path.join(here, "torch")
+        sys.exit(print(open(t).read()) if os.path.exists(t) else 1)
+    if a[:1] == ["-c"] and "torch.cuda" in a[1]:
+        print("    torch 2.13.0+cu130 on NVIDIA RTX A6000")
+    """)
+
+
+@unittest.skipUnless(LINUX and shutil.which("git"), "install_agent.sh (bash, git)")
+class InstallAgentTests(unittest.TestCase):
+    """install_agent.sh from nothing, with stand-ins: Miniconda's conda and both envs'
+    Python, nvidia-smi, and ComfyUI (a git checkout with no history). The farm's checkout
+    is a copy of this repo's files, so the real environment file is read."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.base = self.tmp / "softwareLocal"
+        farm = self.farm = self.base / "comfyui-farm"
+        for d in ("deploy", "comfyfarm", "comfyui_nodes"):
+            shutil.copytree(REPO / d, farm / d, ignore=shutil.ignore_patterns("__pycache__"))
+        for f in ("requirements.txt", "config.example.yaml", "agent.example.yaml"):
+            shutil.copy(REPO / f, farm / f)
+        self.git(farm, "init", "-q")
+        self.git(farm, "add", "-A")
+        self.git(farm, "commit", "-q", "-m", "farm")
+        comfy = self.base / "comfyui"
+        (comfy / "custom_nodes").mkdir(parents=True)
+        (comfy / "requirements.txt").write_text("torch\nnumpy\n")
+        self.git(comfy, "init", "-q")
+        conda = self.base / "miniconda3/bin/conda"
+        conda.parent.mkdir(parents=True)
+        conda.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            # conda create -y -q -p <env> ... | conda config --show channels
+            case "$1" in
+              create) mkdir -p "$5/bin" && cp {self.tmp}/python "$5/bin/python" ;;
+              config) printf 'channels:\\n  - conda-forge\\n' ;;
+              *) exit 9 ;;
+            esac
+            """))
+        conda.chmod(0o755)
+        (self.tmp / "python").write_text(INSTALL_PYTHON)
+        (self.tmp / "python").chmod(0o755)
+        bin_ = self.tmp / "bin"
+        bin_.mkdir()
+        (bin_ / "nvidia-smi").write_text(textwrap.dedent("""\
+            #!/bin/sh
+            case "$*" in
+              *name*) echo "NVIDIA RTX A6000" ;;
+              *driver_version*) echo "${FAKE_DRIVER:-580.159.04}" ;;
+            esac
+            """))
+        (bin_ / "nvidia-smi").chmod(0o755)
+        storage = [self.tmp / "rdo/shows", self.tmp / "rdo/bank/comfyui", self.tmp / "rdo/bank/comfy_farm"]
+        for d in storage:
+            d.mkdir(parents=True)
+        (self.tmp / "manager.json").write_text('{"url": "http://manager:9090"}')
+        (self.tmp / "token").write_text("s3cr'et\n")
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.env = dict(os.environ, PATH=f"{bin_}:{os.environ['PATH']}", HOME=str(self.home),
+                        PYTHONPATH="/pipeline/rez/python", COMFYFARM_MIN_FREE_GB="0",
+                        COMFYFARM_STORAGE=" ".join(map(str, storage)))
+
+    @staticmethod
+    def git(folder: Path, *args):
+        subprocess.run(["git", "-C", str(folder), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+    def install(self, *extra, env=None):
+        return subprocess.run(["bash", str(self.farm / "deploy/linux/install_agent.sh"), "--no-start",
+                               "--manager", str(self.tmp / "manager.json"), "--token-file", str(self.tmp / "token"),
+                               *extra], cwd=self.base, env=env or self.env, capture_output=True, text=True,
+                              timeout=300)
+
+    def calls(self, env: str):
+        f = self.base / "miniconda3/envs" / env / "bin/calls.jsonl"
+        return [json.loads(x) for x in f.read_text().splitlines()]
+
+    def test_from_nothing(self):
+        r = self.install()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Installed. Not started (--no-start)", r.stdout)
+        host = subprocess.run(["hostname", "-s"], capture_output=True, text=True).stdout.strip()
+        name = f"{host}-a6000"
+        cpy = self.base / "miniconda3/envs/comfy/bin/python"
+        agent = self.farm / "agent.yaml"
+        text = agent.read_text()
+        for line in (f"name: {name}", f"manager: '{self.tmp / 'manager.json'}'", "token: 's3cr''et'",
+                     "comfyui: http://127.0.0.1:8188", f"  command: ['{cpy}', main.py, --port, '8188']",
+                     f"  cwd: '{self.base / 'comfyui'}'"):
+            self.assertIn(line + "\n", text)
+        self.assertEqual(agent.stat().st_mode & 0o777, 0o600)                 # it holds the token
+        backup = self.home / f".config/comfyfarm/agent-{name}.yaml"
+        self.assertEqual((backup.read_text(), backup.stat().st_mode & 0o777), (text, 0o600))
+        self.assertEqual((self.base / "miniconda3/.condarc").read_text(), "channels:\n  - conda-forge\n")
+        self.assertEqual(os.readlink(self.base / "comfyui/custom_nodes/comfyfarm_nodes"),
+                         str(self.farm / "comfyui_nodes/comfyfarm_nodes"))
+        self.assertTrue((self.base / "install_agent.log").read_text().count("==> "))
+
+        comfy = [c["args"] for c in self.calls("comfy")]
+        torch = ["-m", "pip", "install", "torch==2.13.0+cu130", "torchvision==0.28.0+cu130",
+                 "torchaudio==2.11.0+cu130", "--index-url", "https://download.pytorch.org/whl/cu130"]
+        self.assertIn(torch, comfy)                                             # the environment file's pins
+        held = self.farm / "run/torch-held.txt"
+        self.assertEqual(held.read_text().split(), torch[3:6])
+        self.assertIn(["-m", "pip", "install", "--prefer-binary", "--index-url", "https://pypi.org/simple",
+                       "-c", str(held), "-r", str(self.base / "comfyui/requirements.txt")], comfy)
+        farm = self.calls("comfyfarm")
+        sync = ["-m", "comfyfarm", "comfyui", "sync", "--config", str(agent), "--apply", "--no-manager"]
+        self.assertEqual([c["args"] for c in farm].count(sync), 2)             # the second pass pins the rest
+        self.assertIn(["-m", "comfyfarm", "comfyui", "verify", "--config", str(agent)], [c["args"] for c in farm])
+        everything = farm + self.calls("comfy")
+        self.assertEqual({c["PYTHONPATH"] for c in everything}, {None})          # the pipeline's stays out
+        self.assertEqual({c["cache"] for c in self.calls("comfy")}, {str(self.base / "pip-cache")})
+
+        # Again: an edited agent.yaml is kept, and torch isn't installed twice.
+        agent.write_text(text.replace("max_inflight: 2", "max_inflight: 1"))
+        r = self.install()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("agent.yaml is there: kept as it is", r.stdout)
+        self.assertIn("max_inflight: 1", agent.read_text())
+        self.assertEqual([c["args"] for c in self.calls("comfy")].count(torch), 1)
+
+        # An NVIDIA driver too old for the farm's torch stops it, saying so.
+        r = self.install(env=dict(self.env, FAKE_DRIVER="570.86.10"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("STOPPED: NVIDIA driver 570.86.10: the farm's torch", r.stdout)
+
+    def test_refuses_a_busy_port_and_a_missing_drive(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen()
+            r = self.install("--port", str(s.getsockname()[1]))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("is in use on this machine (another ComfyUI?)", r.stdout)
+        self.assertFalse((self.farm / "agent.yaml").exists())
+        r = self.install(env=dict(self.env, COMFYFARM_STORAGE=str(self.tmp / "nope")))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"{self.tmp / 'nope'} isn't visible from this machine", r.stdout)
+
+
 @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"), "the Windows deploy scripts")
 class WindowsDeployTests(unittest.TestCase):
     def ps(self, command: str) -> subprocess.CompletedProcess:

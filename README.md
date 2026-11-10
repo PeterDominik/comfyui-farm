@@ -100,6 +100,7 @@ requirements: `oiiotool` (OpenImageIO, with OpenColorIO) and `ffmpeg` (imageio-f
 
 | Script | What |
 |---|---|
+| `deploy/linux/install_agent.sh` | A GPU machine from nothing: Miniconda, ComfyUI at the farm's commit with its torch, the agent, `comfyui sync`, cron (run in the folder to install into) |
 | `deploy/linux/setup.sh manager\|agent` | Conda env (Python 3.12, your Miniconda), requirements (from pypi.org rather than the pipeline's package mirror; `--index-url` to change), `config.yaml` or `agent.yaml` from its example, the check |
 | `deploy/linux/farmctl.sh start\|stop\|restart\|status\|ensure\|log\|check manager\|agent` | Runs it in the background, with the pipeline's Python settings (`PYTHONPATH`, rez) removed |
 | `deploy/linux/install_cron.sh manager\|agent` | Your crontab starts it at boot and checks it every minute (`--remove` to undo) |
@@ -151,6 +152,27 @@ If the manager moves to another machine, start it there: artists and agents foll
 ```
 
 ### An agent on a Linux GPU machine
+
+**From nothing** (no Miniconda, no ComfyUI yet): make a folder on the machine's own disk,
+clone the repo into it and run `install_agent.sh` there. It asks for the manager's
+`agents.token` once.
+
+```bash
+mkdir -p /softwareLocal/comfyfarm && cd /softwareLocal/comfyfarm
+git clone https://github.com/PeterDominik/comfyui-farm.git
+bash comfyui-farm/deploy/linux/install_agent.sh       # --name, --port, --token-file, --no-start: see its header
+```
+
+- **What it puts in that folder:** `miniconda3/` (conda-forge only, with the envs `comfyfarm` and `comfy`), `comfyui/` at the
+  environment file's commit with its torch, and `comfyui-farm/` with its `agent.yaml` (readable by you only; a copy goes to
+  `~/.config/comfyfarm/agent-<name>.yaml`).
+- **Then it:** brings ComfyUI to the farm's (`comfyui sync`), starts the agent and adds the crontab lines.
+- **Checks first:** the driver against `driver_min`, local disk with 40 GB free, show storage and the model libraries visible,
+  ComfyUI's port free.
+- **Re-running** keeps what's there. The agent is named `<host>-<gpu>` (`tor-flame02-a6000`) unless `--name` says otherwise,
+  and everything it prints is also in `install_agent.log`.
+
+**With Miniconda and ComfyUI already there:**
 
 ```bash
 git clone https://github.com/PeterDominik/comfyui-farm.git <local disk>/comfyui-farm

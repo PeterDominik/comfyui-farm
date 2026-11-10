@@ -10,7 +10,9 @@
 #   --index-url URL  where pip gets the requirements (default: https://pypi.org/simple, not
 #                    the pipeline's package mirror, which may be too old); '' = pip's own setting
 #   --comfyui DIR    agent: ComfyUI's folder; links the farm's ComfyUI nodes into its custom_nodes
+#   --no-check       skip the check and the next steps at the end (install_agent.sh runs it later)
 #
+# For a new GPU machine from nothing (Miniconda, ComfyUI, the agent), see install_agent.sh.
 # Creates the env (Python 3.12) and installs requirements.txt into it, copies
 # config.example.yaml (manager) or agent.example.yaml (agent) if there's no config yet,
 # and runs the check. Then: farmctl.sh start <role>, and install_cron.sh <role> to keep it
@@ -19,14 +21,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 role="${1:-}"
-case "$role" in manager|agent) shift ;; *) echo "usage: $0 manager|agent [--conda DIR] [--env DIR] [--index-url URL] [--comfyui DIR]" >&2; exit 2 ;; esac
-conda_dir="" env_dir="" comfyui="" index_url="https://pypi.org/simple"
+case "$role" in manager|agent) shift ;; *) echo "usage: $0 manager|agent [--conda DIR] [--env DIR] [--index-url URL] [--comfyui DIR] [--no-check]" >&2; exit 2 ;; esac
+conda_dir="" env_dir="" comfyui="" index_url="https://pypi.org/simple" run_check=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --conda) conda_dir="$2"; shift 2 ;;
     --env) env_dir="$2"; shift 2 ;;
     --index-url) index_url="$2"; shift 2 ;;
     --comfyui) comfyui="$2"; shift 2 ;;
+    --no-check) run_check=0; shift ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -85,6 +88,7 @@ if [ -n "$comfyui" ]; then
   fi
 fi
 
+[ "$run_check" = 1 ] || exit 0
 echo
 if [ "$role" = manager ]; then
   "${clean[@]}" "$py" -m comfyfarm --config "$ROOT/config.yaml" check || true
