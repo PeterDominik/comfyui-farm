@@ -1046,7 +1046,11 @@ Version links*):
   *Nuke template*, *Description* and *Dry run*, then where the row writes and its state
   (which stays in view on the right).
 - **Fill:** the cell under each header sets that column for every ticked row. Any cell can
-  still be changed per row; a cell that differs from its column is outlined.
+  still be changed per row; a cell that differs from its column is outlined. The table and
+  the fill are kept in the browser, but only what you set in the fill yourself stays: the
+  other columns take the farm's defaults as they are when the page loads (the publish step
+  `publish.default_step`, the template, a manifest's), and so do the rows not changed on
+  their own.
 - **Checks:** the manager checks every row as the Submit form's "Will write" line does, its
   publish included (a show without a folder, a shot ShotGrid doesn't have…), a few at a time,
   again after each change: *ready* (with notes, e.g. a Version read from its movie, and where

@@ -39,6 +39,7 @@ const batch = {
   loading: false, why: "", sg: null,       // sg: the manager's ShotGrid status
   queue: [], running: 0, timers: new Map(), checkedOnce: false,
   sending: null, footMsg: "",              // sending: {done, of, stop}
+  fillSet: {},                             // the fill values set by hand (kept); the others follow the defaults
   src: "playlist",                         // the source shown: playlist | query
   q: null,                                 // the query being made: {show, sequences, shots, name, filters, since, latest}
   qopts: null, shows: null, showsWhy: "",  // what the manager offers for q.show; the shows
@@ -83,13 +84,28 @@ function bLoadPub(wf) {
   pubOptions(wf.name).then(o => { batch.pub[wf.name] = o; }).catch(err => { batch.pub[wf.name] = { why: err.message }; })
     .finally(() => {
       if (bWf() !== wf) return;
-      for (const c of bPubCols(wf)) {           // the new columns' defaults, where nothing's set
-        if (!(c.name in batch.fill)) batch.fill[c.name] = bDefault(c);
-        for (const r of batch.rows) if (!(c.name in r.values)) r.values[c.name] = batch.fill[c.name];
-      }
-      batchRender();
+      const moved = bFreshFill(bPubCols(wf));   // the step, template… the manager gives now
+      batchSave(); batchRender();
+      moved.forEach(bCheck);
       bApplyWanted();
     });
+}
+// The fill row is kept in this browser with the table, but only what was set in it by hand
+// stays: the other columns take the defaults the farm gives now, and so do the rows still
+// following the fill (not edited on their own). So a default changed on the farm
+// (publish.default_step lay -> ai, a manifest's) isn't held back by a table saved before.
+// The rows that changed, to check again.
+function bFreshFill(cols) {
+  const moved = new Set(), wf = bWf(), primary = wf && bPrimary(wf);
+  for (const c of cols) {
+    if (batch.fillSet[c.name] || c.name === primary?.name) continue;
+    const d = bDefault(c), had = c.name in batch.fill, old = batch.fill[c.name];
+    if (had && bSame(old, d)) continue;
+    batch.fill[c.name] = d;
+    for (const r of batch.rows)
+      if (!(c.name in r.values) || (had && !r.job && bSame(r.values[c.name], old))) { r.values[c.name] = d; moved.add(r); }
+  }
+  return [...moved];
 }
 
 // ------------------------------------------------------------- kept in this browser
@@ -97,7 +113,8 @@ let bSaveTimer = null;
 function bWrite() {
   bSaveTimer = null;
   store.set(BATCH_KEY, JSON.stringify({
-    workflow: batch.workflow, link: batch.link, playlist: batch.playlist, fill: batch.fill, log: batch.log, src: batch.src, q: batch.q,
+    workflow: batch.workflow, link: batch.link, playlist: batch.playlist, fill: batch.fill, fillSet: batch.fillSet, log: batch.log,
+    src: batch.src, q: batch.q,
     rows: batch.rows.map(r => ({ key: r.key, version: r.version, values: r.values, ticked: r.ticked, touched: r.touched, job: r.job || null })),
   }));
 }
@@ -112,6 +129,9 @@ function batchRestore() {
   if (!saved) return;
   batch.workflow = saved.workflow || ""; batch.link = saved.link || ""; batch.playlist = saved.playlist || null;
   batch.fill = saved.fill || {}; batch.log = saved.log || [];
+  // Saved before the fill kept what was set by hand: all of it counts as set, but the publish
+  // step, whose farm default went from lay to ai (PR #63) and was held back by these tables.
+  batch.fillSet = saved.fillSet || Object.fromEntries(Object.keys(batch.fill).filter(k => k !== "$step").map(k => [k, true]));
   batch.src = saved.src === "query" ? "query" : "playlist";
   batch.q = { ...Q_EMPTY(), ...(saved.q || {}) };
   batch.rows = (saved.rows || []).map(r => ({ ...r, firstCheck: false, plan: null, error: null, checking: false, gen: 0 }));
@@ -133,6 +153,7 @@ function batchInit() {
   bindTable();
   bindQuery();
   bSetSrc(batch.src, false);
+  if (bWf()) bFreshFill(bWf().params);          // a manifest's defaults as they are now (rows are checked when shown)
   bLoadPub(bWf());
   batchRender();
   bRenderLog();
@@ -185,7 +206,7 @@ function bApplyWanted() {
     }
     return;
   }
-  batch.fill.$publish = true;
+  batch.fill.$publish = true; batch.fillSet.$publish = true;      // as if ticked by hand: it stays
   for (const r of batch.rows) if (!r.job) { r.values.$publish = true; }
   batchSave(); batchRender();
   batch.rows.forEach(bCheck);
@@ -219,6 +240,7 @@ function batchSetWorkflow(name, recheck = true) {
   batch.workflow = name;
   $("#batchWf").value = name;
   batch.fill = Object.fromEntries(bCols(wf).map(p => [p.name, bDefault(p)]));
+  batch.fillSet = {};
   for (const r of batch.rows) {                 // another workflow: its defaults, the same inputs
     const input = oldP ? r.values[oldP.name] : r.version?.url;
     r.values = { ...batch.fill, [newP.name]: input ?? "" };
@@ -740,7 +762,7 @@ function bindTable() {
     }
     if (el.dataset.fill && wf) {                            // the column, for every ticked row
       const name = el.dataset.fill, v = val(el);
-      batch.fill[name] = v;
+      batch.fill[name] = v; batch.fillSet[name] = true;
       const hit = batch.rows.filter(r => r.ticked);
       hit.forEach(r => { r.values[name] = v; });
       batchSave(); batchRender(); hit.forEach(bCheck);
