@@ -172,19 +172,24 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             raise HTTPException(403, f"That job belongs to {job['user']}.")
 
     # ------------------------------------------------------------ routes
+    # The dashboard's files are checked with the manager on every load ("no-cache"; they're
+    # small). Without it a browser keeps showing the page from before a deploy for hours,
+    # by its own guess at how long a file stays fresh.
+    FRESH = {"Cache-Control": "no-cache"}
+
     @app.get("/", include_in_schema=False)
     def dashboard():
-        return FileResponse(HERE / "static" / "index.html")
+        return FileResponse(HERE / "static" / "index.html", headers=FRESH)
 
     @app.get("/batch.js", include_in_schema=False)
     def batch_js():
         """The dashboard's Batch Submit tab (static/batch.js)."""
-        return FileResponse(HERE / "static" / "batch.js", media_type="text/javascript")
+        return FileResponse(HERE / "static" / "batch.js", media_type="text/javascript", headers=FRESH)
 
     @app.get("/shotgrid.js", include_in_schema=False)
     def shotgrid_js():
         """The dashboard's From ShotGrid button, drop zone and bookmarklet (static/shotgrid.js)."""
-        return FileResponse(HERE / "static" / "shotgrid.js", media_type="text/javascript")
+        return FileResponse(HERE / "static" / "shotgrid.js", media_type="text/javascript", headers=FRESH)
 
     @app.get("/client.py", include_in_schema=False)
     def client_download():

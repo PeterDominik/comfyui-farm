@@ -702,10 +702,13 @@ convert:
         base = os.environ["COMFYFARM_URL"]                                     # the dashboard and its Batch Submit tab
         with urllib.request.urlopen(f"{base}/") as r:
             self.assertIn('<script src="/batch.js">', r.read().decode())
+            self.assertEqual(r.headers["Cache-Control"], "no-cache")              # a deploy shows on the next load
         with urllib.request.urlopen(f"{base}/batch.js") as r:
             self.assertEqual(r.headers["Content-Type"].split(";")[0], "text/javascript")
+            self.assertEqual(r.headers["Cache-Control"], "no-cache")
             self.assertIn("function batchInit", r.read().decode())
         with urllib.request.urlopen(f"{base}/shotgrid.js") as r:                # the From ShotGrid dialog, the drop zone
+            self.assertEqual(r.headers["Cache-Control"], "no-cache")
             self.assertIn("function sgButton", r.read().decode())
         with self.assertRaisesRegex(farm.FarmError, "lookups are off"):      # picked Versions need the lookups
             farm.shotgrid_versions([4865327, 4865328])
