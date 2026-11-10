@@ -233,6 +233,30 @@ class WorkflowTests(unittest.TestCase):
             ltx.requires = {"bad": bad} if not isinstance(bad, dict) else {"vram_gb": bad["vram_gb"], "tags": []}
             self.assertTrue(any(why in p for p in ltx.static_check()), ltx.static_check())
 
+    def test_node_packs(self):
+        """A pack that only adds choices to a core node (RES4LYF's samplers) is named in the
+        manifest, and a worker without it says which pack should provide the choice."""
+        wan = Workflow(WF_DIR / "wan22_i2i")
+        self.assertEqual((wan.node_packs, wan.problems), (["RES4LYF"], []))
+        self.assertEqual(self.wf.node_packs, [])                       # LTX: every pack shows in its nodes
+        oi = fake_object_info(wan.template)
+        oi["KSampler"]["input"]["required"]["sampler_name"] = [["euler", "res_2s"], {}]
+        oi["KSampler"]["input"]["required"]["scheduler"] = [["normal", "beta57"], {}]
+        self.assertEqual(wan.check_object_info(oi), [])
+        oi["KSampler"]["input"]["required"]["sampler_name"] = [["euler"], {}]   # a ComfyUI without RES4LYF
+        oi["KSampler"]["input"]["required"]["scheduler"] = [["normal"], {}]
+        self.assertEqual(wan.check_object_info(oi), [
+            "node 170 'KSampler': 'res_2s' is not available for sampler_name (node pack RES4LYF should provide it: "
+            "installed?)",
+            "node 170 'KSampler': 'beta57' is not available for scheduler (node pack RES4LYF should provide it: "
+            "installed?)"])
+        wan.node_packs = []                                             # no pack named: either could be missing
+        self.assertIn("(missing model/file or node pack?)", wan.check_object_info(oi)[0])
+        for bad in ("RES4LYF", ["custom_nodes/RES4LYF"], [""], [3]):
+            wan.node_packs = bad
+            self.assertIn("node_packs: needs to be a list of node pack folder names (as in custom_nodes), "
+                          "e.g. [RES4LYF]", wan.static_check())
+
     def test_input_port_rules(self):
         wan = Workflow(WF_DIR / "wan22_i2i")
 
