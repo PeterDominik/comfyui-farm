@@ -84,6 +84,18 @@ class PublishRequest(BaseModel):
     user: str | None = None   # ignored when API keys are configured
 
 
+class ShotGridQuery(BaseModel):
+    """Batch Submit's ShotGrid query: names and picked values, never ShotGrid filters
+    (comfyfarm.shotgrid.query builds those from what it offered)."""
+    show: str
+    sequences: list[str] = Field(default_factory=list)     # codes, or patterns (bpa*)
+    shots: list[str] = Field(default_factory=list)
+    name: str = ""                                          # words the code contains, any of them
+    filters: dict[str, list[str] | str] = Field(default_factory=dict)   # status, step…: values picked, or a text
+    since_days: int | None = None                           # created in the last N days
+    latest: bool = True                                     # only the latest of each shot and name
+
+
 class DrainRequest(BaseModel):
     drain: bool = True        # false: resume
 
@@ -278,6 +290,17 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def shotgrid_versions(ids: str, ident: Identity = Depends(identity)):
         """Batch Submit: Versions picked in ShotGrid (ids, comma-separated), each a row."""
         return farm.batch_versions(ids)
+
+    @app.get("/api/v1/shotgrid/query/options")
+    def shotgrid_query_options(show: str, refresh: bool = False, ident: Identity = Depends(identity)):
+        """Batch Submit's ShotGrid query: what it offers for a show (sequences, shots, the
+        filters and their values), or why not; `refresh` asks ShotGrid again."""
+        return farm.query_options(show, refresh)
+
+    @app.post("/api/v1/shotgrid/query")
+    def shotgrid_query(q: ShotGridQuery, ident: Identity = Depends(identity)):
+        """Batch Submit: the Versions a query finds, each a row (its link as the input)."""
+        return farm.batch_query(q.model_dump())
 
     def _menu_settings() -> dict:
         menu_file = Path(cfg.shotgrid.menu_file)

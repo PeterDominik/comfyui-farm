@@ -1,8 +1,10 @@
 // Batch Submit (README, Batch Submit): many jobs from one table, one workflow per table.
 //
-// A source fills the rows: a ShotGrid Playlist now (each Version a row, its link the
-// input), or Versions picked in ShotGrid (its right-click on a selection, Version links
-// pasted or dropped); a ShotGrid query and Variations later. The columns are the workflow's own form
+// A source fills the rows, each ShotGrid Version a row with its link as the input: a
+// Playlist, Versions picked in ShotGrid (its right-click on a selection, Version links
+// pasted or dropped), or a ShotGrid query (a show's Versions by sequence, shot, name,
+// status, step…: the manager builds ShotGrid's filters from the values it offered);
+// Variations later. The columns are the workflow's own form
 // fields, then (for a workflow that publishes) the publish ones, each with a fill cell
 // under its header (sets the column for the ticked rows); any cell is editable per row
 // (changed ones are outlined). The manager checks every row as the Submit form's "Will
@@ -37,7 +39,13 @@ const batch = {
   loading: false, why: "", sg: null,       // sg: the manager's ShotGrid status
   queue: [], running: 0, timers: new Map(), checkedOnce: false,
   sending: null, footMsg: "",              // sending: {done, of, stop}
+  src: "playlist",                         // the source shown: playlist | query
+  q: null,                                 // the query being made: {show, sequences, shots, name, filters, since, latest}
+  qopts: null, shows: null, showsWhy: "",  // what the manager offers for q.show; the shows
 };
+const Q_EMPTY = () => ({ show: "", sequences: [], shots: [], name: "", filters: {}, since: "", latest: true });
+batch.q = Q_EMPTY();
+const bAll = (s, el = document) => [...el.querySelectorAll(s)];
 
 const bWf = () => state.workflows.find(w => w.name === batch.workflow);
 const bInputs = wf => wf.params.filter(p => p.type === "sequence");
@@ -89,7 +97,7 @@ let bSaveTimer = null;
 function bWrite() {
   bSaveTimer = null;
   store.set(BATCH_KEY, JSON.stringify({
-    workflow: batch.workflow, link: batch.link, playlist: batch.playlist, fill: batch.fill, log: batch.log,
+    workflow: batch.workflow, link: batch.link, playlist: batch.playlist, fill: batch.fill, log: batch.log, src: batch.src, q: batch.q,
     rows: batch.rows.map(r => ({ key: r.key, version: r.version, values: r.values, ticked: r.ticked, touched: r.touched, job: r.job || null })),
   }));
 }
@@ -104,6 +112,8 @@ function batchRestore() {
   if (!saved) return;
   batch.workflow = saved.workflow || ""; batch.link = saved.link || ""; batch.playlist = saved.playlist || null;
   batch.fill = saved.fill || {}; batch.log = saved.log || [];
+  batch.src = saved.src === "query" ? "query" : "playlist";
+  batch.q = { ...Q_EMPTY(), ...(saved.q || {}) };
   batch.rows = (saved.rows || []).map(r => ({ ...r, firstCheck: false, plan: null, error: null, checking: false, gen: 0 }));
 }
 
@@ -116,11 +126,13 @@ function batchInit() {
   sel.innerHTML = usable.map(w => `<option value="${esc(w.name)}">${esc(w.label)}</option>`).join("");
   sel.value = batch.workflow;
   sel.onchange = () => batchSetWorkflow(sel.value);
-  $("#plLink").value = bPicked(batch.link) ? "" : batch.link;
+  $("#plLink").value = bPicked(batch.link) || bQueried(batch.link) ? "" : batch.link;
   $("#plLoad").onclick = () => batchLoadPlaylist(bSource($("#plLink").value));
   $("#plLink").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $("#plLoad").click(); } };
   $("#plClear").onclick = () => { batch.rows = []; batch.playlist = null; batch.why = ""; batchSave(); batchRender(); };
   bindTable();
+  bindQuery();
+  bSetSrc(batch.src, false);
   bLoadPub(bWf());
   batchRender();
   bRenderLog();
@@ -151,6 +163,7 @@ function batchDeepLink() {
   batch.autoSend = q.get("send") === "1";
   batch.footMsg = "";
   if (q.get("workflow") && state.workflows.some(w => w.name === q.get("workflow"))) batchSetWorkflow(q.get("workflow"), false);
+  if (q.get("playlist") || q.get("versions")) bSetSrc("playlist", false);
   bApplyWanted();
   if (q.get("playlist")) { $("#plLink").value = q.get("playlist"); batchLoadPlaylist(q.get("playlist")); }
   else if (q.get("versions")) { $("#plLink").value = ""; batchLoadPlaylist("versions:" + q.get("versions")); }
@@ -224,6 +237,7 @@ async function batchLoadPlaylist(link) {
   batch.loading = true; batch.why = ""; batchRender();
   try {
     const r = bPicked(link) ? await api("/api/v1/shotgrid/versions?ids=" + encodeURIComponent(link.slice(9)))
+      : bQueried(link) ? await api("/api/v1/shotgrid/query", { method: "POST", body: link.slice(6) })
       : await api("/api/v1/shotgrid/playlist?link=" + encodeURIComponent(link));
     const keep = new Map(batch.link === link ? batch.rows.map(x => [x.key, x]) : []);   // reloaded: keep the edits
     const p = bPrimary(wf);
@@ -242,7 +256,205 @@ async function batchLoadPlaylist(link) {
     batch.why = err.message;
   } finally {
     batch.loading = false; batchRender();
+    if (batch.src === "query") bRenderQuery();
   }
+}
+
+// ------------------------------------------------------------- the ShotGrid query
+// A show's Versions by named filters (README, Batch Submit). The manager offers the show's
+// sequences, shots and each filter's values, with how many of its Versions have them
+// (GET /api/v1/shotgrid/query/options), and builds ShotGrid's filters from what's picked
+// here (POST /api/v1/shotgrid/query): nothing else reaches ShotGrid.
+const bQueried = link => /^query:/.test(link || "");
+const Q_PLACES = { sequences: "Sequences", shots: "Shots" };
+
+function bSetSrc(src, save = true) {
+  batch.src = src === "query" ? "query" : "playlist";
+  bAll("#batchSrc [data-src]").forEach(b => b.classList.toggle("on", b.dataset.src === batch.src));
+  $("#srcPlaylist").hidden = batch.src !== "playlist";
+  $("#srcQuery").hidden = batch.src !== "query";
+  if (batch.src === "query") bQueryShown();
+  if (save) { batchSave(); batchRender(); }
+}
+function bQueryShown() {                        // the first time: the shows, then the show's filters
+  if (batch.shows) return bRenderQuery();
+  batch.shows = [];
+  bRenderShows();
+  api("/api/v1/shotgrid/projects").then(r => {
+    batch.shows = r.projects || []; batch.showsWhy = r.why || "";
+    if (!batch.q.show && batch.playlist?.show && batch.shows.some(p => p.code === batch.playlist.show)) batch.q.show = batch.playlist.show;
+    bRenderShows();
+    if (batch.q.show) bQOptions();
+  }).catch(err => { batch.shows = null; batch.showsWhy = err.message; bRenderShows(); });
+}
+function bRenderShows() {
+  const sel = $("#qShow"), list = batch.shows || [], show = batch.q.show;
+  sel.innerHTML = `<option value="">${list.length ? "pick a show" : batch.showsWhy ? "no shows" : "loading…"}</option>`
+    + (show && !list.some(p => p.code === show) ? `<option value="${esc(show)}">${esc(show)}</option>` : "")
+    + list.map(p => `<option value="${esc(p.code)}" title="${esc(p.name)}">${esc(p.code)}</option>`).join("");
+  sel.value = show;
+  sel.title = batch.showsWhy;
+  bRenderQuery();
+}
+async function bQOptions(refresh = false) {
+  const show = batch.q.show;
+  batch.qopts = show ? { show, loading: true } : null;
+  bRenderQuery();
+  if (!show) return;
+  try {
+    const o = await api(`/api/v1/shotgrid/query/options?show=${encodeURIComponent(show)}${refresh ? "&refresh=true" : ""}`);
+    if (batch.q.show !== show) return;
+    batch.qopts = o.why ? { show, why: o.why } : o;
+    bPruneQuery();
+  } catch (err) {
+    if (batch.q.show !== show) return;
+    batch.qopts = { show, why: err.message };
+  }
+  bRenderQuery();
+}
+function bPruneQuery() {                        // picked, but no longer offered (reloaded): let go
+  const o = batch.qopts, q = batch.q;
+  if (!o || o.why || o.loading) return;
+  const seqs = new Set(o.sequences.map(x => x.code)), shots = new Set(o.shots.map(x => x.code));
+  q.sequences = q.sequences.filter(c => seqs.has(c));
+  q.shots = q.shots.filter(c => shots.has(c) && bShotInSeqs(c));
+  const keep = {};
+  for (const f of o.filters) {
+    const v = q.filters[f.key];
+    if (f.kind === "text") { if (typeof v === "string" && v.trim()) keep[f.key] = v; continue; }
+    const ok = new Set((f.values || []).map(x => x.value)), vv = Array.isArray(v) ? v.filter(x => ok.has(x)) : [];
+    if (vv.length) keep[f.key] = vv;
+  }
+  q.filters = keep;
+  batchSave();
+}
+function bShotInSeqs(code) {
+  const q = batch.q, s = (batch.qopts?.shots || []).find(x => x.code === code);
+  return !q.sequences.length || (!!s && q.sequences.includes(s.sequence));
+}
+function bQItems(key) {                         // a dropdown's values: [{value, label, count}]
+  const o = batch.qopts, q = batch.q;
+  if (key === "sequences") return o.sequences.map(s => ({ value: s.code, label: s.code, count: s.shots }));
+  if (key === "shots") return o.shots.filter(s => !q.sequences.length || q.sequences.includes(s.sequence)).map(s => ({ value: s.code, label: s.code }));
+  return o.filters.find(f => f.key === key)?.values || [];
+}
+const bQPicked = key => key in Q_PLACES ? batch.q[key] : Array.isArray(batch.q.filters[key]) ? batch.q.filters[key] : [];
+function bQSummary(key, items) {
+  const picked = bQPicked(key);
+  if (!picked.length) return `<b class="any">${key in Q_PLACES ? "all" : "any"}</b>`;
+  const label = v => items.find(i => i.value === v)?.label ?? v;
+  return `<b>${esc(picked.length <= 2 ? picked.map(label).join(", ") : `${picked.length} picked`)}</b>`;
+}
+function bQPicker(key, label, help = "") {
+  const items = bQItems(key), set = new Set(bQPicked(key)), many = items.length > 8;
+  return `<details class="qpick" data-q="${esc(key)}"><summary title="${esc(help)}">${esc(label)}${bQSummary(key, items)}</summary>
+    <div class="qpop">${many ? '<input class="qfind" placeholder="Filter…" autocomplete="off">' : ""}
+      <div class="qlist">${items.map(i => `<label data-find="${esc(String(i.label ?? i.value).toLowerCase())}"><input type="checkbox" value="${esc(i.value)}" ${set.has(i.value) ? "checked" : ""}><span>${esc(i.label ?? i.value)}</span>${i.count != null ? `<span class="n">${esc(i.count)}</span>` : ""}</label>`).join("")
+        || `<span class="muted">${key === "shots" ? "No shots in the sequences picked." : "Nothing to pick."}</span>`}</div>
+      ${items.length > 1 ? `<div class="qacts"><button type="button" class="small" data-qall>Tick ${many ? "shown" : "all"}</button><button type="button" class="small" data-qnone>Clear</button></div>` : ""}
+    </div></details>`;
+}
+const bShotsPicker = () => bQPicker("shots", "Shots", "The shots of the sequences picked (all of them when none is): type to filter, then Tick shown");
+function bRenderQuery() {
+  const o = batch.qopts, q = batch.q;
+  $("#qName").value = q.name; $("#qSince").value = q.since; $("#qLatest").checked = q.latest;
+  $("#qSearch").disabled = !q.show || !o || !!o.loading || !!o.why || batch.loading;
+  $("#qSearch").title = !q.show ? "Pick a show first" : "Find the show's Versions with these filters: each becomes a row";
+  if (!o || o.loading || o.why) {
+    $("#qPlaces").innerHTML = "";
+    $("#qFacets").innerHTML = !q.show ? (batch.shows && !batch.shows.length && batch.showsWhy ? `<span class="warn">${esc(batch.showsWhy)}</span>` : "")
+      : o?.why ? `<span class="err">${esc(o.why)}</span> <button type="button" class="small" id="qRefresh" title="Ask ShotGrid again">↻</button>`
+      : '<span class="qnote">Asking ShotGrid what the show has…</span>';
+    return;
+  }
+  $("#qPlaces").innerHTML = bQPicker("sequences", "Sequences", "The show's sequences, with how many shots") + bShotsPicker();
+  const facets = o.filters.map(f => f.kind === "text"
+    ? `<label title="${esc((f.note ? f.note + "\n" : "") + f.field)}">${esc(f.label)}<input data-qtext="${esc(f.key)}" class="mono" value="${esc(typeof q.filters[f.key] === "string" ? q.filters[f.key] : "")}" placeholder="contains…" autocomplete="off"></label>`
+    : bQPicker(f.key, f.label, `${f.field}: the values the show's Versions have, with how many`)).join("");
+  const left = o.left_out?.length
+    ? `<span class="qnote" title="${esc(o.left_out.map(x => `${x.label}: ${x.why}`).join("\n"))}">${o.left_out.length} not offered ⓘ</span>` : "";
+  $("#qFacets").innerHTML = facets + left
+    + `<button type="button" class="small" id="qRefresh" title="Ask ShotGrid again for the show's sequences, shots and values">↻</button>`;
+}
+function bQPick(d) {                            // a dropdown's boxes changed
+  const key = d.dataset.q, vals = bAll(".qlist input:checked", d).map(b => b.value);
+  if (key in Q_PLACES) batch.q[key] = vals;
+  else if (vals.length) batch.q.filters[key] = vals;
+  else delete batch.q.filters[key];
+  if (key === "sequences") {                    // the shots offered are those of the sequences picked
+    batch.q.shots = batch.q.shots.filter(bShotInSeqs);
+    const s = $('.qpick[data-q="shots"]');
+    if (s) s.outerHTML = bShotsPicker();
+  }
+  d.querySelector("summary b").outerHTML = bQSummary(key, bQItems(key));
+  batchSave();
+}
+function bQSpec() {
+  const q = batch.q;
+  return { show: q.show, sequences: q.sequences, shots: q.shots, name: q.name.trim(), filters: q.filters,
+           since_days: q.since ? Number(q.since) : null, latest: !!q.latest };
+}
+function bQSearch() {
+  if (!batch.q.show || batch.loading) return;
+  bAll(".qpick[open]").forEach(d => { d.open = false; });
+  $("#qSearch").disabled = true;
+  batchLoadPlaylist("query:" + JSON.stringify(bQSpec()));
+}
+function bQDescribe(q) {                        // a query in words, for the info line's tooltip
+  const label = (k, v) => (batch.qopts?.filters?.find(f => f.key === k)?.values || []).find(x => x.value === v)?.label ?? v;
+  const filters = Object.entries(q.filters || {}).map(([k, v]) =>
+    `${batch.qopts?.filters?.find(f => f.key === k)?.label || k}: ${Array.isArray(v) ? v.map(x => label(k, x)).join(", ") : `contains ${v}`}`);
+  return [`show ${q.show}`, q.sequences?.length && `sequences ${q.sequences.join(", ")}`, q.shots?.length && `shots ${q.shots.join(", ")}`,
+          (Array.isArray(q.name) ? q.name.length : q.name) && `name contains ${[].concat(q.name).join(" or ")}`, ...filters,
+          q.since_days && `created in the last ${q.since_days} day${q.since_days === 1 ? "" : "s"}`,
+          q.latest ? "the latest of each shot and name" : "every version"].filter(Boolean).join("\n");
+}
+function bindQuery() {
+  const panel = $("#srcQuery");
+  if (panel.dataset.bound) return;
+  panel.dataset.bound = "1";
+  bAll("#batchSrc [data-src]").forEach(b => { b.onclick = () => bSetSrc(b.dataset.src); });
+  $("#qShow").onchange = e => {                 // another show: its own sequences, shots and values
+    batch.q = { ...Q_EMPTY(), name: batch.q.name, since: batch.q.since, latest: batch.q.latest, show: e.target.value };
+    batchSave(); bQOptions();
+  };
+  $("#qName").oninput = e => { batch.q.name = e.target.value; batchSave(); };
+  $("#qSince").onchange = e => { batch.q.since = e.target.value; batchSave(); };
+  $("#qLatest").onchange = e => { batch.q.latest = e.target.checked; batchSave(); };
+  $("#qSearch").onclick = bQSearch;
+  $("#qClear").onclick = () => $("#plClear").click();
+  panel.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.target.id === "qName" || e.target.dataset.qtext)) { e.preventDefault(); bQSearch(); }
+  });
+  panel.addEventListener("change", e => {
+    const box = e.target.closest(".qlist input[type=checkbox]");
+    if (box) bQPick(box.closest(".qpick"));
+  });
+  panel.addEventListener("input", e => {
+    const el = e.target;
+    if (el.classList.contains("qfind")) {
+      const t = el.value.trim().toLowerCase();
+      bAll(".qlist label", el.closest(".qpick")).forEach(l => { l.hidden = !!t && !l.dataset.find.includes(t); });
+    } else if (el.dataset.qtext) {
+      if (el.value.trim()) batch.q.filters[el.dataset.qtext] = el.value; else delete batch.q.filters[el.dataset.qtext];
+      batchSave();
+    }
+  });
+  panel.addEventListener("click", e => {
+    if (e.target.id === "qRefresh") return bQOptions(true);
+    const b = e.target.closest("[data-qall], [data-qnone]");
+    if (!b) return;
+    const d = b.closest(".qpick"), tick = "qall" in b.dataset;
+    bAll(".qlist label", d).forEach(l => { const box = l.querySelector("input"); if (!tick) box.checked = false; else if (!l.hidden) box.checked = true; });
+    bQPick(d);
+  });
+  panel.addEventListener("toggle", e => {       // one dropdown open at a time, its filter ready to type in
+    if (!e.target.matches?.(".qpick") || !e.target.open) return;
+    bAll(".qpick[open]").forEach(d => { if (d !== e.target) d.open = false; });
+    e.target.querySelector(".qfind")?.focus();
+  }, true);
+  document.addEventListener("click", e => { bAll(".qpick[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; }); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") bAll(".qpick[open]").forEach(d => { d.open = false; }); });
 }
 
 // ------------------------------------------------------------- checking the rows
@@ -408,23 +620,28 @@ function bGroups() {                            // ticked rows going into the sa
 function batchRender() {
   const wf = bWf(), pl = batch.playlist, sg = batch.sg;
   const sgWhy = sg && sg.set_up === false ? sg.why : "";
-  const picked = bPicked(batch.link), missing = pl?.missing || [];
-  $("#plInfo").innerHTML = batch.loading ? `<span class="muted">Loading ${picked ? "the Versions" : "the playlist"} from ShotGrid…</span>`
+  const picked = bPicked(batch.link), queried = bQueried(batch.link), missing = pl?.missing || [];
+  $("#plInfo").innerHTML = batch.loading ? `<span class="muted">${queried ? "Searching ShotGrid…" : `Loading ${picked ? "the Versions" : "the playlist"} from ShotGrid…`}</span>`
     : batch.why ? `<span class="err">${esc(batch.why)}</span>`
     : sgWhy ? `<span class="warn">${esc(sgWhy)}</span>`
     : pl ? (pl.url ? `<a href="${esc(pl.url)}" target="_blank" rel="noopener">${esc(pl.code)}</a> · ${batch.rows.length} Version${batch.rows.length === 1 ? "" : "s"}`
-                   : `<b>${esc(pl.code)}</b>`)
-      + (pl.show ? ` · show <code>${esc(pl.show)}</code>` : "")
+                   : `<b ${pl.query ? `title="${esc(bQDescribe(pl.query))}"` : ""}>${esc(pl.code)}</b>`)
+      + (pl.show && !queried ? ` · show <code>${esc(pl.show)}</code>` : "")
       + (missing.length ? ` · <span class="warn" title="${esc(missing.join(", "))}">${missing.length} not in ShotGrid</span>` : "")
-      + ` <button class="small" type="button" id="plReload" title="Load ${picked ? "these Versions" : "the playlist"} from ShotGrid again (keeps your edits)">↻</button>`
+      + (pl.notes?.length ? ` · <span class="warn">${esc(pl.notes.join(" "))}</span>` : "")
+      + ` <button class="small" type="button" id="plReload" title="${queried ? "Search ShotGrid again" : `Load ${picked ? "these Versions" : "the playlist"} from ShotGrid again`} (keeps your edits)">↻</button>`
     : "";
   if ($("#plReload")) $("#plReload").onclick = () => batchLoadPlaylist(batch.link);
   const t = $("#batchTable");
   if (!wf || !batch.rows.length) {
-    t.innerHTML = `<tbody><tr><td class="empty">Paste a ShotGrid Playlist link and Load: each of its Versions becomes a row of
-      ${wf ? `<b>${esc(wf.label)}</b>` : "the workflow"}, its link the input, checked as the Submit form checks one job.
+    const what = wf ? `<b>${esc(wf.label)}</b>` : "the workflow";
+    t.innerHTML = `<tbody><tr><td class="empty">${batch.src === "query"
+      ? `Pick a show, narrow it down (sequences, shots, name, status, step…), then Search: each Version found becomes a row of ${what},
+         its link the input, checked as the Submit form checks one job.`
+      : `Paste a ShotGrid Playlist link and Load: each of its Versions becomes a row of ${what}, its link the input,
+         checked as the Submit form checks one job.`}
       Change any cell, or a whole column with the fill cell under its header, then Submit the ticked rows.
-      <span class="muted">Versions picked in ShotGrid come here too: its right-click on several, or Version links pasted above.</span></td></tr></tbody>`;
+      ${batch.src === "query" ? "" : '<span class="muted">Versions picked in ShotGrid come here too: its right-click on several, or Version links pasted above.</span>'}</td></tr></tbody>`;
     bRenderFoot();
     return;
   }

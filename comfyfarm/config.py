@@ -252,6 +252,18 @@ class MenuSyncConfig(BaseModel):
     timeout: float = 600.0
 
 
+class QueryConfig(BaseModel):
+    """Batch Submit's ShotGrid query (comfyfarm.shotgrid.query): the Version fields it can
+    filter on besides show, sequences, shots, name and date (status first, then these, in
+    this order; a field the site doesn't have is left out), and how many Versions it takes."""
+    fields: dict[str, str] = Field(default_factory=lambda: {
+        "step": "sg_pipeline_step", "task": "sg_task", "type": "sg_version_type", "department": "sg_department"})
+    version_number: str = "sg_version_number"   # "latest" ranks by it (else the code's vN, else the newest)
+    max_rows: int = 500                          # rows a query gives at most
+    scan: int = 5000                             # Versions looked at, the newest first ("latest" picks among them)
+    options_ttl: float = 600.0                   # seconds a show's filter values are used before they're asked again
+
+
 class ShotGridConfig(BaseModel):
     """The manager's read-only ShotGrid lookups for the publish fields (comfyfarm.shotgrid):
     active shows, their sequences and shots. Off until enabled; the script's name and key
@@ -279,6 +291,8 @@ class ShotGridConfig(BaseModel):
     # the address it posts to. Relative to the repo.
     menu_file: str = "deploy/shotgrid/menu.yaml"
     menu_sync: MenuSyncConfig = Field(default_factory=MenuSyncConfig)
+    # Batch Submit's ShotGrid query (README: Batch Submit): the filters it offers.
+    query: QueryConfig = Field(default_factory=QueryConfig)
 
 
 class Config(BaseModel):

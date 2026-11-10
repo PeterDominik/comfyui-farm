@@ -709,6 +709,25 @@ convert:
             self.assertIn("function sgButton", r.read().decode())
         with self.assertRaisesRegex(farm.FarmError, "lookups are off"):      # picked Versions need the lookups
             farm.shotgrid_versions([4865327, 4865328])
+        # Batch Submit's ShotGrid query (chunk 14) too: what a show offers says why not, and
+        # a query (names and picked values, never ShotGrid filters) is refused with it.
+        with urllib.request.urlopen(f"{base}/api/v1/shotgrid/query/options?show=bri3") as r:
+            opts = json.loads(r.read())
+        self.assertEqual((opts["filters"], opts["shots"], opts["set_up"]), ([], [], False))
+        self.assertIn("shotgrid.enabled", opts["why"])
+
+        def query(body: dict):
+            req = urllib.request.Request(f"{base}/api/v1/shotgrid/query", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as e:
+                urllib.request.urlopen(req)
+            return e.exception.code, e.exception.read().decode()
+        code, why = query({"show": "bri3", "sequences": ["bpa"], "name": "mp01", "since_days": 7,
+                           "filters": {"status": ["rev"], "department": "light"}})
+        self.assertEqual(code, 503)
+        self.assertIn("The ShotGrid query needs the manager's ShotGrid lookups", why)
+        self.assertEqual(query({"show": "bri3", "shots": ["bpa;drop"]})[0], 400)       # checked before ShotGrid's asked
+        self.assertEqual(query({"sequences": ["bpa"]})[0], 422)                          # no show
         # ShotGrid's right-click (an Action Menu Item) posts the selection; it's sent on to the
         # dashboard's deep link, which needs no lookups to make.
         def ami(body: bytes | None, query: str = "", ctype: str = "application/x-www-form-urlencoded"):

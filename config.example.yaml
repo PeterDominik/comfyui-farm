@@ -210,3 +210,13 @@ shotgrid:
     # show: raa            # the context's show (default: menu.yaml's first)
     check_minutes: 5       # how often it looks whether the menu changed
     every_hours: 24        # synced again anyway (an item changed by hand in ShotGrid)
+  # Batch Submit's ShotGrid query (README: Batch Submit): the Version fields it can filter
+  # on besides show, sequences, shots, name and date. Status comes first, then these; a
+  # field the site doesn't have is left out (the query panel says so). Each offers the
+  # values the show's Versions have, with how many.
+  query:
+    fields: {step: sg_pipeline_step, task: sg_task, type: sg_version_type, department: sg_department}
+    version_number: sg_version_number   # "latest" ranks by it (else the code's vN, else the newest)
+    max_rows: 500          # rows a query gives at most
+    scan: 5000             # Versions looked at, the newest first ("latest" picks among them)
+    options_ttl: 600       # seconds a show's filter values are used before ShotGrid is asked again
