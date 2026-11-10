@@ -88,8 +88,9 @@ or as a **manager** on one machine and an **agent** on each GPU machine, Linux o
 Windows. Nothing below needs sudo or admin rights, except the optional Windows services.
 
 Every machine runs from its own git checkout of this repo, on local disk, at the same
-commit. ComfyUI needs the custom node packs the workflows use: VideoHelperSuite, WAS Node
-Suite, Easy-Use and ComfyUI-LTXVideo, plus
+commit. ComfyUI needs the custom node packs the workflows use (`deploy/comfyui/environment.yaml`
+lists them, and `comfyui sync` installs them; see The farm's ComfyUI): WAS Node Suite,
+Easy-Use, KJNodes, RES4LYF and ComfyUI-LTXVideo, plus
 [ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord) with `chord_v1.safetensors` in
 `ComfyUI/models/checkpoints` for `chord_pbr`. CHORD's weights are under Ubisoft's
 research-only licence. The farm's own nodes (`comfyui_nodes/`: *ComfyFarm Load Images*,
@@ -294,6 +295,11 @@ runs. `deploy/comfyui/environment.yaml` records it, from a reference machine:
   the 3090).
   Packs live on each machine (`ComfyUI/custom_nodes`), except those in the farm library
   (ComfyUI-Chord).
+  A pack is found from the workflow's node classes. One that only adds choices to a core
+  node shows in none of them: RES4LYF's `res_2s` sampler and `beta57` scheduler in
+  `wan22_i2i`'s KSampler. The manifest names such packs (`node_packs: [RES4LYF]`, by their
+  `custom_nodes` folder name), and `snapshot` records them like the others. A worker without
+  one says which pack should provide the missing choice.
 - The models the farm's workflows name: which library each comes from and its size (not
   its contents). Models come from the two shared libraries only, `/rdo/bank/comfyui` and
   `/rdo/bank/comfy_farm/comfyui` (`B:\comfyui`, `B:\comfy_farm\comfyui` on Windows);
@@ -511,8 +517,9 @@ and `show` / `shot` overrides for inputs outside the publish layout.
 
 The seed and the negative prompt are fixed in the workflow. It needs Wan 2.2's low-noise
 14B model (fp8) and Wan 2.1's VAE in `models/…/WAN/`, `umt5_xxl_fp8_e4m3fn_scaled` as its
-text encoder, and the node packs for `WanVideoNAG`, `easy float` and the `res_2s` sampler
-with the `beta57` scheduler; the Machines tab lists what a machine is missing.
+text encoder, and the node packs KJNodes (`WanVideoNAG`), Easy-Use (`easy float`) and
+RES4LYF (the `res_2s` sampler and `beta57` scheduler, named in the manifest's `node_packs`);
+the Machines tab lists what a machine is missing.
 
 ```bash
 python comfyfarm_client.py submit wan22_i2i \
@@ -1217,6 +1224,8 @@ params:                        # becomes the form in the dashboard, in this orde
 # preview: false               # optional: no preview movie of the frames (see Preview movies)
 # shotgrid: {submit: false}    # optional: ShotGrid's right-click menu (see ShotGrid right-click): false keeps
                                # it out of the menu, submit: false out of the Submit folders, title: its name there
+# node_packs: [RES4LYF]        # optional: node packs it needs that none of its nodes shows (custom_nodes
+                               # folder names), e.g. one adding samplers to KSampler; see The farm's ComfyUI
 
 outputs:                       # nodes the gateway points at each job's versioned folder
   root_node: {node: "9093", input: value, class: PrimitiveString}

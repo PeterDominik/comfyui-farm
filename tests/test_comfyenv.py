@@ -234,7 +234,39 @@ class SpecTests(unittest.TestCase):
         need = S.needs(WorkflowRegistry(REPO / "workflows"), {})
         self.assertIn("LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors", need["models"])    # / on every OS
         self.assertIn("chord_v1.safetensors", need["models"])
-        self.assertEqual(need["packs"], {})                         # no ComfyUI to say which pack has a node
+        # No ComfyUI to say which pack has a node: only the packs the manifests name.
+        self.assertEqual(need["packs"], {"RES4LYF": ["wan22_i2i"]})
+
+    def test_named_packs(self):
+        """A pack a manifest names (node_packs) counts without a node of its own, and is
+        recorded from the reference machine like the others."""
+        registry = SimpleNamespace(workflows={**REGISTRY.workflows, "wan": SimpleNamespace(
+            node_packs=["RES4LYF", "comfyui-kjnodes"],
+            template={"1": {"class_type": "KSampler", "inputs": {"sampler_name": "res_2s"}},
+                      "2": {"class_type": "WanVideoNAG", "inputs": {}}})})
+        need = S.needs(registry, {**OBJECT_INFO, "KSampler": {"python_module": "nodes"}})
+        self.assertEqual(need["packs"]["RES4LYF"], ["wan"])
+        self.assertEqual(need["packs"]["comfyui-kjnodes"], ["ltx", "wan"])     # named and found: once per workflow
+        warnings = S.snapshot(self.state(packs=list(need["packs"])), need, "ref")[1]
+        self.assertIn("node pack RES4LYF (wan) isn't in this ComfyUI's custom_nodes folders", warnings)
+        res = self.farm.comfy / "custom_nodes" / "RES4LYF"
+        write(res / "__init__.py", "SAMPLERS = ['res_2s']\n")
+        git(res, COMMIT_B, "https://github.com/ClownsharkBatwing/RES4LYF")
+        spec, warnings = S.snapshot(self.state(packs=list(need["packs"])), need, "ref")
+        self.assertEqual({k: spec["node_packs"]["RES4LYF"][k] for k in ("url", "commit", "for", "shared")},
+                         {"url": "https://github.com/ClownsharkBatwing/RES4LYF", "commit": COMMIT_B, "for": ["wan"],
+                          "shared": False})
+        self.assertFalse(any("RES4LYF" in w for w in warnings))
+
+    def test_the_environment_file_has_every_named_pack(self):
+        """A pack a manifest names must be in the environment file: snapshot on the
+        reference machine (wrk59467w-5090) records it."""
+        from comfyfarm.fileio.ocio import REPO
+        from comfyfarm.workflows import WorkflowRegistry
+        need = S.needs(WorkflowRegistry(REPO / "workflows"), {})
+        missing = sorted(set(need["packs"]) - set((S.load() or {}).get("node_packs") or {}))
+        self.assertEqual(missing, [], "run `comfyfarm comfyui snapshot` on the reference machine and commit "
+                                      "deploy/comfyui/environment.yaml")
 
     def test_snapshot(self):
         warnings = self.snap()

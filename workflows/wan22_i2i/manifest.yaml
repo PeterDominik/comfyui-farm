@@ -16,6 +16,11 @@ template: workflow_api.json
 # Images are used at their own size (no work_resolution): full plate frames take longer
 # and more GPU memory.
 
+# The KSampler (node 170) runs the res_2s sampler with the beta57 scheduler, which RES4LYF
+# adds to ComfyUI's lists. No node of the workflow is RES4LYF's, so it's named here: the
+# farm's environment file pins it, and `comfyui sync` installs it.
+node_packs: [RES4LYF]
+
 params:
   # One image (takes: image), read by the ComfyFarm Load Image node (INPUT IMAGE). A
   # sequence or movie must name its frame; the Nuke panel fills in the current frame.

@@ -224,6 +224,11 @@ class Workflow:
         # from its inputs; `shotgrid: false` keeps it out, `shotgrid: {submit: false}` out of
         # the Submit folders, `title:` names it there (default: its label).
         self.shotgrid = m.get("shotgrid", True)
+        # Node packs it needs that none of its node classes shows, named by their custom_nodes
+        # folder: a pack that adds samplers or schedulers to a core node (RES4LYF's res_2s and
+        # beta57 for KSampler). They join the packs found from its nodes in the farm's
+        # environment file (comfyenv.spec.needs).
+        self.node_packs = m.get("node_packs") or []
         self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
@@ -330,6 +335,11 @@ class Workflow:
                                           and isinstance(sg.get("submit", True), bool)
                                           and isinstance(sg.get("title", ""), str))):
             problems.append("shotgrid: needs to be false, or a section like {submit: false, title: <its name in the menu>}")
+        packs = self.node_packs
+        if not (isinstance(packs, list) and all(isinstance(p, str) and p.strip() and not re.search(r"[/\\]", p)
+                                                 for p in packs)):
+            problems.append("node_packs: needs to be a list of node pack folder names (as in custom_nodes), "
+                            "e.g. [RES4LYF]")
         for p in self.params.values():
             if p.type in GATEWAY_TYPES or p.naming:
                 if p.targets:
@@ -497,8 +507,17 @@ class Workflow:
                 if opts is not None and isinstance(val, str):
                     norm = {o.replace("\\", "/") for o in opts}
                     if val.replace("\\", "/") not in norm:
-                        problems.append(f"{label}: '{val}' is not available for {key} (missing model/file?)")
+                        problems.append(f"{label}: '{val}' is not available for {key} ({self._missing_hint(val)})")
         return problems
+
+    def _missing_hint(self, val: str) -> str:
+        """Why a list value (a model, a sampler) may be missing on a worker."""
+        if re.search(r"[/\\]|\.[A-Za-z0-9]{2,12}$", val):
+            return "missing model/file?"
+        packs = [p for p in self.node_packs if isinstance(p, str)] if isinstance(self.node_packs, list) else []
+        if packs:
+            return f"{'node pack' if len(packs) == 1 else 'node packs'} {', '.join(packs)} should provide it: installed?"
+        return "missing model/file or node pack?"
 
     def expected_nodes(self, output_classes: set[str] | None = None) -> int:
         """How many nodes ComfyUI will run: ancestors of output nodes (an estimate;

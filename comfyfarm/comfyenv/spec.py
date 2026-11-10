@@ -7,7 +7,8 @@ It's written from a reference machine (`comfyfarm comfyui snapshot`) and reviewe
                exists on one OS only, triton-windows, is pinned per OS)
   driver_min   the NVIDIA driver the pinned torch's CUDA build needs
   libraries    the shared model libraries (a studio path, and how Windows sees it)
-  node_packs   the packs that provide a node in a farm workflow: commit or registry
+  node_packs   the packs that provide a node in a farm workflow, or that its manifest names
+               (node_packs: packs that only add samplers or schedulers): commit or registry
                version, a hash of their Python files, whether they live in a library
   models       the model files the farm's workflows name: folder, library, size
 
@@ -111,11 +112,17 @@ def farm_model_paths(path: str | os.PathLike = FARM_MODEL_PATHS) -> list[dict]:
 def needs(registry, object_info: dict) -> dict:
     """The node packs and models the farm's workflows use, from a ComfyUI's node
     definitions: {"packs": {pack: [workflows]}, "models": {file: [workflows]},
-    "unknown": [(workflow, class)]} (classes this ComfyUI doesn't have)."""
+    "unknown": [(workflow, class)]} (classes this ComfyUI doesn't have). Packs a manifest
+    names in `node_packs` (one adding samplers to a core node shows in no node class)
+    count without asking ComfyUI."""
     packs: dict[str, set] = {}
     models: dict[str, set] = {}
     unknown = []
     for name, wf in registry.workflows.items():
+        declared = getattr(wf, "node_packs", None)
+        for pack in declared if isinstance(declared, list) else []:
+            if isinstance(pack, str) and pack.strip():
+                packs.setdefault(pack.strip(), set()).add(name)
         for node in wf.template.values():
             ct = node.get("class_type")
             info = object_info.get(ct)
