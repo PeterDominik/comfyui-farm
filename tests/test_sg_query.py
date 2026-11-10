@@ -62,7 +62,7 @@ def ver(vid, code, ent, created, project=11, frames=FRAMES, movie=MOVIE, **f):
     return {"type": "Version", "id": vid, "code": code, "entity": ent, "project": {"type": "Project", "id": project},
             "sg_path_to_frames": frames, "sg_path_to_movie": movie, "sg_first_frame": 1001, "sg_last_frame": 1010,
             "created_at": created, "sg_status_list": "rev", "sg_task": None, "sg_pipeline_step": None,
-            "sg_version_type": None, "sg_department": None, "sg_version_number": None, **f}
+            "sg_version_type": None, "sg_department": None, "sg_version_number": None, "sg_layer": None, **f}
 
 
 VERSIONS = [
@@ -82,6 +82,9 @@ VERSIONS = [
     ver(109, "mis_0040.comp.v1", shot(5), ago(1), project=12),                             # another show
 ]
 
+# Rodeo's Version fields as the chunk 11 probe found them (Version 4865327, the project's
+# claude/sg_probe-version-4865327.json): Pipeline Step links to a Step, Task to a Task,
+# Type and Department are lists, Version Number a number, Layer text.
 SCHEMA = {
     "code": {"data_type": {"value": "text"}, "name": {"value": "Version Name"}},
     "sg_status_list": {"data_type": {"value": "status_list"}, "name": {"value": "Status"},
@@ -93,7 +96,9 @@ SCHEMA = {
     "sg_version_type": {"data_type": {"value": "list"}, "name": {"value": "Type"},
                         "properties": {"valid_values": {"value": ["plate", "render", "precomp"]},
                                        "display_values": {"value": {"plate": "Plate", "render": "Render"}}}},
-    "sg_department": {"data_type": {"value": "text"}, "name": {"value": "Department"}},
+    "sg_department": {"data_type": {"value": "list"}, "name": {"value": "Department"},
+                      "properties": {"valid_values": {"value": ["Editorial", "Lighting", "FX", "Reference"]}}},
+    "sg_layer": {"data_type": {"value": "text"}, "name": {"value": "Layer"}},
     "sg_version_number": {"data_type": {"value": "number"}, "name": {"value": "Version Number"}},
     "sg_first_frame": {"data_type": {"value": "number"}}, "created_at": {"data_type": {"value": "date_time"}},
 }
@@ -173,6 +178,9 @@ class FakeShotGrid:
         if head not in self.schema and head not in ("project", "entity", "id", "code", "created_at",
                                                     "sg_path_to_frames", "sg_path_to_movie"):
             raise Fault(f"API read() Version.{head} doesn't exist")
+        kind = ((self.schema.get(f[0]) or {}).get("data_type") or {}).get("value")
+        if f[1] == "contains" and kind in ("list", "status_list"):
+            raise Fault(f"API read() 'contains' isn't valid for the {kind} field Version.{f[0]}")
 
     def schema_field_read(self, entity):
         self.calls.append(("schema_field_read", entity))
@@ -241,29 +249,33 @@ class Offered(unittest.TestCase):
         self.assertEqual(len(fake.asked("summarize")), 10)
 
     def test_what_the_site_doesnt_have_or_cant_list(self):
-        sg, fake = lookups(fields={"step": "sg_pipeline_step", "frames": "sg_first_frame", "dept": "sg_department",
-                                   "type": "sg_version_type", "gone": "sg_nope"})
-        fake.refuse_summarize = {"sg_department", "sg_version_type"}
+        sg, fake = lookups(fields={"step": "sg_pipeline_step", "frames": "sg_first_frame", "layer": "sg_layer",
+                                   "dept": "sg_department", "type": "sg_version_type", "gone": "sg_nope"})
+        fake.refuse_summarize = {"sg_layer", "sg_department", "sg_version_type"}
         fake.versions = [v for v in fake.versions if v["id"] != 104 and v["id"] != 105]   # no Lighting step left
         for v in fake.versions:
             v["sg_pipeline_step"] = None
         o = Q.options(sg, "bri3")
         f = {d["key"]: d for d in o["filters"]}
-        self.assertEqual(list(f), ["status", "dept", "type"])
-        self.assertEqual((f["dept"]["kind"], f["dept"]["note"]), ("text", "typed: ShotGrid couldn't list its values"))
-        self.assertEqual(f["type"]["kind"], "choice")                             # a list: all its values, no counts
-        self.assertEqual(f["type"]["values"][0], {"value": "plate", "label": "Plate", "count": None})
+        self.assertEqual(list(f), ["status", "layer", "dept", "type"])
+        self.assertEqual((f["layer"]["kind"], f["layer"]["note"]), ("text", "typed: ShotGrid couldn't list its values"))
+        for k, first in (("type", {"value": "plate", "label": "Plate", "count": None}),   # a list: all its values,
+                         ("dept", {"value": "Editorial", "label": "Editorial", "count": None})):  # without counts
+            self.assertEqual((f[k]["kind"], f[k]["values"][0]), ("choice", first))
         self.assertEqual({d["key"]: d["why"] for d in o["left_out"]},
                          {"step": "none of bri3's Versions has one",
                           "frames": "sg_first_frame is a number field: only lists, text and links are offered",
                           "gone": "Version has no field sg_nope on this site (shotgrid.query.fields)"})
 
-    def test_too_many_values_are_typed(self):
-        sg, fake = lookups()
-        fake.versions += [ver(1000 + i, f"yht_1040.x{i}.v1", shot(3), ago(1), sg_department=f"d{i}") for i in range(Q.MAX_VALUES + 1)]
+    def test_too_many_values_are_typed_but_not_a_list(self):
+        sg, fake = lookups(fields={"layer": "sg_layer", "department": "sg_department"})
+        fake.versions += [ver(1000 + i, f"yht_1040.x{i}.v1", shot(3), ago(1), sg_layer=f"l{i}", sg_department=f"d{i}")
+                          for i in range(Q.MAX_VALUES + 1)]
         f = {d["key"]: d for d in Q.options(sg, "bri3")["filters"]}
-        self.assertEqual((f["department"]["kind"], f["department"]["note"]), ("text", "typed: 303 values, too many to list"))
-        self.assertNotIn("values", f["department"])
+        self.assertEqual((f["layer"]["kind"], f["layer"]["note"]), ("text", "typed: 301 values, too many to list"))
+        self.assertNotIn("values", f["layer"])
+        # ShotGrid takes no "contains" on a list (Rodeo's Department is one): it stays picked from.
+        self.assertEqual((f["department"]["kind"], len(f["department"]["values"])), ("choice", 303))
 
     def test_no_show_or_no_shotgrid(self):
         sg, fake = lookups()
@@ -331,8 +343,12 @@ class Found(unittest.TestCase):
         self.assertEqual(sent[4], 5001)                                           # scan + 1: are there more?
 
     def test_a_typed_filter(self):
-        self.fake.refuse_summarize = {"sg_department"}
-        self.assertEqual(codes(self.run_(filters={"department": "refer"})), ["bpa_1430_mp01_compressed.mov"])
+        sg, fake = lookups(fields={"layer": "sg_layer"})
+        fake.refuse_summarize = {"sg_layer"}
+        fake.versions[2]["sg_layer"] = "refPass"                                   # bpa_1430_mp01_compressed.mov
+        self.assertEqual(codes(Q.run(sg, {"show": "bri3", "filters": {"layer": "refp"}}, now=NOW)),
+                         ["bpa_1430_mp01_compressed.mov"])
+        self.assertEqual(fake.asked("find")[-1][2][-1], ["sg_layer", "contains", "refp"])
 
     def test_refused(self):
         for spec, why in (

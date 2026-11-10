@@ -12,9 +12,11 @@ options(show), what the query panel offers for a show:
                     department), each a Version field the site has. Each offers the values
                     the show's Versions have, with how many (ShotGrid's summarize), labelled
                     as ShotGrid labels them; a linked field (a Task) by its linked name. A
-                    field ShotGrid can't sum up, or with too many values to list, is typed
-                    instead ("contains"). A field the site doesn't have, or of another kind
-                    (a number, a date), is left out, and the panel says so.
+                    text or linked field ShotGrid can't sum up, or with too many values to
+                    list, is typed instead ("contains"); a list (status, Rodeo's type and
+                    department) is always picked from, since ShotGrid takes no "contains"
+                    on a list. A field the site doesn't have, or of another kind (a number,
+                    a date), is left out, and the panel says so.
   cached options_ttl seconds per show (the panel's ↻ asks again).
 
 run(spec), the Versions:
@@ -140,7 +142,7 @@ def _filters(sg, show: dict, refresh: bool) -> dict:
             values = [{**v, "count": None} for v in d["schema"]]
         if values is None:
             d.update(kind="text", note="typed: ShotGrid couldn't list its values")
-        elif len(values) > MAX_VALUES:
+        elif len(values) > MAX_VALUES and d["schema"] is None:    # a list stays a list: no "contains" on one
             d.update(kind="text", note=f"typed: {len(values)} values, too many to list")
         elif not values:
             left.append({"key": k, "label": d["label"], "why": f"none of {show['code']}'s Versions has one"})
