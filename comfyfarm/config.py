@@ -221,10 +221,12 @@ class PublishConfig(BaseModel):
     shell: list[str] = Field(default_factory=lambda: ["env", "-i", "HOME={home}", "USER={user}", "LOGNAME={user}",
                                                       "/bin/bash", "-lc"])
     # {graph} (the manifest's publish.graph, update_and_render_nuke) {show} {shot} {step}
-    # {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted
+    # {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted.
+    # --owner {user}: the publish is the artist's who asked for it, not the manager's account
+    # (Daiquiri's default is the account dispatchGraph runs as).
     command: str = (f"source {_LAUNCHER}/env/set_context.sh {{show}} && {_LAUNCHER}/rdo_rez_launcher.bash -a graph "
                     f"-c dispatchGraph {{graph}} --description {{description}} --step {{step}} "
-                    f"--entities {{shot}} --workfile {{workfile}} --frameRange {{frames}}")
+                    f"--entities {{shot}} --workfile {{workfile}} --frameRange {{frames}} --owner {{user}}")
     job_id_pattern: str = r"#ID:\s*(\d+)"    # the Tractor job in dispatchGraph's output
     timeout: float = 600.0
     workers: int = 2                    # publishes dispatched at once

@@ -187,11 +187,14 @@ class DispatchTests(unittest.TestCase):
         self.assertIn("rdo_rez_launcher.bash -a graph -c dispatchGraph {graph} --description", cmd)
         argv = D.command(Config().publish.shell, cmd, {"graph": "update_and_render_nuke", "show": "bri3",
                                                        "shot": "305046_0010", "step": "lay", "description": "Auto Publish",
-                                                       "workfile": "/rdo/bank/x/default.nk", "frames": "1001-1084"})
+                                                       "workfile": "/rdo/bank/x/default.nk", "frames": "1001-1084",
+                                                       "user": "mbentitou"})
+        # --owner: published as the artist who asked, not the manager's account.
         self.assertEqual(argv[-1], "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh bri3 && "
                                    "/rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c "
                                    "dispatchGraph update_and_render_nuke --description 'Auto Publish' --step lay "
-                                   "--entities 305046_0010 --workfile /rdo/bank/x/default.nk --frameRange 1001-1084")
+                                   "--entities 305046_0010 --workfile /rdo/bank/x/default.nk --frameRange 1001-1084 "
+                                   "--owner mbentitou")
 
 
 @unittest.skipUnless(POSIX, "publishing runs on the Linux manager (a POSIX shell)")
@@ -206,7 +209,8 @@ class PublisherTests(unittest.TestCase):
         fake.write_text(FAKE_DISPATCH)
         self.calls = self.tmp / "calls.jsonl"
         cmd = (f"CALLS={self.calls} {sys.executable} {fake} update_and_render_nuke --description {{description}} "
-               f"--step {{step}} --entities {{shot}} --workfile {{workfile}} --frameRange {{frames}} --show {{show}}")
+               f"--step {{step}} --entities {{shot}} --workfile {{workfile}} --owner {{user}} --frameRange {{frames}} "
+               f"--show {{show}}")
         self.cfg = Config.model_validate({
             "workers": [], "database": str(self.tmp / "farm.db"),
             "publish": {"enabled": True, "dry_run": False, "templates": str(templates),
@@ -324,8 +328,8 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(t.knob(t.output_reads()[0], "file"), OUT)
         [call] = self.calls_made()
         want = ["update_and_render_nuke", "--description", f'Looks "good" (ComfyFarm {job["id"][:8]}, jdoe)',
-                "--step", "ai", "--entities", "305046_0010", "--workfile", str(staged), "--frameRange", "1001-1050",
-                "--show", "bri3"]
+                "--step", "ai", "--entities", "305046_0010", "--workfile", str(staged), "--owner", "jdoe",
+                "--frameRange", "1001-1050", "--show", "bri3"]
         self.assertEqual(call, want)
         self.assertEqual(self.farm.annotate([self.store.get(job["id"])])[0]["publish"]["tractor_id"], "6501887")
         self.assertEqual(len(self.store.publishes(job["id"])), 1)
@@ -361,6 +365,8 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(self.store.publishes(ok["id"])[0]["state"], "dispatched")
         calls = self.calls_made()
         self.assertEqual(sorted(c[4] for c in calls), ["comp", "lay"])
+        # The owner is whoever asked for the publish (ann), not the job's submitter (jdoe).
+        self.assertEqual([c[c.index("--owner") + 1] for c in calls], ["ann", "ann"])
         self.assertEqual(sorted(c[-1] == "--dry-run" for c in calls), [False, True])
         failed = self.store.publishes(bad["id"])[0]
         self.assertEqual(failed["state"], "failed")
