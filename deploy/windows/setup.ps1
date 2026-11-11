@@ -10,11 +10,14 @@
 
     powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -Agent -ComfyUIDir "C:\ComfyUI_windows_portable"
     powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 -ComfyUIDir "C:\ComfyUI_windows_portable"
+
+  For a new GPU machine from nothing (Python, ComfyUI, the agent), see install_agent.ps1.
 #>
 param(
     [switch]$Agent,            # a GPU machine for a manager elsewhere (agent.yaml), not standalone (config.yaml)
     [string]$Python = "",      # optional: full path to python.exe (3.10+)
-    [string]$ComfyUIDir = ""   # ComfyUI's folder (portable install, the one holding custom_nodes, or custom_nodes)
+    [string]$ComfyUIDir = "",  # ComfyUI's folder (portable install, the one holding custom_nodes, or custom_nodes)
+    [switch]$NoCheck           # skip the check and the next steps at the end (install_agent.ps1 runs it later)
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # the repo
@@ -80,13 +83,14 @@ if ($ComfyUIDir) {
         New-Item -ItemType Junction -Path $link -Target $nodes | Out-Null
         Write-Host "Linked the farm's ComfyUI nodes: $link -> $nodes (restart ComfyUI to load them)" -ForegroundColor Yellow
     }
-} else {
+} elseif (-not $NoCheck) {
     Write-Host "Pass -ComfyUIDir <ComfyUI folder> to link the farm's ComfyUI nodes (needed by chord_pbr)." -ForegroundColor Yellow
 }
 
 # EXR inputs use oiiotool (OpenImageIO) and movie inputs use ffmpeg (imageio-ffmpeg);
 # both were installed into .venv above with the requirements. The check below lists them.
 
+if ($NoCheck) { exit 0 }
 if ($Agent) {
     Write-Host "`nChecking this worker (ComfyUI must be running, or set comfyui_launch in agent.yaml):" -ForegroundColor Cyan
     & $venvPy -m comfyfarm agent --check
