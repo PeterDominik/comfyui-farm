@@ -124,8 +124,8 @@ Then edit `config.yaml`:
 
 - `share.dir: /rdo/bank/comfy_farm`: the shared folder (below);
 - `agents.token`: a long random string, e.g. `python3 -c "import secrets; print(secrets.token_hex(16))"`;
-- `agents.order` (optional): agent names that get jobs first, best first. Without it the
-  biggest GPUs (VRAM) get jobs first;
+- `agents.order` (optional): jobs go to the GPU that ran their workflow fastest; machines whose
+  GPU hasn't run it yet follow, the biggest GPU (VRAM) first, or in this order (agent names, best first);
 - `paths.mappings: [{posix: /rdo/shows}, {posix: /shows, local: /rdo/shows}]`: this machine sees show
   storage as it is, and `/shows/...` inputs are the same storage (the farm reports them as `/rdo/shows/...`);
 - `paths.output_root: /rdo/shows/{show}/_project_ref/_cg/comfyui/renders`;
@@ -421,16 +421,21 @@ it, as before. `agent --check` lists the differences as warnings.
   open port and the manager needs no list of them. An agent checks in every few seconds;
   one that stops for `farm.lost_after_seconds` (5 minutes) has its jobs queued again for
   the others.
-- **A job goes to the best free GPU:** machines rank by VRAM (or by `agents.order` in
-  the manager's config, then VRAM), and each job goes to the best machine that is free and
-  can run its workflow; the next job to the next machine. Only when every GPU is busy does
-  a machine get a second job, prepared ahead of its current one (the best machine first).
-  The Machines tab shows the order (#). Machines whose ComfyUI lacks a workflow's nodes or
+- **A job goes to the fastest free GPU for it:** machines rank by how fast their GPU type
+  ran the job's workflow before, for the job's size (the run times below, the *Run times*
+  tab's #), so LTX goes to a free 5090 before a free A6000 though the A6000 has more VRAM.
+  Machines whose GPU type hasn't run the workflow yet come after those (they get it when
+  the faster ones are busy, which times them too), by VRAM (or by `agents.order` in the
+  manager's config, then VRAM); a workflow that has never run goes to the biggest GPU
+  first. Each job goes to the best machine that is free and can run its workflow; the next
+  job to the next machine. Only when every GPU is busy does a machine get a second job,
+  prepared ahead of its current one (the best machine first). The Machines tab's # is the
+  order for a workflow without run times. Machines whose ComfyUI lacks a workflow's nodes or
   models don't get it, nor do machines its manifest's `requires` keeps it off (too little
   VRAM: the LTX workflows need 32 GB, so the 3090 never gets them; missing tags). A job
   no machine may take now waits in the queue, saying why, and runs once one checks in.
 - **Warm models:** between equal cards (two 5090s), the one that last ran the workflow,
-  with its models still loaded, gets the job. A bigger free card still comes first.
+  with its models still loaded, gets the job. A faster free card still comes first.
 - **Drain:** *Drain* on the dashboard's Machines tab lets a machine finish what it holds
   and take no new jobs (before working on it, or restarting it) until *Resume*. It lasts
   across manager restarts.
@@ -470,10 +475,11 @@ it, as before. `agent --check` lists the differences as warnings.
   row for input/output paths (copy buttons), the preview movie (▶ in the row: it has one; see
   *Preview movies*), warnings, errors with traceback, *Run again* and *API JSON*, and on a
   finished job *Publish…* (see *Publishing*).
-- **Machines:** each GPU machine, in the order they get jobs (#): whether it takes jobs, its GPU and
+- **Machines:** each GPU machine, in the order they get jobs of a workflow without run times (#): whether it takes jobs, its GPU and
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
   and why. *Drain* / *Resume* per machine.
-- **Run times:** how long each workflow takes on each GPU type, what the ETAs come from.
+- **Run times:** how long each workflow takes on each GPU type, what the ETAs come from, and
+  the order free GPUs get its jobs in (#: fastest first).
 - **Nuke Publish Templates** (while publishing is on): the publish templates, their history, publishing and restoring one (see *Publishing*).
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from

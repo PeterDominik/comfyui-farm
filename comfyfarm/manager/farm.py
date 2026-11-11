@@ -228,11 +228,22 @@ class Farm:
                 "worker": got[0].get("worker"), "workers": sorted({g["worker"] for g in got if g.get("worker")})}
 
     def run_times(self) -> list[dict]:
-        """How long each workflow takes on each GPU type, from its recent runs (the
-        Machines tab)."""
-        out = [{"workflow": wf, "label": (self.registry.workflows[wf].label if wf in self.registry.workflows else wf),
-                "gpu": gpu, **E.describe(row)} for (wf, gpu), row in self.store.run_stats().items()]
-        return sorted(out, key=lambda r: (r["label"].lower(), r["gpu"]))
+        """How long each workflow takes on each GPU type, from its recent runs (the Run
+        times tab). `order`: the order free GPUs of each type get the workflow's jobs in,
+        fastest first for a job of its usual size (machines whose GPU type hasn't run it
+        come after these)."""
+        by_wf: dict[str, list[tuple[str, dict]]] = {}
+        for (wf, gpu), row in self.store.run_stats().items():
+            by_wf.setdefault(wf, []).append((gpu, row))
+        out = []
+        for wf, rows in by_wf.items():
+            pooled = E.combine([row for _, row in rows])
+            size = pooled["wx"] / pooled["w"] if pooled and pooled["wx"] else 1     # the workflow's usual size
+            label = self.registry.workflows[wf].label if wf in self.registry.workflows else wf
+            ranked = sorted(rows, key=lambda r: ((t := E.estimate(r[1], size)) is None, t or 0.0, r[0]))
+            out += [{"workflow": wf, "label": label, "gpu": gpu, "order": i + 1, **E.describe(row)}
+                    for i, (gpu, row) in enumerate(ranked)]
+        return sorted(out, key=lambda r: (r["label"].lower(), r["order"]))
 
     # ================================================================ submit / cancel
     def plan(self, workflow: str, params: dict, show: str | None = None, shot: str | None = None,

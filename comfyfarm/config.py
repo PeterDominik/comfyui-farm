@@ -150,8 +150,9 @@ class AgentsConfig(BaseModel):
     """Agents on other machines (`comfyfarm agent`) check in over HTTP."""
     # Shared secret agents send (their agent.yaml `token`). Empty = any agent may check in.
     token: str = ""
-    # The machines (agent names) that get jobs first, best first. Machines not listed come
-    # after them, the biggest GPU (VRAM) first. Empty = all by VRAM.
+    # A job goes to the free GPU that ran its workflow fastest (run times per GPU type).
+    # Machines whose GPU hasn't run the workflow yet come after those, in this order (agent
+    # names, best first), then the biggest GPU (VRAM) first. Empty = those by VRAM.
     order: list[str] = []
 
 

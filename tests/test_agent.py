@@ -736,6 +736,69 @@ class AgentTests(unittest.TestCase):
         self.beat(small)
         self.assertEqual(self.job(job["id"])["worker"], "small")
 
+    def test_the_fastest_gpu_for_the_workflow_takes_the_job(self):
+        """Run times decide, not VRAM: LTX goes to the 5090 before the A6000 (48 GB)."""
+        self.any_gpu()
+        a6000 = self.gpu("a6000", 48, card="NVIDIA RTX A6000")
+        r3090 = self.gpu("r3090", 24, card="NVIDIA GeForce RTX 3090")
+        r5090 = self.gpu("r5090", 32, card="NVIDIA GeForce RTX 5090")
+        ltx = "ltx25_alpha_gen"
+        self.store.record_gpu_run(ltx, "NVIDIA GeForce RTX 5090", 3, 10)       # 3.3 s a frame
+        self.store.record_gpu_run(ltx, "NVIDIA GeForce RTX 3090", 3, 22)       # 7.3 s
+        self.store.record_gpu_run(ltx, "NVIDIA RTX A6000", 3, 36)              # 12 s
+        self.assertEqual({w["name"]: w["rank"] for w in self.desk.summaries()},     # without run times: VRAM
+                         {"a6000": 1, "r5090": 2, "r3090": 3})
+        self.assertEqual([(r["order"], r["gpu"]) for r in self.farm.run_times()],
+                         [(1, "NVIDIA GeForce RTX 5090"), (2, "NVIDIA GeForce RTX 3090"), (3, "NVIDIA RTX A6000")])
+        jobs = [self.submit() for _ in range(4)]
+        # The queue's "→ machine" says the same: fastest free first, then one prepared ahead on the fastest.
+        self.assertEqual([j["next_worker"] for j in self.farm.annotate([dict(j) for j in jobs])],
+                         ["r5090", "r3090", "a6000", "r5090"])
+        for a in (a6000, r3090, r5090):                                       # the slowest checks in first
+            self.beat(a)
+        self.assertEqual([self.job(j["id"])["worker"] for j in jobs], ["r5090", "r3090", "a6000", "r5090"])
+        # A workflow none of them has run goes by VRAM.
+        for j in jobs:
+            self.store.transition(j["id"], ("preparing", "dispatched"), status="done")
+        wan = self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1001"}, "ann")
+        for a in (r5090, r3090, a6000):
+            self.beat(a)
+        self.assertEqual(self.job(wan["id"])["worker"], "a6000")
+
+    def test_gpus_that_havent_run_the_workflow_come_after_timed_ones(self):
+        self.any_gpu()
+        machines = [self.gpu("a6000", 48, card="NVIDIA RTX A6000"),
+                    self.gpu("r5090", 32, card="NVIDIA GeForce RTX 5090"),
+                    self.gpu("r3090", 24, card="NVIDIA GeForce RTX 3090")]
+        self.store.record_gpu_run("ltx25_alpha_gen", "NVIDIA GeForce RTX 3090", 3, 60)   # only the 3090 has run it
+        jobs = [self.submit() for _ in range(3)]
+        for a in machines:
+            self.beat(a)
+        # The timed 3090 first; the others (no runs of their own yet) by VRAM, which times them too.
+        self.assertEqual([self.job(j["id"])["worker"] for j in jobs], ["r3090", "a6000", "r5090"])
+
+    def test_the_job_size_decides_between_overhead_and_speed(self):
+        """A GPU with a big start-up overhead but fast frames gets long jobs; short ones go
+        to the one that starts quickly."""
+        self.any_gpu()
+        quick = self.gpu("quick", 32, card="NVIDIA GeForce RTX 5090")
+        heavy = self.gpu("heavy", 48, card="NVIDIA RTX A6000")
+        ltx = "ltx25_alpha_gen"
+        for frames in (2, 10, 30):
+            self.store.record_gpu_run(ltx, "NVIDIA GeForce RTX 5090", frames, 5 + 4 * frames)    # 5 s + 4 s a frame
+            self.store.record_gpu_run(ltx, "NVIDIA RTX A6000", frames, 60 + 1 * frames)          # 60 s + 1 s a frame
+        short = self.submit()                                                  # 3 frames: 17 s here, 63 s there
+        self.beat(heavy)
+        self.beat(quick)
+        self.assertEqual(self.job(short["id"])["worker"], "quick")
+        self.store.transition(short["id"], ("preparing", "dispatched"), status="done")
+        long = dict(self.submit())                                             # 100 frames: 405 s, 160 s
+        info = dict(long["info"], expected_frames=100)
+        self.store.update(long["id"], info=info)
+        self.beat(quick)
+        self.beat(heavy)
+        self.assertEqual(self.job(long["id"])["worker"], "heavy")
+
     def test_identical_gpus_warm_first_then_take_turns(self):
         a, b = self.gpu("gpu-a", 32), self.gpu("gpu-b", 32)
         got = []

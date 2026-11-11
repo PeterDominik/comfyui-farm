@@ -5,13 +5,16 @@ attempt id (also its prompt id in ComfyUI); the desk acts on a report only while
 is the job's current one. Jobs are leased to the agent holding them: every check-in
 renews the lease, and jobs whose lease runs out (farm.lost_after_seconds) are queued again.
 
-Which machine runs a job (_claim): the best free GPU. Machines rank by agents.order in the
-manager's config, then by VRAM, so a job goes to the biggest card that is free and can run
-its workflow (its nodes and models, and its manifest's `requires`: least VRAM, tags); the
-next job to the next one. Between equal cards, the one that last ran the workflow (its
-models still loaded) goes first. A machine gets a second job, prepared ahead of its
-current one, only when every GPU is busy. A machine drained from the dashboard takes no
-new jobs until it's resumed.
+Which machine runs a job (_claim): the best free GPU that can run its workflow (its nodes
+and models, and its manifest's `requires`: least VRAM, tags). The best is the one that
+should run the job fastest: past runs of its workflow on that machine's GPU type, for the
+job's size (manager.eta), so LTX goes to the 5090 before the A6000 though the A6000 has
+more VRAM. GPU types that haven't run the workflow yet come after those that have, ranked
+by agents.order in the manager's config, then by VRAM (as every machine is for a workflow
+that has never run). Between equal cards, the one that last ran the workflow (its models
+still loaded) goes first. A machine gets a second job, prepared ahead of its current one,
+only when every GPU is busy. A machine drained from the dashboard takes no new jobs until
+it's resumed.
 
 The desk keeps what agents tell it about their ComfyUI in memory (a manager restart
 forgets it; agents check in again). Jobs live in the database as before, with their
@@ -224,18 +227,31 @@ class Desk:
     def online_count(self) -> int:
         return sum(1 for a in self.agents.values() if self.accepting(a))
 
-    def _rank_key(self, a: AgentState, turns: bool = True, workflow: str | None = None) -> tuple:
-        """Better machines first: those in agents.order, in its order, then by VRAM. Between
-        equal ones, the one that last ran `workflow` (its models still loaded), then turns
-        (the one that took a job longest ago first)."""
+    def run_estimate(self, a: AgentState, workflow: str, size: float, stats: dict) -> float | None:
+        """Seconds a job of `workflow` with `size` frames (tiles) should take on this machine,
+        from its GPU type's own past runs of it (manager.eta; `stats`: store.run_stats()), or
+        None while that GPU type hasn't run it."""
+        return E.estimate(stats.get((workflow, self.gpu_type(a))), size)
+
+    def _rank_key(self, a: AgentState, turns: bool = True, workflow: str | None = None, size: float = 1,
+                  stats: dict | None = None) -> tuple:
+        """Better machines first. For a job (its `workflow` and `size`, with the run `stats`):
+        the one that should run it fastest, from its GPU type's past runs of the workflow
+        (run_estimate), then those whose GPU type hasn't run it yet. Then (and without a job,
+        or for a workflow that has never run): those in agents.order, in its order, then by
+        VRAM. Between equal ones (the same GPU type), the one that last ran `workflow` (its
+        models still loaded), then turns (the one that took a job longest ago first)."""
+        est = self.run_estimate(a, workflow, size, stats) if workflow and stats is not None else None
         order = [n.lower() for n in self.cfg.agents.order]
         name = a.name.lower()
         listed = order.index(name) if name in order else len(order)
         cold = 0 if workflow and a.last_workflow == workflow else 1
-        return listed, -vram_gb(a), cold, a.last_claimed if turns else 0.0, name
+        return est is None, est or 0.0, listed, -vram_gb(a), cold, a.last_claimed if turns else 0.0, name
 
     def ranks(self) -> dict[str, int]:
-        """Each machine's place in the order it gets jobs in (1 = first), all free."""
+        """Each machine's place in the order it gets jobs in (1 = first), all free, for a
+        workflow that hasn't run on their GPU types yet: agents.order, then VRAM. A workflow
+        with run times goes to its fastest GPU type first (Farm.run_times' `order`)."""
         ranked = sorted(list(self.agents.values()), key=lambda x: self._rank_key(x, turns=False))
         return {a.name: i + 1 for i, a in enumerate(ranked)}
 
@@ -481,10 +497,11 @@ class Desk:
         every machine's free GPU, one job prepared ahead. Queued jobs fill the slots in queue
         order, each the best slot on a machine that can run its workflow (its nodes and
         models, and the manifest's `requires`): a free GPU before one ahead, then by rank
-        (_rank_key: between equal cards, the one that last ran the workflow first). This
-        agent takes the jobs that land on its slots. So a job goes to the best free GPU,
-        whichever agent checks in first; and a machine gets a second job only when every GPU
-        is busy (or can't run it).
+        (_rank_key: the GPU type that ran the workflow fastest for the job's size; between
+        equal cards, the one that last ran the workflow first). This agent takes the jobs
+        that land on its slots. So a job goes to the fastest free GPU for it, whichever agent
+        checks in first; and a machine gets a second job only when every GPU is busy (or
+        can't run it).
 
         A job no machine may run (requires) waits: a bigger machine may check in later. One
         that every machine allowed to run it lacks the nodes or models for fails now,
@@ -516,9 +533,19 @@ class Desk:
         def able(x: AgentState, wf: str) -> bool:
             return allowed(x, wf) and not (strict and x.problems.get(wf))
 
-        def best(wf: str, among) -> int | None:
+        stats: dict | None = None               # run times, read once there's a job to place
+
+        def best(job: dict, among) -> int | None:
+            nonlocal stats
+            wf = job["workflow"]
             ks = [k for k in among if not used[k] and able(slots[k][1], wf)]
-            return min(ks, key=lambda k: (slots[k][0], self._rank_key(slots[k][1], workflow=wf)), default=None)
+            if not ks:
+                return None
+            if stats is None:
+                stats = self.store.run_stats()
+            size = E.units(job)
+            return min(ks, key=lambda k: (slots[k][0], self._rank_key(slots[k][1], workflow=wf, size=size,
+                                                                        stats=stats)))
 
         for job in self.store.queued():
             wf = job["workflow"]
@@ -530,7 +557,7 @@ class Desk:
                                 + (f" (+{len(probs) - 4} more)" if len(probs) > 4 else "")
                                 + ". Run `python -m comfyfarm check` on the farm machine.", ("queued",))
                 continue
-            i = best(wf, range(len(slots)))
+            i = best(job, range(len(slots)))
             if i is None:
                 continue                # no room on a machine that can run it (or none may): it waits
             target = slots[i][1]
@@ -539,7 +566,7 @@ class Desk:
                 if since is None or since[0] != target.name:
                     since = self._passed[job["id"]] = (target.name, t)
                 if t - since[1] >= STEAL_SECONDS and able(a, wf):
-                    k = best(wf, [k for k in range(len(slots)) if slots[k][1] is a])
+                    k = best(job, [k for k in range(len(slots)) if slots[k][1] is a])
                     if k is not None:
                         log.info("job %s waited %.0f s for %s: %s takes it", job["id"][:8], t - since[1],
                                  target.name, a.name)
@@ -574,7 +601,8 @@ class Desk:
         {job id: {"done_in": seconds or None, "worker": name, "run": its own seconds}}.
 
         Walks the queue the way _claim hands jobs out: each job to the best free machine
-        that may run it; once every GPU is busy, prepared ahead on the best one with room;
+        that may run it (its fastest GPU type for the job, _rank_key); once every GPU is
+        busy, prepared ahead on the best one with room;
         once those are full, to whichever frees first. A job's time comes from past runs of
         its workflow on that machine's GPU type, for its size (manager.eta). `extra`: jobs
         not queued yet (a plan), after the queue. Times unknown (no runs yet) are None, and
@@ -627,12 +655,16 @@ class Desk:
                 continue
             idle = [x for x in fit if count[x.name] == 0]
             room = [x for x in fit if count[x.name] < PER_GPU]
+            size = E.units(job)
+
+            def rank(x: AgentState, wf=wf, size=size) -> tuple:
+                return self._rank_key(x, workflow=wf, size=size, stats=stats)
             if idle:
-                m = min(idle, key=lambda x: self._rank_key(x, workflow=wf))
+                m = min(idle, key=rank)         # the fastest free GPU for it
             elif room:
-                m = min(room, key=lambda x: self._rank_key(x, workflow=wf))   # prepared ahead on the best
+                m = min(room, key=rank)         # prepared ahead on the fastest
             else:                               # waits for whichever frees first
-                m = min(fit, key=lambda x: (free_at[x.name] is None, free_at[x.name] or 0, self._rank_key(x, workflow=wf)))
+                m = min(fit, key=lambda x: (free_at[x.name] is None, free_at[x.name] or 0, rank(x)))
             est = run_time(job, m)
             at = free_at[m.name]
             at = None if at is None or est is None else max(at, t) + est
