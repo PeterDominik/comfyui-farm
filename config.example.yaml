@@ -174,8 +174,9 @@ publish:
   workers: 2               # publishes dispatched at once
   # steps: [ani, bmm, ..., uv]          # the studio's steps (the default list is built in)
   # The command, in a clean login shell (shell: env -i … /bin/bash -lc). {graph} {show} {shot}
-  # {step} {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted:
-  # command: "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} && /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph {graph} --description {description} --step {step} --entities {shot} --workfile {workfile} --frameRange {frames}"
+  # {step} {description} {workfile} {frames} {first} {last} {job} {user}, each shell-quoted.
+  # --owner {user} publishes as the artist who asked (keep it if you set your own command):
+  # command: "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} && /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph {graph} --description {description} --step {step} --entities {shot} --workfile {workfile} --frameRange {frames} --owner {user}"
 
 # ShotGrid lookups for the publish fields (README, ShotGrid lookups): the active shows and
 # each show's sequences and shots as suggestions, and a check that a publish goes to a shot

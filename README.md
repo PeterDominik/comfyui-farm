@@ -835,8 +835,10 @@ publish:
 Restart the manager (`deploy/linux/farmctl.sh restart manager`), publish a finished job (a dry
 run), then set `dry_run: false` and publish one for real.
 
-dispatchGraph runs as the manager's user, so the dailies are published as that account for
-now. It runs in a clean login shell with the show's context (`publish.shell`,
+dispatchGraph runs as the manager's user, but `--owner <user>` publishes as the artist who
+asked for the publish (the user in the description suffix): without it Daiquiri would give
+every daily to the manager's account. A `publish.command` of your own in `config.yaml` needs
+`--owner {user}` too. It runs in a clean login shell with the show's context (`publish.shell`,
 `publish.command`), because `ctxl` and `dispatchGraph` are aliases a non-interactive shell
 doesn't have:
 
@@ -845,7 +847,7 @@ env -i HOME=$HOME USER=$USER LOGNAME=$USER /bin/bash -lc \
   'source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh <show> &&
    /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph \
      update_and_render_nuke --description "…" --step lay --entities <shot> \
-     --workfile <staging>/<job id>/default.nk --frameRange 1001-1084'
+     --workfile <staging>/<job id>/default.nk --frameRange 1001-1084 --owner <user>'
 ```
 
 The Tractor job id comes from its output (`Dispatched engine, #ID: …`, `publish.job_id_pattern`).

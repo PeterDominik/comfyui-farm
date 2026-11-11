@@ -9,9 +9,10 @@ non-interactive shell doesn't expand, so the default command sources the show's 
   source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} &&
   /rdo/rodeo/setup/rdo_rez_launcher/current/rdo_rez_launcher.bash -a graph -c dispatchGraph
       update_and_render_nuke --description {description} --step {step} --entities {shot}
-      --workfile {workfile} --frameRange {frames}
+      --workfile {workfile} --frameRange {frames} --owner {user}
 
-Every value is shell-quoted before it goes in. A dry run adds dispatchGraph's own
+--owner makes the publish the artist's who asked for it; without it Daiquiri gives it to
+the account dispatchGraph runs as (the manager's). Every value is shell-quoted before it goes in. A dry run adds dispatchGraph's own
 --dry-run: Daiquiri checks the context and the workfile and sends nothing to Tractor.
 dispatchGraph prints the Tractor job it made ("Dispatched engine, #ID: 6501887.") and its
 title ("jobTitle: [Nuke Render] …")."""
