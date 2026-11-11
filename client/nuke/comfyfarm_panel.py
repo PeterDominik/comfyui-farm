@@ -520,7 +520,9 @@ class PanelModel:
 
     @staticmethod
     def machines(workers: list[dict]) -> list[dict]:
-        """In the order they get jobs (rank): a job goes to the first free one that can run it."""
+        """In the order they get jobs (rank) of a workflow that hasn't run on their GPUs yet: a
+        job goes to the first free one that can run it. A workflow with run times goes to
+        its fastest GPU first (the dashboard's Run times tab)."""
         return sorted(workers, key=lambda w: (w.get("rank") if w.get("rank") is not None else 10**9, w.get("name") or ""))
 
     @staticmethod

@@ -7,7 +7,9 @@ so a 200-frame LTX job is expected to take longer than a 50-frame one, and a 309
 than a 5090. While all runs had about the same size, the time is taken as proportional to
 the size.
 
-Desk.forecast() walks the queue the way the desk hands jobs out (the best free GPU, a job
+The same times decide where a job goes: the desk gives it to the free GPU type that ran
+its workflow fastest, for its size (Desk._rank_key). Desk.forecast() walks the queue the
+way the desk hands jobs out (the best free GPU, a job
 prepared ahead on the best machine once every GPU is busy, then whichever frees first)
 to say when each job will be done, and on which machine."""
 
