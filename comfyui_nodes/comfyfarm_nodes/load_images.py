@@ -10,7 +10,9 @@ Image":
   - The path is typed as in Nuke or the pipeline, range included (plate.%04d.png
     1001-1158), so the workflow also runs by hand in ComfyUI.
   - Alpha comes out as a MASK the way core Load Image gives it (1 - alpha; 64×64 zeros
-    without alpha). The outputs match VHS Load Images (Path): IMAGE, MASK, frame_count.
+    without alpha). The outputs match VHS Load Images (Path): IMAGE, MASK, frame_count,
+    plus Load Images' frame_numbers (1001,1002,1011: the frames read, in order) for
+    nodes that work with frame numbers (ComfyFarm Pro Alpha's pick frame).
   - `optional` (set by the farm for an optional input left empty): an empty path gives
     one 64×64 black image instead of an error, so the graph still validates when a
     switch skips that branch. Off, an empty path is an error, as a forgotten input should be.
@@ -145,8 +147,8 @@ class ComfyFarmLoadImages:
                          "optional": ("BOOLEAN", {"default": False, "tooltip": _OPTIONAL_TIP})},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "INT")
-    RETURN_NAMES = ("IMAGE", "MASK", "frame_count")
+    RETURN_TYPES = ("IMAGE", "MASK", "INT", "STRING")
+    RETURN_NAMES = ("IMAGE", "MASK", "frame_count", "frame_numbers")
     FUNCTION = "load"
     CATEGORY = "ComfyFarm"
     DESCRIPTION = ("Loads exactly the frames given (a pattern and a frame list), in order. A missing frame "
@@ -164,11 +166,13 @@ class ComfyFarmLoadImages:
     def load(self, path, frames="", optional=False):
         if _empty(path, optional):
             image, mask = _tensors(*_blank())
-            return (image, mask, 1)
-        files = [f for _, f in input_files(path, frames)]
-        images, masks = load_batch(files)
+            return (image, mask, 1, "")
+        found = input_files(path, frames)
+        images, masks = load_batch([f for _, f in found])
         image, mask = _tensors(images, masks)
-        return (image, mask, len(files))
+        # A file without a frame number (a still) leaves the list empty: nothing to number by.
+        numbers = "" if any(n is None for n, _ in found) else ",".join(str(n) for n, _ in found)
+        return (image, mask, len(found), numbers)
 
 
 class ComfyFarmLoadImage:

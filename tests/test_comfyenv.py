@@ -235,7 +235,9 @@ class SpecTests(unittest.TestCase):
         self.assertIn("LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors", need["models"])    # / on every OS
         self.assertIn("chord_v1.safetensors", need["models"])
         # No ComfyUI to say which pack has a node: only the packs the manifests name.
-        self.assertEqual(need["packs"], {"RES4LYF": ["wan22_i2i"]})
+        self.assertEqual(need["packs"], {"ComfyUI-Comfy-Pro-Alpha-Generator": ["sam3_ltx_alpha"],
+                                         "ComfyUI-LTXVideo": ["sam3_ltx_alpha"], "ComfyUI-SAM3": ["sam3_ltx_alpha"],
+                                         "RES4LYF": ["wan22_i2i"]})
 
     def test_named_packs(self):
         """A pack a manifest names (node_packs) counts without a node of its own, and is

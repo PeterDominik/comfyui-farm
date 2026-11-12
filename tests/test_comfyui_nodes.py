@@ -26,13 +26,16 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 class FakeTensor:
-    """The torch.Tensor methods to_uint8 uses, on a numpy array."""
+    """The torch.Tensor methods to_uint8 and to_uint16 use, on a numpy array."""
 
     def __init__(self, a):
         self.a = np.asarray(a)
 
     def detach(self):
         return self
+
+    def float(self):
+        return FakeTensor(self.a.astype(np.float32))
 
     def clamp(self, lo, hi):
         return FakeTensor(np.clip(self.a, lo, hi))
@@ -74,6 +77,8 @@ class SaveImageTests(unittest.TestCase):
         # The same inputs the farm's manifests point at on WAS Image Save.
         self.assertEqual(list(inputs), ["images", "output_path", "filename_prefix", "compress_level"])
         self.assertEqual(inputs["compress_level"][1]["default"], 0)
+        bits = ComfyFarmSaveImage.INPUT_TYPES()["optional"]["bit_depth"]     # optional: older workflows unchanged
+        self.assertEqual((bits[0], bits[1]["default"]), (["8", "16"], "8"))
         self.assertEqual(ComfyFarmSaveImage.RETURN_NAMES, ("images", "files"))
         self.assertTrue(ComfyFarmSaveImage.OUTPUT_NODE)
 
@@ -112,6 +117,27 @@ class SaveImageTests(unittest.TestCase):
         self.assertGreater(os.path.getsize(a), os.path.getsize(b))           # level 0 = stored, not compressed
         self.assertEqual(np.asarray(Image.open(a)).tolist(), np.asarray(Image.open(b)).tolist())
 
+    def test_16_bit(self):
+        """bit_depth 16: a matte (three equal channels, as Convert Mask to Image gives) is one
+        16-bit grey channel; colour stays RGB, written by the farm's own PNG encoder."""
+        matte = np.zeros((2, 3, 4, 3), np.float32)
+        matte[0, 1, 2] = 0.5
+        matte[1, 0, 0] = 3 / 65535                  # below one 8-bit step: kept in 16 bits
+        _, files = self.node.save(matte, self.dir, "a", bit_depth="16")
+        first, second = files.split("\n")
+        im = Image.open(first)
+        self.assertEqual((im.mode, im.size), ("I;16", (4, 3)))
+        self.assertEqual(int(np.asarray(im)[1, 2]), 32768)
+        self.assertEqual(int(np.asarray(Image.open(second))[0, 0]), 3)
+        _, f = self.node.save(FakeTensor(np.full((1, 2, 2, 1), 0.25, np.float32)), self.dir, "g", bit_depth="16")
+        self.assertEqual(int(np.asarray(Image.open(f))[0, 0]), 16384)          # tensors and (H, W, 1) too
+        rgb = np.zeros((1, 2, 3, 3), np.float32)
+        rgb[0, 1, 2] = [1.0, 0.5, 0.0]
+        for level in (0, 6):
+            _, f = self.node.save(rgb, self.dir, f"c{level}", compress_level=level, bit_depth="16")
+            self.assertEqual(read_png16(f)[1, 2].tolist(), [65535, 32768, 0])
+            self.assertEqual(Image.open(f).size, (3, 2))                       # a PNG other readers take
+
     def test_empty_output_path_uses_comfyui_output(self):
         import types
         sys.modules["folder_paths"] = types.SimpleNamespace(get_output_directory=lambda: self.dir)
@@ -141,6 +167,26 @@ class ChordWorkflowTests(unittest.TestCase):
         self.assertIn("comes with this repo: run deploy\\windows\\setup.ps1 -ComfyUIDir <ComfyUI folder>", probs[0])
 
 
+def read_png16(path) -> np.ndarray:
+    """A 16-bit PNG's samples, decoded here (Pillow reads 16-bit RGB as 8-bit)."""
+    import struct
+    import zlib
+    data = Path(path).read_bytes()
+    pos, idat, head = 8, b"", None
+    while pos < len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        if kind == b"IHDR":
+            head = struct.unpack(">IIBB", data[pos + 8:pos + 18])
+        elif kind == b"IDAT":
+            idat += data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+    w, h, depth, color = head
+    ch = 3 if color == 2 else 1
+    rows = np.frombuffer(zlib.decompress(idat), np.uint8).reshape(h, 1 + w * ch * 2)
+    assert depth == 16 and not rows[:, 0].any()     # unfiltered rows
+    return rows[:, 1:].copy().view(">u2").reshape(h, w, ch).squeeze(-1 if ch == 1 else None)
+
+
 def png(path, size=(4, 3), mode="RGB", value=0):
     """A small image: every pixel `value` (a tuple for several channels)."""
     Image.new(mode, size, value).save(path)
@@ -157,15 +203,16 @@ class LoadImagesTests(unittest.TestCase):
         self.pattern = f"{self.dir}/plate.%04d.png"
 
     def test_exactly_the_frames_given_in_order(self):
-        images, masks, count = ComfyFarmLoadImages().load(self.pattern, "1003,1001,1011")
+        images, masks, count, numbers = ComfyFarmLoadImages().load(self.pattern, "1003,1001,1011")
         self.assertEqual((images.shape, images.dtype, count), ((3, 3, 4, 3), np.float32, 3))
+        self.assertEqual(numbers, "1003,1001,1011")                  # the frames read, in order
         self.assertEqual([images[i, 0, 0].tolist() for i in range(3)], [[0, 0, 1], [1, 0, 0], [1, 1, 1]])
         self.assertEqual((masks.shape, float(masks.max())), ((3, 64, 64), 0.0))   # no alpha: like core Load Image
 
     def test_a_range_in_the_path_as_copied_from_nuke(self):
-        _, _, count = ComfyFarmLoadImages().load(self.pattern + " 1001-1003")
-        self.assertEqual(count, 3)
-        _, _, count = ComfyFarmLoadImages().load(self.pattern.replace("%04d", "####") + " 1001-1002", "1011")
+        _, _, count, numbers = ComfyFarmLoadImages().load(self.pattern + " 1001-1003")
+        self.assertEqual((count, numbers), (3, "1001,1002,1003"))
+        _, _, count, _ = ComfyFarmLoadImages().load(self.pattern.replace("%04d", "####") + " 1001-1002", "1011")
         self.assertEqual(count, 1)                                   # frames win over the range
         self.assertEqual(ComfyFarmLoadImages().load(self.pattern)[2], 4)   # neither: every frame
 
@@ -183,7 +230,7 @@ class LoadImagesTests(unittest.TestCase):
     def test_alpha_comes_out_as_a_mask(self):
         png(f"{self.dir}/rgba.1001.png", mode="RGBA", value=(255, 0, 0, 255))
         png(f"{self.dir}/rgba.1002.png", mode="RGBA", value=(255, 0, 0, 0))
-        images, masks, _ = ComfyFarmLoadImages().load(f"{self.dir}/rgba.%04d.png", "1001-1002")
+        images, masks, _, _ = ComfyFarmLoadImages().load(f"{self.dir}/rgba.%04d.png", "1001-1002")
         self.assertEqual((images.shape, masks.shape), ((2, 3, 4, 3), (2, 3, 4)))
         self.assertEqual((float(masks[0, 0, 0]), float(masks[1, 0, 0])), (0.0, 1.0))   # 1 - alpha
 
@@ -209,8 +256,12 @@ class LoadImagesTests(unittest.TestCase):
         self.assertIn("doesn't exist", ComfyFarmLoadImage.VALIDATE_INPUTS(f"{self.dir}/nope.png"))
 
     def test_outputs_like_vhs_load_images(self):
-        """The farm's workflows swapped VHS Load Images (Path) for it: the same output slots."""
-        self.assertEqual(ComfyFarmLoadImages.RETURN_TYPES, ("IMAGE", "MASK", "INT"))
+        """The farm's workflows swapped VHS Load Images (Path) for it: the same output slots,
+        then the frame numbers (added after them, so links to the first three still hold)."""
+        self.assertEqual(ComfyFarmLoadImages.RETURN_TYPES, ("IMAGE", "MASK", "INT", "STRING"))
+        self.assertEqual(ComfyFarmLoadImages.RETURN_NAMES[3], "frame_numbers")
+        png(f"{self.dir}/still.png")
+        self.assertEqual(ComfyFarmLoadImages().load(f"{self.dir}/still.png")[2:], (1, ""))   # a still: no numbers
         self.assertEqual(list(ComfyFarmLoadImages.INPUT_TYPES()["required"]), ["path"])
         self.assertEqual(list(ComfyFarmLoadImages.INPUT_TYPES()["optional"]), ["frames", "optional"])
 
@@ -219,8 +270,9 @@ class LoadImagesTests(unittest.TestCase):
         the graph validates while a switch skips that branch."""
         self.assertIs(ComfyFarmLoadImages.VALIDATE_INPUTS("", "", True), True)
         self.assertIn("No image path given", ComfyFarmLoadImages.VALIDATE_INPUTS("", ""))   # a forgotten input
-        images, masks, count = ComfyFarmLoadImages().load("", "", optional=True)
-        self.assertEqual((images.shape, float(images.max()), masks.shape, count), ((1, 64, 64, 3), 0.0, (1, 64, 64), 1))
+        images, masks, count, numbers = ComfyFarmLoadImages().load("", "", optional=True)
+        self.assertEqual((images.shape, float(images.max()), masks.shape, count, numbers),
+                         ((1, 64, 64, 3), 0.0, (1, 64, 64), 1, ""))
         image, mask = ComfyFarmLoadImage().load(" ", optional=True)
         self.assertEqual(image.shape, (1, 64, 64, 3))
         self.assertIs(ComfyFarmLoadImage.VALIDATE_INPUTS("", optional=True), True)
