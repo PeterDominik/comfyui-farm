@@ -642,6 +642,12 @@ generator to the graph. What each machine needs on top of LTX 2.5:
   route and ComfyUI stops at start ("method POST is already registered"); `comfyui sync`
   moves a local copy aside. SAM3 sets up its own Python environment with `comfy-env` (pixi,
   in the user's `~/.ce`) the first time ComfyUI starts with it, which needs the internet once.
+- On Linux, enough open files. SAM3 runs in its own process and hands each result to
+  ComfyUI in shared memory, one open file per tensor ComfyUI holds: a tracked shot is one
+  per frame and object, past the usual limit of 1024 ("[Errno 24] Too many open files").
+  The agent raises the limit to the machine's hard limit for the ComfyUI it starts (its
+  log's `started by agent` line shows it). A ComfyUI started by hand needs
+  `ulimit -n $(ulimit -Hn)` first. Raising the hard limit itself needs root (limits.conf).
 - LTX 2.5's conv video VAE, `ltx-2.5-video-vae-conv-bf16.safetensors`, in the library's
   `models/vae`: only it can encode the plate that guides alpha-gen.
 - SAM3's and ViTMatte's models in ComfyUI's own models folder, where those packs read them
