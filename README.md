@@ -635,10 +635,13 @@ asks SAM3 for the subject on the pick frame, writes the picks the picker would, 
 generator to the graph. What each machine needs on top of LTX 2.5:
 
 - The node packs ComfyUI-Comfy-Pro-Alpha-Generator (git, 74e4368) and SAM3 (the Nodes
-  Manager's *SAM3* by pznodes, 0.1.21), in `custom_nodes` as `ComfyUI-Comfy-Pro-Alpha-Generator`
-  and `comfyui-sam3`: the farm finds a pack by its folder name (`comfyui sync` installs
-  both). ComfyUI-SAM3 sets up its own Python environment with
-  `comfy-env` (pixi) the first time ComfyUI starts with it, which needs the internet once.
+  Manager's *SAM3* by pznodes, 0.1.21), once for every machine in the farm library's
+  `custom_nodes` (`/rdo/bank/comfy_farm/comfyui/custom_nodes`, `B:\comfy_farm\comfyui\custom_nodes`)
+  as `ComfyUI-Comfy-Pro-Alpha-Generator` and `comfyui-sam3`: the farm finds a pack by its
+  folder name. No machine may have its own copy as well: two SAM3s register the same web
+  route and ComfyUI stops at start ("method POST is already registered"); `comfyui sync`
+  moves a local copy aside. SAM3 sets up its own Python environment with `comfy-env` (pixi,
+  in the user's `~/.ce`) the first time ComfyUI starts with it, which needs the internet once.
 - LTX 2.5's conv video VAE, `ltx-2.5-video-vae-conv-bf16.safetensors`, in the library's
   `models/vae`: only it can encode the plate that guides alpha-gen.
 - SAM3's and ViTMatte's models in ComfyUI's own models folder, where those packs read them

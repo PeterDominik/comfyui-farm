@@ -27,7 +27,7 @@ node_packs:
     hash: f9ed4bf0442a
     for: [chord_pbr]
   ComfyUI-Comfy-Pro-Alpha-Generator:
-    shared: false
+    shared: true
     url: https://github.com/rik-python/ComfyUI-Comfy-Pro-Alpha-Generator
     commit: 74e4368b6fe79211f431e7f4c76ea47d92d1353e
     version: 0.6.0
@@ -52,7 +52,7 @@ node_packs:
     hash: 45a491d5ed32
     for: [ltx25_alpha_gen]
   comfyui-sam3:
-    shared: false
+    shared: true
     url: https://github.com/PozzettiAndrea/ComfyUI-SAM3
     version: 0.1.21
     registry: true
