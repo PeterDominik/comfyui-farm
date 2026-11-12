@@ -634,8 +634,10 @@ It runs [Comfy Pro Alpha Generator](https://github.com/rik-python/ComfyUI-Comfy-
 asks SAM3 for the subject on the pick frame, writes the picks the picker would, and adds the
 generator to the graph. What each machine needs on top of LTX 2.5:
 
-- The node packs ComfyUI-Comfy-Pro-Alpha-Generator and ComfyUI-SAM3, at the environment
-  file's commits (`comfyui sync`). ComfyUI-SAM3 sets up its own Python environment with
+- The node packs ComfyUI-Comfy-Pro-Alpha-Generator (git, 74e4368) and SAM3 (the Nodes
+  Manager's *SAM3* by pznodes, 0.1.21), in `custom_nodes` as `ComfyUI-Comfy-Pro-Alpha-Generator`
+  and `comfyui-sam3`: the farm finds a pack by its folder name (`comfyui sync` installs
+  both). ComfyUI-SAM3 sets up its own Python environment with
   `comfy-env` (pixi) the first time ComfyUI starts with it, which needs the internet once.
 - LTX 2.5's conv video VAE, `ltx-2.5-video-vae-conv-bf16.safetensors`, in the library's
   `models/vae`: only it can encode the plate that guides alpha-gen.

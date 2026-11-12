@@ -236,7 +236,7 @@ class SpecTests(unittest.TestCase):
         self.assertIn("chord_v1.safetensors", need["models"])
         # No ComfyUI to say which pack has a node: only the packs the manifests name.
         self.assertEqual(need["packs"], {"ComfyUI-Comfy-Pro-Alpha-Generator": ["sam3_ltx_alpha"],
-                                         "ComfyUI-LTXVideo": ["sam3_ltx_alpha"], "ComfyUI-SAM3": ["sam3_ltx_alpha"],
+                                         "ComfyUI-LTXVideo": ["sam3_ltx_alpha"], "comfyui-sam3": ["sam3_ltx_alpha"],
                                          "RES4LYF": ["wan22_i2i"]})
 
     def test_named_packs(self):
