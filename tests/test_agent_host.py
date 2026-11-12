@@ -205,6 +205,56 @@ class LauncherTests(unittest.TestCase):
             self.tick(la, False, after=31)
 
 
+class FakeLimits:
+    """The resource module's open-files calls."""
+    RLIMIT_NOFILE, RLIM_INFINITY = 7, -1
+
+    def __init__(self, soft, hard, refuse=False):
+        self.lim, self.refuse = (soft, hard), refuse
+
+    def getrlimit(self, which):
+        return self.lim
+
+    def setrlimit(self, which, lim):
+        if self.refuse:
+            raise ValueError("not allowed")
+        self.lim = lim
+
+
+@unittest.skipIf(Launcher is None, "needs the agent's dependencies (httpx, websockets)")
+class OpenFilesTests(unittest.TestCase):
+    """SAM3 (comfy-env) keeps a file open per tensor it hands ComfyUI: the ComfyUI the agent
+    starts gets the hard limit, not the usual 1024."""
+
+    def test_raised_to_the_hard_limit(self):
+        from comfyfarm.agent.launch import OPEN_FILES_CAP, raise_open_files
+        r = FakeLimits(1024, 262144)
+        self.assertEqual(raise_open_files(r), (1024, 262144))
+        self.assertEqual(r.lim, (262144, 262144))
+        r = FakeLimits(1024, FakeLimits.RLIM_INFINITY)          # unlimited: capped
+        self.assertEqual(raise_open_files(r), (1024, OPEN_FILES_CAP))
+        self.assertEqual(raise_open_files(FakeLimits(4096, 4096)), (4096, 4096))     # already there
+        self.assertEqual(raise_open_files(FakeLimits(1024, 4096, refuse=True)), (1024, 1024))
+
+    @unittest.skipIf(os.name == "nt", "Windows has no such limit")
+    def test_comfyui_inherits_it(self):
+        import resource
+
+        from comfyfarm.agent.launch import OPEN_FILES_CAP
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        want = OPEN_FILES_CAP if hard == resource.RLIM_INFINITY else min(hard, OPEN_FILES_CAP)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        show = "import resource; print('nofile', resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+        lc = ComfyUILaunchConfig(command=[PYTHON, "-c", show])
+        la = Launcher("gpu1", lc, tmp / "logs", tmp)
+        la.start()
+        la.proc.wait(timeout=30)
+        text = la.log_file.read_text()
+        self.assertIn("(open files: ", text)
+        self.assertEqual(int(text.split("nofile ")[1].split()[0]), want)
+
+
 @unittest.skipIf(Launcher is None, "needs the agent's dependencies (httpx, websockets)")
 class AddressFileTests(unittest.TestCase):
     def setUp(self):

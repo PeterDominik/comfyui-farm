@@ -12,7 +12,12 @@ older farm nodes than the checkout (ComfyUI loads nodes only at startup).
 
 While logs/comfyui-<name>.hold exists, ComfyUI is down on purpose (`comfyfarm comfyui
 sync` is updating it) and isn't started. The file names the sync's process: a hold
-left behind by one that died is removed."""
+left behind by one that died is removed.
+
+On Linux the ComfyUI it starts may keep as many files open as the hard limit allows, not
+the usual 1024: SAM3 (comfy-env) hands each result tensor over in shared memory, and
+ComfyUI keeps one file open per tensor it holds, one per frame and object of a tracked
+shot ("[Errno 24] Too many open files" in sam3_ltx_alpha)."""
 
 from __future__ import annotations
 
@@ -27,6 +32,29 @@ from pathlib import Path
 log = logging.getLogger("comfyfarm")
 
 BACKOFF_MAX = 600.0
+OPEN_FILES_CAP = 1 << 20             # where the hard limit is unlimited
+OPEN_FILES_LOW = 16384               # below this, long SAM3 shots may still run out
+
+
+def raise_open_files(res=None) -> tuple[int, int] | None:
+    """This process's soft limit on open files raised to its hard limit, so the ComfyUI it
+    starts inherits it (no root needed). (before, after), or None where there are no such
+    limits (Windows)."""
+    if res is None:
+        try:
+            import resource as res
+        except ImportError:
+            return None
+    soft, hard = res.getrlimit(res.RLIMIT_NOFILE)
+    target = OPEN_FILES_CAP if hard == res.RLIM_INFINITY else min(hard, OPEN_FILES_CAP)
+    if soft != res.RLIM_INFINITY and soft < target:
+        try:
+            res.setrlimit(res.RLIMIT_NOFILE, (target, hard))
+        except (ValueError, OSError) as e:
+            log.warning("couldn't raise the open-files limit from %s to %s: %s", soft, target, e)
+            return soft, soft
+        return soft, target
+    return soft, soft
 
 
 def hold_path(log_dir, name: str) -> Path:
@@ -233,14 +261,22 @@ class Launcher:
         # 8 KB blocks, so the log would stay empty while ComfyUI starts (or hangs).
         env = dict(os.environ, PYTHONUNBUFFERED="1", **self.lc.env)
         kw: dict = {"cwd": cwd, "env": env, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT}
+        files = ""
         if os.name == "nt":
             kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kw["start_new_session"] = True                # not stopped with the agent
+            lim = raise_open_files()                      # inherited by ComfyUI
+            if lim:
+                files = f" (open files: {lim[1]})"
+                if lim[1] < OPEN_FILES_LOW:
+                    log.warning("%s: ComfyUI may keep only %s files open (the hard limit): long SAM3 shots "
+                                "can fail with 'Too many open files'. Raising it needs root (limits.conf).",
+                                self.name, lim[1])
         try:
             with open(self.log_file, "ab") as out:
-                out.write(f"\n===== started by agent {self.name} at {time.ctime()}: {' '.join(self.lc.command)}\n"
-                          .encode())
+                out.write(f"\n===== started by agent {self.name} at {time.ctime()}{files}: "
+                          f"{' '.join(self.lc.command)}\n".encode())
                 out.flush()
                 self.proc = subprocess.Popen(list(self.lc.command), stdout=out, **kw)
         except OSError as e:
@@ -254,4 +290,4 @@ class Launcher:
         log.info("started ComfyUI on %s (pid %s), output in %s", self.name, self.proc.pid, self.log_file)
 
 
-__all__ = ["Launcher", "pid_alive", "boot_time", "stop_process"]
+__all__ = ["Launcher", "pid_alive", "boot_time", "stop_process", "raise_open_files"]
