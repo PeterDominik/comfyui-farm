@@ -27,7 +27,7 @@ node_packs:
     hash: f9ed4bf0442a
     for: [chord_pbr]
   ComfyUI-Comfy-Pro-Alpha-Generator:
-    shared: false
+    shared: true
     url: https://github.com/rik-python/ComfyUI-Comfy-Pro-Alpha-Generator
     commit: 74e4368b6fe79211f431e7f4c76ea47d92d1353e
     version: 0.6.0
@@ -38,11 +38,6 @@ node_packs:
     commit: 3bf3ca62595f1764c47d01c35c8e5dfe47e1a88f
     hash: bd91c4dd4183
     for: [ltx25_alpha_gen, ltx25_layout_render, sam3_ltx_alpha]
-  ComfyUI-SAM3:
-    shared: false
-    url: https://github.com/PozzettiAndrea/ComfyUI-SAM3
-    commit: de0ff5d2c2ea435d29f800abfa568cffdfb94773
-    for: [sam3_ltx_alpha]
   RES4LYF:
     shared: false
     url: https://github.com/ClownsharkBatwing/RES4LYF
@@ -56,6 +51,13 @@ node_packs:
     commit: 7781c768db324b5724f42ae17beb1d0dcd860e93
     hash: 45a491d5ed32
     for: [ltx25_alpha_gen]
+  comfyui-sam3:
+    shared: true
+    url: https://github.com/PozzettiAndrea/ComfyUI-SAM3
+    version: 0.1.21
+    registry: true
+    id: comfyui-sam3
+    for: [sam3_ltx_alpha]
   comfyui-easy-use:
     shared: false
     url: https://github.com/yolain/ComfyUI-Easy-Use

@@ -26,7 +26,8 @@ requires: {vram_gb: 32}
 # backward from the pick frame, 24 fps, seed 42, alpha only, plates bigger than 1920x1088
 # matted at that size and the alpha scaled up to theirs. SAM3's and ViTMatte's models must
 # be in the machine's ComfyUI/models folder (see README: Parameters for sam3_ltx_alpha).
-node_packs: [ComfyUI-Comfy-Pro-Alpha-Generator, ComfyUI-SAM3, ComfyUI-LTXVideo]
+# Folder names in custom_nodes: comfyui-sam3 is where the Nodes Manager (Comfy registry) puts SAM3.
+node_packs: [ComfyUI-Comfy-Pro-Alpha-Generator, comfyui-sam3, ComfyUI-LTXVideo]
 
 params:
   input:
