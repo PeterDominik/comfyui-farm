@@ -191,9 +191,9 @@ class AllTheWay(unittest.TestCase):
         sync = MenuSync(cfg, menu, REPO / "tools" / "sg_ami.py", d / "data")
         r = asyncio.run(sync.check(reason="the manager started"))
         self.assertTrue(r["ok"], r["output"])
-        self.assertEqual((r["created"], r["changed"], r["deleted"]), (8, 0, 1))
+        self.assertEqual((r["created"], r["changed"], r["deleted"]), (10, 0, 1))
         items = json.loads(store.read_text())
-        self.assertEqual(len(items), 8)
+        self.assertEqual(len(items), 10)
         self.assertEqual({v["folder"] for v in items.values()}, {"ComfyFarm Open"})
         r = asyncio.run(sync.check(force=True))                                  # again: nothing to do
         self.assertEqual((r["ok"], r["created"], r["changed"], r["deleted"]), (True, 0, 0, 0))

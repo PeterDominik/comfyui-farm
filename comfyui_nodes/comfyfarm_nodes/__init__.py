@@ -19,15 +19,19 @@ if str(_REPO) not in sys.path:
 from comfyfarm.fileio import farmnodes as _farmnodes  # noqa: E402
 
 from .load_images import ComfyFarmLoadImage, ComfyFarmLoadImages  # noqa: E402
+from .pro_alpha import ComfyFarmProAlpha, ComfyFarmProAlphaPick  # noqa: E402
 from .save_image import ComfyFarmSaveImage  # noqa: E402
 
 VERSION = _farmnodes.version(_REPO)
 MARKER = _farmnodes.marker(VERSION, _REPO)
 
 NODE_CLASS_MAPPINGS = {"ComfyFarmLoadImage": ComfyFarmLoadImage, "ComfyFarmLoadImages": ComfyFarmLoadImages,
-                       "ComfyFarmSaveImage": ComfyFarmSaveImage}
+                       "ComfyFarmSaveImage": ComfyFarmSaveImage, "ComfyFarmProAlpha": ComfyFarmProAlpha,
+                       "ComfyFarmProAlphaPick": ComfyFarmProAlphaPick}
 NODE_DISPLAY_NAME_MAPPINGS = {"ComfyFarmLoadImage": "ComfyFarm Load Image", "ComfyFarmLoadImages": "ComfyFarm Load Images",
-                              "ComfyFarmSaveImage": "ComfyFarm Save Image"}
+                              "ComfyFarmSaveImage": "ComfyFarm Save Image",
+                              "ComfyFarmProAlpha": "ComfyFarm Pro Alpha (SAM3 subject)",
+                              "ComfyFarmProAlphaPick": "ComfyFarm Pro Alpha: pick (internal)"}
 for _cls in NODE_CLASS_MAPPINGS.values():
     _cls.DESCRIPTION = f"{(_cls.DESCRIPTION or '').strip()} {MARKER}".strip()
 

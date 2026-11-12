@@ -28,8 +28,10 @@ class Fit(unittest.TestCase):
                          {"ltx25_alpha_gen": (True, True, True),          # one input, frames, nothing else needed
                           "chord_pbr": (True, False, False),              # Open only: says its manifest
                           "ltx25_layout_render": (True, False, False),    # two inputs and a prompt
+                          "sam3_ltx_alpha": (True, False, False),         # the subject has to be named
                           "wan22_i2i": (True, False, False)})             # one image: its frame has to be picked
         self.assertEqual(got["ltx25_layout_render"]["why"], "it also needs Reference frame; it needs Prompt")
+        self.assertEqual(got["sam3_ltx_alpha"]["why"], "it needs Subject")
         self.assertEqual(got["wan22_i2i"]["why"], "it takes one image, so a Version's frame has to be picked")
         self.assertEqual(got["chord_pbr"]["why"], "shotgrid: {submit: false} in its manifest")   # plates aren't UDIMs
         self.assertFalse(M.fit(REGISTRY.workflows["ltx25_alpha_gen"], False)["publish"])    # publishing off
@@ -93,6 +95,8 @@ class Items(unittest.TestCase):
             ("ComfyFarm Open", "LTX 2.5 alpha generation", "Playlist", "raa,bri3"),
             ("ComfyFarm Open", "LTX 2.5 layout to render", "Version", "raa"),
             ("ComfyFarm Open", "LTX 2.5 layout to render", "Playlist", "raa"),
+            ("ComfyFarm Open", "SAM3 x LTX alpha (one subject)", "Version", "raa"),
+            ("ComfyFarm Open", "SAM3 x LTX alpha (one subject)", "Playlist", "raa"),
             ("ComfyFarm Open", "Wan 2.2 image to image", "Version", "raa"),
             ("ComfyFarm Open", "Wan 2.2 image to image", "Playlist", "raa")])
         self.assertEqual(m["items"][1]["url"], FARM + "/api/v1/shotgrid/ami?action=publish&workflow=ltx25_alpha_gen")
@@ -100,7 +104,7 @@ class Items(unittest.TestCase):
         self.assertEqual(m["folders"], ["ComfyFarm Submit", "ComfyFarm Submit + Publish", "ComfyFarm Open"])
         self.assertEqual(M.build(wfs, publishes, {}, FARM)["items"], [])                      # no shows: no menu
         only = M.build(wfs, publishes, {"raa": "all"}, FARM)                                 # the default: Open only
-        self.assertEqual((only["folders"], len(only["items"])), (["ComfyFarm Open"], 8))
+        self.assertEqual((only["folders"], len(only["items"])), (["ComfyFarm Open"], 10))
         self.assertEqual([i["list_order"] for i in only["items"]][:2], [300, 300])          # as with the other folders on
 
 

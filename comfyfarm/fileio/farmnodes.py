@@ -20,7 +20,8 @@ from .paths import _pattern_regex, normalize, parse_frames, parse_input
 __all__ = ["CLASSES", "DEPENDS", "version", "marker", "loaded", "stale", "input_files"]
 
 # Every node class in comfyui_nodes/comfyfarm_nodes.
-CLASSES = ("ComfyFarmLoadImage", "ComfyFarmLoadImages", "ComfyFarmSaveImage")
+CLASSES = ("ComfyFarmLoadImage", "ComfyFarmLoadImages", "ComfyFarmSaveImage", "ComfyFarmProAlpha",
+           "ComfyFarmProAlphaPick")
 # The fileio modules the nodes import: a change to one of them is a change to the nodes
 # (tests/test_comfyui_nodes.py checks the list is complete).
 DEPENDS = ("comfyfarm/fileio/errors.py", "comfyfarm/fileio/paths.py", "comfyfarm/fileio/farmnodes.py")

@@ -53,6 +53,9 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
   the path (`…/plate.%04d.exr 1050`); the result is numbered like that frame.
 - **Several inputs.** `ltx25_layout_render` renders a layout sequence with LTX 2.5's
   layout-to-render IC-LoRA, taking its look from a reference frame and a prompt.
+- **One subject, named by a word.** `sam3_ltx_alpha` mattes the subject an artist names
+  (`person`, `car`, `dog`): SAM3 finds and tracks it, LTX 2.5 alpha-gen draws its edges,
+  and everything else is painted out first. 16-bit alpha, numbered like the plate.
 - **Preflight checks** catch a missing node pack, a node-pack update that renamed an
   input, or a missing model before a job is sent (`python -m comfyfarm check`).
 - **Cancel, retry, and the exact API JSON** of any job, for loading back into ComfyUI to debug.
@@ -71,7 +74,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render` |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -94,7 +97,7 @@ Easy-Use, KJNodes, RES4LYF and ComfyUI-LTXVideo, plus
 [ComfyUI-Chord](https://github.com/ubisoft/ComfyUI-Chord) with `chord_v1.safetensors` in
 `ComfyUI/models/checkpoints` for `chord_pbr`. CHORD's weights are under Ubisoft's
 research-only licence. The farm's own nodes (`comfyui_nodes/`: *ComfyFarm Load Images*,
-*ComfyFarm Load Image*, *ComfyFarm Save Image*) come with this repo; the setup scripts link
+*ComfyFarm Load Image*, *ComfyFarm Save Image*, *ComfyFarm Pro Alpha*) come with this repo; the setup scripts link
 them into ComfyUI (`--comfyui` on Linux, `-ComfyUIDir` on Windows). The tools for EXR and movie inputs come with the Python
 requirements: `oiiotool` (OpenImageIO, with OpenColorIO) and `ffmpeg` (imageio-ffmpeg).
 
@@ -610,6 +613,41 @@ python comfyfarm_client.py submit wan22_i2i \
 Fixed in the workflow: 544 on the shorter side then upscaled 2×, 24 fps, seed 42. LTX
 keeps lengths of 8×n + 1 frames (97, 121, …): with another length the job may come back
 with fewer frames than the layout, and says so in its warnings.
+
+### Parameters for `sam3_ltx_alpha`
+
+| Param | Default | Notes |
+|---|---|---|
+| `input` | required | The plate: a sequence with an optional `first-last` range, or a `.mov`/`.mp4` (timecode frame numbers). Up to 960 frames |
+| `subject` | required | What to matte: one word or a short phrase SAM3 knows (`person`, `car`, `dog`, `red car`). When SAM3 finds several, the one it scores highest is matted and the others (the nearest 8) are painted out |
+| `pick_frame` | first frame | The frame number SAM3 looks for the subject on. Give one where it is clearly visible if it enters later; it is tracked backward as well as forward from there |
+| `output_path` | show default | Root folder: frames go to `<this>/<shot>/<source>.matte_vNNN.<frame>.png`. Same rules as above |
+
+The alpha comes out as 16-bit grey PNGs (*ComfyFarm Save Image* with `bit_depth` 16), one
+per input frame, at the input's size. Fixed in the workflow: Best quality (two LTX passes,
+the second on a plate with everything but the subject painted out), 24 fps, seed 42,
+SAM3 threshold 0.3. Plates bigger than 1920×1088 are matted at that size (LTX alpha-gen's)
+and the alpha is scaled up to theirs.
+
+It runs [Comfy Pro Alpha Generator](https://github.com/rik-python/ComfyUI-Comfy-Pro-Alpha-Generator)
+(GPL-3.0) without its picker: *ComfyFarm Pro Alpha* (`comfyui_nodes/comfyfarm_nodes/pro_alpha.py`)
+asks SAM3 for the subject on the pick frame, writes the picks the picker would, and adds the
+generator to the graph. What each machine needs on top of LTX 2.5:
+
+- The node packs ComfyUI-Comfy-Pro-Alpha-Generator and ComfyUI-SAM3, at the environment
+  file's commits (`comfyui sync`). ComfyUI-SAM3 sets up its own Python environment with
+  `comfy-env` (pixi) the first time ComfyUI starts with it, which needs the internet once.
+- LTX 2.5's conv video VAE, `ltx-2.5-video-vae-conv-bf16.safetensors`, in the library's
+  `models/vae`: only it can encode the plate that guides alpha-gen.
+- SAM3's and ViTMatte's models in ComfyUI's own models folder, where those packs read them
+  (they ignore `extra_model_paths.yaml`): `ComfyUI/models/sam3/sam3.safetensors` and the
+  folder `ComfyUI/models/vitmatte/vitmatte-base-composition-1k/`. Copy them from
+  `/rdo/bank/comfy_farm/comfyui/models/` (or link the folders). Without them a job stops
+  with the paths, instead of the packs downloading 4 GB from Hugging Face mid-job.
+
+The generator also saves its own copy of the alpha in ComfyUI's output folder
+(`comfyfarm_pro_alpha/`); the next run clears it, with the generator's temp files. The
+author's timings on a 5090: about 25 minutes for 247 frames at 1080p.
 
 ### Parameters for `chord_pbr`
 
@@ -1405,7 +1443,8 @@ outputs:                       # nodes the gateway points at each job's versione
     the folder matters, a missing frame stops the run, and images of different sizes are
     refused rather than cropped. Its `path` also takes a range as copied from Nuke
     (`…/plate.%04d.png 1001-1158`), so the workflow runs by hand in ComfyUI too. Same
-    outputs as VHS: IMAGE, MASK (from alpha), frame_count.
+    outputs as VHS: IMAGE, MASK (from alpha), frame_count; then frame_numbers
+    (`1001,1002,1011`, the frames read), for nodes that take a frame number.
   - `VHS_LoadImagesPath`, for downloaded workflows: it reads the whole folder in name
     order, so the farm works out `skip_first_images`/`image_load_cap` and refuses a range
     that other images in the folder sort into.

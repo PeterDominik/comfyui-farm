@@ -128,19 +128,19 @@ class Sync(unittest.TestCase):
         self.assertIn("'Send to ComfyFarm' on Playlist: would delete ActionMenuItem 375", text)
         self.assertIn("Only in Open: CHORD PBR maps from a diffuse texture (shotgrid: {submit: false} in its manifest); "
                       "LTX 2.5 layout to render (it also needs", text)
-        self.assertIn("10 to create, 0 to change, 2 to delete, 0 as they are.\nNothing was changed in ShotGrid", text)
+        self.assertIn("12 to create, 0 to change, 2 to delete, 0 as they are.\nNothing was changed in ShotGrid", text)
 
     def test_apply_then_again(self):
         code, text = self.run_it("--apply")
         self.assertEqual(code, 0, text)
         made = [w[1] for w in self.sg.writes if w[0] == "create"]
-        self.assertEqual(len(made), 10)
+        self.assertEqual(len(made), 12)
         self.assertEqual(made[0], {"title": "LTX 2.5 alpha generation", "url": AMI + "?action=submit&workflow=ltx25_alpha_gen",
                                    "entity_type": "Version", "folder": "ComfyFarm Submit", "list_order": 101,
                                    "selection_required": True, "projects": [{"type": "Project", "id": 6449}]})
         self.assertEqual(sorted(w[1] for w in self.sg.writes if w[0] == "delete"), [374, 375])
         self.assertIn(12, self.sg.items)                                     # somebody else's: left alone
-        self.assertIn("Done: 10 created, 0 changed, 2 deleted.", text)
+        self.assertIn("Done: 12 created, 0 changed, 2 deleted.", text)
         n = len(self.sg.writes)
         code, text = self.run_it("--apply")                                 # again: nothing to do
         self.assertEqual((code, len(self.sg.writes)), (0, n))
@@ -164,7 +164,7 @@ class Sync(unittest.TestCase):
         n = len(self.sg.writes)
         self.menu = menu(menus=("open",))
         code, text = self.run_it()
-        self.assertIn("0 to create, 0 to change, 2 to delete, 8 as they are.", text)
+        self.assertIn("0 to create, 0 to change, 2 to delete, 10 as they are.", text)
         self.assertIn("ComfyFarm Submit ▸ 'LTX 2.5 alpha generation' on Version: would delete", text)
         self.assertNotIn("Only in Open", text)                                # no Submit folders to be left out of
         code, text = self.run_it("--apply")
@@ -220,7 +220,7 @@ class MenuFile(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 return ami.main(["--pipeline", *argv], env={}, pipeline=lambda p: sg, fetch=no_fetch, out=out)
         self.assertEqual(go("--menu-json", str(d / "m.json"), "--apply"), 0)
-        self.assertIn("Done: 8 created, 0 changed, 2 deleted.", out.getvalue())   # the farm from the file's farm_url
+        self.assertIn("Done: 10 created, 0 changed, 2 deleted.", out.getvalue())   # the farm from the file's farm_url
         self.assertEqual(go("--menu-json", str(d / "bad.json")), 1)
         self.assertIn("isn't the farm's menu", err.getvalue())
         self.assertEqual(go("--menu-json", str(d / "nofarm.json")), 1)

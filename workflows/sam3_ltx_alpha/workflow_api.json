@@ -1,0 +1,88 @@
+{
+  "1": {
+    "inputs": {
+      "path": "",
+      "frames": ""
+    },
+    "class_type": "ComfyFarmLoadImages",
+    "_meta": {
+      "title": "INPUT Image Sequence"
+    }
+  },
+  "2": {
+    "inputs": {
+      "value": "person"
+    },
+    "class_type": "PrimitiveString",
+    "_meta": {
+      "title": "INPUT Subject SAM3"
+    }
+  },
+  "3": {
+    "inputs": {
+      "value": -1
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "INPUT Pick Frame"
+    }
+  },
+  "4": {
+    "inputs": {
+      "images": [
+        "1",
+        0
+      ],
+      "subject": [
+        "2",
+        0
+      ],
+      "pick_frame": [
+        "3",
+        0
+      ],
+      "seed": 42,
+      "sam3_threshold": 0.3,
+      "ltx_model": "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+      "alpha_lora": "LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors",
+      "video_vae": "ltx-2.5-video-vae-conv-bf16.safetensors",
+      "audio_vae": "ltx-2.5-audio-vae-bf16.safetensors",
+      "frame_numbers": [
+        "1",
+        3
+      ]
+    },
+    "class_type": "ComfyFarmProAlpha",
+    "_meta": {
+      "title": "ComfyFarm Pro Alpha (SAM3 subject)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "mask": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "Convert Mask to Image"
+    }
+  },
+  "6": {
+    "inputs": {
+      "output_path": "",
+      "filename_prefix": "matte",
+      "compress_level": 0,
+      "bit_depth": "16",
+      "images": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "ComfyFarmSaveImage",
+    "_meta": {
+      "title": "OUTPUT Save Alpha"
+    }
+  }
+}
