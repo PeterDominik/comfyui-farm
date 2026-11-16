@@ -7,8 +7,11 @@ need made unimportable:
   agent tests run without them and a remote agent can replace the in-process one.
 - the agent doesn't need the manager or its web server: a worker machine runs the agent
   alone, talking to the manager over HTTP.
+- the agent doesn't need a backend: it runs jobs through a runner (runners/base.py), and
+  only the ComfyUI runner knows ComfyUI's client, its websocket and its environment.
 """
 
+import ast
 import subprocess
 import sys
 import textwrap
@@ -64,6 +67,21 @@ class LayoutTests(unittest.TestCase):
     def test_agent_needs_neither_the_manager_nor_its_web_server(self):
         r = import_without(["comfyfarm.agent.agent", "comfyfarm.agent.link"],
                            ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_agent_needs_no_backend(self):
+        """Phase 1's gate (docs/plan.md): ComfyUI is behind the runner seam."""
+        comfyui = ["comfyfarm.runners.comfyui", "comfyfarm.runners.comfy", "comfyfarm.comfyenv",
+                   "comfyfarm.agent.launch", "comfyfarm.workflows", "httpx", "websockets"]
+        r = import_without(["comfyfarm.agent.agent", "comfyfarm.runners", "comfyfarm.runners.base"], comfyui)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tree = ast.parse((REPO / "comfyfarm/agent/agent.py").read_text(encoding="utf-8"))
+        imported = {(n.module or "") + "." + a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                    for a in n.names} | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        self.assertEqual(sorted(i for i in imported if any(w in i.lower() for w in ("comfy", "httpx", "websocket"))), [])
+
+    def test_runners_need_neither_the_manager_nor_its_web_server(self):
+        r = import_without(["comfyfarm.runners.comfyui"], ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_example_configs_load_as_they_are(self):

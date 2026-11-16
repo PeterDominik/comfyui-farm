@@ -66,3 +66,6 @@ A4 launchers (xStudio, Daiquiri Automate).
   JSON logs are in, off by default (`log_json`). `tools/baseline.py` reports cold and warm
   timings per workflow and GPU from the farm's own jobs. Left: take the baseline on the
   three pilot machines and commit it to `docs/baseline/` (see its README).
+- Phase 1: done. ComfyUI is behind the runner interface (`runners/base.py`,
+  `runners/comfyui.py`, decision 0012) and `tests/test_layout.py` holds the gate. Left for
+  later: `agent/launch.py` still lives in the agent package.

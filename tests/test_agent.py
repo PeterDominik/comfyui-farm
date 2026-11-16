@@ -40,6 +40,7 @@ from comfyfarm.workflows import ParamError, WorkflowRegistry
 try:   # the agent talks to ComfyUI with httpx and websockets
     from comfyfarm.agent.agent import Agent
     from comfyfarm.agent.link import LocalLink
+    from comfyfarm.runners.comfyui import ComfyUIRunner
 except ImportError:   # pragma: no cover
     Agent = None
 
@@ -249,7 +250,7 @@ class AgentTests(unittest.TestCase):
                           paths={"mappings": self.mappings if mappings is None else mappings},
                           convert={"scratch_dir": scratch or f"{self.root}/scratch-{name}",
                                    "tools": {"oiiotool": FAKE_OIIOTOOL}}, **settings)
-        a = Agent(cfg, FlakyLink(self.desk), client=comfy or FakeComfy())
+        a = Agent(cfg, FlakyLink(self.desk), runner=ComfyUIRunner(cfg, client=comfy or FakeComfy()))
         self.agents.append(a)
         return a
 
@@ -267,9 +268,9 @@ class AgentTests(unittest.TestCase):
         """Checked in, its ComfyUI up and its node definitions checked."""
         async def go():
             await a._hello()
-            a.stats = await a.client.system_stats()
-            a.online = a.ws_connected = True
-            await a.refresh_object_info()
+            a.runner.stats = await a.runner.client.system_stats()
+            a.runner.online = a.runner.ws_connected = True
+            await a.runner.refresh_object_info()
         self.wait(go())
         return a
 
@@ -291,7 +292,7 @@ class AgentTests(unittest.TestCase):
         self.wait(go())
 
     def msg(self, a, kind, **data):
-        self.wait(a._on_message({"type": kind, "data": data}))
+        self.wait(a.runner._on_message({"type": kind, "data": data}))
 
     def job(self, jid):
         return self.store.get(jid)
@@ -313,7 +314,7 @@ class AgentTests(unittest.TestCase):
         info = h.job["info"]
         for i in range(1, (info.get("expected_frames") or 1) + 1):
             Path(info["output_dir"], f"{info['frames_prefix']}_{i:04d}.png").write_bytes(frame)
-        a.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
+        a.runner.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
         self.msg(a, "execution_success", prompt_id=pid)
         self.until(lambda: self.job(jid)["status"] in ("done", "failed"), what="done")
         return self.job(jid)
@@ -330,7 +331,7 @@ class AgentTests(unittest.TestCase):
         j = self.job(job["id"])
         pid = j["prompt_id"]
         self.assertEqual(j["attempts"], 1)
-        prompt = a.client.prompts[pid]
+        prompt = a.runner.client.prompts[pid]
         self.assertEqual(prompt["9104"]["inputs"],     # ComfyFarm Load Images: the exact frames
                          {"path": f"{self.root}/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/"
                                   f"abc_0010.pre.v1.%04d.png", "frames": "1001-1003"})
@@ -345,7 +346,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(done["output_dir"])),
                          [f"abc_0010.pre.v1.alpha_v001.{f}.png" for f in (1001, 1002, 1003)])
         self.assertEqual(a.held, {})
-        self.assertNotIn(pid, a.client.hist)                    # ComfyUI's history entry dropped
+        self.assertNotIn(pid, a.runner.client.hist)                    # ComfyUI's history entry dropped
         self.assertEqual(self.store.stats("ltx25_alpha_gen")["runs"], 1)
         w = self.desk.summaries()[0]
         self.assertEqual((w["name"], w["online"], w["connected"], w["inflight"], w["gpu"]["name"]),
@@ -456,7 +457,7 @@ class AgentTests(unittest.TestCase):
         a = self.ready(self.agent("gpu2", mappings=mine))
         job = self.submit()
         pid = self.dispatched(a, job)
-        prompt = a.client.prompts[pid]
+        prompt = a.runner.client.prompts[pid]
         self.assertTrue(prompt["9104"]["inputs"]["path"].startswith(f"{self.root}/other/mount/shows/"))
         self.assertTrue(prompt["9109"]["inputs"]["output_path"].startswith(f"{self.root}/other/mount/shows/"))
         done = self.finish(a, job["id"], pid)
@@ -472,7 +473,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((job["status"], job["info"]["input"]["convert"]["dst_dir"]),
                          ("queued", f"{self.root}/scratch/{job['id']}/"))   # as the manager planned it
         pid = self.dispatched(a, job)
-        loader = a.client.prompts[pid]["9104"]["inputs"]
+        loader = a.runner.client.prompts[pid]["9104"]["inputs"]
         self.assertEqual(loader, {"path": f"{self.root}/agent-scratch/{job['id']}/abc_0010.plate.v1.%04d.png",
                                   "frames": "1001-1003"})
         self.assertEqual(sorted(os.listdir(loader["path"].rpartition("/")[0])),
@@ -486,7 +487,7 @@ class AgentTests(unittest.TestCase):
         a = self.ready(self.agent())
         queued = self.submit()
         self.assertEqual(self.wait(self.farm.cancel(queued["id"]))["status"], "cancelled")
-        a.online = False                                       # ComfyUI down: the next job waits in preparing
+        a.runner.online = False                                       # ComfyUI down: the next job waits in preparing
         job = self.submit()
         self.beat(a)
         self.assertEqual(self.job(job["id"])["status"], "preparing")
@@ -494,7 +495,7 @@ class AgentTests(unittest.TestCase):
         self.beat(a)                                           # told to drop it
         self.assertEqual(a.held, {})
         self.assertEqual(a._in_comfy, 0)
-        self.assertEqual(a.client.prompts, {})
+        self.assertEqual(a.runner.client.prompts, {})
 
     def test_cancel_in_comfyui_waiting_and_running(self):
         a = self.ready(self.agent())
@@ -504,16 +505,16 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((j["status"], j["stage"], j["cancel_requested"]), ("dispatched", "cancelling", 1))
         self.beat(a)
         self.until(lambda: self.job(waiting["id"])["status"] == "cancelled")
-        self.assertEqual(a.client.deleted, [pid])
+        self.assertEqual(a.runner.client.deleted, [pid])
 
         running = self.submit()
         pid = self.dispatched(a, running)
-        a.client.pending.discard(pid)
-        a.client.running.add(pid)
+        a.runner.client.pending.discard(pid)
+        a.runner.client.running.add(pid)
         self.msg(a, "execution_start", prompt_id=pid)
         self.wait(self.farm.cancel(running["id"]))
         self.beat(a)
-        self.assertEqual(a.client.interrupted, [pid])
+        self.assertEqual(a.runner.client.interrupted, [pid])
         self.assertEqual(self.job(running["id"])["status"], "running")   # until ComfyUI says it stopped
         self.msg(a, "execution_interrupted", prompt_id=pid)
         self.until(lambda: self.job(running["id"])["status"] == "cancelled")
@@ -536,18 +537,18 @@ class AgentTests(unittest.TestCase):
         job = self.submit()
         pid = self.dispatched(a, job)
         a.held[job["id"]].dispatched_at -= 10
-        a.client.pending.clear()                               # ComfyUI restarted: no queue, no history
-        self.wait(a._reconcile())
+        a.runner.client.pending.clear()                               # ComfyUI restarted: no queue, no history
+        self.wait(a.runner._reconcile())
         j = self.job(job["id"])
         self.assertEqual((j["status"], j["worker"], j["attempts"]), ("queued", None, 1))
         self.assertIn("lost the job", j["warnings"][-1])
-        self.assertIn(pid, a.abandoned)
+        self.assertIn(pid, a.runner.abandoned)
         pid2 = self.dispatched(a, j)                           # taken again: a new run
         self.assertNotEqual(pid2, pid)
         self.assertEqual(self.job(job["id"])["attempts"], 2)
         a.held[job["id"]].dispatched_at -= 10
-        a.client.pending.clear()
-        self.wait(a._reconcile())
+        a.runner.client.pending.clear()
+        self.wait(a.runner._reconcile())
         self.until(lambda: self.job(job["id"])["status"] == "failed")   # farm.max_attempts is 2
         self.assertIn("Gave up after 2 attempts", self.job(job["id"])["error"])
 
@@ -556,12 +557,12 @@ class AgentTests(unittest.TestCase):
         job = self.submit()
         self.dispatched(a, job)
         a.held[job["id"]].dispatched_at -= 10
-        a.client.pending.clear()
+        a.runner.client.pending.clear()
         calls, lost = [], self.farm.lost
         self.farm.lost = lambda j, reason: (calls.append(j["id"]), lost(j, reason))[1]
 
         async def both():
-            await asyncio.gather(a._reconcile(), a._reconcile())
+            await asyncio.gather(a.runner._reconcile(), a.runner._reconcile())
         self.wait(both())
         self.assertEqual(calls, [job["id"]])
         self.assertEqual(self.job(job["id"])["status"], "queued")
@@ -577,7 +578,7 @@ class AgentTests(unittest.TestCase):
         self.beat(a)                                           # ...and taken again as a new run
         self.assertNotEqual(self.job(job["id"])["prompt_id"], pid)
         self.assertNotEqual(a.held[job["id"]].attempt, pid)
-        self.assertIn(pid, a.client.deleted)                   # the old run taken out of ComfyUI
+        self.assertIn(pid, a.runner.client.deleted)                   # the old run taken out of ComfyUI
 
     def test_agent_restart_picks_its_run_up_again(self):
         comfy = FakeComfy()
@@ -615,7 +616,7 @@ class AgentTests(unittest.TestCase):
     def test_agent_restart_before_submitting_prepares_again(self):
         comfy = FakeComfy()
         a = self.ready(self.agent(comfy=comfy))
-        a.online = False
+        a.runner.online = False
         job = self.submit()
         self.beat(a)
         self.assertEqual(self.job(job["id"])["status"], "preparing")
@@ -641,7 +642,7 @@ class AgentTests(unittest.TestCase):
         info = a.held[job["id"]].job["info"]
         for i in range(1, 4):
             Path(info["output_dir"], f"{info['frames_prefix']}_{i:04d}.png").write_bytes(b"png")
-        a.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
+        a.runner.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
         self.msg(a, "execution_success", prompt_id=pid)
         self.until(lambda: a.held[job["id"]].finished, what="collected")
         self.assertEqual(self.job(job["id"])["status"], "dispatched")   # nothing delivered yet
@@ -665,7 +666,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(self.job(job["id"])["worker"], "gpu2")
         self.beat(a)                                           # the first comes back: told to drop its run
         self.assertNotIn(job["id"], a.held)
-        self.assertIn(pid, a.client.deleted)
+        self.assertIn(pid, a.runner.client.deleted)
 
     def test_a_job_the_agent_never_got_goes_back(self):
         a = self.ready(self.agent())
@@ -927,7 +928,7 @@ class AgentTests(unittest.TestCase):
                 tmp / "environment.yaml")
         self.desk.env = ES.Cached(tmp / "environment.yaml", tmp / "no-farm-paths.yaml")
         a = self.ready(self.agent(comfyui_dir=str(inst.comfy), comfyui_python=sys.executable))
-        state = self.wait(a.check_environment())
+        state = self.wait(a.runner.check_environment())
         self.assertEqual(state["comfyui"]["commit"], COMMIT_A)
         self.assertEqual(state["models"]["ltx.safetensors"]["size"], 100)
         env = self.desk.summary(self.desk.agents["gpu1"])["environment"]
@@ -958,24 +959,24 @@ class AgentTests(unittest.TestCase):
         job = self.submit()
         r = self.desk.ping({"name": "gpu1"})                               # what sync asks before stopping ComfyUI
         self.assertEqual((r["drained"], r["held"]), (True, 0))
-        write_hold(a.launcher.hold_file, "sync is updating ComfyUI")
-        self.assertTrue(a._hold_tick())
-        self.wait(a._send_status())
+        write_hold(a.runner.launcher.hold_file, "sync is updating ComfyUI")
+        self.assertTrue(a.runner._hold_tick())
+        self.wait(a.send_status())
         self.assertEqual(self.desk.summary(w)["farm_nodes"], {"state": "syncing", "message": "sync is updating ComfyUI"})
         self.desk.set_drained("gpu1", False)
         self.beat(a)
         self.assertEqual(self.job(job["id"])["status"], "queued")           # held: no jobs
-        release_hold(a.launcher.hold_file)
-        self.assertFalse(a._hold_tick())
-        self.assertIsNone(a.farm_nodes)
-        self.assertTrue(a._env_stale)                                      # its environment is read again
-        self.wait(a._send_status())
+        release_hold(a.runner.launcher.hold_file)
+        self.assertFalse(a.runner._hold_tick())
+        self.assertIsNone(a.runner.farm_nodes)
+        self.assertTrue(a.runner._env_stale)                                      # its environment is read again
+        self.wait(a.send_status())
         self.beat(a)
         self.assertEqual(self.job(job["id"])["worker"], "gpu1")
 
     def test_an_agent_that_doesnt_know_its_comfyui_folder(self):
         a = self.ready(self.agent())
-        self.wait(a.check_environment())
+        self.wait(a.runner.check_environment())
         env = self.desk.summary(self.desk.agents["gpu1"])["environment"]
         self.assertEqual(env["differs"], [])
         self.assertIn("ComfyUI's folder isn't known", env["notes"][-1])
@@ -1066,7 +1067,7 @@ class AgentTests(unittest.TestCase):
         job = self.farm.submit("wan22_i2i", {"input": f"{SEQ} 1002", "prompt": "fog"}, "ann")
         self.assertEqual((job["info"]["first_frame"], job["info"]["expected_frames"]), (1002, 1))
         pid = self.dispatched(a, job)
-        prompt = a.client.prompts[pid]
+        prompt = a.runner.client.prompts[pid]
         self.assertEqual(prompt["254"]["inputs"]["path"],         # ComfyFarm Load Image finds the frame's file
                          f"{self.root}/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/"
                          f"abc_0010.pre.v1.%04d.png 1002")
@@ -1079,7 +1080,7 @@ class AgentTests(unittest.TestCase):
         a = self.ready(self.agent())
         job = self.farm.submit("wan22_i2i", {"input": f"{EXR} 1003"}, "ann")
         pid = self.dispatched(a, job)
-        path = a.client.prompts[pid]["254"]["inputs"]["path"]
+        path = a.runner.client.prompts[pid]["254"]["inputs"]["path"]
         self.assertEqual(path, f"{self.root}/scratch-gpu1/{job['id']}/abc_0010.plate.v1.1003.png")   # the converted file
         self.assertTrue(os.path.isfile(path))
         done = self.finish(a, job["id"], pid)
@@ -1118,7 +1119,7 @@ class AgentTests(unittest.TestCase):
         self.assertIsNone(info["inputs"]["reference"])
         self.assertEqual(info["inputs"]["matte"]["convert"]["dst_dir"], f"{self.root}/scratch/{job['id']}/matte/")
         pid = self.dispatched(a, job)
-        prompt = a.client.prompts[pid]
+        prompt = a.runner.client.prompts[pid]
         scratch = f"{self.root}/scratch-gpu1/{job['id']}"
         self.assertEqual(prompt["1"]["inputs"]["frames"], "1001-1003")             # the plate, read in place
         self.assertTrue(prompt["1"]["inputs"]["path"].endswith("/hi/abc_0010.pre.v1.%04d.png"))
@@ -1140,7 +1141,7 @@ class AgentTests(unittest.TestCase):
         job = self.farm.submit("ltx25_layout_render", {"input": f"{SEQ} 1001-1003", "reference": f"{EXR} 1002",
                                                        "prompt": "a castle at dusk"}, "ann")
         pid = self.dispatched(a, job)
-        prompt = a.client.prompts[pid]
+        prompt = a.runner.client.prompts[pid]
         self.assertEqual(prompt["9061"]["inputs"]["frames"], "1001-1003")             # the layout
         self.assertEqual(prompt["9060"]["inputs"]["path"],                           # the reference, converted
                          f"{self.root}/scratch-gpu1/{job['id']}/reference/abc_0010.plate.v1.1002.png")
@@ -1171,10 +1172,10 @@ class AgentTests(unittest.TestCase):
         job = self.submit()
         pid = self.dispatched(a, job)
         # A `git pull` changed the farm nodes; ComfyUI still runs the old ones.
-        a.client.oi = old_farm_nodes(INSTALLED)
-        a.launcher = FakeLauncher(a.client, then=INSTALLED)
+        a.runner.client.oi = old_farm_nodes(INSTALLED)
+        a.runner.launcher = FakeLauncher(a.runner.client, then=INSTALLED)
         with self.assertLogs("comfyfarm", "WARNING"):
-            self.wait(a.refresh_object_info())
+            self.wait(a.runner.refresh_object_info())
         w = self.desk.summaries()[0]
         self.assertEqual(w["farm_nodes"]["state"], "waiting")
         self.assertIn("runs version 0123456789ab from /old/checkout", w["farm_nodes"]["message"])
@@ -1182,14 +1183,14 @@ class AgentTests(unittest.TestCase):
         nxt = self.submit()
         self.beat(a)
         self.assertEqual(self.job(nxt["id"])["status"], "queued")
-        self.wait(a._farm_nodes_tick(True))
-        self.assertEqual(a.launcher.restarts, 0)                          # it still runs a job
+        self.wait(a.runner._farm_nodes_tick(True))
+        self.assertEqual(a.runner.launcher.restarts, 0)                          # it still runs a job
         self.assertEqual(self.finish(a, job["id"], pid)["status"], "done")
-        self.wait(a._farm_nodes_tick(True))
-        self.assertEqual(a.launcher.restarts, 1)                          # idle: restarted
+        self.wait(a.runner._farm_nodes_tick(True))
+        self.assertEqual(a.runner.launcher.restarts, 1)                          # idle: restarted
         self.assertEqual(self.desk.summaries()[0]["farm_nodes"]["state"], "restarting")
-        self.wait(a.refresh_object_info())                                # back, with the new nodes
-        self.assertIsNone(a.farm_nodes)
+        self.wait(a.runner.refresh_object_info())                                # back, with the new nodes
+        self.assertIsNone(a.runner.farm_nodes)
         self.assertIsNone(self.desk.summaries()[0]["farm_nodes"])
         self.beat(a)
         self.assertEqual(self.job(nxt["id"])["worker"], "gpu1")           # taking jobs again
@@ -1197,11 +1198,11 @@ class AgentTests(unittest.TestCase):
     def test_old_farm_nodes_without_comfyui_launch_wait_for_a_restart_by_hand(self):
         comfy = FakeComfy(old_farm_nodes(INSTALLED))
         a = self.agent(comfy=comfy)
-        a.launcher = FakeLauncher(comfy, then=INSTALLED, enabled=False)
+        a.runner.launcher = FakeLauncher(comfy, then=INSTALLED, enabled=False)
         with self.assertLogs("comfyfarm", "WARNING"):
             self.ready(a)
-        self.wait(a._farm_nodes_tick(True))
-        self.assertEqual(a.launcher.restarts, 0)
+        self.wait(a.runner._farm_nodes_tick(True))
+        self.assertEqual(a.runner.launcher.restarts, 0)
         w = self.desk.summaries()[0]
         self.assertEqual(w["farm_nodes"]["state"], "manual")
         self.assertTrue(w["farm_nodes"]["message"].endswith("Restart ComfyUI to load them."))
@@ -1210,29 +1211,29 @@ class AgentTests(unittest.TestCase):
     def test_a_comfyui_the_agent_didnt_start_is_left_to_restart_by_hand(self):
         comfy = FakeComfy(old_farm_nodes(INSTALLED))
         a = self.agent(comfy=comfy)
-        a.launcher = FakeLauncher(comfy, then="not ours")
+        a.runner.launcher = FakeLauncher(comfy, then="not ours")
         with self.assertLogs("comfyfarm", "WARNING"):
             self.ready(a)
-            self.wait(a._farm_nodes_tick(True))
-            self.wait(a._farm_nodes_tick(True))
-        self.assertEqual(a.launcher.restarts, 1)
-        self.assertEqual(a.farm_nodes["state"], "manual")
+            self.wait(a.runner._farm_nodes_tick(True))
+            self.wait(a.runner._farm_nodes_tick(True))
+        self.assertEqual(a.runner.launcher.restarts, 1)
+        self.assertEqual(a.runner.farm_nodes["state"], "manual")
         self.assertIn("This agent didn't start ComfyUI, so it can't restart it: Restart ComfyUI to load them.",
-                      a.farm_nodes["message"])
+                      a.runner.farm_nodes["message"])
 
     def test_a_restart_that_doesnt_bring_the_checkouts_nodes_says_so(self):
         comfy = FakeComfy(old_farm_nodes(INSTALLED))
         a = self.agent(comfy=comfy)
-        a.launcher = FakeLauncher(comfy, then=None)                       # ComfyUI loads them from elsewhere
+        a.runner.launcher = FakeLauncher(comfy, then=None)                       # ComfyUI loads them from elsewhere
         with self.assertLogs("comfyfarm", "WARNING"):
             self.ready(a)
-            self.wait(a._farm_nodes_tick(True))
-            self.wait(a.refresh_object_info())
-            self.wait(a._farm_nodes_tick(True))
-        self.assertEqual(a.launcher.restarts, 1)                          # once, not in a loop
-        self.assertEqual(a.farm_nodes["state"], "manual")
+            self.wait(a.runner._farm_nodes_tick(True))
+            self.wait(a.runner.refresh_object_info())
+            self.wait(a.runner._farm_nodes_tick(True))
+        self.assertEqual(a.runner.launcher.restarts, 1)                          # once, not in a loop
+        self.assertEqual(a.runner.farm_nodes["state"], "manual")
         self.assertIn("Restarting ComfyUI didn't change that: check that ComfyUI's custom_nodes/comfyfarm_nodes "
-                      "links to this checkout", a.farm_nodes["message"])
+                      "links to this checkout", a.runner.farm_nodes["message"])
 
     def test_the_agent_on_its_own(self):
         """Its loops as `comfyfarm agent` runs them: it checks in, takes and runs a job, and
@@ -1240,10 +1241,10 @@ class AgentTests(unittest.TestCase):
         a = self.agent(heartbeat_wait=1, health_seconds=0.05, reconcile_seconds=0.2)
 
         async def ws_loop():            # ComfyUI's websocket: up; its messages come from the test
-            a.ws_connected = True
-            await a.refresh_object_info()
+            a.runner.ws_connected = True
+            await a.runner.refresh_object_info()
             await asyncio.Event().wait()
-        a._ws_loop = ws_loop
+        a.runner._ws_loop = ws_loop
 
         async def start():
             a.start()
@@ -1258,8 +1259,8 @@ class AgentTests(unittest.TestCase):
         info = a.held[job["id"]].job["info"]
         for i in range(1, 4):
             Path(info["output_dir"], f"{info['frames_prefix']}_{i:04d}.png").write_bytes(b"png")
-        a.client.pending.discard(pid)
-        a.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
+        a.runner.client.pending.discard(pid)
+        a.runner.client.hist[pid] = {"outputs": {}, "status": {"status_str": "success", "completed": True}}
         self.msg(a, "execution_success", prompt_id=pid)
         self.until(lambda: a.held[job["id"]].finished, what="collected")
         self.until(lambda: a.manager_down, what="manager seen down")

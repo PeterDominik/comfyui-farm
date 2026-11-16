@@ -1,4 +1,5 @@
-"""An agent: runs the manager's jobs on one ComfyUI (protocol.py).
+"""An agent: runs the manager's jobs on this machine through a runner (protocol.py,
+runners/base.py). Today the runner is ComfyUI (runners/comfyui.py).
 
 It checks in with the manager and takes the jobs the manager gives it: one for its GPU,
 and one prepared ahead when every GPU on the farm is busy (never more than its ComfyUI runs
@@ -6,43 +7,30 @@ at once, max_inflight, plus one). For each job it:
 
 1. converts the input (EXR, movie, images larger than the workflow's work_resolution)
    into its own scratch folder,
-2. submits the prompt to ComfyUI, with the run's attempt id as the prompt id,
-3. follows it over ComfyUI's websocket, and checks its queue and history (events
-   missed, ComfyUI restarted),
-4. collects the outputs: frames renamed, texture maps written as EXRs, the preview
+2. hands the run to the runner, which starts it and tells the agent as it moves on
+   (started, progress, succeeded, failed, interrupted, lost),
+3. collects the outputs: frames renamed, texture maps written as EXRs, the preview
    movie made from the frames (or copied, from a workflow's own video node),
-5. reports each step to the manager. A report that can't be delivered (the manager is
+4. reports each step to the manager. A report that can't be delivered (the manager is
    restarting) waits and goes later, in order.
 
 Jobs arrive with studio paths and @scratch/ / @repo/ (fileio.wire); the agent sees them
 through its own paths.mappings, scratch folder and checkout. It keeps its jobs in memory:
-after a restart the manager hands them back and the agent picks them up again from
-ComfyUI.
-
-ComfyUI loads the farm's own nodes (comfyui_nodes/) only at startup. When it runs other
-ones than this checkout has (after a `git pull`), the agent takes no new jobs, and once
-it holds none it restarts ComfyUI, if it started it (comfyui_launch)."""
+after a restart the manager hands them back and the agent asks the runner where each
+one is."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shutil
 import sys
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
-import websockets
-
-from ..comfyenv import machine as EM
-from ..comfyenv import spec as ES
 from ..config import AgentConfig, PathsConfig
 from ..fileio import convert as C
-from ..fileio import farmnodes as FN
 from ..fileio import outputs as O
 from ..fileio import paths as P
 from ..fileio import preview as PV
@@ -50,44 +38,12 @@ from ..fileio import scratch as S
 from ..fileio import wire as W
 from ..fileio.errors import ConvertError, SequenceError
 from ..fileio.ocio import REPO
-from ..protocol import ON_WORKER, TERMINAL, LinkError, build, duration, now
-from ..workflows import fit_to_options
-from .comfy import ComfyClient, ComfyRejected, describe_rejection
-from .launch import Launcher
+from ..protocol import ON_WORKER, TERMINAL, LinkError, build, now
+from ..runners import make_runner
+from ..runners.base import Runner, RunRejected, RunState
 
 log = logging.getLogger("comfyfarm")
 _DEFAULT_PATHS = PathsConfig()
-
-
-@dataclass
-class Runtime:
-    """Live progress of one job in ComfyUI (not persisted)."""
-    job_id: str
-    expected: int
-    titles: dict
-    done: set = field(default_factory=set)
-    current: str | None = None
-    frac: float = 0.0
-    last_push: float = 0.0
-
-    def progress(self) -> float:
-        return min((len(self.done) + self.frac) / max(self.expected, 1), 0.99)
-
-
-def _history_failure(hist: dict) -> tuple[str, bool, str | None]:
-    """(message, interrupted, traceback) from a failed ComfyUI history entry."""
-    for name, data in (hist.get("status") or {}).get("messages") or []:
-        if name == "execution_interrupted":
-            return "Interrupted on the farm machine.", True, None
-        if name == "execution_error":
-            tb = "".join(data.get("traceback") or []) or None
-            return (f"{data.get('node_type')} (node {data.get('node_id')}): "
-                    f"{data.get('exception_message', '').strip()}"), False, tb
-    return "ComfyUI reported an error.", False, None
-
-
-def _titles(prompt: dict) -> dict:
-    return {nid: (n.get("_meta") or {}).get("title") or n.get("class_type") for nid, n in (prompt or {}).items()}
 
 
 @dataclass
@@ -96,10 +52,10 @@ class Held:
     job: dict                       # the job as this machine sees it (wire.localize)
     attempt: str                    # the run's id, given by the manager
     status: str = "preparing"       # preparing | dispatched | running | postprocessing
-    pid: str | None = None          # its prompt id in ComfyUI (the attempt id, unless an old ComfyUI minted its own)
-    rt: Runtime | None = None
+    pid: str | None = None          # its id in the runner (the attempt id, unless the runner minted its own)
+    rt: RunState | None = None      # its live progress, kept by the runner
     task: asyncio.Task | None = None
-    slot: bool = False              # has one of ComfyUI's max_inflight places
+    slot: bool = False              # has one of the runner's max_inflight places
     submitting: bool = False
     cancelling: bool = False
     finished: bool = False          # its last report is on its way; forgotten once delivered
@@ -116,55 +72,29 @@ class Held:
 
 
 class Agent:
-    def __init__(self, cfg: AgentConfig, link, client: ComfyClient | None = None):
+    def __init__(self, cfg: AgentConfig, link, runner: Runner | None = None):
         self.cfg = cfg
         self.link = link
         self.name = cfg.name
-        self.client = client or ComfyClient(cfg.comfyui)
-        self.client_id = "comfyfarm-" + uuid.uuid5(uuid.NAMESPACE_URL, cfg.comfyui + cfg.name).hex[:12]
-        self.launcher = Launcher(cfg.name, cfg.comfyui_launch, cfg.resolve(cfg.log_dir), cfg.base_dir)
+        self.runner: Runner = runner or make_runner(cfg)
+        self.runner.attach(self)
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
         self.view = W.View(mappings=cfg.paths.mappings, scratch=self.scratch_root, repo=P.normalize(str(REPO)))
         self.held: dict[str, Held] = {}          # job id -> its run
-        # ComfyUI
-        self.online = False
-        self.ws_connected = False
-        self.checked = False
-        self.offline_since = now()
-        self.stats: dict | None = None
-        self.object_info: dict | None = None
-        self.output_classes: set[str] | None = None
         self.problems: dict[str, list[str]] = {}
-        self.queue_remaining: int | None = None
-        self.error: str | None = None
-        # ComfyUI runs other farm nodes than this checkout has: {"state": waiting | restarting
-        # | manual, "message": why}; None while they're the checkout's.
-        self.farm_nodes: dict | None = None
         # What workflows can ask for (requires.tags): agent.yaml's tags, and this OS.
         osname = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else sys.platform
         self.tags = sorted({str(t).strip().lower() for t in cfg.tags if str(t).strip()} | {osname})
-        # This machine's ComfyUI environment (comfyenv), sent to the manager: read when
-        # ComfyUI (re)connects and every environment_seconds.
-        self.environment: dict | None = None
         self.environment_differs: list[str] = []
-        self._env_want: dict | None = None      # what the manager's environment file asks to read
-        self._env_next = 0.0
-        self._env_stale = True
-        self._env_busy = False
-        self._restarted_for: str | None = None   # the checkout's node version ComfyUI was restarted for
-        self._restarting = False
-        self._cant_restart = False               # its ComfyUI wasn't started by this agent
-        self.abandoned: set[str] = set()         # prompt ids given up on: cancelled if seen again
         # the manager
         self.registered = False
         self.manager_down = False
         self.lease_seconds: float | None = None
         self._seq = 0
         self._cleaned = False
-        self._in_comfy = 0                       # runs holding one of ComfyUI's places
+        self._in_comfy = 0                       # runs holding one of the runner's places
         self._slots: asyncio.Condition | None = None
         self._convert_sem: asyncio.Semaphore | None = None
-        self._reconcile_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
         self._bg: set[asyncio.Task] = set()
 
@@ -176,21 +106,18 @@ class Agent:
 
     def start(self) -> None:
         self._ensure_sync()
-        self._tasks = [asyncio.create_task(self._manager_loop(), name=f"manager-{self.name}"),
-                       asyncio.create_task(self._health_loop(), name=f"health-{self.name}"),
-                       asyncio.create_task(self._ws_loop(), name=f"ws-{self.name}"),
-                       asyncio.create_task(self._reconcile_loop(), name=f"reconcile-{self.name}")]
+        self._tasks = [asyncio.create_task(self._manager_loop(), name=f"manager-{self.name}"), *self.runner.start()]
         log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
                  getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process"))
 
     async def stop(self) -> None:
-        """Stop following ComfyUI and the manager. Jobs in ComfyUI carry on; the next start
-        picks them up again."""
+        """Stop following the runner and the manager. Jobs in ComfyUI carry on; the next
+        start picks them up again."""
         tasks = self._tasks + list(self._bg) + [h.task for h in self.held.values() if h.task]
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await self.client.close()
+        await self.runner.close()
         close = getattr(self.link, "close", None)
         if close:
             await close()
@@ -202,13 +129,20 @@ class Agent:
         finally:
             await self.stop()
 
-    def _spawn(self, coro) -> None:
+    # ---------------------------------------------------------------- for the runner (runners.base.Host)
+    def spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
         self._bg.add(t)
         t.add_done_callback(self._bg.discard)
 
     def by_pid(self, pid: str) -> Held | None:
         return next((h for h in self.held.values() if h.pid == pid), None)
+
+    def runs(self) -> list[Held]:
+        return list(self.held.values())
+
+    def holds(self, h: Held) -> bool:
+        return self.held.get(h.id) is h
 
     # ================================================================ the manager
     async def _manager_loop(self) -> None:
@@ -257,11 +191,11 @@ class Agent:
             await self._drop(d["job"], d["attempt"])
         for p in reply.get("adopt") or []:
             self._adopt(p)
-        await self._send_status()
-        if self.object_info is not None and not self.farm_nodes:
-            await self._send_nodes()
-        if self.environment is not None:
-            await self._send_environment()
+        await self.send_status()
+        if self.runner.object_info is not None and not self.runner.farm_nodes:
+            await self.send_nodes()
+        if self.runner.environment is not None:
+            await self.send_environment()
         if not self._cleaned:
             self._cleaned = True
             self._clean_orphan_scratch()
@@ -284,21 +218,19 @@ class Agent:
         for p in reply.get("jobs") or []:
             await self._take(p)
         if reply.get("nodes"):
-            self._spawn(self.refresh_object_info())
+            self.spawn(self.runner.refresh_object_info())
 
-    async def _send_status(self) -> None:
+    async def send_status(self) -> None:
         try:
-            reply = await self.link.status({
-                "name": self.name, "online": self.online, "connected": self.ws_connected, "stats": self.stats,
-                "queue_remaining": self.queue_remaining, "error": self.error, "farm_nodes": self.farm_nodes})
+            reply = await self.link.status({"name": self.name, **self.runner.status()})
             if reply.get("hello"):
                 self.registered = False
         except LinkError:
             pass                        # sent again with the next one, or after hello
 
-    async def _send_nodes(self) -> None:
+    async def send_nodes(self) -> None:
         try:
-            reply = await self.link.nodes({"name": self.name, "object_info": self.object_info or {}})
+            reply = await self.link.nodes({"name": self.name, "object_info": self.runner.object_info or {}})
         except LinkError:
             return                      # sent again after hello
         if reply.get("hello"):
@@ -385,7 +317,7 @@ class Agent:
                 try:
                     await asyncio.to_thread(O.makedirs_readable, out_dir)
                 except OSError as e:
-                    await self._fail(h, f"Can't create the output folder {out_dir}: {e.strerror or e}")
+                    await self.run_failed(h, f"Can't create the output folder {out_dir}: {e.strerror or e}")
                     return
             tex = info.get("textures")
             if tex:
@@ -394,7 +326,7 @@ class Agent:
                     await asyncio.to_thread(shutil.rmtree, tex["raw_dir"], True)
                     await asyncio.to_thread(os.makedirs, tex["raw_dir"], exist_ok=True)
                 except OSError as e:
-                    await self._fail(h, f"Can't create the scratch folder {tex['raw_dir']}: {e.strerror or e}")
+                    await self.run_failed(h, f"Can't create the scratch folder {tex['raw_dir']}: {e.strerror or e}")
                     return
             # The primary input first: converting it empties <scratch>/<job id>/, where the
             # other inputs convert into their own subfolders.
@@ -413,7 +345,7 @@ class Agent:
             raise
         except Exception as e:  # noqa: BLE001
             log.exception("agent %s: job %s failed", self.name, h.id[:8])
-            await self._fail(h, f"{type(e).__name__}: {e}")
+            await self.run_failed(h, f"{type(e).__name__}: {e}")
 
     async def _convert(self, h: Held, seq_info: dict, what: str | None = None) -> bool:
         """Convert one input (`what`: the name of an input besides the primary)."""
@@ -430,7 +362,7 @@ class Agent:
             if now() - last[0] < 0.5 and done < total:
                 return
             last[0] = now()
-            self._spawn(self._report(h, "progress", lossy=True, status="preparing", stage=f"{label} {done}/{total}"))
+            self.spawn(self._report(h, "progress", lossy=True, status="preparing", stage=f"{label} {done}/{total}"))
 
         await self._report(h, "progress", lossy=True, status="preparing", stage=label)
         log.info("job %s: %s", h.id[:8], label)
@@ -440,22 +372,22 @@ class Agent:
             raise
         except Exception as e:  # noqa: BLE001
             msg = str(e) if isinstance(e, (ConvertError, SequenceError)) else f"{type(e).__name__}: {e}"
-            await self._fail(h, f"Converting {what or 'the input'} failed: {msg}")
+            await self.run_failed(h, f"Converting {what or 'the input'} failed: {msg}")
             return False
         log.info("job %s: input ready in %.0fs", h.id[:8], now() - t0)
         return True
 
     async def _take_slot(self, h: Held) -> None:
-        """Wait for one of ComfyUI's places (max_inflight), and for ComfyUI to be up."""
+        """Wait for one of the runner's places (max_inflight), and for the runner to be up."""
         async with self._slots:
             await self._slots.wait_for(lambda: self._in_comfy < self.cfg.max_inflight)
             self._in_comfy += 1
             h.slot = True
-        while not (self.online and self.ws_connected and self.checked):
+        while not self.runner.ready:
             await asyncio.sleep(0.25)
 
     def _hold_slot(self, h: Held) -> None:
-        """A run already in ComfyUI (picked up again after a restart) takes a place as it is."""
+        """A run already in the runner (picked up again after a restart) takes a place as it is."""
         if not h.slot:
             h.slot = True
             self._in_comfy += 1
@@ -464,7 +396,7 @@ class Agent:
         if h.slot:
             h.slot = False
             self._in_comfy -= 1
-            self._spawn(self._notify_slots())
+            self.spawn(self._notify_slots())
 
     async def _notify_slots(self) -> None:
         self._ensure_sync()
@@ -476,53 +408,26 @@ class Agent:
         if h.dropped:
             self._release(h)
             return
-        prompt = fit_to_options(h.job["prompt"], self.object_info)   # LTX\\x vs LTX/x on this OS
-        titles = _titles(prompt)
-        extra = {"comfyfarm_job": h.id, "comfyfarm_user": h.job.get("user")}
+        rejected = None
         h.submitting = True
         try:
-            while True:
-                try:
-                    pid, node_errors = await self.client.submit(prompt, h.attempt, self.client_id, extra)
-                    break
-                except ComfyRejected as e:
-                    await self._fail(h, "ComfyUI rejected the job: " + describe_rejection(e.body, titles))
-                    return
-                except httpx.HTTPError as e:
-                    # The request may have landed even though we got no answer; the attempt
-                    # id lets us check instead of risking a duplicate run.
-                    try:
-                        running, pending = await self.client.queue()
-                        if h.attempt in running or h.attempt in pending or await self.client.history(h.attempt):
-                            pid, node_errors = h.attempt, {}
-                            break
-                    except Exception:  # noqa: BLE001
-                        pass
-                    log.warning("agent %s: submitting job %s failed (%s); trying again", self.name, h.id[:8], e)
-                    await asyncio.sleep(2.0)
-                    while not (self.online and self.ws_connected and self.checked):
-                        await asyncio.sleep(0.25)
+            await self.runner.submit(h)         # sets h.pid and h.rt
+        except RunRejected as e:
+            rejected = str(e)
         finally:
             h.submitting = False
-        h.pid = pid
-        if node_errors:
-            try:
-                await self.client.delete_queued([pid])
-            except httpx.HTTPError:
-                self.abandoned.add(pid)
-            body = {"error": {"message": "Some outputs failed validation"}, "node_errors": node_errors}
-            await self._fail(h, "ComfyUI rejected the job: " + describe_rejection(body, titles))
+        if rejected is not None:
+            await self.run_failed(h, rejected)
             return
         h.status, h.dispatched_at = "dispatched", now()
-        h.rt = Runtime(job_id=h.id, expected=h.job.get("expected_nodes") or 20, titles=titles)
-        log.info("job %s -> ComfyUI on %s (prompt %s)", h.id[:8], self.name, pid[:8])
-        await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=pid)
+        log.info("job %s -> %s on %s (prompt %s)", h.id[:8], self.runner.label, self.name, h.pid[:8])
+        await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid)
         if h.cancelling and not h.dropped:
-            if await self._cancel_in_comfy(h):
+            if await self.runner.cancel(h):
                 await self._cancelled(h)
 
     # ---------------------------------------------------------------- endings
-    async def _fail(self, h: Held, message: str, traceback: str | None = None) -> None:
+    async def run_failed(self, h: Held, message: str, traceback: str | None = None) -> None:
         if h.finished or h.dropped:
             return
         self._release(h)
@@ -537,11 +442,11 @@ class Agent:
         S.cleanup(h.job, self.scratch_root)
         await self._report(h, "cancelled")
 
-    async def _lost(self, h: Held, reason: str) -> None:
+    async def run_lost(self, h: Held, reason: str) -> None:
         if h.finished or h.dropped:
             return
         if h.pid:
-            self.abandoned.add(h.pid)
+            self.runner.give_up(h.pid)
         if h.rt is not None:
             h.rt = None
         self._release(h)
@@ -549,43 +454,22 @@ class Agent:
         await self._report(h, "lost", reason=reason)
 
     async def _cancel(self, h: Held) -> None:
-        """The manager cancelled this job: take it out of ComfyUI."""
+        """The manager cancelled this job: take it out of the runner."""
         if h.cancelling or h.finished:
             return
         h.cancelling = True
         if h.status == "preparing":
             if h.submitting:
-                return                  # _submit takes it out of ComfyUI once it's in
+                return                  # _submit takes it out of the runner once it's in
             if h.task and not h.task.done():
                 h.task.cancel()
                 await asyncio.gather(h.task, return_exceptions=True)
             await self._cancelled(h)
         elif h.status in ON_WORKER:
-            if await self._cancel_in_comfy(h):
+            if await self.runner.cancel(h):
                 await self._cancelled(h)
-            # otherwise ComfyUI's interrupt event finishes it
+            # otherwise the runner's interrupted event finishes it
         # postprocessing: it finishes
-
-    async def _cancel_in_comfy(self, h: Held) -> bool:
-        """Delete it from ComfyUI's queue if waiting, interrupt it if running. True if it's
-        gone without having run (the caller finishes the cancel)."""
-        pid = h.pid
-        try:
-            running, pending = await self.client.queue()
-            if pid in pending:
-                await self.client.delete_queued([pid])
-                running, pending = await self.client.queue()
-            if pid in running:
-                # Only interrupt what is actually running: older ComfyUI builds ignore
-                # prompt_id and would stop whichever job is on the GPU.
-                await self.client.interrupt(pid)
-            elif pid not in pending and not await self.client.history(pid):
-                return True             # it was only waiting; now gone
-        except httpx.HTTPError as e:
-            log.warning("cancel %s: ComfyUI on %s unreachable (%s); cancelled when it returns", h.id[:8], self.name, e)
-            self.abandoned.add(pid)
-            return True
-        return False
 
     async def _drop(self, job_id: str, attempt: str) -> None:
         """This run isn't the job's current one any more (the manager cancelled it, or gave
@@ -601,86 +485,55 @@ class Agent:
         del self.held[job_id]
         h.outbox.clear()
         if h.task and not h.task.done() and h.task is not asyncio.current_task():
-            self.abandoned.add(h.attempt)   # in case its submit landed as we stopped it
+            self.runner.give_up(h.attempt)  # in case its submit landed as we stopped it
             h.task.cancel()
             await asyncio.gather(h.task, return_exceptions=True)
         if h.pid and h.status in ON_WORKER:
-            self.abandoned.add(h.pid)
-            try:
-                running, pending = await self.client.queue()
-                if h.pid in pending:
-                    await self.client.delete_queued([h.pid])
-                elif h.pid in running:
-                    await self.client.interrupt(h.pid)
-            except httpx.HTTPError:
-                pass                    # reconcile cancels it when ComfyUI is back
+            await self.runner.abandon(h.pid)
         self._release(h)
         if h.status != "postprocessing":
             S.cleanup(h.job, self.scratch_root)
 
     def _adopt(self, payload: dict) -> None:
         """A job the manager has on this agent that it didn't know about (it restarted):
-        follow it again in ComfyUI, prepare it again, or report it lost."""
+        follow it again in the runner, prepare it again, or report it lost."""
         job = W.localize(payload, self.view)
         h = Held(job=job, attempt=job["attempt"], status=job.get("status") or "preparing", pid=job["attempt"],
                  dispatched_at=job.get("dispatched_at"), started_at=job.get("started_at"))
         self.held[h.id] = h
-        self._spawn(self._reattach(h))
+        self.spawn(self._reattach(h))
 
     async def _reattach(self, h: Held) -> None:
         self._ensure_sync()
         if h.status == "postprocessing":
-            await self._lost(h, f"{self.name} restarted while collecting the outputs.")
+            await self.run_lost(h, f"{self.name} restarted while collecting the outputs.")
             return
-        while True:
-            while not (self.online and self.ws_connected):
-                await asyncio.sleep(0.25)
-            try:
-                running, pending = await self.client.queue()
-                hist = None if h.pid in running or h.pid in pending else await self.client.history(h.pid)
-                break
-            except httpx.HTTPError:
-                await asyncio.sleep(1.0)
+        where, result = await self.runner.locate(h)     # once the runner answers
         if self.held.get(h.id) is not h:
             return                      # dropped meanwhile
         was = h.status
-        if h.pid in running or h.pid in pending:
+        if where in ("running", "pending"):
             self._hold_slot(h)
-            h.status = "running" if h.pid in running else "dispatched"
-            h.rt = Runtime(job_id=h.id, expected=h.job.get("expected_nodes") or 20, titles=_titles(h.job["prompt"]))
+            h.status = "running" if where == "running" else "dispatched"
+            self.runner.follow(h)
             h.dispatched_at = h.dispatched_at or now()
-            log.info("agent %s picked job %s up again in ComfyUI", self.name, h.id[:8])
+            log.info("agent %s picked job %s up again in %s", self.name, h.id[:8], self.runner.label)
             if was == "preparing":
                 await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid)
             if h.status == "running" and was != "running":
                 h.started_at = h.started_at or now()
                 await self._report(h, "running", at=h.started_at)
-        elif hist:
+        elif where == "finished":
             self._hold_slot(h)
             if was == "preparing":
                 h.status = "dispatched"
                 await self._report(h, "dispatched", at=h.dispatched_at or now(), prompt_id=h.pid)
-            await self._from_history(h, hist)
+            await self.runner.settle(h, result)
         elif was == "preparing":
-            log.info("agent %s: job %s never reached ComfyUI: preparing it again", self.name, h.id[:8])
+            log.info("agent %s: job %s never reached %s: preparing it again", self.name, h.id[:8], self.runner.label)
             h.task = asyncio.create_task(self._prepare_and_submit(h), name=f"job-{h.id[:8]}")
         else:
-            await self._lost(h, f"ComfyUI on {self.name} lost the job while {self.name} was restarting.")
-
-    async def _from_history(self, h: Held, hist: dict) -> None:
-        """A run that ended in ComfyUI while we weren't listening."""
-        if h.finished or h.dropped:
-            return
-        status = hist.get("status") or {}
-        if status.get("status_str") == "success" or (status.get("completed") and status.get("status_str") != "error"):
-            await self._finalize(h, hist)
-            return
-        message, interrupted, tb = _history_failure(hist)
-        if interrupted and h.cancelling:
-            await self._cancelled(h)
-        else:
-            await self._fail(h, message, traceback=tb)
-        self._spawn(self._drop_history(h.pid))
+            await self.run_lost(h, f"{self.runner.label} on {self.name} lost the job while {self.name} was restarting.")
 
     def _clean_orphan_scratch(self) -> None:
         """Scratch folders of jobs this agent doesn't hold (finished while it was down)."""
@@ -689,45 +542,8 @@ class Agent:
         keep = set(self.held)
         S.clean_orphans(self.scratch_root, lambda name: name in keep)
 
-    # ================================================================ ComfyUI: events
-    async def _ws_loop(self) -> None:
-        backoff = 1.0
-        while True:
-            try:
-                async with websockets.connect(self.client.ws_url(self.client_id), max_size=None,
-                                              open_timeout=10, ping_interval=20, ping_timeout=30) as ws:
-                    self.ws_connected = True
-                    backoff = 1.0
-                    log.info("connected to %s events", self.name)
-                    # A reconnect usually means ComfyUI restarted, maybe after node packs
-                    # or models changed: check the workflows again before taking work.
-                    self.checked = False
-                    await self.refresh_object_info()
-                    await self._reconcile()
-                    async for raw in ws:
-                        if isinstance(raw, bytes):
-                            continue    # live preview images
-                        try:
-                            msg = json.loads(raw)
-                        except ValueError:
-                            continue
-                        try:
-                            await self._on_message(msg)
-                        except Exception:  # noqa: BLE001
-                            log.exception("error handling %s event", msg.get("type"))
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                log.debug("ws %s: %s", self.name, e)
-            if self.ws_connected:
-                self.ws_connected = False
-                self.checked = False
-                log.warning("lost event connection to %s", self.name)
-                await self._send_status()
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
-
-    async def _progress(self, h: Held, stage: str | None = None, force: bool = False) -> None:
+    # ================================================================ what the runner reports (runners.base.Host)
+    async def run_progress(self, h: Held, stage: str | None = None, force: bool = False) -> None:
         rt = h.rt
         if rt is None:
             return
@@ -738,294 +554,27 @@ class Agent:
         data = {"status": h.status, "progress": round(rt.progress(), 4)}
         if stage:
             data["stage"] = stage
-        self._spawn(self._report(h, "progress", lossy=True, **data))
+        self.spawn(self._report(h, "progress", lossy=True, **data))
 
-    async def _running(self, h: Held) -> None:
+    async def run_started(self, h: Held) -> None:
         if h.status == "dispatched":
             h.status, h.started_at = "running", now()
             await self._report(h, "running", at=h.started_at, stage="starting")
 
-    async def _on_message(self, msg: dict) -> None:
-        kind, data = msg.get("type"), msg.get("data") or {}
-        if kind == "status":
-            self.queue_remaining = ((data.get("status") or {}).get("exec_info") or {}).get("queue_remaining")
-            return
-        pid = data.get("prompt_id")
-        if not pid or pid in self.abandoned:
-            return
-        h = self.by_pid(pid)
-        if h is None or h.status not in ON_WORKER:
-            return
-        rt = h.rt
-        if kind == "execution_start":
-            await self._running(h)
-        elif kind == "execution_cached" and rt:
-            rt.done.update(data.get("nodes") or [])
-            await self._progress(h, "using cached results")
-        elif kind == "executing" and rt:
-            node = data.get("node")
-            await self._running(h)
-            if rt.current and rt.current != node:
-                rt.done.add(rt.current)
-            rt.current, rt.frac = node, 0.0
-            if node is None:            # older ComfyUI signals completion this way
-                self._spawn(self._finalize(h))
-            else:
-                await self._progress(h, rt.titles.get(node, node), force=True)
-        elif kind == "progress" and rt:
-            node = data.get("node")
-            if node and node != rt.current:
-                if rt.current:
-                    rt.done.add(rt.current)
-                rt.current = node
-            mx = data.get("max") or 0
-            rt.frac = (data.get("value") or 0) / mx if mx else 0.0
-            await self._progress(h, f"{rt.titles.get(rt.current, rt.current)} {data.get('value')}/{mx}")
-        elif kind == "executed" and rt:
-            if data.get("node"):
-                rt.done.add(data["node"])
-        elif kind == "execution_success":
-            self._spawn(self._finalize(h))
-        elif kind == "execution_error":
-            title = rt.titles.get(str(data.get("node_id")), "") if rt else ""
-            message = (f"{data.get('node_type')} (node {data.get('node_id')}"
-                       f"{' ' + repr(title) if title else ''}): {str(data.get('exception_message', '')).strip()}")
-            await self._fail(h, message, traceback="".join(data.get("traceback") or []) or None)
-            self._spawn(self._drop_history(pid))
-        elif kind == "execution_interrupted":
-            if h.cancelling:
-                await self._cancelled(h)
-            else:
-                await self._fail(h, "Interrupted on the farm machine.")
-            self._spawn(self._drop_history(pid))
-
-    async def _drop_history(self, pid: str | None) -> None:
-        if not pid or not self.cfg.delete_comfy_history:
-            return
-        try:
-            await self.client.delete_history([pid])
-        except httpx.HTTPError:
-            pass
-
-    # ================================================================ ComfyUI: reconcile
-    async def _reconcile_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self.cfg.reconcile_seconds)
-            if not (self.online and self.ws_connected):
-                continue
-            try:
-                await self._reconcile()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                log.exception("reconcile %s failed", self.name)
-
-    async def _reconcile(self) -> None:
-        """Correct our view from ComfyUI's queue and history: catches events missed while
-        disconnected, and runs ComfyUI lost because it restarted. One at a time: the
-        reconnect and the periodic check must not both act on the same lost run."""
-        async with self._reconcile_lock:
-            await self._reconcile_once()
-
-    async def _reconcile_once(self) -> None:
-        t0 = now()
-        runs = [h for h in self.held.values() if h.status in ON_WORKER and (h.dispatched_at or 0) < t0 - 2]
-        if not runs and not self.abandoned:
-            return
-        running, pending = await self.client.queue()
-        for pid in list(self.abandoned):
-            try:
-                if pid in pending:
-                    await self.client.delete_queued([pid])
-                elif pid in running:
-                    await self.client.interrupt(pid)
-            except httpx.HTTPError:
-                continue
-            if pid not in running:
-                self.abandoned.discard(pid)
-        for h in runs:
-            if self.held.get(h.id) is not h or h.status not in ON_WORKER:
-                continue                # dropped or finished meanwhile
-            if h.pid in running:
-                await self._running(h)
-                if h.rt is None:
-                    h.rt = Runtime(job_id=h.id, expected=h.job.get("expected_nodes") or 20,
-                                   titles=_titles(h.job["prompt"]))
-                continue
-            if h.pid in pending:
-                continue
-            hist = await self.client.history(h.pid)
-            if self.held.get(h.id) is not h or h.status not in ON_WORKER:
-                continue
-            if hist:
-                self._spawn(self._from_history(h, hist))
-                continue
-            await self._lost(h, f"ComfyUI on {self.name} lost the job (restarted?).")
-
-    # ================================================================ ComfyUI: health
-    async def _health_loop(self) -> None:
-        fails = 0
-        while True:
-            reachable = False
-            try:
-                self.stats = await self.client.system_stats()
-                reachable, fails = True, 0
-                if not self.online:
-                    self.online, self.error = True, None
-                    log.info("worker %s online", self.name)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                fails += 1
-                if self.online and fails >= 2:
-                    self.online, self.offline_since = False, now()
-                    self.error = str(e) or type(e).__name__
-                    log.warning("worker %s offline: %s", self.name, self.error)
-                if not self.online and now() - self.offline_since > self.cfg.lost_after_seconds:
-                    for h in [h for h in self.held.values() if h.status in ON_WORKER]:
-                        await self._lost(h, f"ComfyUI on {self.name} was unreachable for over "
-                                            f"{duration(self.cfg.lost_after_seconds)}.")
-            try:
-                self.launcher.tick(reachable)   # starts ComfyUI if agent.yaml says how and it isn't running
-            except Exception:  # noqa: BLE001
-                log.exception("starting ComfyUI on %s failed", self.name)
-            if not self._hold_tick():
-                try:
-                    await self._farm_nodes_tick(reachable)
-                except Exception:  # noqa: BLE001
-                    log.exception("checking the farm nodes on %s failed", self.name)
-            if reachable and self.object_info is not None and not self._env_busy and \
-                    (self._env_stale or now() >= self._env_next):
-                self._spawn(self.check_environment())
-            if self.registered:
-                await self._send_status()
-            await asyncio.sleep(self.cfg.health_seconds)
-
-    def _hold_tick(self) -> bool:
-        """While `comfyfarm comfyui sync` updates ComfyUI (the launcher's hold file), the
-        agent takes no jobs and says why; True then. Once the hold is gone, ComfyUI is
-        started again and its environment read again."""
-        hold = self.launcher.held()
-        if hold:
-            if (self.farm_nodes or {}).get("state") != "syncing":
-                log.warning("agent %s takes no new jobs: %s", self.name, hold)
-            self.farm_nodes = {"state": "syncing", "message": hold}
-            return True
-        if (self.farm_nodes or {}).get("state") == "syncing":
-            log.info("ComfyUI on %s was updated: it's started again", self.name)
-            self.farm_nodes, self._env_stale = None, True
-        return False
-
-    async def _farm_nodes_tick(self, reachable: bool) -> None:
-        """After every health check: a `git pull` may have changed the farm nodes; once
-        ComfyUI runs older ones and this agent holds no jobs, restart it."""
-        if not (reachable and self.ws_connected and self.object_info is not None) or self._restarting:
-            return
-        was = self.farm_nodes
-        if self._check_farm_nodes():
-            if was and self.registered:     # the checkout's again (it went back): tell the manager
-                await self._send_nodes()
-        elif self.farm_nodes["state"] == "waiting" and not self.held and not self.queue_remaining:
-            await self._restart_comfyui()           # idle: no farm job, and nothing run by hand either
-
-    def _check_farm_nodes(self) -> bool:
-        """Whether ComfyUI runs this checkout's farm nodes (it has none at all counts too:
-        the workflow checks say what's missing). Sets self.farm_nodes when it doesn't."""
-        why = FN.stale(self.object_info or {}, REPO)
-        if why is None:
-            if self.farm_nodes:
-                log.info("ComfyUI on %s runs this checkout's farm nodes", self.name)
-            self.farm_nodes = None
-            return True
-        if self._restarted_for == FN.version(REPO):
-            state, msg = "manual", (why + " Restarting ComfyUI didn't change that: check that ComfyUI's "
-                                    "custom_nodes/comfyfarm_nodes links to this checkout (the setup script makes "
-                                    "the link), then restart ComfyUI.")
-        elif self.launcher.enabled and not self._cant_restart:
-            state, msg = "waiting", why + " ComfyUI will be restarted to load them once its jobs are done."
+    async def run_interrupted(self, h: Held) -> None:
+        """The run was stopped on the machine: our cancel, or somebody's interrupt."""
+        if h.cancelling:
+            await self._cancelled(h)
         else:
-            state, msg = "manual", why + (" This agent didn't start ComfyUI, so it can't restart it:"
-                                          if self._cant_restart else "") + " Restart ComfyUI to load them."
-        if (self.farm_nodes or {}).get("message") != msg:
-            log.warning("agent %s takes no new jobs: %s", self.name, msg)
-        self.farm_nodes = {"state": state, "message": msg}
-        return False
-
-    async def _restart_comfyui(self) -> None:
-        """Restart ComfyUI for this checkout's farm nodes (the agent holds no jobs)."""
-        want = FN.version(REPO)
-        self._restarting, self._restarted_for = True, want
-        self.farm_nodes = {"state": "restarting",
-                           "message": f"Restarting ComfyUI to load this checkout's farm nodes (version {want})."}
-        if self.registered:
-            await self._send_status()
-        try:
-            ok = await asyncio.to_thread(self.launcher.restart)
-        finally:
-            self._restarting = False
-        if not ok:
-            self._restarted_for, self._cant_restart = None, True
-            self._check_farm_nodes()
-            return
-        self._cant_restart = False
-        self.object_info = None         # read again when it's back (its websocket reconnects)
-
-    async def refresh_object_info(self) -> None:
-        """Read ComfyUI's node definitions and send them to the manager, which checks the
-        workflows against them."""
-        try:
-            oi = await self.client.object_info()
-        except Exception as e:  # noqa: BLE001
-            log.warning("couldn't read node definitions from %s: %s", self.name, e)
-            self.checked = True
-            return
-        self.object_info = oi
-        self.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
-        self._env_stale = True              # ComfyUI (re)started: read its environment again
-        # Other farm nodes than the checkout's: the manager gets no node definitions, so it
-        # gives this agent no jobs until ComfyUI runs the checkout's (_farm_nodes_tick).
-        if self._check_farm_nodes() and self.registered:
-            await self._send_nodes()
-        self.checked = True
-        if self.registered:
-            await self._send_status()
+            await self.run_failed(h, "Interrupted on the farm machine.")
 
     # ================================================================ environment
-    async def check_environment(self) -> dict | None:
-        """Read this machine's ComfyUI (version and launch flags, Python packages, driver,
-        node packs, extra_model_paths.yaml, the farm's models) and send it to the manager,
-        which compares it with the farm's environment file (comfyenv)."""
-        if self._env_busy:
-            return None
-        self._env_busy, self._env_stale = True, False
-        state = None
-        try:
-            want = self._env_want or ES.wanted(ES.load(ES.SPEC))
-            folder = EM.comfyui_folder(self.cfg)
-            if folder and not os.path.isabs(folder):
-                folder = str(self.cfg.resolve(folder))
-            argv = list(self.cfg.comfyui_launch.command[1:])
-            for _ in range(2):              # again if the manager's file asks for other packs or models
-                state = await asyncio.to_thread(EM.collect, folder, EM.comfyui_python(self.cfg), self.stats, argv,
-                                                **want)
-                self.environment = state
-                asked = await self._send_environment()
-                if not asked or asked == want:
-                    break
-                want = self._env_want = asked
-        except Exception:  # noqa: BLE001
-            log.exception("reading the ComfyUI environment on %s failed", self.name)
-        finally:
-            self._env_busy = False
-            self._env_next = now() + self.cfg.environment_seconds
-        return state
-
-    async def _send_environment(self) -> dict | None:
-        """Send the last state read; returns what the manager wants read."""
-        if self.environment is None or not self.registered:
+    async def send_environment(self) -> dict | None:
+        """Send the last state the runner read; returns what the manager wants read."""
+        if self.runner.environment is None or not self.registered:
             return None
         try:
-            reply = await self.link.environment({"name": self.name, "state": self.environment})
+            reply = await self.link.environment({"name": self.name, "state": self.runner.environment})
         except LinkError:
             return None                     # sent again after hello
         if reply.get("hello"):
@@ -1038,7 +587,7 @@ class Agent:
         return reply.get("want")
 
     # ================================================================ outputs
-    async def _finalize(self, h: Held, hist: dict | None = None) -> None:
+    async def run_succeeded(self, h: Held, hist: dict | None = None) -> None:
         if h.status not in ON_WORKER or self.held.get(h.id) is not h:
             return                      # already handled (duplicate event, cancel, reconcile)
         h.status = "postprocessing"
@@ -1048,15 +597,11 @@ class Agent:
             return                      # the manager said it isn't ours any more
         try:
             if hist is None:
-                for _ in range(10):     # history is written just after the success event
-                    hist = await self.client.history(h.pid)
-                    if hist:
-                        break
-                    await asyncio.sleep(0.5)
+                hist = await self.runner.result(h)
             outputs, warnings = await self._collect_outputs(h, hist or {})
             t = now()
             started = h.started_at or h.dispatched_at or t
-            nodes = len(rt.done | ({rt.current} if rt.current else set())) if rt else None
+            nodes = rt.nodes() if rt else None
             S.cleanup(h.job, self.scratch_root)
             self._release(h)
             log.info("job %s done in %.0fs -> %s", h.id[:8], t - started, outputs.get("output_dir"))
@@ -1064,10 +609,10 @@ class Agent:
                                seconds=t - started, nodes=nodes or None, prepare_seconds=round(h.prepare_seconds, 2))
         except Exception as e:  # noqa: BLE001
             log.exception("collecting outputs for %s failed", h.id[:8])
-            await self._fail(h, f"Finished on the GPU but collecting outputs failed: {e}")
+            await self.run_failed(h, f"Finished on the GPU but collecting outputs failed: {e}")
         finally:
             self._release(h)
-            await self._drop_history(h.pid)
+            await self.runner.forget(h.pid)
 
     async def _collect_outputs(self, h: Held, hist: dict) -> tuple[dict, list[str]]:
         info = h.job["info"] or {}
@@ -1086,7 +631,7 @@ class Agent:
                 if now() - last[0] < 0.5 and done < total:
                     return
                 last[0] = now()
-                self._spawn(self._report(h, "progress", lossy=True, status="postprocessing",
+                self.spawn(self._report(h, "progress", lossy=True, status="postprocessing",
                                          stage=f"writing EXR maps {done}/{total}"))
 
             outputs.update(await O.write_maps(tex, out_dir, self.cfg.textures, self.cfg.convert, mappings, progress))
@@ -1103,13 +648,12 @@ class Agent:
 
         pv = collect.get("preview")
         if pv:
-            node_out = (hist.get("outputs") or {}).get(str(pv["node"])) or {}
-            entries = node_out.get("gifs") or node_out.get("videos") or node_out.get("images") or []
+            entries = self.runner.files(hist, pv["node"])
             if entries and out_dir:
                 e = entries[-1]
                 dest = Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens)
                 try:
-                    await self.client.download(e["filename"], e.get("subfolder", ""), e.get("type", "output"), dest)
+                    await self.runner.fetch(e, dest)
                     O.readable(str(dest))
                     outputs["preview"] = P.normalize(str(dest))
                     outputs["preview_posix"] = P.to_posix(outputs["preview"], mappings)
@@ -1135,4 +679,4 @@ class Agent:
         return outputs, warnings
 
 
-__all__ = ["Agent", "Held", "Runtime"]
+__all__ = ["Agent", "Held"]

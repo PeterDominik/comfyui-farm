@@ -5,7 +5,7 @@ ComfyUI loads custom nodes once, at startup, so after a `git pull` it keeps runn
 old ones until it restarts. Each farm node writes its version (a hash of its code and of
 the fileio modules it uses) and the checkout it was loaded from into its description,
 which ComfyUI's /object_info shows. The agent compares that with its own checkout and
-restarts ComfyUI when they differ (agent.agent)."""
+restarts ComfyUI when they differ (runners.comfyui)."""
 
 from __future__ import annotations
 

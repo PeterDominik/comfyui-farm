@@ -17,3 +17,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0009](0009-workstation-windows.md) | Workstations join in timed windows | accepted |
 | [0010](0010-observability.md) | Observability is a job timeline, GPU history, metrics and evals | accepted |
 | [0011](0011-ci.md) | Tests run in CI on every pull request | accepted |
+| [0012](0012-resident-runner-interface.md) | The agent talks to a resident runner through one in-process interface | accepted |
