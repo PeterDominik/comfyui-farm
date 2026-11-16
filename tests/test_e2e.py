@@ -27,6 +27,12 @@ farm = importlib.import_module("comfyfarm_client")
 sys.path.insert(0, str(REPO / "tests"))
 from test_textures import exr_header, exr_sized, png_bytes
 
+from comfyfarm.fileio.tools import find_tool
+
+# The farm's own lookup, so the fixtures are made with the ffmpeg that requirements.txt
+# installs (imageio-ffmpeg) when the machine has none on PATH, as on a CI runner.
+FFMPEG = find_tool("ffmpeg") or ["ffmpeg"]
+
 SEQ = "/rdo/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi/abc_0010.pre.v1.%04d.png"
 
 
@@ -101,14 +107,14 @@ convert:
             for f in frames:
                 (exr / f"abc_0010.{name}.v1.{f}.exr").write_bytes(b"x")
         (shot / "edit").mkdir()
-        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "12",
+        subprocess.run([*FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "12",
                         "-timecode", "00:00:41:17", "-c:v", "prores_ks", str(shot / "edit/abc_0010_ref.mov")], check=True)
-        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=25", "-frames:v", "4",
+        subprocess.run([*FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=25", "-frames:v", "4",
                         "-c:v", "prores_ks", str(cls.tmp / "shows/ply/work/notc.mov")], check=True)
         # A shot work area: /shows/<show>/<seq>/<shot number>/movhistory/
         movhistory = cls.tmp / "shows/xyz/abc/0010/movhistory"
         movhistory.mkdir(parents=True)
-        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "6",
+        subprocess.run([*FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=24", "-frames:v", "6",
                         "-timecode", "00:00:41:16", "-c:v", "prores_ks",     # slate at 1000, plate 1001-1005
                         str(movhistory / "abc_0010.ingest.mp01.rdo-nwb.distort.compPlate.v2.mov")], check=True)
 
