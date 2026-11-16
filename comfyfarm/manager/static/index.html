@@ -811,6 +811,7 @@ function detail(j) {
         ? `<button class="small" data-retryfailed="${j.id}" title="Run the failed batches again, into the same folder">Retry failed</button>` : ""}
       ${["done", "failed", "cancelled"].includes(j.status) ? `<button class="small" data-retry="${j.id}">Run again</button>` : ""}
       ${j.kind === "set" ? "" : `<button class="small" data-prompt="${j.id}">API JSON</button>`}
+      <button class="small" data-timeline="${j.id}" title="What happened to this job, where and for how long">Timeline</button>
       ${j.status === "done" && j.kind !== "set" && wfPublish(j.workflow) ? `<button class="small" data-publish="${j.id}" title="Render a Nuke template with these frames on Tractor (Daiquiri), with a daily in Artist Review">Publish…</button>` : ""}
       ${j.publish ? `<button class="small" data-publog="${j.id}" title="Each publish of this job: the command run and Daiquiri's output">Publish log</button>` : ""}
     </div></div></td></tr>`;
@@ -869,6 +870,7 @@ $("#jobs").addEventListener("click", async e => {
     if (t.dataset.retryfailed) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.retryfailed}/retry-failed`, { method: "POST" })); await loadBatches(t.dataset.retryfailed); return; }
     if (t.dataset.publish) { await openPublish(state.jobs.get(t.dataset.publish)); return; }
     if (t.dataset.publog) { await openPublishLog(t.dataset.publog); return; }
+    if (t.dataset.timeline) { await openTimeline(t.dataset.timeline); return; }
     if (t.dataset.prompt) {
       const data = await api(`/api/v1/jobs/${t.dataset.prompt}/prompt`);
       const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })), download: t.dataset.prompt.slice(0, 8) + "_api.json" });
@@ -1154,6 +1156,24 @@ async function openPublishLog(id) {
       ${p.command ? `<div>Command</div><div><pre>${esc(p.command)}</pre></div>` : ""}
       ${p.output ? `<div>Output</div><div><pre>${esc(p.output)}</pre></div>` : ""}
     </div>`; }).join("<hr>") || '<div class="empty">Not published yet.</div>'}</div>`;
+  dlg.showModal();
+}
+
+// A job's timeline: every status it went through, on which machine, and how long each lasted.
+const EVENT_LABEL = { submitted: "Submitted", queued: "Queued", preparing: "Taken by an agent", dispatched: "Sent to ComfyUI",
+  running: "Running", postprocessing: "Collecting outputs", done: "Done", failed: "Failed", cancelled: "Cancelled",
+  requeued: "Queued again", retried: "Retried", cancel_requested: "Cancel asked for", stage: "Step" };
+async function openTimeline(id) {
+  const j = state.jobs.get(id) || {};
+  const t = await api(`/api/v1/jobs/${id}/events`);
+  $("#pubTitle").textContent = `Timeline of ${j.short_id || id.slice(0, 8)} · ${j.name || ""}`;
+  $("#pubBody").innerHTML = t.events.length ? `<table><thead><tr><th>When</th><th>What</th><th>Machine</th><th>Lasted</th><th></th></tr></thead><tbody>${
+    t.events.map(e => { const d = e.detail || {}; return `<tr>
+      <td class="muted">${new Date(e.at * 1000).toLocaleTimeString()}</td>
+      <td>${esc(EVENT_LABEL[e.event] || e.event)}</td><td>${esc(e.worker || "")}</td>
+      <td>${e.seconds == null ? "" : dur(e.seconds) || "0s"}</td>
+      <td class="${d.error ? "err" : "muted"}">${esc(d.error || d.reason || d.stage || "")}</td></tr>`; }).join("")}</tbody></table>`
+    : '<div class="empty">No timeline: this job was submitted before the farm kept one.</div>';
   dlg.showModal();
 }
 

@@ -256,6 +256,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def get_job(job_id: str, ident: Identity = Depends(identity)):
         return farm.annotate([_job_or_404(job_id)])[0]
 
+    @app.get("/api/v1/jobs/{job_id}/events")
+    def job_events(job_id: str, ident: Identity = Depends(identity)):
+        """The job's timeline: each status it went through, where, and for how long."""
+        return farm.timeline(_job_or_404(job_id)["id"])
+
     @app.delete("/api/v1/jobs/{job_id}")
     async def cancel_job(job_id: str, ident: Identity = Depends(identity)):
         job = _job_or_404(job_id)

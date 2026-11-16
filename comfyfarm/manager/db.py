@@ -8,6 +8,7 @@ batches) and its "batch" jobs (parent_id = the set), each an ordinary run."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from collections import Counter
@@ -20,6 +21,15 @@ from .eta import fold
 __all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "now"]
 
 JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt")
+
+# Stages worth a line in a job's timeline: the steps before and after the GPU run. While it
+# runs, the stage is the node ComfyUI is on, which changes too often to keep.
+STAGE_EVENTS = ("preparing", "postprocessing")
+_COUNTER = re.compile(r"\s+\d+/\d+$")      # "converting EXR to PNG 12/240" is one step, not 240
+
+
+def stage_label(stage: str | None) -> str:
+    return _COUNTER.sub("", stage or "")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -77,6 +87,17 @@ CREATE TABLE IF NOT EXISTS publishes (
     finished_at REAL
 );
 CREATE INDEX IF NOT EXISTS publishes_job ON publishes(job_id, created_at);
+CREATE TABLE IF NOT EXISTS job_events (      -- a job's timeline: what happened to it, and when
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    at REAL NOT NULL,
+    event TEXT NOT NULL,        -- submitted, a status, requeued, retried, cancel_requested, stage
+    status TEXT,                -- the job's status after it
+    worker TEXT,
+    attempt TEXT,               -- the run's attempt id (jobs.prompt_id)
+    detail TEXT                 -- JSON: stage, error, reason
+);
+CREATE INDEX IF NOT EXISTS job_events_job ON job_events(job_id, id);
 CREATE TABLE IF NOT EXISTS workflow_stats (
     workflow TEXT PRIMARY KEY,
     runs INTEGER NOT NULL DEFAULT 0,
@@ -146,6 +167,7 @@ class JobStore:
         with self._lock:
             self._db.execute(f"INSERT INTO jobs ({cols}) VALUES ({','.join('?' * len(job))})",
                              tuple(job.values()))
+            self._submitted(job)
         return self.get(job["id"])
 
     def insert_many(self, jobs: list[dict]) -> None:
@@ -156,6 +178,7 @@ class JobStore:
                 for job in map(self._encoded, jobs):
                     self._db.execute(f"INSERT INTO jobs ({','.join(job)}) VALUES ({','.join('?' * len(job))})",
                                      tuple(job.values()))
+                    self._submitted(job)
             except Exception:
                 self._db.execute("ROLLBACK")
                 raise
@@ -163,12 +186,15 @@ class JobStore:
 
     def update(self, job_id: str, **fields: Any) -> dict | None:
         if fields:
+            plain = dict(fields)
             for k in JSON_FIELDS:
                 if k in fields and fields[k] is not None:
                     fields[k] = json.dumps(fields[k])
             sets = ",".join(f"{k}=?" for k in fields)
             with self._lock:
+                before = self._before(job_id)
                 self._db.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*fields.values(), job_id))
+                self._changed(before, plain)
         return self.get(job_id)
 
     def transition(self, job_id: str, from_statuses: tuple, *, only_prompt: str | None = None,
@@ -177,6 +203,7 @@ class JobStore:
         between websocket events, reconciliation and cancels), and with only_prompt, only
         while that is still its ComfyUI prompt (the same run, not a later attempt). None
         if it wasn't."""
+        plain = dict(fields)
         for k in JSON_FIELDS:
             if k in fields and fields[k] is not None:
                 fields[k] = json.dumps(fields[k])
@@ -187,10 +214,65 @@ class JobStore:
             where += " AND prompt_id=?"
             args.append(only_prompt)
         with self._lock:
+            before = self._before(job_id)
             cur = self._db.execute(f"UPDATE jobs SET {sets} WHERE {where}", (*fields.values(), *args))
             if cur.rowcount == 0:
                 return None
+            self._changed(before, plain)
         return self.get(job_id)
+
+    # ---------------------------------------------------------------- timeline
+    # Written here, where every change to a job passes, so no caller can forget one. Always
+    # called with the lock held, in the same breath as the change itself.
+    def _event(self, job_id: str, event: str, status: str | None, worker: str | None = None,
+               attempt: str | None = None, **detail: Any) -> None:
+        detail = {k: v for k, v in detail.items() if v}
+        self._db.execute("INSERT INTO job_events (job_id, at, event, status, worker, attempt, detail) "
+                         "VALUES (?,?,?,?,?,?,?)",
+                         (job_id, now(), event, status, worker, attempt, json.dumps(detail) if detail else None))
+
+    def _submitted(self, job: dict) -> None:
+        kind = job.get("kind")
+        self._event(job["id"], "submitted", job.get("status"), kind=kind if kind != "job" else None)
+
+    def _before(self, job_id: str) -> sqlite3.Row | None:
+        return self._db.execute("SELECT id, status, stage, worker, prompt_id, cancel_requested FROM jobs WHERE id=?",
+                                (job_id,)).fetchone()
+
+    def _changed(self, before: sqlite3.Row | None, fields: dict) -> None:
+        """The timeline line for one change, if it is worth one: a new status, a cancel
+        asked for, or a new step while preparing or collecting outputs."""
+        if before is None:
+            return
+        status = fields.get("status", before["status"])
+        worker = fields.get("worker") or before["worker"]          # a requeue clears it: keep where it was
+        attempt = fields.get("prompt_id") or before["prompt_id"]
+        if status != before["status"]:
+            event, detail = status, {"error": fields.get("error")}
+            if status == "queued" and before["status"] in HELD:
+                event = "requeued"
+                detail["reason"] = (fields.get("warnings") or [None])[-1]
+            elif status == "queued" and before["status"] in FINISHED:
+                event = "retried"
+            if status in STAGE_EVENTS or fields.get("stage") not in (None, status, "queued", "requeued"):
+                detail["stage"] = stage_label(fields.get("stage"))
+            self._event(before["id"], event, status, worker, attempt, **detail)
+        elif fields.get("cancel_requested") and not before["cancel_requested"]:
+            self._event(before["id"], "cancel_requested", status, worker, attempt)
+        elif status in STAGE_EVENTS and fields.get("stage") is not None:
+            label = stage_label(fields["stage"])
+            if label != stage_label(before["stage"]):
+                self._event(before["id"], "stage", status, worker, attempt, stage=label)
+
+    def events(self, job_id: str) -> list[dict]:
+        """A job's timeline, oldest first."""
+        out = []
+        for r in self._q("SELECT at, event, status, worker, attempt, detail FROM job_events "
+                         "WHERE job_id=? ORDER BY id", (job_id,)):
+            d = dict(r)
+            d["detail"] = json.loads(d["detail"]) if d["detail"] else {}
+            out.append(d)
+        return out
 
     def get(self, job_id: str, with_prompt: bool = False) -> dict | None:
         rows = self._q("SELECT * FROM jobs WHERE id=?", (job_id,))
@@ -296,6 +378,7 @@ class JobStore:
         with self._lock:
             cur = self._db.execute(
                 "DELETE FROM jobs WHERE status IN ('done','failed','cancelled') AND finished_at < ?", (ts,))
+            self._db.execute("DELETE FROM job_events WHERE job_id NOT IN (SELECT id FROM jobs)")
             return cur.rowcount
 
     # ---------------------------------------------------------------- drained machines

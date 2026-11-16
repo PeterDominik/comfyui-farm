@@ -163,6 +163,27 @@ class FarmSetTests(unittest.TestCase):
             fields["outputs"] = {"files": 5 * b["info"]["batch"]["tiles"]}
         self.farm._emit(self.store.update(b["id"], **fields))
 
+    def test_timeline_of_a_set_and_its_batches(self):
+        src = self.tiles("src", "rockA_diffuse", range(1001, 1011), png_bytes(2, (2048, 2048)))
+        s = self.farm.submit("chord_pbr", {"input": src}, "ann")
+        batches = self.store.list(parent=s["id"])
+        waiting = self.farm.timeline(s["id"])
+        self.assertEqual([e["event"] for e in waiting["events"]], ["submitted"])
+        self.assertIsNotNone(waiting["events"][-1]["seconds"])           # still queued: counted up to now
+        self.finish(batches[0])
+        self.finish(batches[1], "failed", "CUDA out of memory.")
+        self.finish(batches[2])
+        t = self.farm.timeline(s["id"])
+        self.assertEqual([e["event"] for e in t["events"]], ["submitted", "running", "failed"])
+        self.assertIn("1 of 3 batches didn't finish", t["events"][-1]["detail"]["error"])
+        self.assertIsNone(t["events"][-1]["seconds"])                    # over: the last line has no length
+        self.assertTrue(all(e["seconds"] >= 0 for e in t["events"][:-1]))
+        one = self.farm.timeline(batches[1]["id"])
+        self.assertEqual([(e["event"], e["detail"]) for e in one["events"]],
+                         [("submitted", {"kind": "batch"}), ("failed", {"error": "CUDA out of memory."})])
+        with self.assertRaisesRegex(FarmError, "Job not found"):
+            self.farm.timeline("nope-nope")
+
     def test_large_texture_becomes_a_set(self):
         src = self.tiles("src", "rockA_diffuse", range(1001, 1011), png_bytes(2, (2048, 2048)))
         preview = self.farm.plan_summary(self.farm.plan("chord_pbr", {"input": src}))
