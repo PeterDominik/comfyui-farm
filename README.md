@@ -1510,6 +1510,11 @@ outputs:                       # nodes the gateway points at each job's versione
 
 ## Development
 
+`CLAUDE.md` holds the working rules (layering, tests, how a change is made), `docs/plan.md` the
+build plan and `docs/decisions/` the reasons behind it. Every pull request runs the full suite on
+GitHub Actions (`.github/workflows/tests.yml`): Linux must pass; Windows is reported but does not
+block yet.
+
 ```bash
 pip install -r requirements-dev.txt               # the farm's requirements + what only the tests use
 python -m unittest discover -s tests -t . -v      # unit + end-to-end (2-3 minutes)

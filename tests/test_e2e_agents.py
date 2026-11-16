@@ -316,7 +316,8 @@ delete_comfy_history: false{launch[name]}
             self.assertTrue(any(ln.startswith(f"[ ok ] worker {name} http://127.0.0.1:") for ln in ok), out)
             self.assertTrue(any(f"{name} has every node, input and model ltx25_alpha_gen needs" in ln for ln in ok), out)
             self.assertTrue(any(ln.startswith("[ ok ] storage /rdo/shows") for ln in ok), out)
-            self.assertTrue(any(ln.startswith("[ ok ] scratch ") for ln in ok), out)
+            # [WARN] when the disk has under 20 GB free (a CI runner): the folder is still checked.
+            self.assertTrue(any(" scratch " in ln and ": writable" in ln for ln in lines), out)
         self.assertTrue(any("manager.json" in ln and "token accepted" in ln for ln in check("gpu-b")[1]))
         self.assertTrue(any(ln.startswith("[ ok ] ComfyUI is started with:") for ln in check("gpu-b")[1]))
         bad = self.tmp / "bad-token.yaml"
