@@ -779,7 +779,7 @@ convert:
                          ("http://wrk1125l.rodeofx.com:9090", ["ComfyFarm Open"], True))
         self.assertEqual(sorted({(i["entity_type"], i["workflow"]) for i in menu["items"]}),
                          [(t, w) for t in ("Playlist", "Version")
-                          for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "wan22_i2i")])
+                          for w in ("chord_pbr", "ltx25_alpha_gen", "ltx25_layout_render", "sam3_ltx_alpha", "wan22_i2i")])
         self.assertEqual((menu["sync"]["enabled"], menu["sync"]["last"]), (False, None))  # the manager doesn't sync it here
         req = urllib.request.Request(f"{base}/api/v1/shotgrid/menu/sync", data=b"", method="POST")
         with self.assertRaises(urllib.error.HTTPError) as e:
