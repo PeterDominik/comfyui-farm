@@ -12,6 +12,7 @@ server:
 
 database: data/comfyfarm.db
 log_dir: logs
+# log_json: true    # also write logs/comfyfarm.jsonl: the same lines, one JSON object each, for a log collector
 workflows_dir: workflows
 
 # standalone: the ComfyUI instances on this machine that run jobs, each with an agent in

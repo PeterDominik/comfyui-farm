@@ -304,6 +304,7 @@ class Config(BaseModel):
     share: ShareConfig = Field(default_factory=ShareConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
+    log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line
     workflows_dir: str = "workflows"
     workers: list[WorkerConfig] = Field(default_factory=lambda: [WorkerConfig(name="local")])
     paths: PathsConfig = Field(default_factory=PathsConfig)
@@ -361,6 +362,7 @@ class AgentConfig(BaseModel):
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []
     log_dir: str = "logs"
+    log_json: bool = False                      # also write logs/agent-<name>.jsonl, one JSON object per line
     paths: AgentPathsConfig = Field(default_factory=AgentPathsConfig)
     convert: ConvertConfig = Field(default_factory=ConvertConfig)   # scratch_dir, tools, frame_workers
     textures: TexturesConfig = Field(default_factory=TexturesConfig)
