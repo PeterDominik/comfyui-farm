@@ -27,10 +27,13 @@ from . import __version__
 from .config import Config, load_config
 from .fileio import farmnodes
 from .fileio.ocio import REPO, nuke_ramp, ocio_roles
+from .logs import json_handler
 from .workflows import WorkflowRegistry
 
 
 def setup_logging(cfg, verbose: bool = False, filename: str = "comfyfarm.log") -> None:
+    """Console and a rotating text log; with log_json, the same lines as JSON beside it
+    (comfyfarm.jsonl, agent-<name>.jsonl) for a log collector."""
     log_dir = cfg.resolve(cfg.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
@@ -41,7 +44,13 @@ def setup_logging(cfg, verbose: bool = False, filename: str = "comfyfarm.log") -
     fileh = logging.handlers.RotatingFileHandler(log_dir / filename, maxBytes=5_000_000,
                                                  backupCount=5, encoding="utf-8")
     fileh.setFormatter(fmt)
-    root.handlers[:] = [console, fileh]
+    handlers = [console, fileh]
+    if getattr(cfg, "log_json", False):
+        agent = getattr(cfg, "name", None) if filename.startswith("agent-") else None
+        handlers.append(json_handler(log_dir / (Path(filename).stem + ".jsonl"), "agent" if agent else "manager", agent))
+    for old in root.handlers:           # a second call (standalone: manager, then agents) must not leak files
+        old.close()
+    root.handlers[:] = handlers
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 

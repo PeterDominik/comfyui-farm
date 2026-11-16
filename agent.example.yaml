@@ -38,6 +38,7 @@ comfyui_launch:
 # environment_seconds: 900       # checked this often, and whenever ComfyUI starts
 
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
+# log_json: true                # also logs/agent-<name>.jsonl: the same lines, one JSON object each
 
 paths:
   # How this machine sees show storage. Linux machines that see /rdo/shows as it is need

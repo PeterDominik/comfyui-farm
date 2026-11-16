@@ -1491,6 +1491,11 @@ outputs:                       # nodes the gateway points at each job's versione
   agent on another machine logs to `logs/agent-<name>.log` there, and ComfyUI, when its agent
   starts it, to `logs/comfyui-<name>.log`. `farmctl.sh` keeps console output in
   `logs/manager.out` and `logs/agent.out`.
+- **JSON logs:** set `log_json: true` in `config.yaml` (and in an agent's `agent.yaml`) to also get
+  `logs/comfyfarm.jsonl` and `logs/agent-<name>.jsonl`: the same lines as the text log, one JSON
+  object each, for a log collector. Fields: `ts` (UTC), `level`, `logger`, `role` (`manager` or
+  `agent`), `host`, `agent` (its name, on an agent), `msg`, and, when the line is about one, `job`
+  (the 8-character id) and `worker`; `error` holds a traceback. Off by default.
 - **State:** `data/comfyfarm.db` (SQLite). Back it up or delete it; nothing else depends on it.
 - **Restarts:**
   - Manager restarts mid-job: agents carry on, and report what finished meanwhile when it's back.
