@@ -73,11 +73,40 @@ if have and "--ch" in args:
                             f'(actual channels: "{",".join(have)}")')
 for w in warnings:
     print(w, file=sys.stderr)
+
+
+def append_line(path: str, line: str) -> None:
+    """One whole line onto the log, safe when several of these run at once (the farm converts
+    frames in parallel). Appending isn't atomic on Windows: two processes both seek to the
+    end and one overwrites the other, so calls went missing or came out as half lines. A lock
+    file makes the writers take turns, and the line goes out in a single write."""
+    lock, waited = path + ".lock", 0.0
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except (FileExistsError, PermissionError):       # PermissionError: Windows, while the holder deletes it
+            time.sleep(0.005)
+            waited += 0.005
+            if waited > 10:                              # a writer died holding it: don't hang the test
+                break
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0))
+        try:
+            os.write(fd, (line + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
 log = os.environ.get("FAKE_OIIOTOOL_LOG")
 if log:
-    with open(log, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"args": args, "SEQ": os.environ.get("SEQ"), "SHOT": os.environ.get("SHOT"),
-                             "warnings": warnings}) + "\n")
+    append_line(log, json.dumps({"args": args, "SEQ": os.environ.get("SEQ"), "SHOT": os.environ.get("SHOT"),
+                                 "warnings": warnings}))
 if "broken" in os.path.basename(src):
     print(f"oiiotool ERROR: Could not open \"{src}\": bad EXR header", file=sys.stderr)
     sys.exit(1)
