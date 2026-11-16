@@ -140,7 +140,9 @@ class RepoConfigProcessorTests(unittest.TestCase):
                              f'<Offset>0 0 0</Offset><Power>1 1 1</Power></SOPNode>'
                              f'<SatNode><Saturation>{sat}</Saturation></SatNode></ColorCorrection>\n')
                 ref = OCIO.Config.CreateFromFile(str(REFERENCE))
-                ref.setSearchPath(f"{d}:{OCIO_DIR / 'luts'}")
+                ref.clearSearchPaths()               # one at a time: a ":"-joined string splits C:\\... on Windows
+                ref.addSearchPath(d)
+                ref.addSearchPath(str(OCIO_DIR / "luts"))
                 ref_fwd = np.round(np.clip(_apply(self.cpu(ref, LINEAR, IMAGE), lin), 0, 1) * 255)
                 ref_inv = _apply(self.cpu(ref, IMAGE, LINEAR), png)
                 self.assertLessEqual(np.abs(ours_fwd - ref_fwd).max(), 1)
