@@ -234,6 +234,17 @@ delete_comfy_history: false{launch[name]}
         self.assertTrue(all(w.startswith(scratch) for w in written), written)
         self.assertFalse(os.path.exists(scratch), "scratch frames should be cleaned up")
         self.assertFalse((self.tmp / "manager/scratch" / job["id"]).exists())   # nothing on the manager
+        # Its timeline: every state it went through, with the conversion as its own step.
+        events = farm._request("GET", f"/api/v1/jobs/{job['id']}/events")["events"]
+        self.assertEqual(events, farm.events(job["id"]))
+        names = [e["event"] for e in events]
+        self.assertEqual([n for n in names if n != "stage"],
+                         ["submitted", "preparing", "dispatched", "running", "postprocessing", "done"])
+        steps = [e["detail"]["stage"] for e in events if e["event"] == "stage" and e["status"] == "preparing"]
+        self.assertTrue(any(s_.startswith("converting EXR") for s_ in steps), events)
+        self.assertEqual({e["worker"] for e in events[1:]}, {done["worker"]})
+        self.assertIsNone(events[-1]["seconds"])
+        self.assertTrue(all(e["seconds"] is not None for e in events[:-1]))
 
     def test_03_cancel_running_and_queued(self):
         job = self.submit("1001-1012")

@@ -113,6 +113,19 @@ class Farm:
             if job.get("parent_id"):
                 self._refresh_set(job["parent_id"])
 
+    def timeline(self, job_id: str) -> dict:
+        """What happened to a job and when, oldest first, with how long each step lasted
+        (the last one up to now, while the job is still active)."""
+        job = self.store.get(job_id)
+        if not job:
+            raise FarmError("Job not found.", 404)
+        events = self.store.events(job["id"])
+        end = now() if job["status"] in ACTIVE else None
+        for e, nxt in zip(events, events[1:] + [None]):
+            until = nxt["at"] if nxt else end
+            e["seconds"] = round(max(until - e["at"], 0.0), 3) if until is not None else None
+        return {"job": job["id"], "status": job["status"], "events": events}
+
     # ================================================================ texture sets
     def _refresh_set(self, set_id: str) -> dict | None:
         """Work out a set's status, progress and outputs from its batches; called whenever

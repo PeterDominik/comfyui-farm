@@ -269,6 +269,12 @@ def publishes(job_id: str) -> list:
     return _request("GET", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/publishes")["publishes"]
 
 
+def events(job_id: str) -> list:
+    """A job's timeline, oldest first: each status it went through, on which machine, and
+    for how many seconds."""
+    return _request("GET", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/events")["events"]
+
+
 def describe_publish(p: dict) -> str:
     s = f"publish {p.get('state')}: {p.get('show')} {p.get('shot')} {p.get('step')} with {p.get('template')}.nk"
     if p.get("tractor_id"):

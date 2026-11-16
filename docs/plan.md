@@ -61,5 +61,6 @@ A4 launchers (xStudio, Daiquiri Automate).
 
 ## Progress
 
-- Phase 0: `CLAUDE.md`, decision records and CI are in. Next: `job_events` and the job
-  timeline, then JSON logs, then baseline timings.
+- Phase 0: `CLAUDE.md`, decision records and CI are in, and the suite passes on Linux and
+  Windows. The `job_events` table and the job timeline (API, client, dashboard) are in.
+  Next: JSON logs, then baseline timings.
