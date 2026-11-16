@@ -63,5 +63,6 @@ A4 launchers (xStudio, Daiquiri Automate).
 
 - Phase 0: `CLAUDE.md`, decision records and CI are in, and the suite passes on Linux and
   Windows. The `job_events` table and the job timeline (API, client, dashboard) are in.
-  JSON logs are in, off by default (`log_json`). Next: baseline timings, cold and warm,
-  per workflow and GPU on the three pilot machines.
+  JSON logs are in, off by default (`log_json`). `tools/baseline.py` reports cold and warm
+  timings per workflow and GPU from the farm's own jobs. Left: take the baseline on the
+  three pilot machines and commit it to `docs/baseline/` (see its README).
