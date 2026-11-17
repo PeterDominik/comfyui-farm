@@ -442,14 +442,14 @@ convert:
         self.assertIn("Will write</b> 4 frames", text)
         self.assertIn("/comfyui/renders/abc_0010/</code>", text)
         job = m.submit("ltx25_alpha_gen", raw, source_node="Read3")
-        prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")
-        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 42)
         finished, end = [], time.time() + 40
         while not finished and time.time() < end:
             jobs, finished = m.poll(mine=True, active_only=True)
             time.sleep(0.2)
         self.assertEqual([(j["id"], j["status"]) for j in finished], [(job["id"], "done")])   # once,
         self.assertEqual(m.poll(mine=True, active_only=True)[1], [])                          # not twice
+        prompt = farm._request("GET", f"/api/v1/jobs/{job['id']}/prompt")     # as the machine that ran it built it
+        self.assertEqual(prompt["5516:4832"]["inputs"]["noise_seed"], 42)
         self.assertEqual(m.sources[job["id"]], "Read3")
         row = m.row(finished[0], labels=m.labels())
         self.assertEqual(row[panel.COLUMNS.index("Status")], "done")

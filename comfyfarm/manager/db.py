@@ -41,8 +41,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     priority INTEGER NOT NULL DEFAULT 0,
     params TEXT,
     info TEXT,
-    prompt TEXT,                -- the ComfyUI graph, when the manager built it
-    request TEXT,               -- what to build it from, when the machine that runs it does (workflows.request)
+    prompt TEXT,                -- what its last run handed its backend, as the agent reported it (for ComfyUI
+                                -- the API JSON); in rows from before agents built graphs, the graph to run
+    request TEXT,               -- what the machine that runs it builds that from (workflows.request)
     worker TEXT,
     prompt_id TEXT,
     progress REAL NOT NULL DEFAULT 0,

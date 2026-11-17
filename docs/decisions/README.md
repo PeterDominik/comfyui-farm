@@ -21,3 +21,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0013](0013-graph-built-where-the-job-runs.md) | The machine that runs a job builds its graph, from a stored request | accepted |
 | [0014](0014-agents-report-what-they-can-run.md) | Agents report what they can run | accepted |
 | [0015](0015-process-yaml.md) | A definition is a process.yaml: a shared head and a runner block | accepted |
+| [0016](0016-manager-stores-requests-only.md) | The manager stores requests only, and keeps what a run submitted as the agent reports it | accepted |

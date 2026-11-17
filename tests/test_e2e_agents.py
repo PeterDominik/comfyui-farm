@@ -42,7 +42,6 @@ AGENTS = ("gpu-a", "gpu-b")
 
 
 class AgentsE2E(unittest.TestCase):
-    BUILD_ON_AGENT = False      # farm.build_on_agent; AgentsBuildE2E below runs it all with it on
 
     @classmethod
     def setUpClass(cls):
@@ -75,7 +74,7 @@ share: {{dir: "{root}/share"}}
 paths:
   mappings: [{{posix: /rdo/shows, windows: "{root}/shows"}}]
   output_root: "{root}/shows/{{show}}/_project_ref/_cg/comfyui/renders"
-farm: {{lost_after_seconds: {LEASE}, build_on_agent: {str(cls.BUILD_ON_AGENT).lower()}}}
+farm: {{lost_after_seconds: {LEASE}}}
 ocio: {{config: "{root}/ocio/config.ocio"}}
 convert: {{scratch_dir: {root}/manager/scratch, tools: {{oiiotool: {oiiotool}}}}}
 """)
@@ -357,12 +356,6 @@ delete_comfy_history: false{launch[name]}
             urllib.request.urlopen(req, timeout=5)
         self.assertEqual(e.exception.code, 401)
         self.assertNotIn("intruder", {w["name"] for w in farm.workers()})
-
-
-class AgentsBuildE2E(AgentsE2E):
-    """The same farm with farm.build_on_agent: each agent builds the graph from the request
-    it gets over HTTP, with its own checkout's workflows."""
-    BUILD_ON_AGENT = True
 
 
 if __name__ == "__main__":

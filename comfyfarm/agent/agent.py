@@ -82,7 +82,6 @@ class Agent:
         self.view = W.View(mappings=cfg.paths.mappings, scratch=self.scratch_root, repo=P.normalize(str(REPO)))
         self.held: dict[str, Held] = {}          # job id -> its run
         self.problems: dict[str, list[str]] = {}
-        self.wants = "object_info"               # what the manager checks workflows against (its hello says)
         # What workflows can ask for (requires.tags): agent.yaml's tags, and this OS.
         osname = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else sys.platform
         self.tags = sorted({str(t).strip().lower() for t in cfg.tags if str(t).strip()} | {osname})
@@ -188,7 +187,6 @@ class Agent:
             raise LinkError(reply["error"])
         self.registered = True
         self.lease_seconds = reply.get("lease_seconds")
-        self.wants = reply.get("wants") or "object_info"    # an older manager doesn't say: node definitions
         for d in reply.get("drop") or []:
             await self._drop(d["job"], d["attempt"])
         for p in reply.get("adopt") or []:
@@ -232,9 +230,7 @@ class Agent:
 
     async def send_nodes(self) -> None:
         try:
-            told = {"processes": self.runner.processes()} if self.wants == "processes" else \
-                {"object_info": self.runner.object_info or {}}
-            reply = await self.link.nodes({"name": self.name, **told})
+            reply = await self.link.nodes({"name": self.name, "processes": self.runner.processes()})
         except LinkError:
             return                      # sent again after hello
         if reply.get("hello"):
@@ -425,7 +421,8 @@ class Agent:
             return
         h.status, h.dispatched_at = "dispatched", now()
         log.info("job %s -> %s on %s (prompt %s)", h.id[:8], self.runner.label, self.name, h.pid[:8])
-        await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid)
+        # With what the runner handed its backend, which the manager keeps for people to look at.
+        await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid, submitted=self.runner.submitted(h))
         if h.cancelling and not h.dropped:
             if await self.runner.cancel(h):
                 await self._cancelled(h)

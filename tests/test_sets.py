@@ -202,13 +202,15 @@ class FarmSetTests(unittest.TestCase):
                          ["UDIMs 1001–1004", "UDIMs 1005–1008", "UDIMs 1009–1010"])
         for b in batches:
             full = self.store.get(b["id"], with_prompt=True)
+            self.assertIsNone(full["prompt"])                                   # built by the machine that runs it
+            graph = self.farm.registry.workflows["chord_pbr"].build_from(full["request"])
             c = b["info"]["input"]["convert"]
             self.assertEqual((b["kind"], b["status"], b["output_dir"], b["output_key"]),
                              ("batch", "queued", out, None))
             self.assertEqual(c["dst_dir"], f"{self.root}/scratch/{b['id']}/")   # its own scratch folder
-            self.assertEqual(full["prompt"]["17"]["inputs"]["path"], c["dst_dir"] + c["dst_pattern"])
-            self.assertEqual(full["prompt"]["17"]["inputs"]["frames"], frames_text(c["frames"]))
-            self.assertEqual(full["prompt"]["28"]["inputs"]["output_path"], f"{self.root}/scratch/{b['id']}/maps")
+            self.assertEqual(graph["17"]["inputs"]["path"], c["dst_dir"] + c["dst_pattern"])
+            self.assertEqual(graph["17"]["inputs"]["frames"], frames_text(c["frames"]))
+            self.assertEqual(graph["28"]["inputs"]["output_path"], f"{self.root}/scratch/{b['id']}/maps")
             self.assertEqual(len(b["info"]["textures"]["items"]), len(c["names"]))
         self.assertEqual(batches[2]["info"]["input"]["convert"]["names"],
                          ["rockA_diffuse.1009.png", "rockA_diffuse.1010.png"])
@@ -273,7 +275,8 @@ class FarmSetTests(unittest.TestCase):
         src = self.tiles("small", "rockA_diffuse", range(1001, 1007), png_bytes(2, (800, 800)))
         s = self.farm.submit("chord_pbr", {"input": src}, "ann")
         batches = [self.store.get(b["id"], with_prompt=True) for b in self.store.list(parent=s["id"])]
-        loaders = [b["prompt"]["17"]["inputs"] for b in batches]
+        wf = self.farm.registry.workflows["chord_pbr"]
+        loaders = [wf.build_from(b["request"])["17"]["inputs"] for b in batches]
         self.assertEqual([(x["path"], x["frames"]) for x in loaders],
                          [(f"{self.asset}/small/rockA_diffuse.%04d.png", "1001-1004"),
                           (f"{self.asset}/small/rockA_diffuse.%04d.png", "1005-1006")])

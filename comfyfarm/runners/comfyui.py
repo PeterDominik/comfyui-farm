@@ -153,13 +153,14 @@ class ComfyUIRunner:
                 for name, wf in self._workflows().items()}
 
     def _prompt(self, h) -> dict:
-        """The run's graph: as the manager sent it, or built here from the job's request with
-        this checkout's copy of the workflow (kept on the job, so it's built once)."""
+        """The run's graph, built here from the job's request with this checkout's copy of the
+        workflow (kept on the job, so it's built once)."""
         job = h.job
         if job.get("prompt") is None:
             request = job.get("request")
-            if not request:
-                raise RunRejected("The job came with neither a graph nor a request to build one from.")
+            if not request:             # a row from when the manager built and stored graphs
+                raise RunRejected("This job was queued before the farm changed how it stores jobs, and can't "
+                                  "run as it is. Submit it again.")
             wf = self._workflows().get(job["workflow"])
             if wf is None:
                 raise RunRejected(f"{self.name} has no workflow {job['workflow']}. Update the farm's code on it.")
@@ -170,6 +171,10 @@ class ComfyUIRunner:
             except ParamError as e:
                 raise RunRejected(str(e)) from None
         return job["prompt"]
+
+    def submitted(self, h) -> dict | None:
+        """The API JSON this run was queued with (None for a run found again after a restart)."""
+        return h.job.get("prompt")
 
     async def submit(self, h) -> None:
         """Put the run's prompt in ComfyUI's queue. Sets h.pid and h.rt."""

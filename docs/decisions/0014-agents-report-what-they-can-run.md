@@ -26,3 +26,5 @@ running the workflows it does match. The check now runs with the agent's copy of
 workflow, so a definition fix reaches a machine only when its code is updated; remote
 updates are phase 4 and phase 9. The runner still refuses a job whose fingerprint does not
 match, for a checkout that changed after it was reported.
+
+Later: 0016 made this the only way; an agent that sends node definitions is passed over.

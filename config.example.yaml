@@ -157,12 +157,6 @@ farm:
   reconcile_seconds: 20    # jobs cross-checked against ComfyUI's queue and history this often
   health_seconds: 5        # ComfyUI checked this often
   delete_comfy_history: true
-  # The machine that runs a job builds its ComfyUI graph, from the request the manager stores
-  # (the workflow, its parameters and resolved inputs), with its own checkout's copy of the
-  # workflow. Each agent then tells the manager which workflows it holds and can run; a
-  # machine whose copy of one differs from the manager's is passed over for it (the Machines
-  # tab says so). Off: the manager builds and stores the graph and checks the workflows itself.
-  # build_on_agent: true
 
 # Publishing finished jobs through the pipeline (README, Publishing): a Nuke template staged
 # with the job's frames, then Daiquiri's update_and_render_nuke dispatched to Tractor.

@@ -167,9 +167,6 @@ class FarmConfig(BaseModel):
     # Fail jobs straight away when the worker is missing a node pack, an input the
     # workflow uses, or a model file (see `python -m comfyfarm check`).
     strict_preflight: bool = True
-    # The machine that runs a job builds its ComfyUI graph, from the request the manager
-    # stores (docs/decisions/0013). Off: the manager builds and stores the graph itself.
-    build_on_agent: bool = False
 
 
 class ShareConfig(BaseModel):
@@ -451,6 +448,9 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     if old_exr:
         cfg.obsolete_keys.append(f"convert.exr: {', '.join(old_exr)} no longer used; EXRs are converted with the "
                                  f"repo's OCIO config (ocio: in config.yaml). Delete those lines")
+    if "build_on_agent" in (data.get("farm") or {}):
+        cfg.obsolete_keys.append("farm.build_on_agent is no longer used: the machine that runs a job always "
+                                 "builds its graph. Delete the line")
     old_tex = sorted(set(data.get("textures") or {}) - {"workers"})
     if old_tex:
         cfg.obsolete_keys.append(f"textures: {', '.join(old_tex)} no longer used; colour comes from ocio: in "

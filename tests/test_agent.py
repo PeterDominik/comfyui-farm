@@ -28,12 +28,13 @@ from test_preview import FFMPEG, png
 from comfyfarm.comfyenv import spec as ES
 from comfyfarm.config import AgentConfig, Config
 from comfyfarm.fileio import farmnodes
+from comfyfarm.fileio import wire as W
 from comfyfarm.fileio.errors import SequenceError
 from comfyfarm.fileio.media import read_movie_info
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
-from comfyfarm.manager.farm import Farm
+from comfyfarm.manager.farm import Farm, FarmError
 from comfyfarm.protocol import LinkError
 from comfyfarm.workflows import ParamError, WorkflowRegistry
 
@@ -251,6 +252,7 @@ class AgentTests(unittest.TestCase):
                           convert={"scratch_dir": scratch or f"{self.root}/scratch-{name}",
                                    "tools": {"oiiotool": FAKE_OIIOTOOL}}, **settings)
         a = Agent(cfg, FlakyLink(self.desk), runner=ComfyUIRunner(cfg, client=comfy or FakeComfy()))
+        a.runner._registry = REGISTRY           # the suite's: some tests add workflows of their own to it
         self.agents.append(a)
         return a
 
@@ -1304,6 +1306,113 @@ class AgentTests(unittest.TestCase):
             reply = await self.desk.heartbeat({"name": "gpu1", "seq": 52, "held": [], "wait": 0})
             self.assertEqual([j["job"] for j in reply["jobs"]], [job["id"]])
         self.wait(go())
+
+
+    # ---------------------------------------------------------------- requests (decisions 0013, 0014, 0016)
+    def test_the_manager_stores_a_request_and_the_agent_builds_the_graph(self):
+        a = self.gpu("gpu1", 32)
+        job = self.submit()
+        stored = self.store.get(job["id"], with_prompt=True)
+        self.assertIsNone(stored["prompt"])
+        wf = REGISTRY.workflows["ltx25_alpha_gen"]
+        self.assertEqual(stored["request"]["definition"], wf.digest)
+        with self.assertRaisesRegex(FarmError, "once a machine has started it"):     # the dashboard's API JSON
+            self.farm.submitted(stored)
+        a.runner._registry = None               # as a real agent: its own checkout's workflows/, read now
+        self.beat(a)
+        self.until(lambda: a.runner.client.prompts, what="the graph in ComfyUI")
+        self.assertEqual(sorted(a.runner._registry.workflows), sorted(WorkflowRegistry(REPO / "workflows").workflows))
+        (sent,) = a.runner.client.prompts.values()
+        self.assertEqual(sent, W.localize(W.portable(wf.build_from(stored["request"]), self.desk.view), a.view))
+        # The agent tells the manager what it queued, and that is what the dashboard hands out.
+        self.until(lambda: self.job(job["id"])["status"] == "dispatched", what="the run reported")
+        self.assertEqual(self.farm.submitted(self.store.get(job["id"], with_prompt=True)), sent)
+        self.assertNotIn("prompt", self.desk._payload(self.store.get(job["id"], with_prompt=True),
+                                                      self.desk.agents["gpu1"]))        # never sent back out
+
+    def test_a_set_has_no_api_json_of_its_own(self):
+        with self.assertRaisesRegex(FarmError, "each of its batches has one"):
+            self.farm.submitted({"kind": "set", "prompt": None})
+
+    def stale(self, a, workflow="ltx25_alpha_gen"):
+        """Give the agent a checkout of its own whose copy of the workflow is another one."""
+        own = WorkflowRegistry(REPO / "workflows")
+        own.workflows[workflow].digest = "0" * 16
+        a.runner._registry = own
+        return a
+
+    def test_the_agent_says_what_it_can_run_and_sends_no_node_definitions(self):
+        sent = []
+        a = self.agent("gpu1")
+        nodes = a.link.nodes
+
+        async def spy(msg):
+            sent.append(msg)
+            return await nodes(msg)
+        a.link.nodes = spy
+        self.ready(a)
+        self.assertEqual([sorted(m) for m in sent], [["name", "processes"]])
+        told = sent[0]["processes"]
+        self.assertEqual(sorted(told), sorted(REGISTRY.workflows))
+        wf = REGISTRY.workflows["wan22_i2i"]
+        self.assertEqual(told["wan22_i2i"], {"digest": wf.digest, "problems": [],
+                                             "expected_nodes": wf.expected_nodes(a.runner.output_classes)})
+        state = self.desk.agents["gpu1"]
+        self.assertEqual((state.problems, state.checked), ({}, True))
+        self.assertEqual(state.expected["wan22_i2i"], told["wan22_i2i"]["expected_nodes"])
+
+    def test_a_machine_with_another_copy_of_the_workflow_is_passed_over(self):
+        self.any_gpu()
+        old = self.stale(self.agent("old"))
+        self.ready(old)
+        self.assertRegex(self.desk.agents["old"].problems["ltx25_alpha_gen"][0],
+                         r"its copy of the workflow \(0{16}\) and the manager's \([0-9a-f]{16}\) differ: update")
+        self.assertEqual(list(self.desk.agents["old"].problems), ["ltx25_alpha_gen"])   # its other workflows are fine
+        good = self.gpu("good", 32)
+        job = self.submit()
+        self.beat(old)
+        self.assertEqual(old.held, {})
+        self.beat(good)
+        self.until(lambda: good.runner.client.prompts, what="the job on the machine that matches")
+        self.assertEqual(self.job(job["id"])["worker"], "good")
+
+    def test_a_checkout_that_changed_after_it_was_reported_refuses_the_job(self):
+        a = self.gpu("gpu1", 32)
+        job = self.submit()
+        self.stale(a)                                               # pulled, or edited, since it checked in
+        self.beat(a)
+        self.until(lambda: self.job(job["id"])["status"] == "failed", what="the job refused")
+        self.assertRegex(self.job(job["id"])["error"],
+                         r"ltx25_alpha_gen on this machine \(0{16}\) and the one the manager planned the job with")
+        self.assertEqual(a.runner.client.prompts, {})
+
+    def test_a_machine_whose_checkout_lacks_the_workflow(self):
+        a = self.agent("gpu1")
+        own = WorkflowRegistry(REPO / "workflows")
+        del own.workflows["wan22_i2i"]
+        a.runner._registry = own
+        self.ready(a)
+        self.assertEqual(self.desk.agents["gpu1"].problems["wan22_i2i"],
+                         ["gpu1 has no workflow wan22_i2i: update the farm's code on it"])
+
+    def test_a_job_from_before_requests_is_refused_with_what_to_do(self):
+        a = self.gpu("gpu1", 32)
+        job = self.submit()
+        wf = REGISTRY.workflows["ltx25_alpha_gen"]
+        full = self.store.get(job["id"], with_prompt=True)
+        self.store.update(job["id"], prompt=wf.build_from(full["request"]), request=None)   # as the manager stored it
+        self.beat(a)
+        self.until(lambda: self.job(job["id"])["status"] == "failed", what="the job refused")
+        self.assertRegex(self.job(job["id"])["error"],
+                         "queued before the farm changed how it stores jobs.*Submit it again")
+        self.assertEqual(a.runner.client.prompts, {})
+
+    def test_an_agent_too_old_to_say_what_it_can_run_is_passed_over(self):
+        a = self.agent("old")
+        self.wait(a._hello())
+        self.assertEqual(self.desk.nodes({"name": "old", "object_info": {}})["problems"]["wan22_i2i"],
+                         ["old runs farm code too old to say what it can run: update the farm's code on it"])
+        self.assertEqual(sorted(self.desk.agents["old"].problems), sorted(REGISTRY.workflows))
 
 
 if __name__ == "__main__":

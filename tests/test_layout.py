@@ -80,6 +80,20 @@ class LayoutTests(unittest.TestCase):
                     for a in n.names} | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         self.assertEqual(sorted(i for i in imported if any(w in i.lower() for w in ("comfy", "httpx", "websocket"))), [])
 
+    def test_the_manager_builds_and_checks_no_graph(self):
+        """Phase 2 (docs/plan.md, decisions 0013 and 0014): the machine that runs a job builds its
+        graph and says what it can run. The manager's code calls none of the workflow's
+        ComfyUI-facing methods and reads no node definitions."""
+        graph_side = {"build", "build_from", "check_object_info", "expected_nodes", "fit_to_options", "template"}
+        for name in ("farm", "desk", "app", "db"):
+            source = (REPO / "comfyfarm/manager" / f"{name}.py").read_text(encoding="utf-8")
+            used = {n.attr for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Attribute)}
+            # app.py builds ShotGrid's menu with shotgrid.menu.build: a module's function, not a workflow's.
+            used -= {"build"} if name == "app" and "SM.build(" in source else set()
+            with self.subTest(module=name):
+                self.assertEqual(sorted(used & graph_side), [])
+                self.assertNotIn("object_info", source)
+
     def test_runners_need_neither_the_manager_nor_its_web_server(self):
         r = import_without(["comfyfarm.runners.comfyui"], ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
         self.assertEqual(r.returncode, 0, r.stderr)
