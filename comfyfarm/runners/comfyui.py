@@ -137,6 +137,21 @@ class ComfyUIRunner:
             prompt = None               # a run found again whose graph can't be rebuilt: no node titles
         return Runtime(job_id=h.id, expected=h.job.get("expected_nodes") or 20, titles=_titles(prompt))
 
+    def _workflows(self) -> dict:
+        if self._registry is None:
+            folder = self.cfg.workflows_dir
+            self._registry = WorkflowRegistry(self.cfg.resolve(folder) if folder else Path(REPO) / "workflows")
+        return self._registry.workflows
+
+    def processes(self) -> dict:
+        """What this machine can run, for the manager: each workflow of this checkout with its
+        fingerprint, what its ComfyUI lacks for it (node packs, inputs, models), and how many
+        nodes a run goes through."""
+        oi = self.object_info or {}
+        return {name: {"digest": wf.digest, "problems": wf.check_object_info(oi),
+                       "expected_nodes": wf.expected_nodes(self.output_classes)}
+                for name, wf in self._workflows().items()}
+
     def _prompt(self, h) -> dict:
         """The run's graph: as the manager sent it, or built here from the job's request with
         this checkout's copy of the workflow (kept on the job, so it's built once)."""
@@ -145,10 +160,7 @@ class ComfyUIRunner:
             request = job.get("request")
             if not request:
                 raise RunRejected("The job came with neither a graph nor a request to build one from.")
-            if self._registry is None:
-                folder = self.cfg.workflows_dir
-                self._registry = WorkflowRegistry(self.cfg.resolve(folder) if folder else Path(REPO) / "workflows")
-            wf = self._registry.workflows.get(job["workflow"])
+            wf = self._workflows().get(job["workflow"])
             if wf is None:
                 raise RunRejected(f"{self.name} has no workflow {job['workflow']}. Update the farm's code on it.")
             try:

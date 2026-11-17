@@ -58,6 +58,7 @@ class Runner(Protocol):
     def start(self) -> list: ...            # its background tasks
     async def close(self) -> None: ...
     def status(self) -> dict: ...           # for the manager: online, connected, stats, ...
+    def processes(self) -> dict: ...        # what it can run: {name: {digest, problems, expected_nodes}}
 
     async def submit(self, run) -> None: ...            # sets run.pid and run.rt; RunRejected if refused
     async def cancel(self, run) -> bool: ...            # True: gone without having run
