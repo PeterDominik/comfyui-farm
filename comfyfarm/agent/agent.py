@@ -570,22 +570,23 @@ class Agent:
             await self.run_failed(h, "Interrupted on the farm machine.")
 
     # ================================================================ environment
-    async def send_environment(self) -> dict | None:
-        """Send the last state the runner read; returns what the manager wants read."""
-        if self.runner.environment is None or not self.registered:
-            return None
+    async def send_environment(self) -> None:
+        """Send the runner's last report of how its environment differs from the farm's."""
+        report = self.runner.environment
+        if report is None:
+            return
+        differs = list(report.get("differs") or [])
+        if differs and differs != self.environment_differs:
+            log.warning("%s on %s differs from the farm's: %s", self.runner.label, self.name, "; ".join(differs))
+        self.environment_differs = differs
+        if not self.registered:
+            return                          # sent after hello
         try:
-            reply = await self.link.environment({"name": self.name, "state": self.runner.environment})
+            reply = await self.link.environment({"name": self.name, "report": report})
         except LinkError:
-            return None                     # sent again after hello
+            return                          # sent again after hello
         if reply.get("hello"):
             self.registered = False
-            return None
-        differs = [d.get("message", "") for d in reply.get("differs") or []]
-        if differs and differs != self.environment_differs:
-            log.warning("ComfyUI on %s differs from the farm's: %s", self.name, "; ".join(differs))
-        self.environment_differs = differs
-        return reply.get("want")
 
     # ================================================================ outputs
     async def run_succeeded(self, h: Held, hist: dict | None = None) -> None:
