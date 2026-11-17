@@ -72,6 +72,8 @@ A4 launchers (xStudio, Daiquiri Automate).
 - Phase 2, in progress. Done, both behind `farm.build_on_agent` (off by default): the graph
   is built where the job runs, with the definition's fingerprint pinned per job (0013); and
   agents report which definitions they hold and can run, so the manager no longer reads
-  ComfyUI's node definitions (0014). Next: `process.yaml` (a neutral head and a runner
-  block; today's manifests keep loading); then the old path and the stored graph go, and
-  the ComfyUI environment comparison leaves the manager.
+  ComfyUI's node definitions (0014). Done: `process.yaml` loads beside `manifest.yaml`
+  (0015): a shared head, a runner block, and head fields (class, targets, limits, models,
+  eval) that are checked now and used from later phases; the five workflows are still
+  manifests. Next: the old path and the stored graph go, and the ComfyUI environment
+  comparison leaves the manager.

@@ -1,4 +1,15 @@
-"""Workflow templates (ComfyUI API JSON) plus manifests describing what is exposed."""
+"""Process definitions: what the farm can run, and how each is wired to its runner.
+
+A definition is a folder with one of two files (docs/decisions/0015):
+
+- process.yaml: a head any runner shares (id, label, class, targets, requires, limits,
+  models, eval, params, publish ...) and a `runner:` block only that runner reads. For
+  `runner.type: comfyui` the block holds the graph's file and which nodes each parameter,
+  input and output drives.
+- manifest.yaml: the older form for ComfyUI workflows, with the wiring written inside each
+  parameter. It loads as `runner.type: comfyui`.
+
+Both become the same Workflow. Other runner types arrive with the process runner."""
 
 from __future__ import annotations
 
@@ -18,6 +29,94 @@ from .fileio import textures as T
 from .fileio.inputs import Sequence
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------- process.yaml <-> manifest.yaml
+# Where a process.yaml keeps what a manifest.yaml mixes into its params and top level.
+RUNNER_PARAM_KEYS = ("targets", "loader", "path_node", "empty", "given")   # per param: the nodes it drives
+RUNNER_SECTIONS = ("template", "node_packs", "sequence", "outputs", "textures")
+# The head's fields that manifests don't have. Read and checked now; the scheduler acts on
+# them from later phases (classes and limits with the process runner, targets with Tractor,
+# models with the policy gates, eval with the evals).
+HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval")
+JOB_CLASSES = ("interactive", "batch")
+TARGETS = ("pool", "tractor")
+RUNNER_TYPES = ("comfyui",)
+
+
+def from_process(p: dict) -> tuple[dict, dict]:
+    """A process.yaml as (the manifest it is equal to, its head-only fields)."""
+    runner = p.get("runner")
+    if not isinstance(runner, dict) or not runner.get("type"):
+        raise ValueError("process.yaml needs a runner block with a type (runner: {type: comfyui, ...})")
+    if runner["type"] not in RUNNER_TYPES:
+        raise ValueError(f"runner type '{runner['type']}' isn't supported yet (supported: {', '.join(RUNNER_TYPES)})")
+    unknown = sorted(set(runner) - {"type", "params", *RUNNER_SECTIONS})
+    if unknown:
+        raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)}")
+    misplaced = sorted(k for k in RUNNER_SECTIONS if k in p)
+    if misplaced:
+        raise ValueError(f"{', '.join(misplaced)}: belongs in the runner block of a process.yaml")
+    m = {k: v for k, v in p.items() if k not in ("runner", "id", *HEAD_ONLY)}
+    if p.get("id"):
+        m["name"] = p["id"]
+    params = {name: dict(spec or {}) for name, spec in (p.get("params") or {}).items()}
+    for name, spec in params.items():
+        wired = sorted(k for k in RUNNER_PARAM_KEYS if k in spec)
+        if wired:
+            raise ValueError(f"params.{name}: {', '.join(wired)} belong under runner.params.{name} in a process.yaml")
+    for name, wiring in (runner.get("params") or {}).items():
+        if name not in params:
+            raise ValueError(f"runner.params.{name}: no such parameter in params")
+        extra = sorted(set(wiring or {}) - set(RUNNER_PARAM_KEYS))
+        if extra:
+            raise ValueError(f"runner.params.{name}: unknown key(s) {', '.join(extra)}")
+        params[name].update(wiring or {})
+    if params:
+        m["params"] = params
+    for k in RUNNER_SECTIONS:
+        if k in runner:
+            m[k] = runner[k]
+    return m, {k: p[k] for k in HEAD_ONLY if k in p}
+
+
+def to_process(m: dict, **head) -> dict:
+    """A manifest.yaml's content as a process.yaml's (tools/manifest_to_process.py).
+    `head` adds head-only fields (version, class, targets, limits, models, eval)."""
+    out: dict = {"id": m.get("name")} if m.get("name") else {}
+    out.update({k: v for k, v in m.items() if k not in ("name", "params", *RUNNER_SECTIONS)})
+    out.update({k: v for k, v in head.items() if k in HEAD_ONLY})
+    runner: dict = {"type": "comfyui"}
+    wiring = {}
+    if m.get("params"):
+        out["params"] = {}
+        for name, spec in m["params"].items():
+            spec = spec or {}
+            out["params"][name] = {k: v for k, v in spec.items() if k not in RUNNER_PARAM_KEYS}
+            wired = {k: v for k, v in spec.items() if k in RUNNER_PARAM_KEYS}
+            if wired:
+                wiring[name] = wired
+    for k in RUNNER_SECTIONS[:3]:
+        if k in m:
+            runner[k] = m[k]
+    if wiring:
+        runner["params"] = wiring
+    for k in RUNNER_SECTIONS[3:]:
+        if k in m:
+            runner[k] = m[k]
+    out["runner"] = runner
+    return out
+
+
+def read_definition(directory: Path) -> tuple[dict, dict, str]:
+    """(manifest, head-only fields, the file it came from) of a definition folder."""
+    process, manifest = directory / "process.yaml", directory / "manifest.yaml"
+    if process.exists() and manifest.exists():
+        raise ValueError("has both process.yaml and manifest.yaml: keep one")
+    if process.exists():
+        m, head = from_process(yaml.safe_load(process.read_text(encoding="utf-8")) or {})
+        return m, head, process.name
+    return yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}, {}, manifest.name
+
 
 # Used to estimate progress when no worker has told us which classes are output nodes.
 FALLBACK_OUTPUT_CLASSES = {
@@ -202,7 +301,16 @@ def fit_to_options(prompt: dict, object_info: dict | None) -> dict:
 class Workflow:
     def __init__(self, directory: Path):
         self.dir = directory
-        m = yaml.safe_load((directory / "manifest.yaml").read_text(encoding="utf-8")) or {}
+        m, head, self.source = read_definition(directory)
+        self.runner_type = "comfyui"
+        # The head's own fields (process.yaml): kept and checked, acted on from later phases.
+        self.version = head.get("version")
+        self.job_class: str = head.get("class") or "interactive"
+        self.targets: list = head["targets"] if "targets" in head else ["pool"]
+        self.limits: dict = head.get("limits") or {}
+        self.models: list = head.get("models") or []
+        self.eval: dict | None = head.get("eval")
+        self._head = head
         self.name: str = m.get("name") or directory.name
         self.label: str = m.get("label") or self.name
         self.description: str = (m.get("description") or "").strip()
@@ -235,8 +343,9 @@ class Workflow:
         # The definition's fingerprint: the manifest and the graph as parsed, so a checkout
         # with other line endings has the same one. A job names the one it was planned with,
         # and a machine whose copy differs doesn't build its graph (build_from).
-        self.digest: str = hashlib.sha256(
-            json.dumps([m, self.template], sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+        self.digest: str = hashlib.sha256(      # a manifest's is what it always was: head-only fields count when set
+            json.dumps([m, self.template, *([head] if head else [])], sort_keys=True, default=str)
+            .encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
             self.params[pname] = Param(
@@ -330,8 +439,32 @@ class Workflow:
         return bool(self.outputs.get("frames") and not self.textures and not self.outputs.get("preview")
                     and self.preview_movie is not False)
 
-    def static_check(self) -> list[str]:
+    def _check_head(self) -> list[str]:
+        """The head-only fields of a process.yaml."""
         problems = []
+        if self.version is not None and not (isinstance(self.version, int) and not isinstance(self.version, bool)
+                                             and self.version >= 1):
+            problems.append("version: needs to be a whole number, 1 or more")
+        if self.job_class not in JOB_CLASSES:
+            problems.append(f"class: needs to be one of {', '.join(JOB_CLASSES)}")
+        if not (isinstance(self.targets, list) and self.targets and all(t in TARGETS for t in self.targets)):
+            problems.append(f"targets: needs to be a list of {' and/or '.join(TARGETS)}, e.g. [pool]")
+        limits = self.limits
+        minutes = limits.get("max_minutes", 1) if isinstance(limits, dict) else None
+        if not isinstance(limits, dict) or set(limits) - {"max_minutes"} or isinstance(minutes, bool) \
+                or not isinstance(minutes, (int, float)) or minutes <= 0:
+            problems.append("limits: needs to be a section like {max_minutes: 30}")
+        if not (isinstance(self.models, list) and all(
+                isinstance(x, dict) and isinstance(x.get("file"), str) and x["file"].strip()
+                and isinstance(x.get("licence"), str) and x["licence"].strip() and set(x) <= {"file", "licence"}
+                for x in self.models)):
+            problems.append("models: needs to be a list of {file: <the weights file>, licence: <its licence>}")
+        if self.eval is not None and not isinstance(self.eval, dict):
+            problems.append("eval: needs to be a section (the reference job: inputs, params, tolerance)")
+        return problems
+
+    def static_check(self) -> list[str]:
+        problems = self._check_head()
         if self.publish is not None and ("bad" in self.publish or
                                          (self.publish["step"] is not None and not isinstance(self.publish["step"], str))):
             problems.append("publish: needs to be a section like {step: lay}")
@@ -672,7 +805,7 @@ class WorkflowRegistry:
             log.warning("workflows folder %s not found", self.directory)
             return
         for d in sorted(self.directory.iterdir()):
-            if not (d / "manifest.yaml").exists():
+            if not (d / "manifest.yaml").exists() and not (d / "process.yaml").exists():
                 continue
             try:
                 wf = Workflow(d)

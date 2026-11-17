@@ -20,3 +20,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0012](0012-resident-runner-interface.md) | The agent talks to a resident runner through one in-process interface | accepted |
 | [0013](0013-graph-built-where-the-job-runs.md) | The machine that runs a job builds its graph, from a stored request | accepted |
 | [0014](0014-agents-report-what-they-can-run.md) | Agents report what they can run | accepted |
+| [0015](0015-process-yaml.md) | A definition is a process.yaml: a shared head and a runner block | accepted |
