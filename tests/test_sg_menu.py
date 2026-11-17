@@ -63,8 +63,12 @@ class Shows(unittest.TestCase):
         return d / "menu.yaml"
 
     def test_the_repos_own(self):
-        self.assertEqual(M.load(REPO / "deploy" / "shotgrid" / "menu.yaml"),
-                         {"shows": {"raa": "all"}, "farm_url": FARM, "menus": ["open"], "publish": True, "problems": []})
+        # Whichever shows it lists today (it is edited as shows come and go): it must load clean.
+        s = M.load(REPO / "deploy" / "shotgrid" / "menu.yaml")
+        self.assertEqual({k: v for k, v in s.items() if k != "shows"},
+                         {"farm_url": FARM, "menus": ["open"], "publish": True, "problems": []})
+        self.assertIn("raa", s["shows"])
+        self.assertTrue(all(v == "all" or isinstance(v, list) for v in s["shows"].values()), s["shows"])
 
     def test_forms_and_problems(self):
         s = M.load(self.write("shows: [raa, bri3]"))

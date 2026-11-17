@@ -82,6 +82,7 @@ class Agent:
         self.view = W.View(mappings=cfg.paths.mappings, scratch=self.scratch_root, repo=P.normalize(str(REPO)))
         self.held: dict[str, Held] = {}          # job id -> its run
         self.problems: dict[str, list[str]] = {}
+        self.wants = "object_info"               # what the manager checks workflows against (its hello says)
         # What workflows can ask for (requires.tags): agent.yaml's tags, and this OS.
         osname = "windows" if os.name == "nt" else "linux" if sys.platform.startswith("linux") else sys.platform
         self.tags = sorted({str(t).strip().lower() for t in cfg.tags if str(t).strip()} | {osname})
@@ -187,6 +188,7 @@ class Agent:
             raise LinkError(reply["error"])
         self.registered = True
         self.lease_seconds = reply.get("lease_seconds")
+        self.wants = reply.get("wants") or "object_info"    # an older manager doesn't say: node definitions
         for d in reply.get("drop") or []:
             await self._drop(d["job"], d["attempt"])
         for p in reply.get("adopt") or []:
@@ -230,7 +232,9 @@ class Agent:
 
     async def send_nodes(self) -> None:
         try:
-            reply = await self.link.nodes({"name": self.name, "object_info": self.runner.object_info or {}})
+            told = {"processes": self.runner.processes()} if self.wants == "processes" else \
+                {"object_info": self.runner.object_info or {}}
+            reply = await self.link.nodes({"name": self.name, **told})
         except LinkError:
             return                      # sent again after hello
         if reply.get("hello"):

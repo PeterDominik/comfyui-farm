@@ -9,8 +9,11 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              them lost.
   status     its ComfyUI's state: reachable, connected, GPU, queue (on change, and every
              few seconds for the dashboard).
-  nodes      its ComfyUI's node definitions (object_info), when it connects. The manager
-             checks every workflow against them; an agent only gets jobs it can run.
+  nodes      what it can run, when its ComfyUI connects. As the manager's hello asked
+             (`wants`): its ComfyUI's node definitions (object_info), which the manager
+             checks its workflows against; or, with farm.build_on_agent, `processes`:
+             each workflow of the agent's checkout with its fingerprint, what its ComfyUI
+             lacks for it, and how many nodes a run goes through.
   environment  its ComfyUI's environment (version, packages, node packs, models:
              comfyenv), when ComfyUI starts and every agent.environment_seconds. The
              manager compares it with the farm's environment file for the dashboard.

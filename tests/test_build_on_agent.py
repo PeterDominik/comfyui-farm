@@ -45,16 +45,67 @@ class BuiltOnTheAgent(TA.AgentTests):
         (sent,) = a.runner.client.prompts.values()
         self.assertEqual(sent, W.localize(W.portable(wf.build_from(stored["request"]), self.desk.view), a.view))
 
-    def test_a_machine_with_another_copy_of_the_workflow_does_not_run_it(self):
+    def stale(self, a, workflow="ltx25_alpha_gen"):
+        """Give the agent a checkout of its own whose copy of the workflow is another one."""
+        own = WorkflowRegistry(REPO / "workflows")
+        own.workflows[workflow].digest = "0" * 16
+        a.runner._registry = own
+        return a
+
+    def test_the_agent_says_what_it_can_run_and_sends_no_node_definitions(self):
+        sent = []
+        a = self.agent("gpu1")
+        nodes = a.link.nodes
+
+        async def spy(msg):
+            sent.append(msg)
+            return await nodes(msg)
+        a.link.nodes = spy
+        self.ready(a)
+        self.assertEqual(a.wants, "processes")
+        self.assertEqual([sorted(m) for m in sent], [["name", "processes"]])
+        told = sent[0]["processes"]
+        self.assertEqual(sorted(told), sorted(TA.REGISTRY.workflows))
+        wf = TA.REGISTRY.workflows["wan22_i2i"]
+        self.assertEqual(told["wan22_i2i"], {"digest": wf.digest, "problems": [],
+                                             "expected_nodes": wf.expected_nodes(a.runner.output_classes)})
+        state = self.desk.agents["gpu1"]
+        self.assertEqual((state.problems, state.checked, state.output_classes), ({}, True, None))
+        self.assertEqual(state.expected["wan22_i2i"], told["wan22_i2i"]["expected_nodes"])
+
+    def test_a_machine_with_another_copy_of_the_workflow_is_passed_over(self):
+        self.any_gpu()
+        old = self.stale(self.agent("old"))
+        self.ready(old)
+        self.assertRegex(self.desk.agents["old"].problems["ltx25_alpha_gen"][0],
+                         r"its copy of the workflow \(0{16}\) and the manager's \([0-9a-f]{16}\) differ: update")
+        self.assertEqual(list(self.desk.agents["old"].problems), ["ltx25_alpha_gen"])   # its other workflows are fine
+        good = self.gpu("good", 32)
+        job = self.submit()
+        self.beat(old)
+        self.assertEqual(old.held, {})
+        self.beat(good)
+        self.until(lambda: good.runner.client.prompts, what="the job on the machine that matches")
+        self.assertEqual(self.job(job["id"])["worker"], "good")
+
+    def test_a_checkout_that_changed_after_it_was_reported_refuses_the_job(self):
         a = self.gpu("gpu1", 32)
         job = self.submit()
-        wf = TA.REGISTRY.workflows["ltx25_alpha_gen"]
-        self.addCleanup(setattr, wf, "digest", wf.digest)
-        wf.digest = "0" * 16                                        # the agent's checkout is older
+        self.stale(a)                                               # pulled, or edited, since it checked in
         self.beat(a)
         self.until(lambda: self.job(job["id"])["status"] == "failed", what="the job refused")
-        self.assertRegex(self.job(job["id"])["error"], r"copy of the workflow ltx25_alpha_gen \(0{16}\) is not the one")
+        self.assertRegex(self.job(job["id"])["error"],
+                         r"ltx25_alpha_gen on this machine \(0{16}\) and the one the manager planned the job with")
         self.assertEqual(a.runner.client.prompts, {})
+
+    def test_a_machine_whose_checkout_lacks_the_workflow(self):
+        a = self.agent("gpu1")
+        own = WorkflowRegistry(REPO / "workflows")
+        del own.workflows["wan22_i2i"]
+        a.runner._registry = own
+        self.ready(a)
+        self.assertEqual(self.desk.agents["gpu1"].problems["wan22_i2i"],
+                         ["gpu1 has no workflow wan22_i2i: update the farm's code on it"])
 
     def test_old_jobs_with_a_stored_graph_still_run(self):
         self.cfg.farm.build_on_agent = False

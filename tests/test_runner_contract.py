@@ -36,6 +36,9 @@ class NullRunner:
     def status(self):
         return {"online": False}
 
+    def processes(self):
+        return {}
+
 
 @unittest.skipIf(Agent is None, "the agent needs httpx and websockets")
 class ContractTests(unittest.TestCase):

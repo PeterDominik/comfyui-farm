@@ -611,8 +611,9 @@ class Workflow:
         """The prompt for a stored request. ParamError when this copy of the workflow isn't
         the one the job was planned with."""
         if request.get("definition") != self.digest:
-            raise ParamError(f"This machine's copy of the workflow {self.name} ({self.digest}) is not the one the "
-                             f"job was planned with ({request.get('definition')}). Update the farm's code on it.")
+            raise ParamError(f"The workflow {self.name} on this machine ({self.digest}) and the one the manager "
+                             f"planned the job with ({request.get('definition')}) differ. Update the farm's code on "
+                             f"both; a change that was not committed on either one causes this too.")
 
         def seq(d):
             return Sequence(**d) if d is not None else None

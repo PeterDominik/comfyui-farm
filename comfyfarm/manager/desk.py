@@ -70,6 +70,7 @@ class AgentState:
     error: str | None = None
     problems: dict[str, list[str]] = field(default_factory=dict)
     output_classes: set[str] | None = None
+    expected: dict[str, int] = field(default_factory=dict)   # nodes a run of each workflow goes through, as it reports
     want_nodes: bool = False            # ask it for its node definitions again
     farm_nodes: dict | None = None      # its ComfyUI runs other farm nodes than its checkout (agent.py)
     was_alive: bool = False
@@ -381,7 +382,10 @@ class Desk:
         log.info("agent %s checked in (%s, ComfyUI %s)%s", name, a.version or "?", a.url or "?",
                  f": {len(adopt)} job(s) to pick up again" if adopt else "")
         self._publish(a)
-        return {"manager": build(), "lease_seconds": self.lease_seconds, "adopt": adopt, "drop": drop}
+        return {"manager": build(), "lease_seconds": self.lease_seconds, "adopt": adopt, "drop": drop,
+                # With farm.build_on_agent the agent says what it can run (`processes`) and
+                # keeps its ComfyUI's node definitions to itself.
+                "wants": "processes" if self.farm.cfg.farm.build_on_agent else "object_info"}
 
     def status(self, msg: dict) -> dict:
         a = self._known(msg)
@@ -407,11 +411,18 @@ class Desk:
         a = self._known(msg)
         if a is None:
             return {"hello": True}
-        oi = msg.get("object_info") or {}
-        a.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
-        a.problems = {}
+        a.problems, a.expected = {}, {}
+        held = msg.get("processes")
+        if held is None:                # the manager checks its ComfyUI's node definitions itself
+            oi = msg.get("object_info") or {}
+            a.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
         for name, wf in self.farm.registry.workflows.items():
-            probs = wf.check_object_info(oi)
+            if held is None:
+                probs = wf.check_object_info(oi)
+            else:                       # what the agent found, for the definition it holds
+                probs = self._held_problems(a, wf, held.get(name))
+                if not probs and held[name].get("expected_nodes"):
+                    a.expected[name] = int(held[name]["expected_nodes"])
             if probs:
                 a.problems[name] = probs
                 for p in probs:
@@ -420,6 +431,16 @@ class Desk:
         self._publish(a)
         self.wake()
         return {"problems": a.problems}
+
+    @staticmethod
+    def _held_problems(a: AgentState, wf, held: dict | None) -> list[str]:
+        """Why this agent can't run the workflow, from what it reported about its own copy."""
+        if not held:
+            return [f"{a.name} has no workflow {wf.name}: update the farm's code on it"]
+        if held.get("digest") != wf.digest:
+            return [f"its copy of the workflow ({held.get('digest')}) and the manager's ({wf.digest}) differ: update "
+                    f"the farm's code on {a.name} and on the manager (a change not committed on either causes this too)"]
+        return list(held.get("problems") or [])
 
     def environment(self, msg: dict) -> dict:
         """The agent's ComfyUI environment (version, packages, node packs, models): how it
@@ -679,7 +700,7 @@ class Desk:
         collect = info.get("collect")
         if collect is None:             # queued before agents collected outputs
             collect = {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview")} if wf else {}
-        expected = self.store.stats(j["workflow"]).get("node_count") or \
+        expected = self.store.stats(j["workflow"]).get("node_count") or a.expected.get(j["workflow"]) or \
             (wf.expected_nodes(a.output_classes) if wf else 20)
         return W.portable({
             "job": j["id"], "attempt": j["prompt_id"], "status": j["status"], "workflow": j["workflow"],
