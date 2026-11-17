@@ -14,6 +14,8 @@ farm_url: http://wrk1125l.rodeofx.com:9090
 # workflows that fit, or a list of them.
 shows:
   raa: all
+  bri3: all
+  cold: all
   # bri3: [ltx25_alpha_gen]
 
 # Open ticks "Publish when done" for a workflow that publishes (the form and Batch Submit).
