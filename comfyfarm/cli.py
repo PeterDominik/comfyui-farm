@@ -173,7 +173,7 @@ def check_tools(convert) -> int:
 
 async def check_comfyui(name: str, url: str, reg: WorkflowRegistry) -> int:
     """A ComfyUI answers, and has every node, input and model each workflow needs."""
-    from .agent.comfy import ComfyClient   # here, so check_ocio and --help don't need httpx
+    from .runners.comfy import ComfyClient   # here, so check_ocio and --help don't need httpx
     bad = 0
     c = ComfyClient(url)
     try:

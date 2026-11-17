@@ -32,7 +32,8 @@ python -m comfyfarm standalone                                   # manager and a
 | Package | Role |
 |---|---|
 | `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `db.py` SQLite |
-| `comfyfarm/agent/` | one per GPU machine: runs jobs on its ComfyUI, reports to the manager |
+| `comfyfarm/agent/` | one per GPU machine: takes jobs, prepares inputs, collects outputs, reports to the manager |
+| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: today `comfyui.py` (its client, websocket, health, environment) |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
 | `comfyfarm/comfyenv/` | the farm's ComfyUI environment: spec, compare, sync |
@@ -47,6 +48,8 @@ decision record first.
 - `fileio` imports the standard library only, so the farm's ComfyUI nodes can use it.
 - The manager's `farm` and `desk` import neither the agent nor the web stack.
 - The agent imports neither the manager nor its web server.
+- `agent/agent.py` imports no backend: ComfyUI's client, websocket and environment live in
+  `runners/comfyui.py`. Runners import neither the manager nor its web server.
 - `comfyfarm --help` works without the web stack.
 
 ## How a change is made

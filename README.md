@@ -65,7 +65,8 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | Path | What |
 |---|---|
 | `comfyfarm/manager/` | The manager: API, dashboard, job database, planning, texture sets, the queue, and the desk agents check in with (`desk.py`) |
-| `comfyfarm/agent/` | The agent, one per ComfyUI: takes jobs from the manager, converts their inputs, runs them, follows them live, writes the outputs |
+| `comfyfarm/agent/` | The agent, one per ComfyUI: takes jobs from the manager, converts their inputs, hands them to its runner, writes the outputs |
+| `comfyfarm/runners/` | What runs a job on the GPU, behind one interface (`base.py`). `comfyui.py`: ComfyUI's client and websocket, its health, node definitions and environment |
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/workflows.py` | Workflow manifests: parameters, validation, building the API JSON |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
