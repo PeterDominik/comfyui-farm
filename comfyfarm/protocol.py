@@ -9,11 +9,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              them lost.
   status     its ComfyUI's state: reachable, connected, GPU, queue (on change, and every
              few seconds for the dashboard).
-  nodes      what it can run, when its ComfyUI connects. As the manager's hello asked
-             (`wants`): its ComfyUI's node definitions (object_info), which the manager
-             checks its workflows against; or, with farm.build_on_agent, `processes`:
-             each workflow of the agent's checkout with its fingerprint, what its ComfyUI
-             lacks for it, and how many nodes a run goes through.
+  nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
+             the agent's checkout with its fingerprint, what its ComfyUI lacks for it, and
+             how many nodes a run goes through. The node definitions stay on the agent.
   environment  its ComfyUI's environment (version, packages, node packs, models:
              comfyenv), when ComfyUI starts and every agent.environment_seconds. The
              manager compares it with the farm's environment file for the dashboard.
@@ -21,7 +19,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              it has something for the agent (new jobs, cancels, jobs to drop) or after
              `wait` seconds.
   report     one step of one job's run: preparing progress, dispatched, running,
-             progress, postprocessing, done, failed, cancelled, lost.
+             progress, postprocessing, done, failed, cancelled, lost. `dispatched` may
+             carry `submitted`: what the runner handed its backend, which the manager
+             keeps for people to look at and never reads.
 
 Every job an agent holds is one run of it, named by its attempt id (also the prompt id
 in ComfyUI). The manager acts on a report only while that run is the job's current one,

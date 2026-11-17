@@ -723,7 +723,7 @@ affects jobs submitted afterwards.
 | DELETE | `/api/v1/jobs/{id}` | Cancel (queued, waiting in ComfyUI, or running) |
 | POST | `/api/v1/jobs/{id}/retry` | Same params, new version |
 | POST | `/api/v1/jobs/{id}/retry-failed` | A texture set: run its failed and cancelled batches again, same folder |
-| GET | `/api/v1/jobs/{id}/prompt` | The exact API JSON sent to ComfyUI |
+| GET | `/api/v1/jobs/{id}/prompt` | The exact API JSON sent to ComfyUI, as the machine that ran the job reported it (there once the job has started) |
 | GET | `/api/v1/jobs/{id}/events` | Its timeline, oldest first: `{at, event, status, worker, attempt, detail, seconds}` per line. `event` is `submitted`, a status, `requeued`, `retried`, `cancel_requested` or `stage` (a new step while preparing or collecting outputs); `seconds` is how long it lasted. The dashboard's *Timeline* button shows it |
 | GET | `/api/v1/jobs/{id}/preview` | The job's preview movie (MP4); `?key=` instead of the header, for players |
 | GET | `/api/v1/workers` | Online state, GPU, free VRAM, slots, preflight problems |

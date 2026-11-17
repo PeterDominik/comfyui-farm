@@ -61,6 +61,7 @@ class Runner(Protocol):
     def processes(self) -> dict: ...        # what it can run: {name: {digest, problems, expected_nodes}}
 
     async def submit(self, run) -> None: ...            # sets run.pid and run.rt; RunRejected if refused
+    def submitted(self, run) -> dict | None: ...        # what it handed its backend, for a person to look at
     async def cancel(self, run) -> bool: ...            # True: gone without having run
     async def abandon(self, pid: str) -> None: ...      # stop it, no report wanted
     def give_up(self, pid: str) -> None: ...            # cancel it if it is ever seen again

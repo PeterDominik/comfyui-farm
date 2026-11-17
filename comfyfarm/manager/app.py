@@ -453,11 +453,12 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
 
     @app.get("/api/v1/jobs/{job_id}/prompt")
     def job_prompt(job_id: str, ident: Identity = Depends(identity)):
-        """The exact API JSON sent to ComfyUI; drop it on the ComfyUI canvas to debug."""
+        """The exact API JSON the machine that ran the job sent to ComfyUI, as it reported it;
+        drop it on the ComfyUI canvas to debug. There once the job has started on a machine."""
         job = store.get(job_id, with_prompt=True)
         if not job:
             raise HTTPException(404, "Job not found.")
-        return JSONResponse(farm.prompt_of(job), headers={
+        return JSONResponse(farm.submitted(job), headers={
             "Content-Disposition": f'attachment; filename="{job["short_id"]}_api.json"'})
 
     @app.get("/api/v1/jobs/{job_id}/preview")

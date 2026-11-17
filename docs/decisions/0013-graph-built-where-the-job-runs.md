@@ -30,3 +30,5 @@ instead of being passed over. The dashboard's API JSON is built on request from 
 manager's copy of the workflow, so it shows what the manager would build, not a copy of
 what ran. When the switch has been on through the pilot, the old path and the stored graph
 are removed, and with them the manager's last call into graph building.
+
+Later: 0016 removed the switch and the old path.

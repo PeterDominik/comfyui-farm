@@ -69,11 +69,12 @@ A4 launchers (xStudio, Daiquiri Automate).
 - Phase 1: done. ComfyUI is behind the runner interface (`runners/base.py`,
   `runners/comfyui.py`, decision 0012) and `tests/test_layout.py` holds the gate. Left for
   later: `agent/launch.py` still lives in the agent package.
-- Phase 2, in progress. Done, both behind `farm.build_on_agent` (off by default): the graph
-  is built where the job runs, with the definition's fingerprint pinned per job (0013); and
-  agents report which definitions they hold and can run, so the manager no longer reads
-  ComfyUI's node definitions (0014). Done: `process.yaml` loads beside `manifest.yaml`
-  (0015): a shared head, a runner block, and head fields (class, targets, limits, models,
-  eval) that are checked now and used from later phases; the five workflows are still
-  manifests. Next: the old path and the stored graph go, and the ComfyUI environment
-  comparison leaves the manager.
+- Phase 2, in progress. Done: the graph is built where the job runs, from a stored request
+  with the definition's fingerprint pinned per job (0013); agents report which definitions
+  they hold and can run (0014); `process.yaml` loads beside `manifest.yaml` (0015), with
+  head fields (class, targets, limits, models, eval) checked now and used from later
+  phases, and the five workflows still manifests; the manager's own graph building, the
+  stored graph and the `farm.build_on_agent` switch are gone, and the API JSON is what the
+  agent reports it queued (0016). Next, the phase's last step: the ComfyUI environment
+  comparison leaves the manager and `workflows.py` is split along the head and the runner
+  block, so the manager imports nothing ComfyUI-specific.

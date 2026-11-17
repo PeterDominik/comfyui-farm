@@ -69,7 +69,6 @@ class AgentState:
     queue_remaining: int | None = None
     error: str | None = None
     problems: dict[str, list[str]] = field(default_factory=dict)
-    output_classes: set[str] | None = None
     expected: dict[str, int] = field(default_factory=dict)   # nodes a run of each workflow goes through, as it reports
     want_nodes: bool = False            # ask it for its node definitions again
     farm_nodes: dict | None = None      # its ComfyUI runs other farm nodes than its checkout (agent.py)
@@ -383,9 +382,9 @@ class Desk:
                  f": {len(adopt)} job(s) to pick up again" if adopt else "")
         self._publish(a)
         return {"manager": build(), "lease_seconds": self.lease_seconds, "adopt": adopt, "drop": drop,
-                # With farm.build_on_agent the agent says what it can run (`processes`) and
-                # keeps its ComfyUI's node definitions to itself.
-                "wants": "processes" if self.farm.cfg.farm.build_on_agent else "object_info"}
+                # The agent says what it can run (`processes`) and keeps its backend's node
+                # definitions to itself. Said for agents from before that was the only way.
+                "wants": "processes"}
 
     def status(self, msg: dict) -> dict:
         a = self._known(msg)
@@ -407,19 +406,17 @@ class Desk:
         return {}
 
     def nodes(self, msg: dict) -> dict:
-        """The agent's ComfyUI node definitions: what each workflow is missing there."""
+        """What the agent says it can run (`processes`: each definition of its checkout with
+        its fingerprint and what the machine lacks for it): what stops each workflow there."""
         a = self._known(msg)
         if a is None:
             return {"hello": True}
         a.problems, a.expected = {}, {}
         held = msg.get("processes")
-        if held is None:                # the manager checks its ComfyUI's node definitions itself
-            oi = msg.get("object_info") or {}
-            a.output_classes = {k for k, v in oi.items() if isinstance(v, dict) and v.get("output_node")}
         for name, wf in self.farm.registry.workflows.items():
-            if held is None:
-                probs = wf.check_object_info(oi)
-            else:                       # what the agent found, for the definition it holds
+            if held is None:            # an agent from before agents reported this (it sent node definitions)
+                probs = [f"{a.name} runs farm code too old to say what it can run: update the farm's code on it"]
+            else:
                 probs = self._held_problems(a, wf, held.get(name))
                 if not probs and held[name].get("expected_nodes"):
                     a.expected[name] = int(held[name]["expected_nodes"])
@@ -700,12 +697,11 @@ class Desk:
         collect = info.get("collect")
         if collect is None:             # queued before agents collected outputs
             collect = {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview")} if wf else {}
-        expected = self.store.stats(j["workflow"]).get("node_count") or a.expected.get(j["workflow"]) or \
-            (wf.expected_nodes(a.output_classes) if wf else 20)
+        expected = self.store.stats(j["workflow"]).get("node_count") or a.expected.get(j["workflow"]) or 20
         return W.portable({
             "job": j["id"], "attempt": j["prompt_id"], "status": j["status"], "workflow": j["workflow"],
             "user": j["user"], "kind": j["kind"], "name": j["name"], "attempts": j["attempts"],
-            "cancel_requested": j["cancel_requested"], "prompt": j["prompt"], "request": j.get("request"),
+            "cancel_requested": j["cancel_requested"], "request": j.get("request"),
             "info": info,
             "output_dir": j["output_dir"], "warnings": j["warnings"], "collect": collect or {},
             "expected_nodes": expected, "dispatched_at": j["dispatched_at"], "started_at": j["started_at"],
@@ -733,9 +729,13 @@ class Desk:
                 F._emit(j)
             return {"ok": True, "status": job["status"]}
         if ev == "dispatched":
+            # `submitted` is what the runner handed its backend (for ComfyUI the API JSON): kept
+            # for a person to look at, as reported, and never read by the manager.
+            told = d.get("submitted")
             j = self.store.transition(jid, ("preparing",), only_prompt=attempt, status="dispatched",
                                       dispatched_at=d.get("at") or now(), stage="waiting for GPU",
-                                      attempts=job["attempts"] + 1, **lease)
+                                      attempts=job["attempts"] + 1, **lease,
+                                      **({"prompt": told} if isinstance(told, dict) else {}))
             if j:
                 log.info("job %s -> %s (prompt %s)", jid[:8], a.name, str(d.get("prompt_id") or attempt)[:8])
             F._emit(j)
