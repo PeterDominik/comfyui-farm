@@ -457,7 +457,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         job = store.get(job_id, with_prompt=True)
         if not job:
             raise HTTPException(404, "Job not found.")
-        return JSONResponse(job["prompt"], headers={
+        return JSONResponse(farm.prompt_of(job), headers={
             "Content-Disposition": f'attachment; filename="{job["short_id"]}_api.json"'})
 
     @app.get("/api/v1/jobs/{job_id}/preview")

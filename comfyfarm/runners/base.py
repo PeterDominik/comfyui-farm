@@ -30,6 +30,7 @@ class Host(Protocol):
     """What a runner may ask of the agent that holds it."""
     name: str
     registered: bool                        # the manager knows this agent
+    view: Any                               # how this machine sees studio paths (fileio.wire.View)
 
     def runs(self) -> list: ...             # the runs the agent holds
     def holds(self, run) -> bool: ...       # still this agent's (not dropped or replaced meanwhile)

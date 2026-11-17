@@ -19,6 +19,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 import websockets
@@ -28,9 +29,10 @@ from ..comfyenv import machine as EM
 from ..comfyenv import spec as ES
 from ..config import AgentConfig
 from ..fileio import farmnodes as FN
+from ..fileio import wire as W
 from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, duration, now
-from ..workflows import fit_to_options
+from ..workflows import ParamError, WorkflowRegistry, fit_to_options
 from .base import Host, RunRejected
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
 
@@ -105,6 +107,7 @@ class ComfyUIRunner:
         self._restarting = False
         self._cant_restart = False               # its ComfyUI wasn't started by this agent
         self.abandoned: set[str] = set()         # prompt ids given up on: cancelled if seen again
+        self._registry: WorkflowRegistry | None = None   # this checkout's workflows, read when first needed
         self._reconcile_lock = asyncio.Lock()
 
     # ================================================================ the agent's side
@@ -127,13 +130,38 @@ class ComfyUIRunner:
         return {"online": self.online, "connected": self.ws_connected, "stats": self.stats,
                 "queue_remaining": self.queue_remaining, "error": self.error, "farm_nodes": self.farm_nodes}
 
-    def _runtime(self, h, prompt: dict | None = None) -> Runtime:
-        return Runtime(job_id=h.id, expected=h.job.get("expected_nodes") or 20,
-                       titles=_titles(h.job["prompt"] if prompt is None else prompt))
+    def _runtime(self, h) -> Runtime:
+        try:
+            prompt = self._prompt(h)
+        except RunRejected:
+            prompt = None               # a run found again whose graph can't be rebuilt: no node titles
+        return Runtime(job_id=h.id, expected=h.job.get("expected_nodes") or 20, titles=_titles(prompt))
+
+    def _prompt(self, h) -> dict:
+        """The run's graph: as the manager sent it, or built here from the job's request with
+        this checkout's copy of the workflow (kept on the job, so it's built once)."""
+        job = h.job
+        if job.get("prompt") is None:
+            request = job.get("request")
+            if not request:
+                raise RunRejected("The job came with neither a graph nor a request to build one from.")
+            if self._registry is None:
+                folder = self.cfg.workflows_dir
+                self._registry = WorkflowRegistry(self.cfg.resolve(folder) if folder else Path(REPO) / "workflows")
+            wf = self._registry.workflows.get(job["workflow"])
+            if wf is None:
+                raise RunRejected(f"{self.name} has no workflow {job['workflow']}. Update the farm's code on it.")
+            try:
+                # Paths written into the graph itself are the studio's: as this machine sees them,
+                # like the rest of the job (which the agent localized when it took it).
+                job["prompt"] = W.localize(wf.build_from(request), self.host.view)
+            except ParamError as e:
+                raise RunRejected(str(e)) from None
+        return job["prompt"]
 
     async def submit(self, h) -> None:
         """Put the run's prompt in ComfyUI's queue. Sets h.pid and h.rt."""
-        prompt = fit_to_options(h.job["prompt"], self.object_info)   # LTX\\x vs LTX/x on this OS
+        prompt = fit_to_options(self._prompt(h), self.object_info)   # LTX\\x vs LTX/x on this OS
         titles = _titles(prompt)
         extra = {"comfyfarm_job": h.id, "comfyfarm_user": h.job.get("user")}
         while True:

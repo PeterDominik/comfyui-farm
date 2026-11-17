@@ -167,6 +167,9 @@ class FarmConfig(BaseModel):
     # Fail jobs straight away when the worker is missing a node pack, an input the
     # workflow uses, or a model file (see `python -m comfyfarm check`).
     strict_preflight: bool = True
+    # The machine that runs a job builds its ComfyUI graph, from the request the manager
+    # stores (docs/decisions/0013). Off: the manager builds and stores the graph itself.
+    build_on_agent: bool = False
 
 
 class ShareConfig(BaseModel):
@@ -361,6 +364,7 @@ class AgentConfig(BaseModel):
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []
+    workflows_dir: str | None = None            # workflow definitions; None: this checkout's workflows/
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/agent-<name>.jsonl, one JSON object per line
     paths: AgentPathsConfig = Field(default_factory=AgentPathsConfig)
@@ -389,7 +393,8 @@ def standalone_agent_config(cfg: Config, worker: WorkerConfig, scratch_dir: str 
                        paths=AgentPathsConfig(mappings=cfg.paths.mappings), convert=convert, textures=cfg.textures,
                        health_seconds=cfg.farm.health_seconds, reconcile_seconds=cfg.farm.reconcile_seconds,
                        lost_after_seconds=cfg.farm.lost_after_seconds,
-                       delete_comfy_history=cfg.farm.delete_comfy_history, base_dir=cfg.base_dir)
+                       delete_comfy_history=cfg.farm.delete_comfy_history, workflows_dir=str(cfg.resolve(cfg.workflows_dir)),
+                       base_dir=cfg.base_dir)
 
 
 def default_agent_config_path() -> Path:

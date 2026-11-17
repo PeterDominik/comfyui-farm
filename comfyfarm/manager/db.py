@@ -20,7 +20,7 @@ from .eta import fold
 
 __all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "now"]
 
-JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt")
+JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt", "request")
 
 # Stages worth a line in a job's timeline: the steps before and after the GPU run. While it
 # runs, the stage is the node ComfyUI is on, which changes too often to keep.
@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     priority INTEGER NOT NULL DEFAULT 0,
     params TEXT,
     info TEXT,
-    prompt TEXT,
+    prompt TEXT,                -- the ComfyUI graph, when the manager built it
+    request TEXT,               -- what to build it from, when the machine that runs it does (workflows.request)
     worker TEXT,
     prompt_id TEXT,
     progress REAL NOT NULL DEFAULT 0,
@@ -124,6 +125,8 @@ class JobStore:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'job'")
             if "parent_id" not in have:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN parent_id TEXT")
+            if "request" not in have:
+                self._db.execute("ALTER TABLE jobs ADD COLUMN request TEXT")
             if "lease_until" not in have:   # an agent holds the job until then (protocol.py)
                 self._db.execute("ALTER TABLE jobs ADD COLUMN lease_until REAL")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
@@ -141,6 +144,7 @@ class JobStore:
         d = dict(row)
         if not with_prompt:   # before parsing: a set's batches are listed often, prompts are big
             d.pop("prompt", None)
+            d.pop("request", None)
         for k in JSON_FIELDS:
             if k in d and d[k] is not None:
                 d[k] = json.loads(d[k])

@@ -113,6 +113,26 @@ class Farm:
             if job.get("parent_id"):
                 self._refresh_set(job["parent_id"])
 
+    def _graph(self, wf, *args, **kwargs) -> dict:
+        """What a job row stores to run from: the request (farm.build_on_agent: the machine
+        that runs it builds the graph), or the graph built here."""
+        if self.cfg.farm.build_on_agent:
+            return {"prompt": None, "request": wf.request(*args, **kwargs)}
+        return {"prompt": wf.build(*args, **kwargs), "request": None}
+
+    def prompt_of(self, job: dict) -> dict | None:
+        """A job's ComfyUI graph, for a person to look at (the dashboard's API JSON): as
+        stored, or built from its request with the manager's copy of the workflow."""
+        if job.get("prompt") is not None or not job.get("request"):
+            return job.get("prompt")
+        wf = self.registry.workflows.get(job["workflow"])
+        if wf is None:
+            raise FarmError(f"The workflow {job['workflow']} is no longer on the farm.", 404)
+        try:
+            return wf.build_from(job["request"])
+        except ParamError as e:
+            raise FarmError(f"{e} The graph this job ran with can't be shown.", 409) from None
+
     def timeline(self, job_id: str) -> dict:
         """What happened to a job and when, oldest first, with how long each step lasted
         (the last one up to now, while the job is still active)."""
@@ -643,8 +663,8 @@ class Farm:
                 self._emit(job)
                 self.wake()
                 return job
-            prompt = wf.build(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
-                              textures=plan.get("textures"), inputs=plan["inputs"])
+            graph = self._graph(wf, values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
+                                textures=plan.get("textures"), inputs=plan["inputs"])
             info = self._info(plan, seq, plan.get("textures"), plan.get("what"))
             if pub:
                 info["publish_request"] = pub
@@ -653,7 +673,7 @@ class Farm:
                 "name": name or plan["shot"] or plan["source"],
                 "status": "queued",
                 "priority": priority, "params": values, "info": info,
-                "prompt": prompt, "output_dir": out_dir, "output_key": plan.get("output_key"),
+                **graph, "output_dir": out_dir, "output_key": plan.get("output_key"),
                 "created_at": now(), "stage": plan.get("waits") or "queued",
                 "warnings": list(plan["notes"]),
             })
@@ -735,8 +755,8 @@ class Farm:
             rows.append({"id": bid, "kind": "batch", "parent_id": set_id, "workflow": wf.name, "user": user,
                          "name": f"{name} · {label}", "status": "queued",
                          "priority": priority, "params": values, "info": binfo,
-                         "prompt": wf.build(values, bseq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
-                                            textures=btex),
+                         **self._graph(wf, values, bseq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
+                                       textures=btex),
                          "output_dir": out_dir, "output_key": None, "created_at": t,
                          "stage": "queued", "warnings": []})
         self.store.insert_many(rows)

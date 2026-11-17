@@ -18,3 +18,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0010](0010-observability.md) | Observability is a job timeline, GPU history, metrics and evals | accepted |
 | [0011](0011-ci.md) | Tests run in CI on every pull request | accepted |
 | [0012](0012-resident-runner-interface.md) | The agent talks to a resident runner through one in-process interface | accepted |
+| [0013](0013-graph-built-where-the-job-runs.md) | The machine that runs a job builds its graph, from a stored request | accepted |

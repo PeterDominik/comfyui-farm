@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import re
@@ -14,6 +15,7 @@ import yaml
 
 from . import loaders as L
 from .fileio import textures as T
+from .fileio.inputs import Sequence
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +232,11 @@ class Workflow:
         # environment file (comfyenv.spec.needs).
         self.node_packs = m.get("node_packs") or []
         self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
+        # The definition's fingerprint: the manifest and the graph as parsed, so a checkout
+        # with other line endings has the same one. A job names the one it was planned with,
+        # and a machine whose copy differs doesn't build its graph (build_from).
+        self.digest: str = hashlib.sha256(
+            json.dumps([m, self.template], sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
         for pname, p in (m.get("params") or {}).items():
             self.params[pname] = Param(
@@ -589,6 +596,30 @@ class Workflow:
                 inputs[self.textures.path_input] = textures["raw_dir"]
                 inputs[self.textures.prefix_input] = mp["prefix"]
         return prompt
+
+    def request(self, values: dict, seq=None, out_dir: str | None = None,
+                frames_prefix: str | None = None, preview_prefix: str | None = None,
+                textures: dict | None = None, inputs: dict | None = None) -> dict:
+        """What build() takes, as plain data: the manager stores this in place of the graph,
+        and the machine that runs the job builds the graph from it (build_from)."""
+        return {"definition": self.digest, "values": values, "seq": seq.as_dict() if seq is not None else None,
+                "out_dir": out_dir, "frames_prefix": frames_prefix, "preview_prefix": preview_prefix,
+                "textures": textures,
+                "inputs": {k: v.as_dict() if v is not None else None for k, v in (inputs or {}).items()}}
+
+    def build_from(self, request: dict) -> dict:
+        """The prompt for a stored request. ParamError when this copy of the workflow isn't
+        the one the job was planned with."""
+        if request.get("definition") != self.digest:
+            raise ParamError(f"This machine's copy of the workflow {self.name} ({self.digest}) is not the one the "
+                             f"job was planned with ({request.get('definition')}). Update the farm's code on it.")
+
+        def seq(d):
+            return Sequence(**d) if d is not None else None
+        return self.build(request["values"], seq(request.get("seq")), request.get("out_dir"),
+                          request.get("frames_prefix"), request.get("preview_prefix"),
+                          textures=request.get("textures"),
+                          inputs={k: seq(v) for k, v in (request.get("inputs") or {}).items()})
 
     @staticmethod
     def _fill_port(prompt: dict, port: Port, seq) -> None:
