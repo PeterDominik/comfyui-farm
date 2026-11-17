@@ -1347,7 +1347,7 @@ studio's rez moves (another OS, another path), change `menu_sync.command` to wha
 1. In ComfyUI: **Workflow → Export (API)**. Save it as `workflows/<name>/workflow_api.json`.
    Blank out show-specific paths. The gateway fills those per job, and this keeps show
    codes out of git.
-2. Write `workflows/<name>/manifest.yaml` (copy `ltx25_alpha_gen`, see below).
+2. Write `workflows/<name>/manifest.yaml` (copy `ltx25_alpha_gen`, see below), or a `process.yaml`.
 3. `python -m comfyfarm check`, then restart the gateway.
 
 Paths left in the export from your last ComfyUI session are harmless: the gateway
@@ -1356,6 +1356,43 @@ overwrites the input, output and save-path nodes on every job.
 Re-exporting can renumber nodes. Because every manifest target names its node class,
 a renumbered workflow fails the check with a clear message. It can't silently write
 a value into the wrong node.
+
+### process.yaml
+
+A workflow can be written as `process.yaml` instead of `manifest.yaml` (never both in one
+folder). It says the same things in two halves: a head any kind of job shares, and a
+`runner:` block with everything about ComfyUI's graph. `docs/decisions/0015-process-yaml.md`
+has the why.
+
+```yaml
+id: wan22_i2i
+label: WAN 2.2 image to image
+requires: {vram_gb: 24}
+class: interactive            # or batch
+targets: [pool]               # and/or tractor
+limits: {max_minutes: 30}
+models:
+  - {file: wan2.2_i2v_low_noise_14B.safetensors, licence: apache-2.0}
+params:
+  prompt: {type: string, label: Prompt}        # type, label, default, min/max, choices
+runner:
+  type: comfyui
+  template: workflow_api.json
+  params:
+    prompt:                                    # the nodes it drives
+      targets: [{node: "6", input: text, class: CLIPTextEncode}]
+  outputs: ...
+```
+
+`class`, `targets`, `limits`, `models`, `eval` and `version` are optional. They are checked
+when the workflow loads and not used yet. `python tools/manifest_to_process.py workflows/<name>`
+prints a manifest as a process.yaml (`--write` saves it; comments are not carried over, and
+you remove the manifest yourself). A converted workflow keeps its fingerprint until a head
+field is added, so machines on the old and the new file still agree.
+
+Everything below about manifests holds for both; in a process.yaml the per-parameter
+`targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,
+`node_packs`, `sequence`, `outputs` and `textures`, sit under `runner:`.
 
 ### Workflow manifests
 

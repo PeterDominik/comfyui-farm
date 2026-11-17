@@ -39,7 +39,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/comfyenv/` | the farm's ComfyUI environment: spec, compare, sync |
 | `comfyfarm/publish/`, `comfyfarm/shotgrid/` | publishing through Daiquiri and Tractor; ShotGrid |
 | `client/` | the shared client and the Nuke panel |
-| `workflows/` | one folder per workflow: `manifest.yaml` and the ComfyUI graph |
+| `workflows/` | one folder per workflow: `process.yaml` (or the older `manifest.yaml`) and the ComfyUI graph |
 | `deploy/` | per-machine install, start-up and update scripts |
 
 `tests/test_layout.py` enforces these rules. A change that needs to break one needs a
