@@ -17,6 +17,8 @@ comfyui: http://127.0.0.1:8188   # this machine's ComfyUI. Keep it on localhost 
 max_inflight: 2                  # jobs in ComfyUI at once: one running + one waiting. The
                                  # manager gives a machine a job waiting behind its current one
                                  # only when every GPU on the farm is busy
+# workflows_dir: workflows        # workflow definitions, when not this checkout's workflows/ (used
+#                                # when the manager has farm.build_on_agent on)
 # tags: [nightly]                # labels a workflow can ask for (its manifest's requires.tags);
                                  # linux or windows is added by itself
 

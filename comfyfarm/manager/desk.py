@@ -684,7 +684,8 @@ class Desk:
         return W.portable({
             "job": j["id"], "attempt": j["prompt_id"], "status": j["status"], "workflow": j["workflow"],
             "user": j["user"], "kind": j["kind"], "name": j["name"], "attempts": j["attempts"],
-            "cancel_requested": j["cancel_requested"], "prompt": j["prompt"], "info": info,
+            "cancel_requested": j["cancel_requested"], "prompt": j["prompt"], "request": j.get("request"),
+            "info": info,
             "output_dir": j["output_dir"], "warnings": j["warnings"], "collect": collect or {},
             "expected_nodes": expected, "dispatched_at": j["dispatched_at"], "started_at": j["started_at"],
         }, self.view)
