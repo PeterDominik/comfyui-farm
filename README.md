@@ -414,7 +414,9 @@ Machines tab shows *updating ComfyUI (sync)*), stops the ComfyUI the agent start
 plan, lets the agent start ComfyUI again and verifies. Then *Resume* the machine.
 
 Each agent also checks its machine when ComfyUI starts and every `environment_seconds`
-(15 min), and the manager compares it with its copy of the file. The Machines tab marks
+(15 min), compares it with its own checkout's copy of the file and tells the manager what
+differs. So after the file changes, a machine compares with the new one once its code is
+updated. The Machines tab marks
 ComfyUI's version ✓ (matches) or ≠, and lists the differences under the machine. A
 machine that differs keeps taking jobs; missing nodes or models still keep a workflow off
 it, as before. `agent --check` lists the differences as warnings.

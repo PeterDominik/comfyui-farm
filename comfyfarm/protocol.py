@@ -12,9 +12,10 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
              the agent's checkout with its fingerprint, what its ComfyUI lacks for it, and
              how many nodes a run goes through. The node definitions stay on the agent.
-  environment  its ComfyUI's environment (version, packages, node packs, models:
-             comfyenv), when ComfyUI starts and every agent.environment_seconds. The
-             manager compares it with the farm's environment file for the dashboard.
+  environment  how its ComfyUI differs from the farm's environment file (`report`: what
+             differs and what couldn't be checked, as text), when ComfyUI starts and
+             every agent.environment_seconds. The agent compares, with its own
+             checkout's copy of the file; the manager shows the report.
   heartbeat  the jobs it holds, which renews their leases. The manager answers as soon as
              it has something for the agent (new jobs, cancels, jobs to drop) or after
              `wait` seconds.

@@ -75,6 +75,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   head fields (class, targets, limits, models, eval) checked now and used from later
   phases, and the five workflows still manifests; the manager's own graph building, the
   stored graph and the `farm.build_on_agent` switch are gone, and the API JSON is what the
-  agent reports it queued (0016). Next, the phase's last step: the ComfyUI environment
-  comparison leaves the manager and `workflows.py` is split along the head and the runner
-  block, so the manager imports nothing ComfyUI-specific.
+  agent reports it queued (0016); each agent compares its own ComfyUI with the environment
+  file and reports what differs, so the manager imports neither `comfyenv` nor a runner
+  (0017). Next, the phase's last step, a move with no change in behaviour: `workflows.py`
+  is split along the head and the runner block, so the manager imports nothing
+  ComfyUI-specific.

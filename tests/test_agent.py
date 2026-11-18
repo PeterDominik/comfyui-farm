@@ -928,9 +928,18 @@ class AgentTests(unittest.TestCase):
                  "node_packs": {"comfyui-kjnodes": {"version": "1.1.9", "hash": "0" * 12, "for": ["ltx25_alpha_gen"]}},
                  "models": {"ltx.safetensors": {"folder": "diffusion_models", "library": str(inst.bank), "size": 100}}},
                 tmp / "environment.yaml")
-        self.desk.env = ES.Cached(tmp / "environment.yaml", tmp / "no-farm-paths.yaml")
         a = self.ready(self.agent(comfyui_dir=str(inst.comfy), comfyui_python=sys.executable))
+        a.runner.env = ES.Cached(tmp / "environment.yaml", tmp / "no-farm-paths.yaml")   # the agent's checkout's
+        sent = []
+        told = a.link.environment
+
+        async def spy(msg):
+            sent.append(msg)
+            return await told(msg)
+        a.link.environment = spy
         state = self.wait(a.runner.check_environment())
+        self.assertEqual([sorted(m) for m in sent], [["name", "report"]])            # what differs, not what it read
+        self.assertEqual(sorted(sent[0]["report"]), ["checked_at", "comfyui", "differs", "file", "notes"])
         self.assertEqual(state["comfyui"]["commit"], COMMIT_A)
         self.assertEqual(state["models"]["ltx.safetensors"]["size"], 100)
         env = self.desk.summary(self.desk.agents["gpu1"])["environment"]
@@ -942,14 +951,42 @@ class AgentTests(unittest.TestCase):
         job = self.submit()                                     # a machine that differs still gets jobs
         self.beat(a)
         self.assertEqual(self.job(job["id"])["worker"], "gpu1")
-        # The file changes (git pull): compared again without the agent sending anything.
+        # The file changes on the machine (git pull): its next check compares with the new one.
         ES.save({"comfyui": {"version": "test"}, "libraries": inst.libraries}, tmp / "environment.yaml")
         os.utime(tmp / "environment.yaml", (time.time() + 5, time.time() + 5))
+        self.wait(a.runner.check_environment())
         self.assertEqual(self.desk.summary(self.desk.agents["gpu1"])["environment"]["differs"], [])
+        self.assertEqual(a.environment_differs, [])
         # A manager that restarted gets it again after hello.
         self.desk.agents.clear()
         self.wait(a._hello())
-        self.assertIsNotNone(self.desk.agents["gpu1"].environment)
+        self.assertEqual(self.desk.agents["gpu1"].environment, a.runner.environment)
+
+    def test_packs_and_models_of_workflows_the_machine_never_runs_dont_count(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        inst = ComfyInstall(tmp)
+        ES.save({"comfyui": {"version": "test"}, "libraries": inst.libraries,
+                 "node_packs": {"only-for-ltx": {"version": "1.0", "hash": "0" * 12, "for": ["ltx25_alpha_gen"]}}},
+                tmp / "environment.yaml")
+        need = REGISTRY.workflows["ltx25_alpha_gen"].requires["vram_gb"]
+        for name, gb, differs in (("small", need - 8, 0), ("big", need, 1)):
+            a = self.ready(self.agent(name, comfy=FakeComfy(vram=gb * 2**30), comfyui_dir=str(inst.comfy),
+                                      comfyui_python=sys.executable))
+            a.runner.env = ES.Cached(tmp / "environment.yaml", tmp / "no-farm-paths.yaml")
+            self.wait(a.runner.check_environment())
+            with self.subTest(machine=name):
+                self.assertEqual(len(self.desk.agents[name].environment["differs"]), differs,
+                                 self.desk.agents[name].environment)
+
+    def test_an_agent_that_sends_what_it_read_is_told_to_update(self):
+        a = self.agent("old")
+        self.wait(a._hello())
+        self.assertEqual(self.desk.environment({"name": "old", "state": {"comfyui": {"version": "1"}}}), {})
+        env = self.desk.summary(self.desk.agents["old"])["environment"]
+        self.assertEqual((env["differs"], env["comfyui"]), ([], {"version": None, "commit": None}))
+        self.assertEqual(env["notes"], ["old runs farm code too old to compare its environment: update the farm's "
+                                        "code on it"])
 
     def test_a_sync_holds_the_machine(self):
         """While comfyfarm comfyui sync updates ComfyUI, the machine takes no jobs and says why."""

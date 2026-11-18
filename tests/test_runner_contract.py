@@ -49,7 +49,7 @@ class ContractTests(unittest.TestCase):
         self.assertIsInstance(inspect.getattr_static(ComfyUIRunner, "ready"), property)
 
     def test_the_agent_has_all_a_runner_may_call(self):
-        instance_attrs = {"name", "registered", "view"}
+        instance_attrs = {"name", "registered", "view", "tags"}
         for name in sorted(members(base.Host) - instance_attrs):
             want = getattr(base.Host, name)
             have = getattr(Agent, name, None)

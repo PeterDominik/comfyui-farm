@@ -94,6 +94,12 @@ class LayoutTests(unittest.TestCase):
                 self.assertEqual(sorted(used & graph_side), [])
                 self.assertNotIn("object_info", source)
 
+    def test_the_manager_needs_no_runner_and_no_comfyui_environment(self):
+        """Phase 2: what a machine's ComfyUI is like is the agent's to read and compare."""
+        blocked = ["comfyfarm.comfyenv", "comfyfarm.runners", "comfyfarm.agent", "httpx", "websockets"]
+        r = import_without(["comfyfarm.manager.farm", "comfyfarm.manager.desk"], blocked)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_runners_need_neither_the_manager_nor_its_web_server(self):
         r = import_without(["comfyfarm.runners.comfyui"], ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
         self.assertEqual(r.returncode, 0, r.stderr)

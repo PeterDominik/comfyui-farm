@@ -98,8 +98,8 @@ class ComfyUIRunner:
         self.farm_nodes: dict | None = None
         # This machine's ComfyUI environment (comfyenv), sent to the manager: read when
         # ComfyUI (re)connects and every environment_seconds.
-        self.environment: dict | None = None
-        self._env_want: dict | None = None      # what the manager's environment file asks to read
+        self.environment: dict | None = None    # how it differs from the farm's file: the report for the manager
+        self.env = ES.Cached()                  # this checkout's environment file, read again when it changes
         self._env_next = 0.0
         self._env_stale = True
         self._env_busy = False
@@ -581,28 +581,37 @@ class ComfyUIRunner:
             await self.host.send_status()
 
     # ================================================================ environment
+    def _environment_report(self, spec: dict | None, farm_paths: list[dict], state: dict) -> dict:
+        """What the manager shows on the Machines tab: plain text, nothing it has to understand."""
+        devices = (self.stats or {}).get("devices") or [{}]
+        # Workflows whose manifest keeps them off this machine (requires): their packs and models don't count.
+        self._workflows()
+        skip = ES.excluded(self._registry, devices[0].get("vram_total"), self.host.tags)
+        result = ES.compare(spec, state, farm_paths, skip=skip)
+        core = state.get("comfyui") or {}
+        return {"checked_at": state.get("collected_at"), "file": spec is not None,
+                "comfyui": {"version": core.get("version"), "commit": core.get("commit")},
+                "differs": [d["message"] for d in result["differs"]], "notes": result["notes"]}
+
     async def check_environment(self) -> dict | None:
         """Read this machine's ComfyUI (version and launch flags, Python packages, driver,
-        node packs, extra_model_paths.yaml, the farm's models) and send it to the manager,
-        which compares it with the farm's environment file (comfyenv)."""
+        node packs, extra_model_paths.yaml, the farm's models), compare it with this
+        checkout's copy of the farm's environment file (comfyenv), and send the manager
+        what differs. Returns what was read."""
         if self._env_busy:
             return None
         self._env_busy, self._env_stale = True, False
         state = None
         try:
-            want = self._env_want or ES.wanted(ES.load(ES.SPEC))
+            spec, farm_paths = self.env.get()
             folder = EM.comfyui_folder(self.cfg)
             if folder and not os.path.isabs(folder):
                 folder = str(self.cfg.resolve(folder))
             argv = list(self.cfg.comfyui_launch.command[1:])
-            for _ in range(2):              # again if the manager's file asks for other packs or models
-                state = await asyncio.to_thread(EM.collect, folder, EM.comfyui_python(self.cfg), self.stats, argv,
-                                                **want)
-                self.environment = state
-                asked = await self.host.send_environment()
-                if not asked or asked == want:
-                    break
-                want = self._env_want = asked
+            state = await asyncio.to_thread(EM.collect, folder, EM.comfyui_python(self.cfg), self.stats, argv,
+                                            **ES.wanted(spec))
+            self.environment = self._environment_report(spec, farm_paths, state)
+            await self.host.send_environment()
         except Exception:  # noqa: BLE001
             log.exception("reading the ComfyUI environment on %s failed", self.name)
         finally:
