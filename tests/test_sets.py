@@ -163,6 +163,23 @@ class FarmSetTests(unittest.TestCase):
             fields["outputs"] = {"files": 5 * b["info"]["batch"]["tiles"]}
         self.farm._emit(self.store.update(b["id"], **fields))
 
+    def test_nothing_stored_for_a_set_names_a_node(self):
+        """Maps are planned by channel; which node saves each is the agent's copy's to say."""
+        def keys(x):
+            if isinstance(x, dict):
+                return set(x) | {k for v in x.values() for k in keys(v)}
+            return {k for v in x for k in keys(v)} if isinstance(x, list) else set()
+        src = self.tiles("src", "rockA_diffuse", range(1001, 1011), png_bytes(2, (2048, 2048)))
+        s = self.farm.submit("chord_pbr", {"input": src}, "ann")
+        wf = self.farm.registry.workflows["chord_pbr"]
+        for job in [s] + self.store.list(parent=s["id"]):
+            full = self.store.get(job["id"], with_prompt=True)
+            self.assertNotIn("node", keys(full["info"]) | keys(full["request"]))
+            if full["request"]:
+                graph = wf.build_from(full["request"])
+                for m in wf.textures.maps:
+                    self.assertTrue(graph[m.node]["inputs"]["filename_prefix"].endswith(m.channel))
+
     def test_timeline_of_a_set_and_its_batches(self):
         src = self.tiles("src", "rockA_diffuse", range(1001, 1011), png_bytes(2, (2048, 2048)))
         s = self.farm.submit("chord_pbr", {"input": src}, "ann")

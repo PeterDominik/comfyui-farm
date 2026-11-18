@@ -177,11 +177,15 @@ class ManifestTests(unittest.TestCase):
         v = self.wf.validate({"input": "x"})
         seq = Sequence(raw="x", farm_path="//srv/t/rock.%04d.png", directory="//srv/t/", filename="rock.%04d.png",
                        first=1001, last=1002, frame_count=2, skip=0, cap=0, show="xyz", shot=None)
+        # Maps by channel, as the manager plans them: which node saves each is this copy's to say.
         tex = {"raw_dir": "C:/farm/scratch/j1/maps",
-               "maps": [{"node": m.node, "prefix": f"_cfj1_{m.channel}"} for m in self.wf.textures.maps]}
+               "maps": [{"channel": m.channel, "prefix": f"_cfj1_{m.channel}"} for m in self.wf.textures.maps]}
         before = copy.deepcopy(self.wf.template)
         p = self.wf.build(v, seq, "//srv/out/rock.chord_v001", textures=tex)
         self.assertEqual(self.wf.template, before)
+        # A request planned before that also named the nodes: the same graph.
+        old = dict(tex, maps=[dict(mp, node=m.node) for mp, m in zip(tex["maps"], self.wf.textures.maps)])
+        self.assertEqual(self.wf.build(v, seq, "//srv/out/rock.chord_v001", textures=old), p)
         for m in self.wf.textures.maps:
             self.assertEqual(p[m.node]["inputs"]["output_path"], "C:/farm/scratch/j1/maps")
             self.assertEqual(p[m.node]["inputs"]["filename_prefix"], f"_cfj1_{m.channel}")

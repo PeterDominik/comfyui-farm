@@ -70,6 +70,6 @@ class Runner(Protocol):
     def follow(self, run) -> None: ...                  # a run found again: track its progress
     async def settle(self, run, result) -> None: ...    # a run that ended unseen: report how
     async def result(self, run) -> Any: ...             # a finished run's result
-    def files(self, result, node) -> list: ...          # files one of its steps wrote
+    def preview(self, run, result) -> list: ...         # the preview video the run made itself, if any
     async def fetch(self, entry, dest) -> None: ...     # copy one of them to dest
     async def forget(self, pid: str | None) -> None: ...  # drop the backend's record of the run

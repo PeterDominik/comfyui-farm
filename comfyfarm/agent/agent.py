@@ -648,9 +648,8 @@ class Agent:
                 warnings.append(f"Got {res['frames']} output frames from {exp} input frames; "
                                 f"numbering starts at {res['first']} and may not line up with the plate.")
 
-        pv = collect.get("preview")
-        if pv:
-            entries = self.runner.files(hist, pv["node"])
+        if collect.get("preview"):         # True; a job queued before agents found their nodes has the section
+            entries = self.runner.preview(h, hist)
             if entries and out_dir:
                 e = entries[-1]
                 dest = Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens)
