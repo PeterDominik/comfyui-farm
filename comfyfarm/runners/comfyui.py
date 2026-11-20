@@ -290,9 +290,14 @@ class ComfyUIRunner:
             await asyncio.sleep(0.5)
         return hist
 
-    def files(self, hist: dict | None, node) -> list:
-        """The files one node wrote, as ComfyUI lists them."""
-        node_out = ((hist or {}).get("outputs") or {}).get(str(node)) or {}
+    def preview(self, h, hist: dict | None) -> list:
+        """The preview video the graph made itself (its definition's outputs.preview), as
+        ComfyUI lists the files: the node is this checkout's, the copy the run was built from."""
+        wf = self._workflows().get(h.job.get("workflow"))
+        pv = (wf.outputs.get("preview") if wf else None) or {}
+        if not pv.get("node"):
+            return []
+        node_out = ((hist or {}).get("outputs") or {}).get(str(pv["node"])) or {}
         return node_out.get("gifs") or node_out.get("videos") or node_out.get("images") or []
 
     async def fetch(self, entry: dict, dest) -> None:

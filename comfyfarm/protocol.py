@@ -29,6 +29,10 @@ in ComfyUI). The manager acts on a report only while that run is the job's curre
 so a late or duplicate report about an earlier run changes nothing. If an agent stops
 checking in for farm.lost_after_seconds, the manager queues its jobs again.
 
+A job names no node of its backend (docs/decisions/0018): it says what the run takes and
+writes, and the agent's runner finds the nodes in its own copy of the definition, the one
+the job's fingerprint pins.
+
 Between machines, a job's paths are studio paths, with @scratch/ and @repo/ for the
 agent's scratch folder and repo (fileio.wire). The manager keeps them in its database as
 it sees them, so its API and dashboard are as before.

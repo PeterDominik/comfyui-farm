@@ -23,3 +23,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0015](0015-process-yaml.md) | A definition is a process.yaml: a shared head and a runner block | accepted |
 | [0016](0016-manager-stores-requests-only.md) | The manager stores requests only, and keeps what a run submitted as the agent reports it | accepted |
 | [0017](0017-environment-compared-on-the-agent.md) | Each agent compares its own environment and reports what differs | accepted |
+| [0018](0018-jobs-name-no-node.md) | Jobs name no node: the manager plans by what a definition takes and writes | accepted |

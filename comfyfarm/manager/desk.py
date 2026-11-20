@@ -684,7 +684,7 @@ class Desk:
         wf = self.farm.registry.workflows.get(j["workflow"])
         collect = info.get("collect")
         if collect is None:             # queued before agents collected outputs
-            collect = {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview")} if wf else {}
+            collect = wf.collect() if wf else {}
         expected = self.store.stats(j["workflow"]).get("node_count") or a.expected.get(j["workflow"]) or 20
         return W.portable({
             "job": j["id"], "attempt": j["prompt_id"], "status": j["status"], "workflow": j["workflow"],

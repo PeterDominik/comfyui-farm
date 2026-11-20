@@ -10,6 +10,7 @@ against tools/mock_comfyui.py.
 """
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -36,7 +37,7 @@ from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm, FarmError
 from comfyfarm.protocol import LinkError
-from comfyfarm.workflows import ParamError, WorkflowRegistry
+from comfyfarm.workflows import ParamError, Workflow, WorkflowRegistry
 
 try:   # the agent talks to ComfyUI with httpx and websockets
     from comfyfarm.agent.agent import Agent
@@ -1148,6 +1149,66 @@ class AgentTests(unittest.TestCase):
         for cls, spec in fake_object_info(wf.template).items():
             oi.setdefault(cls, spec)
         return self.ready(self.agent(comfy=FakeComfy(oi)))
+
+    # ------------------------------------------------------------ node ids stay on the agent
+    def test_nothing_stored_for_a_job_names_a_node(self):
+        """The manager plans by what a workflow takes and writes; which node does what is the
+        agent's copy's to say (pinned by the job's fingerprint)."""
+        def keys(x):
+            if isinstance(x, dict):
+                return set(x) | {k for v in x.values() for k in keys(v)}
+            return {k for v in x for k in keys(v)} if isinstance(x, list) else set()
+        job = self.submit()
+        self.assertEqual(job["info"]["collect"]["frames"], {"ext": "png"})
+        self.assertIs(job["info"]["collect"]["preview"], False)
+        full = self.store.get(job["id"], with_prompt=True)
+        self.assertNotIn("node", keys(full["info"]) | keys(full["request"]))     # texture jobs: test_sets
+
+    def own_preview(self) -> "Agent":
+        """The plate/matte workflow with a video node of its own (outputs.preview)."""
+        wf = plate_matte_workflow(Path(self.tmp, "wf-op"))
+        m, t = (json.loads((wf.dir / f).read_text(encoding="utf-8")) for f in ("manifest.yaml", "workflow_api.json"))
+        t["7"] = {"class_type": "VHS_VideoCombine", "inputs": {"images": ["1", 0], "filename_prefix": "x"}}
+        m.update(name="own_preview", tag="op",
+                 outputs=dict(m["outputs"], preview={"node": "7", "class": "VHS_VideoCombine",
+                                                     "prefix_input": "filename_prefix"}))
+        for f, d in (("manifest.yaml", m), ("workflow_api.json", t)):
+            (wf.dir / f).write_text(json.dumps(d), encoding="utf-8")
+        wf = Workflow(wf.dir)
+        self.assertEqual(wf.problems, [])
+        REGISTRY.workflows[wf.name] = wf
+        self.addCleanup(REGISTRY.workflows.pop, wf.name, None)
+        oi = dict(INSTALLED)
+        for cls, spec in fake_object_info(wf.template).items():
+            oi.setdefault(cls, spec)
+        return self.ready(self.agent(comfy=FakeComfy(oi)))
+
+    def test_a_workflows_own_preview_video_is_copied(self):
+        a = self.own_preview()
+        queued = []
+        for old_style in (False, True):
+            job = self.farm.submit("own_preview", {"plate": f"{SEQ} 1001-1002"}, "ann")
+            self.assertIs(job["info"]["collect"]["preview"], True)
+            if old_style:               # as a job queued before agents found their nodes: the section itself
+                info = dict(job["info"], collect=dict(job["info"]["collect"], preview={"node": "7"}))
+                self.store.update(job["id"], info=info)
+            queued.append(job)
+        for job in queued:
+            pid = self.dispatched(a, job)
+            self.msg(a, "execution_start", prompt_id=pid)
+            info = a.held[job["id"]].job["info"]
+            for i in (1, 2):
+                Path(info["output_dir"], f"{info['frames_prefix']}_{i:04d}.png").write_bytes(b"png")
+            a.runner.client.hist[pid] = {"outputs": {"7": {"gifs": [{"filename": "x.mp4", "subfolder": "",
+                                                                     "type": "output"}]}},
+                                         "status": {"status_str": "success", "completed": True}}
+            self.msg(a, "execution_success", prompt_id=pid)
+            self.until(lambda: self.job(job["id"])["status"] in ("done", "failed"), what="done")
+            done = self.job(job["id"])
+            with self.subTest(queued_before=job is queued[1]):
+                self.assertEqual(done["status"], "done", done.get("error"))
+                self.assertEqual(Path(done["outputs"]["preview"]).read_bytes(), b"mp4")
+                self.assertEqual(done["warnings"] or [], [])
 
     def test_several_inputs_each_converted_into_its_own_folder(self):
         a = self.plate_matte()

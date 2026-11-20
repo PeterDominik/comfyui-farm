@@ -170,6 +170,13 @@ class Port:
     def adapter(self) -> L.Loader | None:
         return L.get(self.loader.get("class"))
 
+    @property
+    def reads_folder(self) -> bool:
+        """The runner reads the input's whole folder, not the files it is given: the manager
+        stages it into a folder of its own."""
+        ad = self.adapter
+        return bool(ad and ad.lists_folder)
+
 
 @dataclass
 class Target:
@@ -431,6 +438,23 @@ class Workflow:
         if input_name and input_name not in n.get("inputs", {}):
             out.append(f"{where}: node {node} has no input '{input_name}'")
         return out
+
+    @property
+    def frames_ext(self) -> str | None:
+        """What its frames are written as (png, exr): None when it writes no frames."""
+        f = self.outputs.get("frames")
+        return f.get("ext", "png") if f else None
+
+    @property
+    def own_preview(self) -> bool:
+        """The run makes its own preview video (outputs.preview), which the agent copies."""
+        return bool(self.outputs.get("preview"))
+
+    def collect(self, movie: dict | None = None) -> dict:
+        """What the agent collects after a run, with no node in it: the agent's runner finds
+        its nodes in its own copy of the definition (pinned by the job's fingerprint)."""
+        return {"frames": {"ext": self.frames_ext} if self.frames_ext else None, "preview": self.own_preview,
+                "movie": movie}
 
     @property
     def makes_preview(self) -> bool:
@@ -723,9 +747,11 @@ class Workflow:
             prompt[str(pv["node"])]["inputs"][pv["prefix_input"]] = preview_prefix
         if textures and self.textures:
             # Each map's save node writes PNGs into the job's scratch folder; the gateway
-            # turns them into the named EXRs afterwards (textures.write_maps).
+            # turns them into the named EXRs afterwards (textures.write_maps). The plan names
+            # maps by channel; which node saves each is this copy's to say.
+            nodes = {m.channel: m.node for m in self.textures.maps}
             for mp in textures["maps"]:
-                inputs = prompt[mp["node"]]["inputs"]
+                inputs = prompt[nodes[mp["channel"]]]["inputs"]
                 inputs[self.textures.path_input] = textures["raw_dir"]
                 inputs[self.textures.prefix_input] = mp["prefix"]
         return prompt

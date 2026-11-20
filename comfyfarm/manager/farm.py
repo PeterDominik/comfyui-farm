@@ -286,7 +286,7 @@ class Farm:
             seq = I.resolve_input(use[wf.sequence_param], pc, self.cfg.convert, show=show, shot=shot,
                                   texture=bool(wf.textures), ocio=self.cfg.ocio,
                                   work_resolution=wf.work_resolution, preview=job_id == "preview",
-                                  listing=wf.loader.lists_folder) \
+                                  listing=wf.port.reads_folder) \
                 if wf.sequence_param else None
             if seq is not None and wf.port.takes == "image":
                 I.one_image(seq, pc)        # one frame of a sequence or movie, named by the artist
@@ -314,7 +314,7 @@ class Farm:
         plan["waits"] = self.desk.requires_note(wf.name) if self.desk else None
         if wf.textures:
             return self._plan_textures(plan, job_id)
-        if not wf.outputs.get("frames"):
+        if not wf.frames_ext:
             return plan
 
         picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
@@ -326,7 +326,7 @@ class Farm:
         versioned = "{version" in pc.frame_name or "{version" in dir_template
         exists = N.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
         base = {"source": source, "show": show_, "seq": seq_name, "shot": shot_, "tag": wf.tag,
-                "ext": wf.outputs["frames"].get("ext", "png")}
+                "ext": wf.frames_ext}
         for v in range(1, 1000):
             out_dir = N.output_dir(dir_template, root=root, version=v, **base)
             tokens = dict(base, version=v, folder=out_dir.rpartition("/")[2])
@@ -524,7 +524,7 @@ class Farm:
             try:
                 seq = I.resolve_input(raw, pc, self.cfg.convert, show=show, shot=shot, ocio=self.cfg.ocio,
                                       work_resolution=port.work_resolution or wf.manifest_work_resolution,
-                                      preview=job_id == "preview", listing=port.adapter.lists_folder)
+                                      preview=job_id == "preview", listing=port.reads_folder)
                 if port.takes != "image":
                     I.frame_limit(seq, port.max_frames)
             except SequenceError as e:
@@ -579,7 +579,7 @@ class Farm:
         else:
             raise FarmError(f"No free version for {out_dir} (999 tried).")
         P.check_writable(out_dir, pc)
-        maps = [{"name": m.name, "node": m.node, "channel": m.channel, "colorspace": m.colorspace,
+        maps = [{"name": m.name, "channel": m.channel, "colorspace": m.colorspace,
                  "color": m.color, "bits": m.bits, "prefix": f"_cf{job_id[:8]}_{m.channel}"} for m in spec.maps]
         textures = {"raw_dir": f"{self.scratch_root}/{job_id}/maps", "name": spec.name, "ext": spec.ext,
                     "tokens": tokens, "items": [list(i) for i in items], "maps": maps, "has_udim": has_udim,
@@ -698,10 +698,9 @@ class Farm:
             "preview_name": pc.preview_name,
             # Texture workflows: every map's file names, also frozen per job.
             "textures": textures, "what": what,
-            # What the agent collects when the run is done, from the manifest the prompt
-            # was built with, and the preview movie it makes of the frames (fileio.preview).
-            "collect": {"frames": wf.outputs.get("frames"), "preview": wf.outputs.get("preview"),
-                        "movie": self._movie(wf, seq)},
+            # What the agent collects when the run is done, and the preview movie it makes of
+            # the frames (fileio.preview). No node ids: the agent's runner has its own copy.
+            "collect": wf.collect(self._movie(wf, seq)),
         }
 
     def _movie(self, wf, seq) -> dict | None:
