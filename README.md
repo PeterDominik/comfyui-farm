@@ -1362,9 +1362,10 @@ a value into the wrong node.
 ### process.yaml
 
 A workflow can be written as `process.yaml` instead of `manifest.yaml` (never both in one
-folder). It says the same things in two halves: a head any kind of job shares, and a
-`runner:` block with everything about ComfyUI's graph. `docs/decisions/0015-process-yaml.md`
-has the why.
+folder). It says the same things in two halves: a head any kind of job shares, with what
+the workflow takes and writes, and a `runner:` block with which ComfyUI node does each
+thing. `docs/decisions/0015-process-yaml.md` and `0019-the-head-says-what-a-definition-writes.md`
+have the why.
 
 ```yaml
 id: wan22_i2i
@@ -1376,15 +1377,31 @@ limits: {max_minutes: 30}
 models:
   - {file: wan2.2_i2v_low_noise_14B.safetensors, licence: apache-2.0}
 params:
+  input: {type: input, takes: image, label: Image, required: true}
   prompt: {type: string, label: Prompt}        # type, label, default, min/max, choices
+writes:
+  frames: {ext: png}          # it writes a frame sequence of this type
+  preview: true               # the farm makes a preview movie (false: none; own: the graph makes one)
 runner:
   type: comfyui
   template: workflow_api.json
   params:
+    input:
+      loader: {node: "254", class: ComfyFarmLoadImage}
     prompt:                                    # the nodes it drives
       targets: [{node: "6", input: text, class: CLIPTextEncode}]
-  outputs: ...
+  outputs:
+    frames: {node: "256", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix}
 ```
+
+A texture workflow says `writes.textures` instead of `writes.frames`: `name`, `dir`, `ext`,
+`batch`, and `maps` with each map's `channel`, `name`, `colorspace`, `color` and `bits`.
+Its `runner.textures` has `path_input`, `prefix_input` and `maps` keyed by channel, each
+with the `node` and `class` that saves it. An input whose loader reads every file in its
+folder (VHS Load Images Path) says `own_folder: true` in the head.
+
+Each half needs the other (frames in `writes` and their node in `runner.outputs`), and a
+key in the wrong half is refused with a message saying where it goes.
 
 `class`, `targets`, `limits`, `models`, `eval` and `version` are optional. They are checked
 when the workflow loads and not used yet. `python tools/manifest_to_process.py workflows/<name>`
@@ -1392,9 +1409,10 @@ prints a manifest as a process.yaml (`--write` saves it; comments are not carrie
 you remove the manifest yourself). A converted workflow keeps its fingerprint until a head
 field is added, so machines on the old and the new file still agree.
 
-Everything below about manifests holds for both; in a process.yaml the per-parameter
+Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,
-`node_packs`, `sequence`, `outputs` and `textures`, sit under `runner:`.
+`node_packs` and `sequence`, sit under `runner:`. What a manifest's `outputs`, `textures`
+and top-level `preview` say is split between `writes:` and `runner:` as above.
 
 ### Workflow manifests
 
