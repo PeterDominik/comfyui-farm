@@ -1,0 +1,196 @@
+{
+  "facts": {
+    "machine": "tor-flame02",
+    "os": "Linux-4.18.0-553.124.1.el8_10.x86_64-x86_64-with-glibc2.28",
+    "python": "3.12.16",
+    "gpus": [
+      "NVIDIA RTX A6000, 580.159.04"
+    ],
+    "settings_in_environment": [
+      "REZ_CONFIG_FILE"
+    ],
+    "pip_config": [
+      "global.index",
+      "global.index-url"
+    ]
+  },
+  "wanted": {
+    "python": "3.12",
+    "torch": [],
+    "torch_index": null,
+    "small": [
+      "numpy==2.5.2",
+      "pillow==12.3.0"
+    ]
+  },
+  "methods": {
+    "uv": {
+      "builds": [
+        {
+          "method": "uv",
+          "run": "cold",
+          "folder": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-cold",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 1.4,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "venv",
+              "seconds": 0.2,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 1.2,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 0.5,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-cold",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": null
+          },
+          "size_mb": 75.3,
+          "problems": []
+        },
+        {
+          "method": "uv",
+          "run": "warm",
+          "folder": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-warm",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 0.1,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "venv",
+              "seconds": 0.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 0.2,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 0.3,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-warm",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": null
+          },
+          "size_mb": 75.3,
+          "problems": []
+        }
+      ],
+      "tool": "uv 0.13.9 (x86_64-unknown-linux-gnu)",
+      "get_uv_seconds": 66.2,
+      "disk_mb": 321.6,
+      "pass": true
+    },
+    "installers": {
+      "builds": [
+        {
+          "method": "installers",
+          "run": "cold",
+          "folder": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-cold",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 10.8,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 10.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 0.3,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-cold",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": null
+          },
+          "size_mb": 256.8,
+          "problems": []
+        },
+        {
+          "method": "installers",
+          "run": "warm",
+          "folder": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-warm",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 24.7,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 12.5,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 0.3,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-warm",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": null
+          },
+          "size_mb": 256.8,
+          "problems": []
+        }
+      ],
+      "tool": "conda /softwareLocal/comfyfarm/miniconda3/bin/conda",
+      "disk_mb": 450.9,
+      "pass": true
+    }
+  },
+  "at": "2026-11-20 22:15:08"
+}
