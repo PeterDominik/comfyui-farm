@@ -341,6 +341,12 @@ class GpuProbeConfig(BaseModel):
     command: list[str] = ["nvidia-smi"]         # comes with the NVIDIA driver, on Linux and Windows
 
 
+class EnvsConfig(BaseModel):
+    """Runner environments built on this machine (comfyfarm/envs, decision 0024)."""
+    dir: str = "data/envs"                      # builds, uv's cache and its Pythons; relative = next to agent.yaml
+    uv: list[str] = []                          # a uv to use; empty: one installed with pip into <dir>/.uv-tool
+
+
 class ComfyUILaunchConfig(BaseModel):
     """How the agent starts this machine's ComfyUI when it isn't running (optional). ComfyUI
     runs on its own once started: restarting the agent leaves it, and its jobs, running."""
@@ -368,6 +374,7 @@ class AgentConfig(BaseModel):
     comfyui_python: str = ""
     environment_seconds: float = 900.0  # the environment is checked this often (and when ComfyUI starts)
     gpu_probe: GpuProbeConfig = Field(default_factory=GpuProbeConfig)
+    envs: EnvsConfig = Field(default_factory=EnvsConfig)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []
