@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import AgentConfig, PathsConfig
+from ..envs import build as EB
 from ..fileio import convert as C
 from ..fileio import outputs as O
 from ..fileio import paths as P
@@ -79,6 +80,7 @@ class Held:
 
 class Agent:
     CLAIM_RETRY_SECONDS = 10.0          # between asking the card's last runner to free it (the GPU claim)
+    ENVS_SECONDS = 30.0                 # what it has built is read again this often (status `environments`)
 
     def __init__(self, cfg: AgentConfig, link, runner: Runner | None = None, runners: list | None = None):
         self.cfg = cfg
@@ -118,6 +120,7 @@ class Agent:
         self.gpus: list[dict] | None = None
         self.gpu_error: str | None = None
         self.released: dict | None = None       # the last time its runner freed its VRAM, and how it went
+        self.environments: dict | None = None   # what it has built (envs/build.report), as last read
         self._releasing = False
 
     # ================================================================ lifecycle
@@ -133,6 +136,7 @@ class Agent:
                        *(t for r in self.runners for t in r.start())]
         if self.cfg.gpu_probe.enabled:
             self._tasks.append(asyncio.create_task(self._gpu_loop(), name=f"gpus-{self.name}"))
+        self._tasks.append(asyncio.create_task(self._envs_loop(), name=f"envs-{self.name}"))
         log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
                  getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process"))
 
@@ -306,8 +310,34 @@ class Agent:
                 log.exception("agent %s: reading its GPUs failed", self.name)
             await asyncio.sleep(max(1.0, self.cfg.gpu_probe.seconds))
 
+    async def refresh_environments(self) -> bool:
+        """Read what this machine has built (off the event loop: the folder may be slow). True
+        if it changed since the last read."""
+        try:
+            now_ = await asyncio.to_thread(EB.report, Path(self.cfg.resolve(self.cfg.envs.dir)))
+        except OSError as e:
+            log.warning("agent %s: can't read its environments: %s", self.name, e)
+            return False
+        changed, self.environments = now_ != self.environments, now_
+        return changed
+
+    async def _envs_loop(self) -> None:
+        """Every ENVS_SECONDS: an `env install` or `env remove` on this machine reaches the
+        manager without waiting for anything else to change (decision 0029)."""
+        while True:
+            try:
+                if await self.refresh_environments() and self.registered:
+                    await self.send_status()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("agent %s: reading its environments failed", self.name)
+            await asyncio.sleep(self.ENVS_SECONDS)
+
     async def send_status(self) -> None:
         msg = {"name": self.name, **self.runner.status()}
+        if self.environments is not None:
+            msg["environments"] = self.environments
         if self.cfg.gpu_probe.enabled:
             msg.update(gpus=self.gpus, gpu_error=self.gpu_error)
         if self.released is not None:

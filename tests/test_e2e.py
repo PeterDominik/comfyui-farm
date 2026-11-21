@@ -692,6 +692,20 @@ convert:
         self.assertEqual(env["differs"], [])
         self.assertIn("ComfyUI's folder isn't known", " ".join(env["notes"]))
 
+    def test_05005_runner_environments(self):
+        """What each machine has built of the runner environments reaches the manager (decision
+        0029); with no bank (share.dir) there are no releases to list."""
+        deadline = time.time() + 30
+        while True:
+            envs = farm._request("GET", "/api/v1/environments")
+            if "mock" in envs["machines"] or time.time() > deadline:
+                break
+            time.sleep(0.5)
+        self.assertEqual((envs["bank"], envs["releases"]), (None, []))
+        self.assertIsInstance(envs["machines"].get("mock"), dict, envs)
+        w = {x["name"]: x for x in farm._request("GET", "/api/v1/workers")["workers"]}["mock"]
+        self.assertEqual(w["environments"], envs["machines"]["mock"])
+
     def test_0501_publishing_off(self):
         """Publishing is off until publish.enabled: no Publish buttons, and asking says why."""
         wf = {w["name"]: w for w in farm.workflows()}["ltx25_alpha_gen"]

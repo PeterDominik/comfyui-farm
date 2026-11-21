@@ -98,3 +98,16 @@ def publish(cfg: Config, client_dir: Path | None = None) -> dict | None:
 
 
 __all__ = ["ADDRESS_FILE", "manager_url", "share_dir", "publish"]
+
+
+def releases(cfg: Config) -> list[dict]:
+    """The runner environments' releases in the bank (share.dir), newest first (decision
+    0028). Read from each release.json; installing one checks it."""
+    if not cfg.share.dir:
+        return []
+    from ..envs import release as R
+    try:
+        return R.listed(Path(cfg.share.dir))
+    except OSError as e:
+        log.warning("can't read the releases in %s: %s", cfg.share.dir, e)
+        return []

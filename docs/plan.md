@@ -99,4 +99,6 @@ A4 launchers (xStudio, Daiquiri Automate).
   updating and removing; rollouts with a canary (the A6000), pause and rollback; the
   Machines tab; today's ComfyUI sync started by the manager. Releases are in: `env publish`
   on the manager's host copies an environment, as committed, to the bank with its hashes,
-  and `env install --release` builds from a checked copy (0028).
+  and `env install --release` builds from a checked copy (0028). Agents report what they
+  have built with their status, and `GET /api/v1/environments` lists it beside the bank's
+  releases (0029).

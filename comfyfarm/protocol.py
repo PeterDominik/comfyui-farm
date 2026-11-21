@@ -13,6 +13,10 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              utilization, driver), and `gpu_error` when it can't be read. `released`:
              the last time its runner freed its VRAM, as asked (`release_vram` in a
              check-in reply): when, ok, bytes held before and after, and why not.
+             `environments`: the runner environments it has built, as on its disk
+             (envs/build.report): for each, its current and previous build and each
+             build's fingerprint, when it was built and where from (a release or its
+             checkout). Read again every 30 s, and sent at once when it changes.
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
              the agent's checkout with its fingerprint, what its ComfyUI lacks for it,
              what is wrong with how the definition wires the graph (`broken`, which

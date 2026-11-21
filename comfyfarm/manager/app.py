@@ -478,6 +478,13 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def workers(ident: Identity = Depends(identity)):
         return {"workers": desk.summaries()}
 
+    @app.get("/api/v1/environments")
+    async def environments(ident: Identity = Depends(identity)):
+        """Runner environments: the releases in the bank and what each machine has built
+        (decisions 0028, 0029). Read-only: what each machine should have comes with rollouts."""
+        releases = await asyncio.to_thread(share.releases, cfg)
+        return {"bank": cfg.share.dir or None, "releases": releases, "machines": desk.environments()}
+
     @app.get("/api/v1/run-times")
     def run_times(ident: Identity = Depends(identity)):
         """How long each workflow takes on each GPU type (what the ETAs come from)."""
