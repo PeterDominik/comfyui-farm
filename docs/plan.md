@@ -78,3 +78,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   which node does it (0015, 0019), and the five are written that way; the manager checks
   the head and agents check the wiring (0020); `definitions.py` holds the head and
   `runners/comfyui_workflow.py` the ComfyUI half (0021).
+- Phase 3, in progress. The builder test is in (`tools/builder_test.py`, `docs/builder/`):
+  it builds the same environment with uv and with the installers' method, cold and warm,
+  and checks it. Left: run it on the three pilot machines; then GPU probe and claim, VRAM
+  release, the process runner with time limits, the environment spec and
+  `comfyfarm env install` with the builder the test picks, and a test Python process.
