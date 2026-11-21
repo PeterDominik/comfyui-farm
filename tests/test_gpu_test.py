@@ -118,6 +118,8 @@ class Script(unittest.TestCase):
         self.assertEqual(result, {"warnings": []})
         self.assertTrue(np.array_equal(self.written(1), 255 - self.frames[0]))
         self.assertTrue(np.array_equal(self.written(2), 255 - self.frames[1]))
+        self.assertEqual(sorted(os.listdir(self.out)), ["_raw_00001.png", "_raw_00002.png",
+                                                        "gpu_test.01234567.json"])   # no half-written frame
         r, _ = self.run_it(operation="grade", strength=2)
         expected = np.clip(np.round(self.frames[0].astype(np.float32) / 255 * 2 * 255), 0, 255)
         self.assertLessEqual(np.abs(self.written(1).astype(int) - expected.astype(int)).max(), 1)

@@ -61,8 +61,12 @@ def load(path: str):
 
 
 def save(arr, path: str) -> None:
+    """Whole or not at all: written under another name, then renamed, so a run stopped
+    mid-frame leaves no broken PNG for the farm to collect."""
     from PIL import Image
-    Image.fromarray(arr).save(path)
+    part = path + ".part"
+    Image.fromarray(arr).save(part, format="PNG")
+    os.replace(part, path)
 
 
 def apply(torch, t, operation: str, strength: float):

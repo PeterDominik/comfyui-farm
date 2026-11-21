@@ -431,10 +431,15 @@ class ComfyUIRunner:
         async with self._reconcile_lock:
             await self._reconcile_once()
 
+    def _mine(self) -> list:
+        """The agent's runs that are ComfyUI's. Another runner's (a process) never reached
+        ComfyUI: it isn't ComfyUI's to find in its queue, or to lose (decision 0025)."""
+        return [h for h in self.host.runs() if getattr(h, "runner", None) in (self, None)]
+
     async def _reconcile_once(self) -> None:
         host = self.host
         t0 = now()
-        runs = [h for h in host.runs() if h.status in ON_WORKER and (h.dispatched_at or 0) < t0 - 2]
+        runs = [h for h in self._mine() if h.status in ON_WORKER and (h.dispatched_at or 0) < t0 - 2]
         if not runs and not self.abandoned:
             return
         running, pending = await self.client.queue()
@@ -467,6 +472,12 @@ class ComfyUIRunner:
             await host.run_lost(h, f"ComfyUI on {self.name} lost the job (restarted?).")
 
     # ================================================================ ComfyUI: health
+    async def _lost_with_comfyui(self) -> None:
+        """ComfyUI unreachable too long: its runs are lost. Not another runner's."""
+        for h in [h for h in self._mine() if h.status in ON_WORKER]:
+            await self.host.run_lost(h, f"ComfyUI on {self.name} was unreachable for over "
+                                        f"{duration(self.cfg.lost_after_seconds)}.")
+
     async def _health_loop(self) -> None:
         host = self.host
         fails = 0
@@ -487,9 +498,7 @@ class ComfyUIRunner:
                     self.error = str(e) or type(e).__name__
                     log.warning("worker %s offline: %s", self.name, self.error)
                 if not self.online and now() - self.offline_since > self.cfg.lost_after_seconds:
-                    for h in [h for h in host.runs() if h.status in ON_WORKER]:
-                        await host.run_lost(h, f"ComfyUI on {self.name} was unreachable for over "
-                                               f"{duration(self.cfg.lost_after_seconds)}.")
+                    await self._lost_with_comfyui()
             try:
                 self.launcher.tick(reachable)   # starts ComfyUI if agent.yaml says how and it isn't running
             except Exception:  # noqa: BLE001
