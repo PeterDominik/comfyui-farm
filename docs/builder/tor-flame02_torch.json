@@ -16,8 +16,11 @@
   },
   "wanted": {
     "python": "3.12",
-    "torch": [],
-    "torch_index": null,
+    "torch": [
+      "torch==2.13.0+cu130",
+      "torchvision==0.28.0+cu130"
+    ],
+    "torch_index": "https://download.pytorch.org/whl/cu130",
     "small": [
       "numpy==2.5.2",
       "pillow==12.3.0"
@@ -33,7 +36,7 @@
           "steps": [
             {
               "name": "python",
-              "seconds": 1.4,
+              "seconds": 1.1,
               "ok": true,
               "tail": ""
             },
@@ -44,16 +47,22 @@
               "tail": ""
             },
             {
+              "name": "torch",
+              "seconds": 29.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
               "name": "packages",
-              "seconds": 1.2,
+              "seconds": 0.9,
               "ok": true,
               "tail": ""
             },
             {
               "name": "check",
-              "seconds": 0.5,
+              "seconds": 8.5,
               "ok": true,
-              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA RTX A6000\"}"
             }
           ],
           "check": {
@@ -62,9 +71,11 @@
             "foreign_paths": [],
             "numpy": "2.5.2",
             "PIL": "12.3.0",
-            "torch": null
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA RTX A6000"
           },
-          "size_mb": 75.3,
+          "size_mb": 4635.6,
           "problems": []
         },
         {
@@ -85,16 +96,22 @@
               "tail": ""
             },
             {
+              "name": "torch",
+              "seconds": 2.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
               "name": "packages",
-              "seconds": 0.2,
+              "seconds": 0.3,
               "ok": true,
               "tail": ""
             },
             {
               "name": "check",
-              "seconds": 0.3,
+              "seconds": 15.3,
               "ok": true,
-              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/uv-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA RTX A6000\"}"
             }
           ],
           "check": {
@@ -103,15 +120,17 @@
             "foreign_paths": [],
             "numpy": "2.5.2",
             "PIL": "12.3.0",
-            "torch": null
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA RTX A6000"
           },
-          "size_mb": 75.3,
+          "size_mb": 4635.6,
           "problems": []
         }
       ],
       "tool": "uv 0.13.9 (x86_64-unknown-linux-gnu)",
-      "get_uv_seconds": 66.2,
-      "disk_mb": 321.6,
+      "get_uv_seconds": 4.3,
+      "disk_mb": 14067.5,
       "pass": true
     },
     "installers": {
@@ -123,21 +142,27 @@
           "steps": [
             {
               "name": "python",
-              "seconds": 10.8,
+              "seconds": 27.7,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "torch",
+              "seconds": 194.2,
               "ok": true,
               "tail": ""
             },
             {
               "name": "packages",
-              "seconds": 10.0,
+              "seconds": 13.5,
               "ok": true,
               "tail": ""
             },
             {
               "name": "check",
-              "seconds": 0.3,
+              "seconds": 6.0,
               "ok": true,
-              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA RTX A6000\"}"
             }
           ],
           "check": {
@@ -146,9 +171,11 @@
             "foreign_paths": [],
             "numpy": "2.5.2",
             "PIL": "12.3.0",
-            "torch": null
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA RTX A6000"
           },
-          "size_mb": 256.8,
+          "size_mb": 4907.8,
           "problems": []
         },
         {
@@ -158,21 +185,27 @@
           "steps": [
             {
               "name": "python",
-              "seconds": 24.7,
+              "seconds": 25.3,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "torch",
+              "seconds": 176.8,
               "ok": true,
               "tail": ""
             },
             {
               "name": "packages",
-              "seconds": 12.5,
+              "seconds": 12.3,
               "ok": true,
               "tail": ""
             },
             {
               "name": "check",
-              "seconds": 0.3,
+              "seconds": 4.9,
               "ok": true,
-              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/softwareLocal/comfyfarm/comfyui-farm/run/builder-test/installers-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA RTX A6000\"}"
             }
           ],
           "check": {
@@ -181,16 +214,18 @@
             "foreign_paths": [],
             "numpy": "2.5.2",
             "PIL": "12.3.0",
-            "torch": null
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA RTX A6000"
           },
-          "size_mb": 256.8,
+          "size_mb": 4907.8,
           "problems": []
         }
       ],
       "tool": "conda /softwareLocal/comfyfarm/miniconda3/bin/conda",
-      "disk_mb": 450.9,
+      "disk_mb": 10690.6,
       "pass": true
     }
   },
-  "at": "2026-11-20 22:15:08"
+  "at": "2026-11-20 23:12:49"
 }
