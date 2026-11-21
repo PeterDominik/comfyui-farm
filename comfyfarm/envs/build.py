@@ -144,9 +144,10 @@ def check(spec: Spec, build: Path, timeout: float = 600) -> str:
     return run(cmd, timeout=timeout, cwd=build)
 
 
-def install(spec: Spec, root: Path, uv: list[str], force: bool = False, log=print) -> dict:
+def install(spec: Spec, root: Path, uv: list[str], force: bool = False, log=print, origin: dict | None = None) -> dict:
     """Build this machine's copy, check it, make it current (the one before becomes previous).
-    Returns its farm-env.json. BuildError with what failed; the current build stays."""
+    Returns its farm-env.json, which says where it came from (`origin`: a release, or this
+    checkout). BuildError with what failed; the current build stays."""
     if not spec.locked:
         raise BuildError(f"{spec.name} has no uv.lock: run `python -m comfyfarm env lock {spec.name}` on a machine "
                          f"that reaches pypi.org, and commit environments/{spec.name}/uv.lock")
@@ -178,6 +179,7 @@ def install(spec: Spec, root: Path, uv: list[str], force: bool = False, log=prin
         raise
     meta = {"name": spec.name, "fingerprint": fp, "python": spec.python, "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "build_seconds": round(built, 1), "check": said.strip()[-500:],
+            "origin": origin or {"checkout": str(spec.folder)},
             "copied": "falling back to full copy" in out.lower()}   # the disk couldn't hard-link from uv's cache
     (build / "farm-env.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     (build / "ok").write_text("", encoding="utf-8")

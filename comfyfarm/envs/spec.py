@@ -110,7 +110,8 @@ def lock_differs(project: dict, lock: dict) -> str | None:
 
 
 def load(name: str, root: Path | None = None) -> Spec:
-    """The folder as it is now: a change after this makes another Spec, with its own fingerprint."""
+    """environments/<name> as it is now: a change after this makes another Spec, with its own
+    fingerprint."""
     root = root or ENVS
     if not NAME.match(name or ""):
         raise SpecError(f"'{name}' isn't an environment name: lowercase letters, digits, - and _")
@@ -118,6 +119,15 @@ def load(name: str, root: Path | None = None) -> Spec:
     if not (folder / "pyproject.toml").exists():
         known = ", ".join(sorted(names(root))) or "none"
         raise SpecError(f"no environment {name} in {folder.parent} (there: {known})")
+    return load_dir(name, folder)
+
+
+def load_dir(name: str, folder: Path) -> Spec:
+    """An environment's files in any folder: the repo's, or a release's copy (release.py)."""
+    if not NAME.match(name or ""):
+        raise SpecError(f"'{name}' isn't an environment name: lowercase letters, digits, - and _")
+    if not (folder / "pyproject.toml").exists():
+        raise SpecError(f"{folder} has no pyproject.toml")
     try:
         project = tomllib.loads((folder / "pyproject.toml").read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as e:

@@ -33,3 +33,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0025](0025-process-runner.md) | The process runner: a reviewed command in a runner environment, kept by a supervisor | accepted |
 | [0026](0026-the-gpu-claim.md) | One runner's runs at a time on the card; the last one frees it first | accepted |
 | [0027](0027-the-test-process.md) | The test process: a torch job that checks the process runner and the GPU claim | accepted |
+| [0028](0028-environment-releases.md) | Environment releases: the repo's environment, published to the bank, checked by hash | accepted |
