@@ -82,3 +82,6 @@ may become a command (CLAUDE.md: identity).
   and requeued.
 - `job.json` is contract 1. A field added later stays optional, so commands written for 1
   keep working.
+
+Later: 0026 replaced the shared `max_inflight` with the GPU claim: one runner's runs at a
+time on the card, and ComfyUI frees its models before a process runs.

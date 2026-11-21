@@ -507,8 +507,15 @@ printed) for 7 days.
 
 `python -m comfyfarm agent --check` lists each process and whether this machine can run it:
 with the runner on, its environment has to be built here at this checkout's version
-(`env install`). Until the GPU claim, `max_inflight` counts ComfyUI's and the process
-runner's runs together, and ComfyUI keeps its models loaded while a process runs.
+(`env install`).
+
+**One runner at a time on the card** (the GPU claim, decision 0026). A process job waits
+while ComfyUI runs the farm's jobs, and the other way round, first come first served. Before
+a process runs, ComfyUI frees its models (as *Free VRAM* does). If it can't, because it
+has prompts queued that aren't the farm's, the job waits, saying why, for
+`claim_wait_seconds` (5 minutes). Then it starts anyway, and the job carries a warning that
+it shared the card. The process runner runs one job at a time; ComfyUI keeps
+`max_inflight`. ComfyUI's next job after a process loads its models again.
 
 ### How the manager and agents work together
 

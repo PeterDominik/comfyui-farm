@@ -87,5 +87,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   locked in the repo and built on each machine with `comfyfarm env install` (0024): uv is
   the builder. The process runner runs a reviewed command in a runner environment with a
   time limit, kept by a supervisor per run that outlives the agent; the agent gives each
-  job to the runner that knows its definition (0025). Off by default. Left: the GPU claim
-  (one card, VRAM freed before the other runner uses it) and a test Python process.
+  job to the runner that knows its definition (0025). Off by default. One runner's runs at a
+  time hold the card, first come first served, and ComfyUI frees its models before a
+  process runs (the GPU claim, 0026). Left: a test Python process, and the gate on the
+  three machines.

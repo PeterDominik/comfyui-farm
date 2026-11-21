@@ -55,14 +55,15 @@ comfyui_launch:
 
 # Off by default: run process definitions (process.yaml with runner: {type: process}), each
 # command in its runner environment's current build here (envs above; `python -m comfyfarm
-# env install <name>`), with a time limit. Until the GPU claim, max_inflight counts runs of
-# both runners together, so with 1 a process job waits for ComfyUI's job and the other way
-# round; ComfyUI's models stay loaded meanwhile.
+# env install <name>`), with a time limit. One runner's jobs at a time use the card (the GPU
+# claim): before a process runs, ComfyUI frees its models; its next job loads them again.
 # process_runner:
 #   enabled: true
 #   runs_dir: data/runs          # a folder per run; relative = next to this file
 #   default_minutes: 60          # the time limit of a definition without limits.max_minutes
 #   grace_seconds: 15            # after a cancel or the time limit, before it is killed
+# claim_wait_seconds: 300        # how long a process job waits for ComfyUI to free the card
+#                                # (its own prompts queued) before it starts anyway, with a warning
 
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 # log_json: true                # also logs/agent-<name>.jsonl: the same lines, one JSON object each
