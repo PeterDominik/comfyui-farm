@@ -1,10 +1,11 @@
-# What the gateway exposes for this workflow, and which nodes each parameter drives.
-# Full reference: "Workflow manifests" and "Texture workflows" in README.md.
+# What the farm exposes for this workflow and what it writes (the head), and which ComfyUI
+# nodes do each (runner:). Full reference: "process.yaml", "Workflow manifests" and
+# "Texture workflows" in README.md.
 #
 # Every node is named with its class_type too, so a re-export that renumbers nodes fails
 # `python -m comfyfarm check` instead of writing into the wrong node.
 
-name: chord_pbr
+id: chord_pbr
 label: CHORD PBR maps from a diffuse texture
 description: >
   Ubisoft's CHORD estimates base colour, normal, height, roughness and metalness from a
@@ -12,7 +13,6 @@ description: >
   naming convention, e.g. acescg_map1_noTile_defState_color01.1001.0000.exr, into a new
   versioned folder for each run.
 tag: chord                      # in the output folder name: <source>.chord_v001
-template: workflow_api.json
 # CHORD runs its model at 1024×1024 anyway, so larger textures are scaled down (longer
 # side, aspect kept) before the workflow: less to convert, load and resize, and the maps
 # come out at 1024. Textures of 1024 or less are used as they are. Leave out to keep
@@ -29,8 +29,6 @@ params:
     takes: images
     label: Diffuse texture
     required: true
-    loader: {node: "17", class: ComfyFarmLoadImages}
-    path_node: {node: "14", input: value, class: PrimitiveString}    # INPUT_PATH, informational
     # Tiles per run. A texture with more tiles is a set: one output folder, filled by runs
     # of up to this many tiles. CHORD estimates a whole batch in one pass, so GPU memory
     # grows with it: 5 tiles used about 29 GB of the 5090's 32. Measured on the farm (4K
@@ -52,7 +50,7 @@ params:
       next free version. Its parent folder must exist. Leave empty for the show's renders folder.
       Never inside .published.
 
-  # Naming params: they only go into the file names, so they have no targets.
+  # Naming params: they only go into the file names, so they drive no node.
   uvset:
     type: string
     label: UV set
@@ -93,24 +91,42 @@ params:
     naming: true
     help: What the number in the input file names is. frame = an animated texture (UDIM 1001, frame from the name).
 
-outputs:
-  root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational
+writes:
+  # The maps, as EXRs named by the TEX convention. The run writes uncompressed PNGs into the
+  # job's scratch folder; the farm converts them to EXR with oiiotool and names them.
+  # color: true maps go color_picking -> scene_linear (ocio/config.ocio); the others keep
+  # their values. bmp01/nrm01 are reserved for modeling's published maps, hence bmp02/nrm02.
+  textures:
+    name: '{colorspace}_{uvset}_{tile}_{state}_{channel}{description}.{udim:04d}.{frame:04d}.exr'
+    ext: png
+    maps:
+      - {name: basecolor, channel: color01, color: true, bits: half}
+      - {name: normal,    channel: nrm02,   bits: half}
+      - {name: height,    channel: bmp02,   bits: float}
+      - {name: roughness, channel: spcr01,  bits: half}
+      - {name: metalness, channel: metal01, bits: half}
 
-# The maps. Each save node (ComfyFarm Save Image, from comfyui_nodes/ in this repo) writes
-# uncompressed PNGs into the job's scratch folder; the gateway converts
-# them to EXR with oiiotool and names them. color: true maps go color_picking ->
-# scene_linear (ocio/config.ocio); the others keep their values.
-# ChordMaterialEstimation outputs basecolor, normal, roughness, metalness;
-# ChordNormalToHeight turns the normal into height.
-# bmp01/nrm01 are reserved for modeling's published maps, hence bmp02/nrm02.
-textures:
-  name: '{colorspace}_{uvset}_{tile}_{state}_{channel}{description}.{udim:04d}.{frame:04d}.exr'
-  path_input: output_path
-  prefix_input: filename_prefix
-  ext: png
-  maps:
-    - {name: basecolor, node: "19", class: ComfyFarmSaveImage, channel: color01, color: true, bits: half}
-    - {name: normal,    node: "24", class: ComfyFarmSaveImage, channel: nrm02,   bits: half}
-    - {name: height,    node: "28", class: ComfyFarmSaveImage, channel: bmp02,   bits: float}
-    - {name: roughness, node: "31", class: ComfyFarmSaveImage, channel: spcr01,  bits: half}
-    - {name: metalness, node: "32", class: ComfyFarmSaveImage, channel: metal01, bits: half}
+runner:
+  type: comfyui
+  template: workflow_api.json
+
+  params:
+    input:
+      loader: {node: "17", class: ComfyFarmLoadImages}
+      path_node: {node: "14", input: value, class: PrimitiveString}  # INPUT_PATH, informational
+
+  outputs:
+    root_node: {node: "23", input: value, class: PrimitiveString}    # OUTPUT_PATH, informational
+
+  # Each map's save node (ComfyFarm Save Image, from comfyui_nodes/ in this repo).
+  # ChordMaterialEstimation outputs basecolor, normal, roughness, metalness;
+  # ChordNormalToHeight turns the normal into height.
+  textures:
+    path_input: output_path
+    prefix_input: filename_prefix
+    maps:
+      color01: {node: "19", class: ComfyFarmSaveImage}
+      nrm02:   {node: "24", class: ComfyFarmSaveImage}
+      bmp02:   {node: "28", class: ComfyFarmSaveImage}
+      spcr01:  {node: "31", class: ComfyFarmSaveImage}
+      metal01: {node: "32", class: ComfyFarmSaveImage}

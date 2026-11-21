@@ -1,10 +1,10 @@
-# What the farm exposes for this workflow, and which nodes each parameter drives.
-# Full reference: "Workflow manifests" in README.md.
+# What the farm exposes for this workflow and what it writes (the head), and which ComfyUI
+# nodes do each (runner:). Full reference: "process.yaml" and "Workflow manifests" in README.md.
 #
-# Every target names the node id AND its class_type, so a re-export that renumbers nodes
-# fails `python -m comfyfarm check` instead of writing into the wrong node.
+# Every node is named with its class_type too, so a re-export that renumbers nodes fails
+# `python -m comfyfarm check` instead of writing into the wrong node.
 
-name: wan22_i2i
+id: wan22_i2i
 label: Wan 2.2 image to image
 description: >
   Reworks one image with Wan 2.2 14B (low-noise model, fp8), steered by the prompt. Noise
@@ -12,24 +12,17 @@ description: >
   one frame of a sequence or movie; the result is a PNG numbered like that frame, at the
   input's size.
 tag: i2i                        # in the output file names: <source>.i2i_vNNN.<frame>.png
-template: workflow_api.json
 # Images are used at their own size (no work_resolution): full plate frames take longer
 # and more GPU memory.
 
-# The KSampler (node 170) runs the res_2s sampler with the beta57 scheduler, which RES4LYF
-# adds to ComfyUI's lists. No node of the workflow is RES4LYF's, so it's named here: the
-# farm's environment file pins it, and `comfyui sync` installs it.
-node_packs: [RES4LYF]
-
 params:
-  # One image (takes: image), read by the ComfyFarm Load Image node (INPUT IMAGE). A
-  # sequence or movie must name its frame; the Nuke panel fills in the current frame.
+  # One image (takes: image). A sequence or movie must name its frame; the Nuke panel fills
+  # in the current frame.
   input:
     type: input
     takes: image
     label: Input image
     required: true
-    loader: {node: "254", class: ComfyFarmLoadImage}
     help: >
       One image: a file, or a sequence or movie with the frame to use after it, e.g.
       /rdo/shows/<show>/.../<shot>.plate.%04d.exr 1050. EXRs are converted with the shot's
@@ -41,8 +34,6 @@ params:
     label: Prompt
     default: ''
     help: What the image should become. Leave empty to run with the negative prompt only.
-    targets:
-      - {node: "255", input: value, class: PrimitiveStringMultiline}   # INPUT PROMPT
 
   steps:
     type: int
@@ -50,8 +41,6 @@ params:
     default: 12
     min: 1
     max: 100
-    targets:
-      - {node: "208", input: value, class: PrimitiveInt}               # INPUT STEPS
 
   cfg:
     type: float
@@ -59,8 +48,6 @@ params:
     default: 3
     min: 0
     max: 30
-    targets:
-      - {node: "257", input: value, class: PrimitiveFloat}             # INPUT CFG
 
   noise:
     type: float
@@ -69,8 +56,6 @@ params:
     min: 0
     max: 1
     help: The sampler's denoise. 0 keeps the input as it is, 1 replaces it entirely.
-    targets:
-      - {node: "210", input: value, class: "easy float"}               # INPUT NOISE
 
   output_path:
     type: output_folder
@@ -80,7 +65,34 @@ params:
       <source>.i2i_vNNN.<frame>.png. Each run takes the next free version. Its parent folder
       must exist. Leave empty for the show's renders folder. Never inside .published.
 
-outputs:
-  # Writes the image. The farm points it at the job's folder, then renames it to
-  # paths.frame_name with the input's frame number.
-  frames: {node: "256", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix, ext: png}
+writes:
+  # The image, renamed to paths.frame_name with the input's frame number.
+  frames: {ext: png}
+
+runner:
+  type: comfyui
+  template: workflow_api.json
+  # The KSampler (node 170) runs the res_2s sampler with the beta57 scheduler, which RES4LYF
+  # adds to ComfyUI's lists. No node of the workflow is RES4LYF's, so it's named here: the
+  # farm's environment file pins it, and `comfyui sync` installs it.
+  node_packs: [RES4LYF]
+
+  params:
+    input:
+      loader: {node: "254", class: ComfyFarmLoadImage}                 # INPUT IMAGE
+    prompt:
+      targets:
+        - {node: "255", input: value, class: PrimitiveStringMultiline}   # INPUT PROMPT
+    steps:
+      targets:
+        - {node: "208", input: value, class: PrimitiveInt}               # INPUT STEPS
+    cfg:
+      targets:
+        - {node: "257", input: value, class: PrimitiveFloat}             # INPUT CFG
+    noise:
+      targets:
+        - {node: "210", input: value, class: "easy float"}               # INPUT NOISE
+
+  outputs:
+    # Writes the image. The farm points it at the job's folder, then renames it.
+    frames: {node: "256", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix}

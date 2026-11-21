@@ -75,7 +75,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `manifest.yaml` (what's exposed): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha` |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `process.yaml` (what's exposed and written, and which nodes do it): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -1349,7 +1349,8 @@ studio's rez moves (another OS, another path), change `menu_sync.command` to wha
 1. In ComfyUI: **Workflow → Export (API)**. Save it as `workflows/<name>/workflow_api.json`.
    Blank out show-specific paths. The gateway fills those per job, and this keeps show
    codes out of git.
-2. Write `workflows/<name>/manifest.yaml` (copy `ltx25_alpha_gen`, see below), or a `process.yaml`.
+2. Write `workflows/<name>/process.yaml` (copy one of the farm's, e.g. `ltx25_alpha_gen`; see below).
+   A `manifest.yaml` still loads.
 3. `python -m comfyfarm check`, then restart the gateway.
 
 Paths left in the export from your last ComfyUI session are harmless: the gateway
@@ -1361,8 +1362,8 @@ a value into the wrong node.
 
 ### process.yaml
 
-A workflow can be written as `process.yaml` instead of `manifest.yaml` (never both in one
-folder). It says the same things in two halves: a head any kind of job shares, with what
+The farm's workflows are written as `process.yaml`; the older `manifest.yaml` still loads
+(never both in one folder). A process.yaml says the same things in two halves: a head any kind of job shares, with what
 the workflow takes and writes, and a `runner:` block with which ComfyUI node does each
 thing. `docs/decisions/0015-process-yaml.md` and `0019-the-head-says-what-a-definition-writes.md`
 have the why.
@@ -1538,7 +1539,7 @@ outputs:                       # nodes the gateway points at each job's versione
   The most tiles per run is the input's `per_run` (older manifests: `textures.batch`); a
   texture with more is a set of batches (see *Large textures*). Set it from the GPU memory
   one run of that many tiles needs.
-  See `workflows/chord_pbr/manifest.yaml`.
+  See `workflows/chord_pbr/process.yaml` (there, the maps' nodes are under `runner.textures`).
 - Removing a param from the manifest changes the API: clients still sending it get
   "Unknown parameter". The Nuke panel and dashboard read the parameters from the farm,
   so they follow on their own; only scripts that send the old name need changing.

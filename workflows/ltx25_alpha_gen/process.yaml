@@ -1,0 +1,66 @@
+# What the farm exposes for this workflow and what it writes (the head), and which ComfyUI
+# nodes do each (runner:). Full reference: "process.yaml" and "Workflow manifests" in README.md.
+#
+# Every node is named with its class_type too. If you re-export the workflow and ComfyUI
+# renumbers nodes, `python -m comfyfarm check` fails loudly instead of the farm silently
+# writing a value into the wrong node.
+
+id: ltx25_alpha_gen
+label: LTX 2.5 alpha generation
+description: >
+  Generates an alpha matte sequence from a plate/preprocess image sequence with the
+  LTX 2.5 IC-LoRA alpha model. Outputs a numbered PNG sequence, numbered like the input.
+tag: alpha                      # used in output folder and file names
+# The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
+# 32 GB 5090 and up, so the 24 GB 3090 never gets it.
+requires: {vram_gb: 32}
+# Published through Daiquiri's update_and_render_nuke (README: Publishing), with a template
+# from /rdo/bank/comfy_farm/publishTemplates/Nuke/ltx25_alpha_gen/; to the farm's step
+# (publish.default_step, ai) unless the artist picks another. publish: {step: <step>} here
+# would offer another first.
+
+params:
+  # The images the workflow takes: a batch of frames (takes: images), read with the exact
+  # frames.
+  input:
+    type: input
+    takes: images
+    label: Input sequence
+    required: true
+    help: >
+      Image sequence with frame pattern and range, as copied from the pipeline, e.g.
+      /rdo/shows/<show>/.../<shot>.<step>.%04d.png 1001-1158, or a .mov/.mp4. Without a
+      range the whole sequence or movie is used. EXRs are converted with the shot's OCIO
+      look first; movies are numbered from their timecode.
+
+  # Frames go to <folder>/<shot>/, named <source>.alpha_vNNN.<frame>.png; each run takes the
+  # next free vNNN, so nothing is ever overwritten. No nodes of its own: the farm wires the
+  # job's folder in itself (runner.outputs below).
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      Frames go into a folder named after the shot inside this one, as
+      <source>.alpha_vNNN.<frame>.png. Each run takes the next free version. Its parent
+      folder must exist. Leave empty for the show's renders folder. Never inside .published.
+
+writes:
+  # The frames, renamed to paths.frame_name with the input's frame numbers.
+  frames: {ext: png}
+
+runner:
+  type: comfyui
+  template: workflow_api.json
+
+  params:
+    # Read by the ComfyFarm Load Images node. INPUT_PATH (path_node) gets the input as
+    # resolved, for whoever reads the graph.
+    input:
+      loader: {node: "9104", class: ComfyFarmLoadImages}
+      path_node: {node: "9094", input: value, class: PrimitiveString}
+
+  outputs:
+    # OUTPUT_PATH: gets the job's final folder (informational; the graph shows it).
+    root_node: {node: "9093", input: value, class: PrimitiveString}
+    # Writes the frames. The farm points it at the job's folder, then renames them.
+    frames: {node: "9109", class: "Image Save", path_input: output_path, prefix_input: filename_prefix}

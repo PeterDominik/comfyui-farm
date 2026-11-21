@@ -1,7 +1,7 @@
-"""Write a workflow's manifest.yaml as a process.yaml (docs/decisions/0015).
+"""Write a workflow's manifest.yaml as a process.yaml (docs/decisions/0015, 0019).
 
-    python tools/manifest_to_process.py workflows/wan22_i2i            # prints it
-    python tools/manifest_to_process.py workflows/wan22_i2i --write    # writes process.yaml beside it
+    python tools/manifest_to_process.py workflows/<name>            # prints it
+    python tools/manifest_to_process.py workflows/<name> --write    # writes process.yaml beside it
 
 The result loads as the same workflow: same parameters, same graph wiring. It is not
 the same file, though: comments are not carried over, and the definition's fingerprint

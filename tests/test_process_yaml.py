@@ -1,7 +1,8 @@
 """process.yaml: a head any runner shares plus a runner block, read beside the older
-manifest.yaml (docs/decisions/0015). The farm's own workflows, rewritten as process.yaml,
-must load as the very same workflows."""
+manifest.yaml (docs/decisions/0015, 0019). The farm's own workflows are process.yaml; each
+must load as the very same workflow from the manifest it equals."""
 
+import copy
 import importlib.util
 import json
 import io
@@ -31,28 +32,49 @@ class ProcessYamlTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
 
+    @staticmethod
+    def process_of(name: str) -> dict:
+        """One of the farm's workflows, as its process.yaml says it."""
+        return yaml.safe_load((REPO / "workflows" / name / "process.yaml").read_text(encoding="utf-8"))
+
+    def manifest_of(self, name: str) -> dict:
+        """The manifest.yaml that one of the farm's workflows is equal to."""
+        m, head = WF.from_process(self.process_of(name))
+        self.assertEqual(head, {})
+        return m
+
     def as_process(self, name: str, edit=None, keep_manifest=False) -> Path:
-        """A copy of one of the farm's workflow folders, its manifest rewritten as process.yaml."""
+        """A copy of one of the farm's workflow folders, its process.yaml edited."""
         folder = self.tmp / name
         shutil.copytree(REPO / "workflows" / name, folder)
-        m = yaml.safe_load((folder / "manifest.yaml").read_text(encoding="utf-8"))
-        p = WF.to_process(m)
+        p = copy.deepcopy(self.process_of(name))
         if edit:
             edit(p)
         (folder / "process.yaml").write_text(yaml.safe_dump(p, sort_keys=False), encoding="utf-8")
-        if not keep_manifest:
-            (folder / "manifest.yaml").unlink()
+        if keep_manifest:
+            m = self.manifest_of(name)
+            (folder / "manifest.yaml").write_text(yaml.safe_dump(m, sort_keys=False), encoding="utf-8")
+        return folder
+
+    def as_manifest(self, name: str) -> Path:
+        """A copy of one of the farm's workflow folders, written as the manifest.yaml it equals."""
+        folder = self.tmp / f"{name}-manifest" / name
+        shutil.copytree(REPO / "workflows" / name, folder)
+        (folder / "manifest.yaml").write_text(yaml.safe_dump(self.manifest_of(name), sort_keys=False), encoding="utf-8")
+        (folder / "process.yaml").unlink()
         return folder
 
     def test_the_farms_workflows_are_the_same_written_either_way(self):
         self.assertEqual(len(self.registry.workflows), 5)
-        for name, old in self.registry.workflows.items():
+        for name, new in self.registry.workflows.items():
             with self.subTest(workflow=name):
-                new = Workflow(self.as_process(name))
+                old = Workflow(self.as_manifest(name))
                 self.assertEqual((new.source, old.source, new.runner_type),
                                  ("process.yaml", "manifest.yaml", "comfyui"))
-                self.assertEqual(new.problems, [])
+                self.assertEqual((new.problems, old.problems), ([], []))
                 self.assertEqual(new.digest, old.digest)            # no head-only field set: the same definition
+                # What the converter writes for that manifest is the farm's file.
+                self.assertEqual(WF.to_process(self.manifest_of(name)), self.process_of(name))
                 self.assertEqual(new.schema(), old.schema())
                 self.assertEqual((new.params, new.ports, new.outputs, new.requires, new.publish, new.node_packs),
                                  (old.params, old.ports, old.outputs, old.requires, old.publish, old.node_packs))
@@ -64,7 +86,7 @@ class ProcessYamlTests(unittest.TestCase):
                                  ("interactive", ["pool"], {}, [], None, None))
 
     def test_the_two_files_keep_the_wiring_in_different_places(self):
-        m = yaml.safe_load((REPO / "workflows/wan22_i2i/manifest.yaml").read_text(encoding="utf-8"))
+        m = self.manifest_of("wan22_i2i")
         p = WF.to_process(m)
         self.assertEqual(list(p)[:2], ["id", "label"])
         self.assertEqual(p["id"], "wan22_i2i")
@@ -84,7 +106,7 @@ class ProcessYamlTests(unittest.TestCase):
         self.assertEqual((back, head), (m, {}))
 
     def test_texture_maps_by_channel_in_the_head_their_nodes_in_the_runner_block(self):
-        m = yaml.safe_load((REPO / "workflows/chord_pbr/manifest.yaml").read_text(encoding="utf-8"))
+        m = self.manifest_of("chord_pbr")
         p = WF.to_process(m)
         tex = p["writes"]["textures"]
         self.assertEqual(sorted(tex), sorted({"maps", "name", "ext", "batch", "dir"} & set(m["textures"])))
@@ -262,7 +284,7 @@ class ProcessYamlTests(unittest.TestCase):
     def test_the_registry_loads_both_and_reports_the_ones_it_cannot(self):
         root = self.tmp / "workflows"
         root.mkdir()
-        shutil.copytree(REPO / "workflows/chord_pbr", root / "chord_pbr")
+        shutil.move(str(self.as_manifest("chord_pbr")), root / "chord_pbr")
         shutil.move(str(self.as_process("wan22_i2i")), root / "wan22_i2i")
 
         def other_runner(p):
@@ -276,8 +298,7 @@ class ProcessYamlTests(unittest.TestCase):
         self.assertIn("isn't supported yet", reg.load_errors["sam3_ltx_alpha"])
 
     def test_the_tool_prints_or_writes_it(self):
-        folder = self.tmp / "wan22_i2i"
-        shutil.copytree(REPO / "workflows/wan22_i2i", folder)
+        folder = self.as_manifest("wan22_i2i")
         with redirect_stdout(io.StringIO()) as out:
             self.assertEqual(TOOL.main([str(folder)]), 0)
         self.assertEqual(WF.from_process(yaml.safe_load(out.getvalue()))[0],

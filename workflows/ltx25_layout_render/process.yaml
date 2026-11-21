@@ -1,17 +1,16 @@
-# What the farm exposes for this workflow, and which nodes each parameter drives.
-# Full reference: "Workflow manifests" in README.md.
+# What the farm exposes for this workflow and what it writes (the head), and which ComfyUI
+# nodes do each (runner:). Full reference: "process.yaml" and "Workflow manifests" in README.md.
 #
-# Every target names the node id AND its class_type, so a re-export that renumbers nodes
-# fails `python -m comfyfarm check` instead of writing into the wrong node.
+# Every node is named with its class_type too, so a re-export that renumbers nodes fails
+# `python -m comfyfarm check` instead of writing into the wrong node.
 
-name: ltx25_layout_render
+id: ltx25_layout_render
 label: LTX 2.5 layout to render
 description: >
   Renders a layout (or blockout) sequence with the LTX 2.5 IC-LoRA layout-to-render
   model in two stages (544 on the shorter side, then upscaled 2×), guided by the prompt
   and a reference frame for the look. Outputs a PNG sequence numbered like the layout.
 tag: render                     # in the output file names: <source>.render_vNNN.<frame>.png
-template: workflow_api.json
 # The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
 # 32 GB 5090 and up, so the 24 GB 3090 never gets it.
 requires: {vram_gb: 32}
@@ -30,7 +29,6 @@ params:
     primary: true
     label: Layout sequence
     required: true
-    loader: {node: "9061", class: ComfyFarmLoadImages}               # INPUT IMAGE SEQUENCE
     help: >
       The layout to render: an image sequence with frame pattern and range, e.g.
       /rdo/shows/<show>/.../<shot>.layout.%04d.png 1001-1097, or a .mov/.mp4 (numbered from
@@ -41,7 +39,6 @@ params:
     takes: image
     label: Reference frame
     required: true
-    loader: {node: "9060", class: ComfyFarmLoadImage}                # INPUT Reference Frame
     help: >
       One image for the look: a file, or a sequence or movie with the frame to use after
       it, e.g. /rdo/shows/<show>/.../<shot>.comp.%04d.exr 1050. In Nuke, "From selected"
@@ -52,15 +49,11 @@ params:
     label: Prompt
     required: true
     help: What the shot should look like.
-    targets:
-      - {node: "5508", input: value, class: PrimitiveStringMultiline}  # Prompt (positive)
 
   negative:
     type: text
     label: Negative prompt
     default: ''
-    targets:
-      - {node: "5509", input: value, class: PrimitiveStringMultiline}  # Prompt (negative)
 
   output_path:
     type: output_folder
@@ -70,7 +63,26 @@ params:
       <source>.render_vNNN.<frame>.png. Each run takes the next free version. Its parent
       folder must exist. Leave empty for the show's renders folder. Never inside .published.
 
-outputs:
-  # Writes the frames. The farm points it at the job's folder, then renames them to
-  # paths.frame_name with the layout's frame numbers.
-  frames: {node: "9065", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix, ext: png}
+writes:
+  # The frames, renamed to paths.frame_name with the layout's frame numbers.
+  frames: {ext: png}
+
+runner:
+  type: comfyui
+  template: workflow_api.json
+
+  params:
+    input:
+      loader: {node: "9061", class: ComfyFarmLoadImages}               # INPUT IMAGE SEQUENCE
+    reference:
+      loader: {node: "9060", class: ComfyFarmLoadImage}                # INPUT Reference Frame
+    prompt:
+      targets:
+        - {node: "5508", input: value, class: PrimitiveStringMultiline}  # Prompt (positive)
+    negative:
+      targets:
+        - {node: "5509", input: value, class: PrimitiveStringMultiline}  # Prompt (negative)
+
+  outputs:
+    # Writes the frames. The farm points it at the job's folder, then renames them.
+    frames: {node: "9065", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix}
