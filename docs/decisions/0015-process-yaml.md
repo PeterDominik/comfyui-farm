@@ -44,3 +44,6 @@ by pull request, when someone needs a head field. The split in the file is the l
 next step cuts along: the manager keeps the head, the runner keeps its block. Comments in
 a manifest are not carried over by the tool. A definition can still only come from the
 reviewed repository; nothing here is accepted over the API.
+
+Later: 0019 moved what a definition writes (frames, preview, texture maps) and `own_folder`
+into the head; the runner block keeps which nodes do it.

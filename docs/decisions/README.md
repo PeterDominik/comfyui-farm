@@ -24,3 +24,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0016](0016-manager-stores-requests-only.md) | The manager stores requests only, and keeps what a run submitted as the agent reports it | accepted |
 | [0017](0017-environment-compared-on-the-agent.md) | Each agent compares its own environment and reports what differs | accepted |
 | [0018](0018-jobs-name-no-node.md) | Jobs name no node: the manager plans by what a definition takes and writes | accepted |
+| [0019](0019-the-head-says-what-a-definition-writes.md) | The head says what a definition takes and writes; the runner block, which node does it | accepted |

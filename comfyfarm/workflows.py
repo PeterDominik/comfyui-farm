@@ -3,9 +3,9 @@
 A definition is a folder with one of two files (docs/decisions/0015):
 
 - process.yaml: a head any runner shares (id, label, class, targets, requires, limits,
-  models, eval, params, publish ...) and a `runner:` block only that runner reads. For
-  `runner.type: comfyui` the block holds the graph's file and which nodes each parameter,
-  input and output drives.
+  models, eval, params, what it writes, publish ...) and a `runner:` block only that
+  runner reads. For `runner.type: comfyui` the block holds the graph's file and which nodes
+  each parameter, input and output drives (docs/decisions/0019).
 - manifest.yaml: the older form for ComfyUI workflows, with the wiring written inside each
   parameter. It loads as `runner.type: comfyui`.
 
@@ -41,6 +41,95 @@ HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval")
 JOB_CLASSES = ("interactive", "batch")
 TARGETS = ("pool", "tractor")
 RUNNER_TYPES = ("comfyui",)
+# What a definition writes (the head's `writes:`, docs/decisions/0019) and which nodes write
+# it (the runner block's `outputs:` and `textures:`). A manifest's outputs and textures
+# sections hold both halves.
+WRITES_KEYS = ("frames", "preview", "textures")
+OUTPUTS_KEYS = ("root_node", "frames", "preview")
+TEX_HEAD_KEYS = ("name", "dir", "ext", "batch", "maps")
+TEX_RUNNER_KEYS = ("path_input", "prefix_input", "maps")
+MAP_HEAD_KEYS = ("channel", "name", "colorspace", "color", "bits")
+MAP_RUNNER_KEYS = ("node", "class")
+
+
+def _section(d, where: str) -> dict:
+    if d is None:
+        return {}
+    if not isinstance(d, dict):
+        raise ValueError(f"{where}: needs to be a section")
+    return d
+
+
+def _keys(d: dict, where: str, allowed, elsewhere: dict | None = None) -> None:
+    """Unknown keys of a section, and ones that belong in the other half (`elsewhere`)."""
+    for k in d:
+        if elsewhere and k in elsewhere:
+            raise ValueError(f"{where}.{k}: belongs in {elsewhere[k]} in a process.yaml")
+        if k not in allowed:
+            raise ValueError(f"{where}: unknown key {k} (it takes {', '.join(allowed)})")
+
+
+def _together(head: dict, runner: dict, key: str, head_where: str, runner_where: str, what: str) -> bool:
+    if (key in head) != (key in runner):
+        have, need = (head_where, runner_where) if key in head else (runner_where, head_where)
+        raise ValueError(f"{have}.{key} needs {need}.{key}: one says {what}, the other which node does it")
+    return key in head
+
+
+def _writes_to_manifest(writes: dict, runner: dict) -> tuple[dict | None, dict | None, Any]:
+    """The head's writes and the runner block's outputs and textures as a manifest's
+    outputs and textures sections, and its top-level preview (None when not said)."""
+    w = _section(writes, "writes")
+    _keys(w, "writes", WRITES_KEYS, {"root_node": "runner.outputs"})
+    ro = _section(runner.get("outputs"), "runner.outputs")
+    _keys(ro, "runner.outputs", OUTPUTS_KEYS)
+    outputs: dict = {}
+    if "root_node" in ro:
+        outputs["root_node"] = ro["root_node"]
+    if _together(w, ro, "frames", "writes", "runner.outputs", "that it writes frames"):
+        wf, rf = _section(w["frames"], "writes.frames"), _section(ro["frames"], "runner.outputs.frames")
+        _keys(wf, "writes.frames", ("ext",), {k: "runner.outputs.frames" for k in ("node", "class", "path_input",
+                                                                                      "prefix_input")})
+        if "ext" in rf:
+            raise ValueError("runner.outputs.frames.ext: what the frames are written as belongs in writes.frames.ext")
+        outputs["frames"] = {**rf, **wf}
+    preview = w.get("preview")
+    if preview == "own" or "preview" in ro:
+        if preview != "own":
+            raise ValueError("runner.outputs.preview: the run makes its own preview video, so say writes.preview: own")
+        if "preview" not in ro:
+            raise ValueError("writes.preview: own needs runner.outputs.preview: the node that writes the video")
+        outputs["preview"] = ro["preview"]
+        preview = None
+    elif preview is not None and not isinstance(preview, bool):
+        raise ValueError("writes.preview: true (the farm makes a preview movie of the frames), false or own")
+    tr = _section(runner.get("textures"), "runner.textures")
+    textures = None
+    if _together(w, {"textures": 1} if "textures" in runner else {}, "textures", "writes", "runner",
+                 "which texture maps it writes"):
+        tw = _section(w["textures"], "writes.textures")
+        _keys(tw, "writes.textures", TEX_HEAD_KEYS, {k: "runner.textures" for k in TEX_RUNNER_KEYS if k != "maps"})
+        _keys(tr, "runner.textures", TEX_RUNNER_KEYS, {k: "writes.textures" for k in TEX_HEAD_KEYS if k != "maps"})
+        maps_w, maps_r = tw.get("maps") or [], _section(tr.get("maps"), "runner.textures.maps")
+        if not isinstance(maps_w, list) or not all(isinstance(m, dict) and m.get("channel") for m in maps_w):
+            raise ValueError("writes.textures.maps: needs to be a list of maps, each with its channel")
+        channels = [m["channel"] for m in maps_w]
+        for c, wiring in maps_r.items():
+            if c not in channels:
+                raise ValueError(f"runner.textures.maps.{c}: writes.textures.maps has no map with that channel")
+            _keys(_section(wiring, f"runner.textures.maps.{c}"), f"runner.textures.maps.{c}", MAP_RUNNER_KEYS,
+                  {k: "writes.textures.maps" for k in MAP_HEAD_KEYS})
+        merged = []
+        for m in maps_w:
+            _keys(m, f"writes.textures.maps ({m['channel']})", MAP_HEAD_KEYS,
+                  {k: f"runner.textures.maps.{m['channel']}" for k in MAP_RUNNER_KEYS})
+            if m["channel"] not in maps_r:
+                raise ValueError(f"writes.textures.maps ({m['channel']}): needs runner.textures.maps.{m['channel']}, "
+                                 f"the node that saves it")
+            merged.append({**m, **maps_r[m["channel"]]})
+        textures = {**{k: tw[k] for k in TEX_HEAD_KEYS if k in tw and k != "maps"},
+                    **{k: tr[k] for k in TEX_RUNNER_KEYS if k in tr and k != "maps"}, "maps": merged}
+    return outputs or None, textures, preview
 
 
 def from_process(p: dict) -> tuple[dict, dict]:
@@ -53,10 +142,16 @@ def from_process(p: dict) -> tuple[dict, dict]:
     unknown = sorted(set(runner) - {"type", "params", *RUNNER_SECTIONS})
     if unknown:
         raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)}")
+    for k in ("outputs", "textures"):
+        if k in p:
+            raise ValueError(f"{k}: in a process.yaml, what it writes goes under writes: and which nodes write it "
+                             f"under runner.{k}")
+    if "preview" in p:
+        raise ValueError("preview: in a process.yaml it is writes.preview (true, false or own)")
     misplaced = sorted(k for k in RUNNER_SECTIONS if k in p)
     if misplaced:
         raise ValueError(f"{', '.join(misplaced)}: belongs in the runner block of a process.yaml")
-    m = {k: v for k, v in p.items() if k not in ("runner", "id", *HEAD_ONLY)}
+    m = {k: v for k, v in p.items() if k not in ("runner", "id", "writes", *HEAD_ONLY)}
     if p.get("id"):
         m["name"] = p["id"]
     params = {name: dict(spec or {}) for name, spec in (p.get("params") or {}).items()}
@@ -73,9 +168,16 @@ def from_process(p: dict) -> tuple[dict, dict]:
         params[name].update(wiring or {})
     if params:
         m["params"] = params
-    for k in RUNNER_SECTIONS:
+    for k in ("template", "node_packs", "sequence"):
         if k in runner:
             m[k] = runner[k]
+    outputs, textures, preview = _writes_to_manifest(p.get("writes"), runner)
+    if outputs is not None:
+        m["outputs"] = outputs
+    if textures is not None:
+        m["textures"] = textures
+    if preview is not None:
+        m["preview"] = preview
     return m, {k: p[k] for k in HEAD_ONLY if k in p}
 
 
@@ -83,7 +185,7 @@ def to_process(m: dict, **head) -> dict:
     """A manifest.yaml's content as a process.yaml's (tools/manifest_to_process.py).
     `head` adds head-only fields (version, class, targets, limits, models, eval)."""
     out: dict = {"id": m.get("name")} if m.get("name") else {}
-    out.update({k: v for k, v in m.items() if k not in ("name", "params", *RUNNER_SECTIONS)})
+    out.update({k: v for k, v in m.items() if k not in ("name", "params", "preview", *RUNNER_SECTIONS)})
     out.update({k: v for k, v in head.items() if k in HEAD_ONLY})
     runner: dict = {"type": "comfyui"}
     wiring = {}
@@ -92,17 +194,39 @@ def to_process(m: dict, **head) -> dict:
         for name, spec in m["params"].items():
             spec = spec or {}
             out["params"][name] = {k: v for k, v in spec.items() if k not in RUNNER_PARAM_KEYS}
+            ad = L.get((spec.get("loader") or {}).get("class")) if spec.get("type") == "input" else None
+            if ad and ad.lists_folder and "own_folder" not in spec:
+                out["params"][name]["own_folder"] = True        # said in the head, where the manager reads it
             wired = {k: v for k, v in spec.items() if k in RUNNER_PARAM_KEYS}
             if wired:
                 wiring[name] = wired
-    for k in RUNNER_SECTIONS[:3]:
+    for k in ("template", "node_packs", "sequence"):
         if k in m:
             runner[k] = m[k]
     if wiring:
         runner["params"] = wiring
-    for k in RUNNER_SECTIONS[3:]:
-        if k in m:
-            runner[k] = m[k]
+    writes: dict = {}
+    outputs = dict(m.get("outputs") or {})
+    if "frames" in outputs:
+        fr = dict(outputs["frames"] or {})
+        writes["frames"] = {"ext": fr.pop("ext")} if "ext" in fr else {}
+        outputs["frames"] = fr
+    if "preview" in outputs:
+        writes["preview"] = "own"
+    elif "preview" in m:
+        writes["preview"] = m["preview"]
+    if outputs:
+        runner["outputs"] = outputs
+    if m.get("textures"):
+        tex = m["textures"]
+        writes["textures"] = {**{k: tex[k] for k in TEX_HEAD_KEYS if k in tex and k != "maps"},
+                              "maps": [{k: v for k, v in mp.items() if k not in MAP_RUNNER_KEYS}
+                                       for mp in tex.get("maps") or []]}
+        runner["textures"] = {**{k: tex[k] for k in TEX_RUNNER_KEYS if k in tex and k != "maps"},
+                              "maps": {mp["channel"]: {k: mp[k] for k in MAP_RUNNER_KEYS if k in mp}
+                                       for mp in tex.get("maps") or []}}
+    if writes:
+        out["writes"] = writes
     out["runner"] = runner
     return out
 
@@ -152,7 +276,9 @@ class Port:
     their frames. Another input with `match: <primary>` is read at the primary's frames
     (a matte for a plate). An optional input (required: false) left empty writes its
     `empty` values into the graph (e.g. a switch that skips its branch); given, its
-    `given` values."""
+    `given` values. own_folder: the runner reads every file in the input's folder, so the
+    farm gives it a folder of its own (a process.yaml says so in its head; a manifest's
+    comes from its loader)."""
     name: str                       # its param
     takes: str = "images"
     loader: dict = field(default_factory=dict)      # {node, class}
@@ -165,6 +291,7 @@ class Port:
     required: bool = True
     empty: list = field(default_factory=list)       # [{node, input, class, value}] when left empty
     given: list = field(default_factory=list)       # [{node, input, class, value}] when given
+    own_folder: Any = None                           # True / False as said; None: not said (a manifest)
 
     @property
     def adapter(self) -> L.Loader | None:
@@ -174,6 +301,8 @@ class Port:
     def reads_folder(self) -> bool:
         """The runner reads the input's whole folder, not the files it is given: the manager
         stages it into a folder of its own."""
+        if self.own_folder is not None:
+            return self.own_folder is True
         ad = self.adapter
         return bool(ad and ad.lists_folder)
 
@@ -354,6 +483,8 @@ class Workflow:
             json.dumps([m, self.template, *([head] if head else [])], sort_keys=True, default=str)
             .encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
+        self._own_folder_elsewhere = sorted(n for n, p in (m.get("params") or {}).items()
+                                            if "own_folder" in (p or {}) and (p or {}).get("type") != "input")
         for pname, p in (m.get("params") or {}).items():
             self.params[pname] = Param(
                 name=pname, type=p.get("type", "string"), label=p.get("label", ""),
@@ -376,7 +507,8 @@ class Workflow:
                                          max_frames=(p.get("frames") or {}).get("max"), per_run=p.get("per_run"),
                                          primary=bool(p.get("primary", False)), match=p.get("match"),
                                          required=bool(p.get("required", False)),
-                                         empty=list(p.get("empty") or []), given=list(p.get("given") or []))
+                                         empty=list(p.get("empty") or []), given=list(p.get("given") or []),
+                                         own_folder=p.get("own_folder"))
             elif p.get("type") == "sequence":
                 self.ports[pname] = Port(pname, loader=legacy.get("loader") or {}, path_node=legacy.get("path_node"),
                                          required=bool(p.get("required", False)))
@@ -489,6 +621,7 @@ class Workflow:
 
     def static_check(self) -> list[str]:
         problems = self._check_head()
+        problems += [f"param {n}: own_folder is for inputs (type: input)" for n in self._own_folder_elsewhere]
         if self.publish is not None and ("bad" in self.publish or
                                          (self.publish["step"] is not None and not isinstance(self.publish["step"], str))):
             problems.append("publish: needs to be a section like {step: lay}")
@@ -625,6 +758,12 @@ class Workflow:
                 problems.append(f"{where}: match names the primary input ({main.name}), not {port.match!r}")
             elif port.match and port.takes == "image" and main.takes == "images":
                 problems.append(f"{where}: takes one image, so it can't match {main.name}'s frames")
+        if port.own_folder not in (None, True, False):
+            problems.append(f"{where}: own_folder is true or false, not {port.own_folder!r}")
+        elif ad.lists_folder and port.own_folder is not True and (port.own_folder is False
+                                                                   or self.source == "process.yaml"):
+            problems.append(f"{where}: its loader {ad.cls} reads every file in the input's folder: say own_folder: "
+                            f"true, so the farm gives it a folder of its own")
         if not port.required and port is not main and ad.lists_folder:
             problems.append(f"{where}: an optional input needs a ComfyFarm loader ({ad.cls} can't be left empty)")
         for kind in ("empty", "given"):

@@ -78,8 +78,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   agent reports it queued (0016); each agent compares its own ComfyUI with the environment
   file and reports what differs, so the manager imports neither `comfyenv` nor a runner
   (0017); jobs name no node, so the manager plans with what a definition takes and writes
-  and the agent finds the nodes in its own copy (0018). Left, as found on the way: the
-  process.yaml head says what a definition takes and writes, with the runner block mapping
-  that to nodes; the five workflows are converted to process.yaml by hand, comments kept;
+  and the agent finds the nodes in its own copy (0018). The process.yaml head says what a
+  definition takes and writes, and the runner block which node does it (0019). Left: the
+  five workflows are converted to process.yaml by hand, comments kept;
   then `workflows.py` is split along the head and the runner block (a move), so the manager
   imports nothing ComfyUI-specific.
