@@ -33,7 +33,8 @@ python -m comfyfarm standalone                                   # manager and a
 |---|---|
 | `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `db.py` SQLite |
 | `comfyfarm/agent/` | one per GPU machine: takes jobs, prepares inputs, collects outputs, reports to the manager |
-| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: today `comfyui.py` (its client, websocket, health, environment) |
+| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: today `comfyui.py` (its client, websocket, health, environment) and `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built) |
+| `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
 | `comfyfarm/comfyenv/` | the farm's ComfyUI environment: spec, compare, sync |
@@ -50,6 +51,9 @@ decision record first.
 - The agent imports neither the manager nor its web server.
 - `agent/agent.py` imports no backend: ComfyUI's client, websocket and environment live in
   `runners/comfyui.py`. Runners import neither the manager nor its web server.
+- The manager imports no runner and nothing ComfyUI-specific: it reads definitions through
+  `definitions.py`. A workflow's ComfyUI half (wiring, building the graph) is
+  `runners/comfyui_workflow.py`, used by agents and `comfyfarm check`.
 - `comfyfarm --help` works without the web stack.
 
 ## How a change is made

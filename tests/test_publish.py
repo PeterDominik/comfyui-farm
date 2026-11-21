@@ -23,7 +23,8 @@ from comfyfarm.manager.farm import Farm
 from comfyfarm.publish import dispatch as D
 from comfyfarm.publish import nuke as N
 from comfyfarm.publish.publisher import PublishError
-from comfyfarm.workflows import ParamError, WorkflowRegistry
+from comfyfarm.definitions import ParamError
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 TEMPLATES = Path(__file__).resolve().parent / "templates"
 TEMPLATE = TEMPLATES / "publish_default.nk"

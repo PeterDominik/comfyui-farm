@@ -19,7 +19,8 @@ from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm
 from comfyfarm.publish import templates as T
 from comfyfarm.publish.publisher import PublishError
-from comfyfarm.workflows import ParamError, WorkflowRegistry
+from comfyfarm.definitions import ParamError
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 TEMPLATE = Path(__file__).resolve().parent / "templates" / "publish_default.nk"
 TEXT = TEMPLATE.read_text()

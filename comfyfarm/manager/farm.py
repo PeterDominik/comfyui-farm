@@ -26,7 +26,7 @@ from ..fileio import scratch as S
 from ..fileio import textures as T
 from ..fileio.errors import SequenceError
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
-from ..workflows import ParamError, WorkflowRegistry
+from ..definitions import DefinitionRegistry, ParamError
 from ..publish.publisher import Publisher, PublishError, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
 from ..shotgrid import menu as SM
@@ -58,7 +58,7 @@ class FarmError(Exception):
 class Farm:
     """Job queue, sets, cancels; the agents' reports, applied (through manager.desk)."""
 
-    def __init__(self, cfg: Config, store: JobStore, registry: WorkflowRegistry, events: EventBus):
+    def __init__(self, cfg: Config, store: JobStore, registry: DefinitionRegistry, events: EventBus):
         self.cfg = cfg
         self.store = store
         self.registry = registry

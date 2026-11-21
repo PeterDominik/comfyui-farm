@@ -69,19 +69,12 @@ A4 launchers (xStudio, Daiquiri Automate).
 - Phase 1: done. ComfyUI is behind the runner interface (`runners/base.py`,
   `runners/comfyui.py`, decision 0012) and `tests/test_layout.py` holds the gate. Left for
   later: `agent/launch.py` still lives in the agent package.
-- Phase 2, in progress. Done: the graph is built where the job runs, from a stored request
-  with the definition's fingerprint pinned per job (0013); agents report which definitions
-  they hold and can run (0014); `process.yaml` loads beside `manifest.yaml` (0015), with
-  head fields (class, targets, limits, models, eval) checked now and used from later
-  phases; the manager's own graph building, the
-  stored graph and the `farm.build_on_agent` switch are gone, and the API JSON is what the
-  agent reports it queued (0016); each agent compares its own ComfyUI with the environment
-  file and reports what differs, so the manager imports neither `comfyenv` nor a runner
-  (0017); jobs name no node, so the manager plans with what a definition takes and writes
-  and the agent finds the nodes in its own copy (0018). The process.yaml head says what a
-  definition takes and writes, and the runner block which node does it (0019), and the
-  five workflows are written that way, with their fingerprints unchanged. The manager checks a
-  definition's head only; agents check how it wires the graph and report one they find
-  broken, which disables it on the manager (0020). Left, the phase's last step:
-  `workflows.py` is split along the head and the runner block (a move), so the manager
-  imports nothing ComfyUI-specific.
+- Phase 2: done. The manager is blind to the backend and `tests/test_layout.py` holds the
+  gate: it imports nothing ComfyUI-specific, and the five workflows run with their
+  fingerprints unchanged. The graph is built where the job runs, from a stored request with
+  the definition's fingerprint pinned per job (0013, 0016); agents say what they can run
+  (0014) and compare their own environment (0017); jobs name no node (0018); a definition
+  is a `process.yaml` whose head says what it takes and writes and whose runner block says
+  which node does it (0015, 0019), and the five are written that way; the manager checks
+  the head and agents check the wiring (0020); `definitions.py` holds the head and
+  `runners/comfyui_workflow.py` the ComfyUI half (0021).

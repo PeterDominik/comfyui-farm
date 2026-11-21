@@ -6,7 +6,8 @@ from pathlib import Path
 
 from comfyfarm.fileio import farmnodes
 from comfyfarm.fileio.inputs import Sequence
-from comfyfarm.workflows import ParamError, Port, Target, Workflow, WorkflowRegistry, fit_to_options
+from comfyfarm.definitions import ParamError, Target
+from comfyfarm.runners.comfyui_workflow import Port, Workflow, WorkflowRegistry, fit_to_options
 
 REPO = Path(__file__).resolve().parent.parent
 WF_DIR = REPO / "workflows"

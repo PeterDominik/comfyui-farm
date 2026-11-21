@@ -18,7 +18,7 @@ from comfyfarm_nodes import pro_alpha as P  # noqa: E402
 from comfyfarm_nodes.load_images import ComfyFarmLoadImages  # noqa: E402
 from comfyfarm_nodes.save_image import ComfyFarmSaveImage  # noqa: E402
 
-from comfyfarm.workflows import Workflow  # noqa: E402
+from comfyfarm.runners.comfyui_workflow import Workflow  # noqa: E402
 
 # The Comfy Pro Alpha Generator's inputs at the pinned commit (v0.6.0, 74e4368): the ones
 # without a default in its execute() must all be given, since added nodes aren't filled in.

@@ -9,6 +9,8 @@ need made unimportable:
   alone, talking to the manager over HTTP.
 - the agent doesn't need a backend: it runs jobs through a runner (runners/base.py), and
   only the ComfyUI runner knows ComfyUI's client, its websocket and its environment.
+- the manager doesn't need a runner: it reads a definition's head (definitions.py), and
+  how a ComfyUI workflow wires its graph is runners/comfyui_workflow.py (phase 2's gate).
 """
 
 import ast
@@ -72,7 +74,8 @@ class LayoutTests(unittest.TestCase):
     def test_agent_needs_no_backend(self):
         """Phase 1's gate (docs/plan.md): ComfyUI is behind the runner seam."""
         comfyui = ["comfyfarm.runners.comfyui", "comfyfarm.runners.comfy", "comfyfarm.comfyenv",
-                   "comfyfarm.agent.launch", "comfyfarm.workflows", "httpx", "websockets"]
+                   "comfyfarm.agent.launch", "comfyfarm.runners.comfyui_workflow", "comfyfarm.loaders", "httpx",
+                   "websockets"]
         r = import_without(["comfyfarm.agent.agent", "comfyfarm.runners", "comfyfarm.runners.base"], comfyui)
         self.assertEqual(r.returncode, 0, r.stderr)
         tree = ast.parse((REPO / "comfyfarm/agent/agent.py").read_text(encoding="utf-8"))
@@ -99,6 +102,23 @@ class LayoutTests(unittest.TestCase):
         blocked = ["comfyfarm.comfyenv", "comfyfarm.runners", "comfyfarm.agent", "httpx", "websockets"]
         r = import_without(["comfyfarm.manager.farm", "comfyfarm.manager.desk"], blocked)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_manager_imports_nothing_comfyui_specific(self):
+        """Phase 2's gate (docs/plan.md, decision 0021): the manager plans and checks jobs with a
+        definition's head. ComfyUI's loaders, the graph's wiring and building it are the
+        runner's, on the machine that runs the job."""
+        comfyui = ["comfyfarm.runners", "comfyfarm.loaders", "comfyfarm.comfyenv", "comfyfarm.agent", "httpx",
+                   "websockets"]
+        r = import_without(["comfyfarm.definitions", "comfyfarm.manager.farm", "comfyfarm.manager.desk",
+                            "comfyfarm.manager.db", "comfyfarm.manager.share", "comfyfarm.publish.publisher",
+                            "comfyfarm.shotgrid.menu", "comfyfarm.shotgrid.menusync"], comfyui)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # app.py needs the web stack, which a test run may not have: its own imports, read. It
+        # imports the agent only for standalone (manager and agents in one process).
+        tree = ast.parse((REPO / "comfyfarm/manager/app.py").read_text(encoding="utf-8"))
+        imported = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+        self.assertEqual(sorted(m for m in imported if m.lstrip(".").split(".")[0] in
+                                ("runners", "loaders", "comfyenv", "workflows")), [])
 
     def test_runners_need_neither_the_manager_nor_its_web_server(self):
         r = import_without(["comfyfarm.runners.comfyui"], ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])

@@ -14,8 +14,9 @@ from pathlib import Path
 
 import yaml
 
-from comfyfarm import workflows as WF
-from comfyfarm.workflows import Workflow, WorkflowRegistry
+from comfyfarm import definitions as D
+from comfyfarm.runners import comfyui_workflow as CW
+from comfyfarm.runners.comfyui_workflow import Workflow, WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("manifest_to_process", REPO / "tools" / "manifest_to_process.py")
@@ -39,7 +40,7 @@ class ProcessYamlTests(unittest.TestCase):
 
     def manifest_of(self, name: str) -> dict:
         """The manifest.yaml that one of the farm's workflows is equal to."""
-        m, head = WF.from_process(self.process_of(name))
+        m, head = D.from_process(self.process_of(name))
         self.assertEqual(head, {})
         return m
 
@@ -74,12 +75,12 @@ class ProcessYamlTests(unittest.TestCase):
                 self.assertEqual((new.problems, old.problems), ([], []))
                 self.assertEqual(new.digest, old.digest)            # no head-only field set: the same definition
                 # What the converter writes for that manifest is the farm's file.
-                self.assertEqual(WF.to_process(self.manifest_of(name)), self.process_of(name))
+                self.assertEqual(CW.to_process(self.manifest_of(name)), self.process_of(name))
                 self.assertEqual(new.schema(), old.schema())
                 self.assertEqual((new.params, new.ports, new.outputs, new.requires, new.publish, new.node_packs),
                                  (old.params, old.ports, old.outputs, old.requires, old.publish, old.node_packs))
                 self.assertEqual(new.template, old.template)
-                values = old.validate({k: "/rdo/shows/x/a.%04d.png 1-2" if p.type in WF.INPUT_TYPES else "a subject"
+                values = old.validate({k: "/rdo/shows/x/a.%04d.png 1-2" if p.type in D.INPUT_TYPES else "a subject"
                                        for k, p in old.params.items() if p.required})
                 self.assertEqual(new.build(values), old.build(values))
                 self.assertEqual((new.job_class, new.targets, new.limits, new.models, new.eval, new.version),
@@ -87,7 +88,7 @@ class ProcessYamlTests(unittest.TestCase):
 
     def test_the_two_files_keep_the_wiring_in_different_places(self):
         m = self.manifest_of("wan22_i2i")
-        p = WF.to_process(m)
+        p = CW.to_process(m)
         self.assertEqual(list(p)[:2], ["id", "label"])
         self.assertEqual(p["id"], "wan22_i2i")
         self.assertEqual(p["params"]["prompt"], {k: v for k, v in m["params"]["prompt"].items() if k != "targets"})
@@ -102,12 +103,12 @@ class ProcessYamlTests(unittest.TestCase):
         self.assertNotIn("outputs", p)
         self.assertNotIn("output_path", p["runner"]["params"])      # it drives no node
         self.assertNotIn("own_folder", p["params"]["input"])        # ComfyFarm Load Image gets its files
-        back, head = WF.from_process(p)
+        back, head = D.from_process(p)
         self.assertEqual((back, head), (m, {}))
 
     def test_texture_maps_by_channel_in_the_head_their_nodes_in_the_runner_block(self):
         m = self.manifest_of("chord_pbr")
-        p = WF.to_process(m)
+        p = CW.to_process(m)
         tex = p["writes"]["textures"]
         self.assertEqual(sorted(tex), sorted({"maps", "name", "ext", "batch", "dir"} & set(m["textures"])))
         self.assertEqual([mp["channel"] for mp in tex["maps"]], [mp["channel"] for mp in m["textures"]["maps"]])
@@ -116,7 +117,7 @@ class ProcessYamlTests(unittest.TestCase):
                          {mp["channel"]: {"node": mp["node"], "class": mp["class"]} for mp in m["textures"]["maps"]})
         self.assertEqual(p["runner"]["outputs"], m["outputs"])      # root_node only: it writes no frames
         self.assertNotIn("frames", p["writes"])
-        self.assertEqual(WF.from_process(p), (m, {}))
+        self.assertEqual(D.from_process(p), (m, {}))
 
     def test_a_loader_that_reads_a_whole_folder_says_so_in_the_head(self):
         def vhs(p):
@@ -134,13 +135,13 @@ class ProcessYamlTests(unittest.TestCase):
         self.assertEqual(wf.problems, [])
         self.assertTrue(wf.port.reads_folder)
         # A manifest says it too (decision 0020), and the converter adds it for one that doesn't.
-        m, _ = WF.from_process(p)
+        m, _ = D.from_process(p)
         (folder / "process.yaml").unlink()
         (folder / "manifest.yaml").write_text(yaml.safe_dump(m), encoding="utf-8")
         self.assertEqual(Workflow(folder).problems, [])
         self.assertTrue(Workflow(folder).port.reads_folder)
         del m["params"]["input"]["own_folder"]
-        self.assertIs(WF.to_process(m)["params"]["input"]["own_folder"], True)
+        self.assertIs(CW.to_process(m)["params"]["input"]["own_folder"], True)
         (folder / "manifest.yaml").write_text(yaml.safe_dump(m), encoding="utf-8")
         self.assertIn("param input: its loader VHS_LoadImagesPath reads every file in the input's folder: say "
                       "own_folder: true, so the farm gives it a folder of its own", Workflow(folder).problems)
@@ -293,7 +294,7 @@ class ProcessYamlTests(unittest.TestCase):
         def other_runner(p):
             p["runner"] = {"type": "process"}
         shutil.move(str(self.as_process("sam3_ltx_alpha", other_runner)), root / "sam3_ltx_alpha")
-        with self.assertLogs("comfyfarm.workflows", level="ERROR"):
+        with self.assertLogs("comfyfarm.definitions", level="ERROR"):
             reg = WorkflowRegistry(root)
         self.assertEqual(sorted(reg.workflows), ["chord_pbr", "wan22_i2i"])
         self.assertEqual({n: w.source for n, w in reg.workflows.items()},
@@ -304,7 +305,7 @@ class ProcessYamlTests(unittest.TestCase):
         folder = self.as_manifest("wan22_i2i")
         with redirect_stdout(io.StringIO()) as out:
             self.assertEqual(TOOL.main([str(folder)]), 0)
-        self.assertEqual(WF.from_process(yaml.safe_load(out.getvalue()))[0],
+        self.assertEqual(D.from_process(yaml.safe_load(out.getvalue()))[0],
                          yaml.safe_load((folder / "manifest.yaml").read_text(encoding="utf-8")))
         self.assertFalse((folder / "process.yaml").exists())
         with redirect_stdout(io.StringIO()):

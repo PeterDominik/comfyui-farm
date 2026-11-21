@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from ..protocol import now
-from ..workflows import ParamError
+from ..definitions import ParamError
 from . import dispatch as D
 from . import nuke as N
 from .templates import GLOBAL, TemplateStore, canonical, key_of, label, scope_of, split_key, valid_name

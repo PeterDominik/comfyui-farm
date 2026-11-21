@@ -148,7 +148,7 @@ class SaveImageTests(unittest.TestCase):
 
 class ChordWorkflowTests(unittest.TestCase):
     def test_chord_saves_with_the_farm_node(self):
-        from comfyfarm.workflows import Workflow
+        from comfyfarm.runners.comfyui_workflow import Workflow
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from test_workflows import WF_DIR, fake_object_info
         wf = Workflow(WF_DIR / "chord_pbr")

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from comfyfarm.shotgrid import menu as M
-from comfyfarm.workflows import Workflow, WorkflowRegistry
+from comfyfarm.runners.comfyui_workflow import Workflow, WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 REGISTRY = WorkflowRegistry(REPO / "workflows")

@@ -26,3 +26,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0018](0018-jobs-name-no-node.md) | Jobs name no node: the manager plans by what a definition takes and writes | accepted |
 | [0019](0019-the-head-says-what-a-definition-writes.md) | The head says what a definition takes and writes; the runner block, which node does it | accepted |
 | [0020](0020-the-manager-checks-the-head.md) | The manager checks a definition's head; agents check how it wires its runner | accepted |
+| [0021](0021-definitions-and-their-comfyui-half.md) | A definition's head is definitions.py; its ComfyUI half is runners/comfyui_workflow.py | accepted |

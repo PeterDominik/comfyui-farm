@@ -74,7 +74,7 @@ def _describe(state: dict) -> str:
 def _state(folder: str, python: str, url: str, command: list[str], tags=()) -> tuple[dict | None, dict, set[str]]:
     """(the environment file, this machine's state, the workflows it never gets). Packs and
     models of those (requires: VRAM, tags) don't count, as on the dashboard."""
-    from ..workflows import WorkflowRegistry
+    from ..runners.comfyui_workflow import WorkflowRegistry
 
     spec = S.load(S.SPEC)
     if spec is None:
@@ -142,7 +142,7 @@ def verify(args) -> int:
 
 
 def snapshot(args) -> int:
-    from ..workflows import WorkflowRegistry
+    from ..runners.comfyui_workflow import WorkflowRegistry
 
     folder, python, url, command = _where(args)
     stats = _get(url + "/system_stats", 5)
