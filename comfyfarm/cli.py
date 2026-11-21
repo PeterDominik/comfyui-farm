@@ -124,19 +124,43 @@ def _line(status: str, text: str) -> None:
     print(f"  [{status}] {text}")
 
 
-def check_workflows(reg: WorkflowRegistry) -> int:
+def check_workflows(reg, what: str = "workflow") -> int:
     bad = 0
     for name, err in reg.load_errors.items():
-        _line("FAIL", f"workflow {name}: {err}")
+        _line("FAIL", f"{what} {name}: {err}")
         bad += 1
     for wf in reg.workflows.values():
         if wf.problems:
             bad += 1
-            _line("FAIL", f"workflow {wf.name}:")
+            _line("FAIL", f"{what} {wf.name}:")
             for p in wf.problems:
                 print(f"         - {p}")
         else:
-            _line(" ok ", f"workflow {wf.name} ({len(wf.params)} params)")
+            _line(" ok ", f"{what} {wf.name} ({len(wf.params)} params)")
+    return bad
+
+
+def check_process_runner(cfg) -> int:
+    """`agent --check`: whether this machine can run each process definition (the process
+    runner on, its environment built here at this checkout's version)."""
+    from .runners.process import ProcessRunner
+    said = ProcessRunner(cfg).processes()
+    if not said:
+        return 0
+    if not cfg.process_runner.enabled:
+        _line(" ok ", f"process runner: off (process_runner.enabled in agent.yaml), so {len(said)} process "
+                      f"definition(s) aren't run here")
+        return 0
+    bad = 0
+    for name, v in sorted(said.items()):
+        probs = list(v["broken"]) + list(v["problems"])
+        if probs:
+            bad += 1
+            _line("FAIL", f"process {name}:")
+            for p in probs:
+                print(f"         - {p}")
+        else:
+            _line(" ok ", f"process {name}: its environment is built here")
     return bad
 
 
@@ -245,6 +269,8 @@ async def run_check(cfg: Config) -> int:
         _line("WARN", f"config.yaml: {note}")
     reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
     bad = check_workflows(reg)
+    from .runners.process import ProcessRegistry
+    bad += check_workflows(ProcessRegistry(cfg.resolve(cfg.workflows_dir)), "process")
     bad += check_tools(cfg.convert)
     bad += check_ocio(cfg)
     for m in cfg.paths.mappings:
@@ -285,6 +311,7 @@ async def run_agent_check(cfg, path) -> int:
         await link.close()
     reg = WorkflowRegistry(Path(__file__).resolve().parent.parent / "workflows")
     bad += await check_comfyui(cfg.name, cfg.comfyui, reg)
+    bad += check_process_runner(cfg)
     lc = cfg.comfyui_launch
     if lc.command:
         exe = lc.command[0]

@@ -4,7 +4,8 @@ A definition is a folder with one of two files (docs/decisions/0015, 0019):
 
 - process.yaml: a head any runner shares (id, label, class, targets, requires, limits,
   models, eval, params, what it writes, publish ...) and a `runner:` block only that
-  runner reads. For `runner.type: comfyui` the block holds the graph's file and which nodes
+  runner reads. For `runner.type: process` the block names the environment and the
+  command (runners/process.py). For `runner.type: comfyui` it holds the graph's file and which nodes
   each parameter, input and output drives.
 - manifest.yaml: the older form for ComfyUI workflows, with the wiring written inside each
   parameter. It loads as `runner.type: comfyui`.
@@ -39,7 +40,10 @@ RUNNER_SECTIONS = ("template", "node_packs", "sequence", "outputs", "textures")
 HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval")
 JOB_CLASSES = ("interactive", "batch")
 TARGETS = ("pool", "tractor")
-RUNNER_TYPES = ("comfyui",)
+RUNNER_TYPES = ("comfyui", "process")
+# A process runner's block (runners/process.py, decision 0025): the environment the command
+# runs in (environments/<name>) and the command. Nothing else: it has no graph and no nodes.
+PROCESS_KEYS = ("environment", "command")
 # What a definition writes (the head's `writes:`, docs/decisions/0019) and which nodes write
 # it (the runner block's `outputs:` and `textures:`). A manifest's outputs and textures
 # sections hold both halves.
@@ -131,13 +135,73 @@ def _writes_to_manifest(writes: dict, runner: dict) -> tuple[dict | None, dict |
     return outputs or None, textures, preview
 
 
+def _process_block(p: dict, runner: dict) -> dict:
+    """A process runner's definition as a manifest-like dict: the head as for any runner, its
+    writes as `outputs` (frames only), and its block under `process`."""
+    comfy = sorted(k for k in runner if k in ("params", *RUNNER_SECTIONS))
+    if comfy:
+        raise ValueError(f"runner.{comfy[0]}: is ComfyUI wiring; a process runner takes {' and '.join(PROCESS_KEYS)}")
+    unknown = sorted(set(runner) - {"type", *PROCESS_KEYS})
+    if unknown:
+        raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)} (a process runner takes "
+                         f"{' and '.join(PROCESS_KEYS)})")
+    missing = [k for k in PROCESS_KEYS if k not in runner]
+    if missing:
+        raise ValueError(f"runner: a process runner needs {' and '.join(missing)} (runner: {{type: process, "
+                         f"environment: gpu-test, command: [python, \"{{definition}}/run.py\"]}})")
+    m = {k: v for k, v in p.items() if k not in ("runner", "id", "writes", *HEAD_ONLY)}
+    if p.get("id"):
+        m["name"] = p["id"]
+    for name, spec in (p.get("params") or {}).items():
+        wired = sorted(k for k in RUNNER_PARAM_KEYS if k in (spec or {}))
+        if wired:
+            raise ValueError(f"params.{name}: {', '.join(wired)} is ComfyUI wiring; a process gets its params in "
+                             f"job.json")
+    w = _section(p.get("writes"), "writes")
+    _keys(w, "writes", ("frames", "preview"))
+    if "frames" in w:
+        wf = _section(w["frames"], "writes.frames")
+        _keys(wf, "writes.frames", ("ext",))
+        m["outputs"] = {"frames": {"ext": wf.get("ext", "png")}}
+    if "preview" in w:
+        if w["preview"] == "own":
+            raise ValueError("writes.preview: own isn't something a process can do yet; true (the farm makes the "
+                             "preview movie of its frames) or false")
+        m["preview"] = w["preview"]
+    m["process"] = {k: runner[k] for k in PROCESS_KEYS}
+    return m
+
+
+def runner_type(directory: Path) -> str | None:
+    """Which runner a definition folder is for, without loading it (None: can't tell)."""
+    if not (directory / "process.yaml").exists():
+        return "comfyui"                # a manifest.yaml is a ComfyUI workflow
+    try:
+        p = yaml.safe_load((directory / "process.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    runner = p.get("runner") if isinstance(p, dict) else None
+    return runner.get("type") if isinstance(runner, dict) else None
+
+
 def from_process(p: dict) -> tuple[dict, dict]:
     """A process.yaml as (the manifest it is equal to, its head-only fields)."""
     runner = p.get("runner")
     if not isinstance(runner, dict) or not runner.get("type"):
         raise ValueError("process.yaml needs a runner block with a type (runner: {type: comfyui, ...})")
     if runner["type"] not in RUNNER_TYPES:
-        raise ValueError(f"runner type '{runner['type']}' isn't supported yet (supported: {', '.join(RUNNER_TYPES)})")
+        raise ValueError(f"runner type '{runner['type']}' isn't supported (supported: {', '.join(RUNNER_TYPES)})")
+    for k in ("outputs", "textures"):
+        if k in p:
+            raise ValueError(f"{k}: in a process.yaml, what it writes goes under writes:"
+                             + (f" and which nodes write it under runner.{k}" if runner["type"] == "comfyui" else ""))
+    if "preview" in p:
+        raise ValueError("preview: in a process.yaml it is writes.preview (true, false or own)")
+    misplaced = sorted(k for k in RUNNER_SECTIONS if k in p)
+    if misplaced:
+        raise ValueError(f"{', '.join(misplaced)}: belongs in the runner block of a process.yaml")
+    if runner["type"] == "process":
+        return _process_block(p, runner), {k: p[k] for k in HEAD_ONLY if k in p}
     unknown = sorted(set(runner) - {"type", "params", *RUNNER_SECTIONS})
     if unknown:
         raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)}")
@@ -188,7 +252,23 @@ def read_definition(directory: Path) -> tuple[dict, dict, str]:
     if process.exists():
         m, head = from_process(yaml.safe_load(process.read_text(encoding="utf-8")) or {})
         return m, head, process.name
-    return yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}, {}, manifest.name
+    m = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    if "process" in m:
+        raise ValueError("process: a definition for the process runner is a process.yaml (runner: {type: process})")
+    return m, {}, manifest.name
+
+
+def folder_digest(directory: Path, skip: tuple = ("process.yaml", "manifest.yaml")) -> dict:
+    """Every file of a definition folder but its definition file, with a hash of its content
+    (line endings aside, so a Windows checkout has the same one): a process definition's
+    fingerprint covers the code its command runs."""
+    out = {}
+    for f in sorted(directory.rglob("*")):
+        rel = f.relative_to(directory).as_posix()
+        if not f.is_file() or rel in skip or "__pycache__" in f.parts or f.suffix in (".pyc", ".pyo"):
+            continue
+        out[rel] = hashlib.sha256(f.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+    return out
 
 
 class ParamError(ValueError):
@@ -341,7 +421,9 @@ class Definition:
     def __init__(self, directory: Path):
         self.dir = directory
         m, head, self.source = read_definition(directory)
-        self.runner_type = "comfyui"
+        # Which runner runs it, and what that runner's block says (process: environment, command).
+        self.runner_type = "process" if "process" in m else "comfyui"
+        self.process: dict | None = m.get("process")
         # The head's own fields (process.yaml): kept and checked, acted on from later phases.
         self.version = head.get("version")
         self.job_class: str = head.get("class") or "interactive"
@@ -375,13 +457,16 @@ class Definition:
         self.shotgrid = m.get("shotgrid", True)
         self._m = m                             # the definition as read: the runner's half reads its block
         # The graph's file (a comfyui runner block's `template`): hashed into the fingerprint
-        # below, read only by the runner (runners/comfyui_workflow.py).
-        self.template: dict = json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
+        # below, read only by the runner (runners/comfyui_workflow.py). A process has none.
+        self.template: dict | None = None if self.process is not None else \
+            json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         # The definition's fingerprint: the manifest and the graph as parsed, so a checkout
-        # with other line endings has the same one. A job names the one it was planned with,
-        # and a machine whose copy differs doesn't build its graph (build_from).
+        # with other line endings has the same one; for a process, the files its command runs.
+        # A job names the one it was planned with, and a machine whose copy differs doesn't
+        # run it (build_from, the process runner).
+        body = self.template if self.process is None else folder_digest(directory)
         self.digest: str = hashlib.sha256(      # a manifest's is what it always was: head-only fields count when set
-            json.dumps([m, self.template, *([head] if head else [])], sort_keys=True, default=str)
+            json.dumps([m, body, *([head] if head else [])], sort_keys=True, default=str)
             .encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
         self._own_folder_elsewhere = sorted(n for n, p in (m.get("params") or {}).items()
@@ -658,8 +743,10 @@ class Definition:
 
 class DefinitionRegistry:
     """The definitions in a folder, one per subfolder with a process.yaml or a manifest.yaml.
-    This one is the manager's: their heads checked here (decision 0020)."""
+    This one is the manager's: their heads checked here (decision 0020), whatever runs them.
+    A runner's registry sets RUNNER and reads only the definitions it runs."""
     KIND = Definition
+    RUNNER: str | None = None
 
     def __init__(self, directory: Path):
         self.directory = directory
@@ -676,6 +763,8 @@ class DefinitionRegistry:
         for d in sorted(self.directory.iterdir()):
             if not (d / "manifest.yaml").exists() and not (d / "process.yaml").exists():
                 continue
+            if self.RUNNER is not None and runner_type(d) not in (self.RUNNER, None):
+                continue                # another runner's; one whose type can't be read reports why
             try:
                 wf = self.KIND(d)
                 self.workflows[wf.name] = wf

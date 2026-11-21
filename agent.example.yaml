@@ -53,6 +53,17 @@ comfyui_launch:
 #   dir: data/envs               # relative = next to this file
 #   uv: []                       # a uv to use, e.g. [/usr/local/bin/uv]; empty: installed with pip into <dir>
 
+# Off by default: run process definitions (process.yaml with runner: {type: process}), each
+# command in its runner environment's current build here (envs above; `python -m comfyfarm
+# env install <name>`), with a time limit. Until the GPU claim, max_inflight counts runs of
+# both runners together, so with 1 a process job waits for ComfyUI's job and the other way
+# round; ComfyUI's models stay loaded meanwhile.
+# process_runner:
+#   enabled: true
+#   runs_dir: data/runs          # a folder per run; relative = next to this file
+#   default_minutes: 60          # the time limit of a definition without limits.max_minutes
+#   grace_seconds: 15            # after a cancel or the time limit, before it is killed
+
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 # log_json: true                # also logs/agent-<name>.jsonl: the same lines, one JSON object each
 

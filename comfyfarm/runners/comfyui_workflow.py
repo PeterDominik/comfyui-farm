@@ -378,5 +378,6 @@ class Workflow(Definition):
 
 class WorkflowRegistry(DefinitionRegistry):
     """The ComfyUI workflows in a folder, their wiring checked too: an agent's, and
-    `python -m comfyfarm check`'s."""
+    `python -m comfyfarm check`'s. Definitions for another runner are left out."""
     KIND = Workflow
+    RUNNER = "comfyui"

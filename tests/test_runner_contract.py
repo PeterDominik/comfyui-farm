@@ -10,6 +10,7 @@ try:
     from comfyfarm.config import AgentConfig
     from comfyfarm.runners import base
     from comfyfarm.runners.comfyui import ComfyUIRunner, Runtime
+    from comfyfarm.runners.process import ProcessRunner, ProcRun
 except ImportError:   # pragma: no cover  (no httpx or websockets here)
     Agent = None
 
@@ -47,6 +48,30 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(hasattr(ComfyUIRunner, name) or name in ("label", "ready"), name)
         self.assertEqual(ComfyUIRunner.label, "ComfyUI")
         self.assertIsInstance(inspect.getattr_static(ComfyUIRunner, "ready"), property)
+
+    def test_the_process_runner_has_all_the_agent_may_call(self):
+        for name in sorted(members(base.Runner)):
+            self.assertTrue(hasattr(ProcessRunner, name) or name in ("label", "ready"), name)
+            want, have = getattr(base.Runner, name, None), getattr(ProcessRunner, name, None)
+            if callable(want) and callable(have):
+                self.assertEqual(inspect.iscoroutinefunction(have), inspect.iscoroutinefunction(want), name)
+        self.assertIsInstance(inspect.getattr_static(ProcessRunner, "ready"), property)
+        rt = ProcRun(job_id="j", proc=None, frac=1.5)
+        self.assertEqual((rt.progress(), rt.nodes(), rt.last_push), (0.99, None, 0.0))
+        self.assertLessEqual(members(base.RunState), set(dir(rt)))
+
+    def test_an_agent_gives_each_job_to_the_runner_that_knows_it(self):
+        class Knows(NullRunner):
+            def __init__(self, names):
+                self.names = names
+
+            def knows(self, process):
+                return process in self.names
+        a, b = Knows({"ltx"}), Knows({"copy"})
+        agent = Agent(AgentConfig(name="gpu-x"), link=None, runners=[a, b])
+        self.assertIs(agent.runner, a)              # the first: the machine's resident backend
+        self.assertEqual((agent.runner_for("ltx"), agent.runner_for("copy"), agent.runner_for("nope")), (a, b, None))
+        self.assertTrue(a.host is agent and b.host is agent)
 
     def test_the_agent_has_all_a_runner_may_call(self):
         instance_attrs = {"name", "registered", "view", "tags"}

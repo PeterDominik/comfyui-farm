@@ -121,8 +121,24 @@ class LayoutTests(unittest.TestCase):
                                 ("runners", "loaders", "comfyenv", "workflows")), [])
 
     def test_runners_need_neither_the_manager_nor_its_web_server(self):
-        r = import_without(["comfyfarm.runners.comfyui"], ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
+        r = import_without(["comfyfarm.runners.comfyui", "comfyfarm.runners.process"],
+                           ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_process_runner_needs_no_comfyui(self):
+        r = import_without(["comfyfarm.runners.process"], ["comfyfarm.runners.comfyui", "comfyfarm.comfyenv",
+                                                           "comfyfarm.loaders", "httpx", "websockets"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_supervisor_needs_only_the_standard_library(self):
+        """runners/process_run.py runs with `python -I`, outside the farm's environment (decision 0025)."""
+        tree = ast.parse((REPO / "comfyfarm/runners/process_run.py").read_text(encoding="utf-8"))
+        imported = {(n.module or "").split(".")[0] if isinstance(n, ast.ImportFrom) else a.name.split(".")[0]
+                    for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+                    for a in (n.names if isinstance(n, ast.Import) else [n])}
+        stdlib = set(sys.stdlib_module_names) | {"__future__"}
+        self.assertEqual(sorted(imported - stdlib), [])
+        self.assertFalse(any(isinstance(n, ast.ImportFrom) and n.level for n in ast.walk(tree)))
 
     def test_example_configs_load_as_they_are(self):
         from comfyfarm.config import load_agent_config, load_config

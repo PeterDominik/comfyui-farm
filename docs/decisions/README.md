@@ -30,3 +30,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0022](0022-agents-probe-their-gpus.md) | Agents read their GPUs with nvidia-smi | accepted |
 | [0023](0023-runners-free-their-vram.md) | A resident runner frees its VRAM on request, and only when idle | accepted |
 | [0024](0024-environments-are-uv-projects.md) | Runner environments are uv projects in the repo, built on each machine with uv | accepted |
+| [0025](0025-process-runner.md) | The process runner: a reviewed command in a runner environment, kept by a supervisor | accepted |

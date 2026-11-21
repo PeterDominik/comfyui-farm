@@ -341,6 +341,15 @@ class GpuProbeConfig(BaseModel):
     command: list[str] = ["nvidia-smi"]         # comes with the NVIDIA driver, on Linux and Windows
 
 
+class ProcessRunnerConfig(BaseModel):
+    """The process runner (runners/process.py, decision 0025): commands of process
+    definitions, each in its runner environment, with a time limit."""
+    enabled: bool = False                       # off: process definitions are reported as not runnable here
+    runs_dir: str = "data/runs"                 # a folder per run; relative = next to agent.yaml
+    default_minutes: float = Field(60.0, gt=0)  # the time limit of a definition without limits.max_minutes
+    grace_seconds: float = Field(15.0, ge=0)    # after cancel or the limit, before it is killed
+
+
 class EnvsConfig(BaseModel):
     """Runner environments built on this machine (comfyfarm/envs, decision 0024)."""
     dir: str = "data/envs"                      # builds, uv's cache and its Pythons; relative = next to agent.yaml
@@ -375,6 +384,7 @@ class AgentConfig(BaseModel):
     environment_seconds: float = 900.0  # the environment is checked this often (and when ComfyUI starts)
     gpu_probe: GpuProbeConfig = Field(default_factory=GpuProbeConfig)
     envs: EnvsConfig = Field(default_factory=EnvsConfig)
+    process_runner: ProcessRunnerConfig = Field(default_factory=ProcessRunnerConfig)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []
