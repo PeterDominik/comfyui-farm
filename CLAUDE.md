@@ -33,7 +33,7 @@ python -m comfyfarm standalone                                   # manager and a
 |---|---|
 | `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `db.py` SQLite |
 | `comfyfarm/agent/` | one per GPU machine: takes jobs, prepares inputs, collects outputs, reports to the manager |
-| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: today `comfyui.py` (its client, websocket, health, environment) and `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built) |
+| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half) and `process_run.py` (each run's supervisor) |
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
@@ -41,7 +41,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/envs/`, `environments/` | runner environments: uv projects in the repo, locked; built and checked on each machine (`comfyfarm env`) |
 | `comfyfarm/publish/`, `comfyfarm/shotgrid/` | publishing through Daiquiri and Tractor; ShotGrid |
 | `client/` | the shared client and the Nuke panel |
-| `workflows/` | one folder per workflow: `process.yaml` (or the older `manifest.yaml`) and the ComfyUI graph |
+| `workflows/` | one folder per definition: `process.yaml` (or the older `manifest.yaml`) and the ComfyUI graph, or a process's code |
 | `deploy/` | per-machine install, start-up and update scripts |
 
 `tests/test_layout.py` enforces these rules. A change that needs to break one needs a
@@ -51,7 +51,9 @@ decision record first.
 - The manager's `farm` and `desk` import neither the agent nor the web stack.
 - The agent imports neither the manager nor its web server.
 - `agent/agent.py` imports no backend: ComfyUI's client, websocket and environment live in
-  `runners/comfyui.py`. Runners import neither the manager nor its web server.
+  `runners/comfyui.py`. Runners import neither the manager nor its web server, and the
+  process runner nothing of ComfyUI.
+- `runners/process_run.py` imports the standard library only: it runs with `python -I`.
 - The manager imports no runner and nothing ComfyUI-specific: it reads definitions through
   `definitions.py`. A workflow's ComfyUI half (wiring, building the graph) is
   `runners/comfyui_workflow.py`, used by agents and `comfyfarm check`.

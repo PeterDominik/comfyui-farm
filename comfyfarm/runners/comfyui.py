@@ -144,6 +144,9 @@ class ComfyUIRunner:
             self._registry = WorkflowRegistry(self.cfg.resolve(folder) if folder else Path(REPO) / "workflows")
         return self._registry.workflows
 
+    def knows(self, process: str) -> bool:
+        return process in self._workflows()
+
     def processes(self) -> dict:
         """What this machine can run, for the manager: each workflow of this checkout with its
         fingerprint, what its ComfyUI lacks for it (node packs, inputs, models), what is wrong

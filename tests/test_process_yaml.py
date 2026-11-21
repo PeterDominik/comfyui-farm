@@ -181,7 +181,17 @@ class ProcessYamlTests(unittest.TestCase):
 
     def test_what_does_not_load(self):
         def other_runner(p):
+            p["runner"] = {"type": "tractor"}
+
+        def process_with_a_wrong_key(p):
             p["runner"] = {"type": "process", "env": "py-test", "command": ["python", "run.py"]}
+
+        def process_with_comfyui_wiring(p):
+            p["runner"] = {"type": "process", "environment": "gpu-test", "command": ["python", "run.py"],
+                           "outputs": p["runner"]["outputs"]}
+
+        def process_without_its_command(p):
+            p["runner"] = {"type": "process", "environment": "gpu-test"}
 
         def wiring_in_the_head(p):
             p["params"]["prompt"]["targets"] = p["runner"]["params"].pop("prompt")["targets"]
@@ -218,7 +228,11 @@ class ProcessYamlTests(unittest.TestCase):
 
         def no_runner(p):
             del p["runner"]
-        for edit, why in ((other_runner, "runner type 'process' isn't supported yet"),
+        for edit, why in ((other_runner, "runner type 'tractor' isn't supported"),
+                          (process_with_a_wrong_key, r"unknown key\(s\) env \(a process runner takes environment and "
+                                                     r"command\)"),
+                          (process_with_comfyui_wiring, "runner.outputs: is ComfyUI wiring"),
+                          (process_without_its_command, "a process runner needs command"),
                           (wiring_in_the_head, "params.prompt: targets belong under runner.params.prompt"),
                           (section_in_the_head, "outputs: in a process.yaml, what it writes goes under writes: and "
                                                 "which nodes write it under runner.outputs"),
@@ -294,12 +308,15 @@ class ProcessYamlTests(unittest.TestCase):
         def other_runner(p):
             p["runner"] = {"type": "process"}
         shutil.move(str(self.as_process("sam3_ltx_alpha", other_runner)), root / "sam3_ltx_alpha")
-        with self.assertLogs("comfyfarm.definitions", level="ERROR"):
-            reg = WorkflowRegistry(root)
+        reg = WorkflowRegistry(root)            # ComfyUI's: another runner's definition isn't its to load
         self.assertEqual(sorted(reg.workflows), ["chord_pbr", "wan22_i2i"])
         self.assertEqual({n: w.source for n, w in reg.workflows.items()},
                          {"chord_pbr": "manifest.yaml", "wan22_i2i": "process.yaml"})
-        self.assertIn("isn't supported yet", reg.load_errors["sam3_ltx_alpha"])
+        self.assertEqual(reg.load_errors, {})
+        with self.assertLogs("comfyfarm.definitions", level="ERROR"):
+            heads = D.DefinitionRegistry(root)  # the manager's reads every runner's
+        self.assertEqual(sorted(heads.workflows), ["chord_pbr", "wan22_i2i"])
+        self.assertIn("a process runner needs environment and command", heads.load_errors["sam3_ltx_alpha"])
 
     def test_the_tool_prints_or_writes_it(self):
         folder = self.as_manifest("wan22_i2i")

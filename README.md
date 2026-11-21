@@ -66,7 +66,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 |---|---|
 | `comfyfarm/manager/` | The manager: API, dashboard, job database, planning, texture sets, the queue, and the desk agents check in with (`desk.py`) |
 | `comfyfarm/agent/` | The agent, one per ComfyUI: takes jobs from the manager, converts their inputs, hands them to its runner, writes the outputs |
-| `comfyfarm/runners/` | What runs a job on the GPU, behind one interface (`base.py`). `comfyui.py`: ComfyUI's client and websocket, its health, node definitions and environment. `comfyui_workflow.py`: a workflow's ComfyUI half, checking how it wires the graph and building the API JSON |
+| `comfyfarm/runners/` | What runs a job on the GPU, behind one interface (`base.py`). `comfyui.py`: ComfyUI's client and websocket, its health, node definitions and environment. `comfyui_workflow.py`: a workflow's ComfyUI half, checking how it wires the graph and building the API JSON. `process.py`: the process runner and a process definition's half; `process_run.py`: the supervisor of each run (standard library only) |
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/definitions.py` | A definition's head, as the manager uses it: reading `process.yaml` and `manifest.yaml`, parameters and validation, inputs and what it writes, the fingerprint |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
@@ -457,6 +457,54 @@ built does nothing (`--force` builds it again). The first run installs uv itself
 A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
 from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
 if a disk can't, uv copies, and `env install` says so.
+
+### Process runner
+
+Off by default (`process_runner.enabled` in `agent.yaml`; decision 0025). It runs *process
+definitions*: a command from this repo, in one of the runner environments above, with a
+time limit. A process definition is a `process.yaml` like a workflow's, with this runner
+block:
+
+```yaml
+limits: {max_minutes: 30}            # stopped after this; default process_runner.default_minutes (60)
+writes: {frames: {ext: png}}
+runner:
+  type: process
+  environment: gpu-test              # environments/gpu-test: its current build on the machine
+  command: [python, "{definition}/run.py"]
+```
+
+`python` first is the environment's Python. The farm fills in `{definition}` (the
+definition's folder), `{run}` (the run's folder) and `{job}` (its `job.json`). Nothing of
+the command comes from the job, and the definition's fingerprint covers every file in its
+folder: a machine with another copy refuses the job.
+
+The command runs in its run's folder (`data/runs/<attempt>/`) and reads `job.json` (also
+in `$COMFYFARM_JOB`):
+
+| Field | What |
+|---|---|
+| `params` | the job's parameters, checked against the definition |
+| `input`, `inputs` | the image inputs as the farm resolved them (`directory`, `filename`, `first`, `last`); one that needed converting (EXR, movie) is in `load_dir`, a PNG per frame |
+| `output_dir`, `frames_prefix` | where its frames go and what they start with: `<frames_prefix>_00001.png`, ... |
+| `events`, `result`, `cancel` | the files it writes and watches (below) |
+| `seconds` | its time limit |
+
+It writes progress to `events` as JSON lines (`{"progress": 0.5, "stage": "frame 2/4"}`),
+an error for the artist to `result` if it fails (`{"error": "..."}`), and stops when the
+`cancel` file appears. At a cancel or the time limit, it gets `process_runner.grace_seconds`
+(15) to stop, then it is killed with what it started. The agent then collects the frames as
+it does a workflow's: renamed to the job's names, with a preview movie.
+
+A small supervisor runs each command and keeps its time limit, also while the agent
+restarts. An agent that comes back finds its runs again by their folders. A run that went
+well leaves nothing behind. A failed run keeps its folder (`log.txt` holds what the command
+printed) for 7 days.
+
+`python -m comfyfarm agent --check` lists each process and whether this machine can run it:
+with the runner on, its environment has to be built here at this checkout's version
+(`env install`). Until the GPU claim, `max_inflight` counts ComfyUI's and the process
+runner's runs together, and ComfyUI keeps its models loaded while a process runs.
 
 ### How the manager and agents work together
 

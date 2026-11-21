@@ -85,5 +85,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   0022). A resident runner frees its VRAM on request, and only when idle; the Machines tab's
   Free VRAM asks for it (0023). Runner environments are uv projects in `environments/`,
   locked in the repo and built on each machine with `comfyfarm env install` (0024): uv is
-  the builder. Left: the GPU claim (with the process runner, as it only matters once two
-  runners share a card), the process runner with time limits, and a test Python process.
+  the builder. The process runner runs a reviewed command in a runner environment with a
+  time limit, kept by a supervisor per run that outlives the agent; the agent gives each
+  job to the runner that knows its definition (0025). Off by default. Left: the GPU claim
+  (one card, VRAM freed before the other runner uses it) and a test Python process.

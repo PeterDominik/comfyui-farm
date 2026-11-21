@@ -1,5 +1,7 @@
-"""An agent: runs the manager's jobs on this machine through a runner (protocol.py,
-runners/base.py). Today the runner is ComfyUI (runners/comfyui.py).
+"""An agent: runs the manager's jobs on this machine through its runners (protocol.py,
+runners/base.py): ComfyUI (runners/comfyui.py) and the process runner (runners/process.py).
+Each job goes to the runner whose definition it is; until the GPU claim, the agent runs at
+most max_inflight runs at once, whichever runner has them (decision 0025).
 
 It checks in with the manager and takes the jobs the manager gives it: one for its GPU,
 and one prepared ahead when every GPU on the farm is busy (never more than its ComfyUI runs
@@ -39,7 +41,7 @@ from ..fileio import wire as W
 from ..fileio.errors import ConvertError, SequenceError
 from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, TERMINAL, LinkError, build, now
-from ..runners import make_runner
+from ..runners import make_runners
 from ..runners.base import Runner, RunRejected, RunState
 from . import gpus as G
 
@@ -55,6 +57,7 @@ class Held:
     status: str = "preparing"       # preparing | dispatched | running | postprocessing
     pid: str | None = None          # its id in the runner (the attempt id, unless the runner minted its own)
     rt: RunState | None = None      # its live progress, kept by the runner
+    runner: Runner | None = None    # the runner whose definition it is (Agent.runner_for)
     task: asyncio.Task | None = None
     slot: bool = False              # has one of the runner's max_inflight places
     submitting: bool = False
@@ -73,12 +76,16 @@ class Held:
 
 
 class Agent:
-    def __init__(self, cfg: AgentConfig, link, runner: Runner | None = None):
+    def __init__(self, cfg: AgentConfig, link, runner: Runner | None = None, runners: list | None = None):
         self.cfg = cfg
         self.link = link
         self.name = cfg.name
-        self.runner: Runner = runner or make_runner(cfg)
-        self.runner.attach(self)
+        # Its runners. The first is the machine's resident backend (ComfyUI): the one its
+        # status, node definitions, environment and Free VRAM are about.
+        self.runners: list[Runner] = list(runners) if runners else [runner] if runner else make_runners(cfg)
+        self.runner: Runner = self.runners[0]
+        for r in self.runners:
+            r.attach(self)
         self.scratch_root = P.normalize(str(cfg.resolve(cfg.convert.scratch_dir)))
         self.view = W.View(mappings=cfg.paths.mappings, scratch=self.scratch_root, repo=P.normalize(str(REPO)))
         self.held: dict[str, Held] = {}          # job id -> its run
@@ -112,7 +119,8 @@ class Agent:
 
     def start(self) -> None:
         self._ensure_sync()
-        self._tasks = [asyncio.create_task(self._manager_loop(), name=f"manager-{self.name}"), *self.runner.start()]
+        self._tasks = [asyncio.create_task(self._manager_loop(), name=f"manager-{self.name}"),
+                       *(t for r in self.runners for t in r.start())]
         if self.cfg.gpu_probe.enabled:
             self._tasks.append(asyncio.create_task(self._gpu_loop(), name=f"gpus-{self.name}"))
         log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
@@ -125,7 +133,8 @@ class Agent:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await self.runner.close()
+        for r in self.runners:
+            await r.close()
         close = getattr(self.link, "close", None)
         if close:
             await close()
@@ -151,6 +160,10 @@ class Agent:
 
     def holds(self, h: Held) -> bool:
         return self.held.get(h.id) is h
+
+    def runner_for(self, workflow: str) -> Runner | None:
+        """The runner whose definition this is (ComfyUI's workflows, the process runner's processes)."""
+        return next((r for r in self.runners if getattr(r, "knows", lambda _w: False)(workflow)), None)
 
     # ================================================================ the manager
     async def _manager_loop(self) -> None:
@@ -236,9 +249,10 @@ class Agent:
         status, with the GPUs read again when gpu_probe is on."""
         self._releasing = True
         try:
-            if self._in_comfy:
+            busy = sum(1 for h in self.held.values() if h.slot and h.runner is self.runner)
+            if busy:
                 result = {"ok": False, "before": None, "after": None,
-                          "error": f"{self._in_comfy} job(s) in {self.runner.label}: drain the machine and wait "
+                          "error": f"{busy} job(s) in {self.runner.label}: drain the machine and wait "
                                    f"for them, then free its VRAM"}
             else:
                 result = await self.runner.release()
@@ -288,7 +302,8 @@ class Agent:
 
     async def send_nodes(self) -> None:
         try:
-            reply = await self.link.nodes({"name": self.name, "processes": self.runner.processes()})
+            processes = {name: v for r in reversed(self.runners) for name, v in r.processes().items()}
+            reply = await self.link.nodes({"name": self.name, "processes": processes})
         except LinkError:
             return                      # sent again after hello
         if reply.get("hello"):
@@ -361,9 +376,13 @@ class Agent:
         old = self.held.get(job["job"])
         if old is not None:
             await self._drop(old.id, old.attempt)      # an earlier run of the same job
-        h = Held(job=job, attempt=job["attempt"], pid=job["attempt"])
+        h = Held(job=job, attempt=job["attempt"], pid=job["attempt"], runner=self.runner_for(job["workflow"]))
         self.held[h.id] = h
         log.info("agent %s took job %s (%s)", self.name, h.id[:8], job["workflow"])
+        if h.runner is None:
+            await self.run_failed(h, f"{self.name} has no workflow or process {job['workflow']}. Update the farm's "
+                                     f"code on it.")
+            return
         h.task = asyncio.create_task(self._prepare_and_submit(h), name=f"job-{h.id[:8]}")
 
     async def _prepare_and_submit(self, h: Held) -> None:
@@ -441,7 +460,7 @@ class Agent:
             await self._slots.wait_for(lambda: self._in_comfy < self.cfg.max_inflight)
             self._in_comfy += 1
             h.slot = True
-        while not self.runner.ready:
+        while not h.runner.ready:
             await asyncio.sleep(0.25)
 
     def _hold_slot(self, h: Held) -> None:
@@ -469,7 +488,7 @@ class Agent:
         rejected = None
         h.submitting = True
         try:
-            await self.runner.submit(h)         # sets h.pid and h.rt
+            await h.runner.submit(h)            # sets h.pid and h.rt
         except RunRejected as e:
             rejected = str(e)
         finally:
@@ -478,11 +497,11 @@ class Agent:
             await self.run_failed(h, rejected)
             return
         h.status, h.dispatched_at = "dispatched", now()
-        log.info("job %s -> %s on %s (prompt %s)", h.id[:8], self.runner.label, self.name, h.pid[:8])
+        log.info("job %s -> %s on %s (prompt %s)", h.id[:8], h.runner.label, self.name, h.pid[:8])
         # With what the runner handed its backend, which the manager keeps for people to look at.
-        await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid, submitted=self.runner.submitted(h))
+        await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid, submitted=h.runner.submitted(h))
         if h.cancelling and not h.dropped:
-            if await self.runner.cancel(h):
+            if await h.runner.cancel(h):
                 await self._cancelled(h)
 
     # ---------------------------------------------------------------- endings
@@ -504,8 +523,8 @@ class Agent:
     async def run_lost(self, h: Held, reason: str) -> None:
         if h.finished or h.dropped:
             return
-        if h.pid:
-            self.runner.give_up(h.pid)
+        if h.pid and h.runner is not None:
+            h.runner.give_up(h.pid)
         if h.rt is not None:
             h.rt = None
         self._release(h)
@@ -525,7 +544,7 @@ class Agent:
                 await asyncio.gather(h.task, return_exceptions=True)
             await self._cancelled(h)
         elif h.status in ON_WORKER:
-            if await self.runner.cancel(h):
+            if await h.runner.cancel(h):
                 await self._cancelled(h)
             # otherwise the runner's interrupted event finishes it
         # postprocessing: it finishes
@@ -544,11 +563,12 @@ class Agent:
         del self.held[job_id]
         h.outbox.clear()
         if h.task and not h.task.done() and h.task is not asyncio.current_task():
-            self.runner.give_up(h.attempt)  # in case its submit landed as we stopped it
+            if h.runner is not None:
+                h.runner.give_up(h.attempt)     # in case its submit landed as we stopped it
             h.task.cancel()
             await asyncio.gather(h.task, return_exceptions=True)
-        if h.pid and h.status in ON_WORKER:
-            await self.runner.abandon(h.pid)
+        if h.pid and h.status in ON_WORKER and h.runner is not None:
+            await h.runner.abandon(h.pid)
         self._release(h)
         if h.status != "postprocessing":
             S.cleanup(h.job, self.scratch_root)
@@ -558,7 +578,8 @@ class Agent:
         follow it again in the runner, prepare it again, or report it lost."""
         job = W.localize(payload, self.view)
         h = Held(job=job, attempt=job["attempt"], status=job.get("status") or "preparing", pid=job["attempt"],
-                 dispatched_at=job.get("dispatched_at"), started_at=job.get("started_at"))
+                 dispatched_at=job.get("dispatched_at"), started_at=job.get("started_at"),
+                 runner=self.runner_for(job["workflow"]))
         self.held[h.id] = h
         self.spawn(self._reattach(h))
 
@@ -567,16 +588,19 @@ class Agent:
         if h.status == "postprocessing":
             await self.run_lost(h, f"{self.name} restarted while collecting the outputs.")
             return
-        where, result = await self.runner.locate(h)     # once the runner answers
+        if h.runner is None:
+            await self.run_lost(h, f"{self.name} has no workflow or process {h.job['workflow']} any more.")
+            return
+        where, result = await h.runner.locate(h)        # once the runner answers
         if self.held.get(h.id) is not h:
             return                      # dropped meanwhile
         was = h.status
         if where in ("running", "pending"):
             self._hold_slot(h)
             h.status = "running" if where == "running" else "dispatched"
-            self.runner.follow(h)
+            h.runner.follow(h)
             h.dispatched_at = h.dispatched_at or now()
-            log.info("agent %s picked job %s up again in %s", self.name, h.id[:8], self.runner.label)
+            log.info("agent %s picked job %s up again in %s", self.name, h.id[:8], h.runner.label)
             if was == "preparing":
                 await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid)
             if h.status == "running" and was != "running":
@@ -587,12 +611,12 @@ class Agent:
             if was == "preparing":
                 h.status = "dispatched"
                 await self._report(h, "dispatched", at=h.dispatched_at or now(), prompt_id=h.pid)
-            await self.runner.settle(h, result)
+            await h.runner.settle(h, result)
         elif was == "preparing":
-            log.info("agent %s: job %s never reached %s: preparing it again", self.name, h.id[:8], self.runner.label)
+            log.info("agent %s: job %s never reached %s: preparing it again", self.name, h.id[:8], h.runner.label)
             h.task = asyncio.create_task(self._prepare_and_submit(h), name=f"job-{h.id[:8]}")
         else:
-            await self.run_lost(h, f"{self.runner.label} on {self.name} lost the job while {self.name} was restarting.")
+            await self.run_lost(h, f"{h.runner.label} on {self.name} lost the job while {self.name} was restarting.")
 
     def _clean_orphan_scratch(self) -> None:
         """Scratch folders of jobs this agent doesn't hold (finished while it was down)."""
@@ -657,7 +681,7 @@ class Agent:
             return                      # the manager said it isn't ours any more
         try:
             if hist is None:
-                hist = await self.runner.result(h)
+                hist = await h.runner.result(h)
             outputs, warnings = await self._collect_outputs(h, hist or {})
             t = now()
             started = h.started_at or h.dispatched_at or t
@@ -672,7 +696,7 @@ class Agent:
             await self.run_failed(h, f"Finished on the GPU but collecting outputs failed: {e}")
         finally:
             self._release(h)
-            await self.runner.forget(h.pid)
+            await h.runner.forget(h.pid)
 
     async def _collect_outputs(self, h: Held, hist: dict) -> tuple[dict, list[str]]:
         info = h.job["info"] or {}
@@ -707,19 +731,19 @@ class Agent:
                                 f"numbering starts at {res['first']} and may not line up with the plate.")
 
         if collect.get("preview"):         # True; a job queued before agents found their nodes has the section
-            entries = self.runner.preview(h, hist)
+            entries = h.runner.preview(h, hist)
             if entries and out_dir:
                 e = entries[-1]
                 dest = Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens)
                 try:
-                    await self.runner.fetch(e, dest)
+                    await h.runner.fetch(e, dest)
                     O.readable(str(dest))
                     outputs["preview"] = P.normalize(str(dest))
                     outputs["preview_posix"] = P.to_posix(outputs["preview"], mappings)
                 except Exception as ex:  # noqa: BLE001
                     warnings.append(f"Couldn't copy the preview video: {ex}")
             elif not entries:
-                warnings.append("ComfyUI returned no preview video.")
+                warnings.append(f"{h.runner.label} returned no preview video.")
 
         # The preview movie of the frames (fileio.preview). Not for one frame, and never a
         # reason to fail the job.
