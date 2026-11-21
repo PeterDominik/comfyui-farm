@@ -111,3 +111,12 @@ def releases(cfg: Config) -> list[dict]:
     except OSError as e:
         log.warning("can't read the releases in %s: %s", cfg.share.dir, e)
         return []
+
+
+def release_fingerprint(cfg: Config, name: str, which: str) -> str:
+    """A release in the bank by fingerprint or "latest", checked against its hashes before any
+    machine is told to install it (decision 0030). ReleaseError says what is wrong."""
+    from ..envs import release as R
+    if not cfg.share.dir:
+        raise R.ReleaseError("the manager has no bank (share.dir in config.yaml), so no releases")
+    return R.find(Path(cfg.share.dir), name, which).fingerprint

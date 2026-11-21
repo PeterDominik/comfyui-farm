@@ -354,6 +354,9 @@ class EnvsConfig(BaseModel):
     """Runner environments built on this machine (comfyfarm/envs, decision 0024)."""
     dir: str = "data/envs"                      # builds, uv's cache and its Pythons; relative = next to agent.yaml
     uv: list[str] = []                          # a uv to use; empty: one installed with pip into <dir>/.uv-tool
+    # Install, update and remove them as the manager says (agent/envman.py, decision 0030).
+    # Off: the agent only reports that it is off when the manager asks for something.
+    managed: bool = False
 
 
 class ComfyUILaunchConfig(BaseModel):

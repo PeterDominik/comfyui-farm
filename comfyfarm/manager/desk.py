@@ -24,6 +24,8 @@ fileio.wire."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -81,6 +83,16 @@ class AgentState:
     want_release: bool = False          # ask it to free its VRAM (the Machines tab's Free VRAM)
     released: dict | None = None        # the last time it did, and how it went (decision 0023)
     envs: dict | None = None            # the runner environments it has built (decision 0029)
+    env_wanted: dict = field(default_factory=dict)   # the releases it should have (decision 0030)
+    want_envs: bool = False             # send it env_wanted in its next check-in reply
+    env_work: dict | None = None        # what its environment manager is doing about them, as it says
+
+
+def wanted_hash(wanted: dict) -> str | None:
+    """A short name for one version of what a machine should have (None: nothing)."""
+    if not wanted:
+        return None
+    return hashlib.sha256(json.dumps(wanted, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def vram(a: AgentState) -> int:
@@ -285,6 +297,7 @@ class Desk:
             "gpus": a.gpus if alive else None, "gpu_error": a.gpu_error if alive else None,
             "released": a.released if alive else None,
             "environments": a.envs if alive else None,
+            "env_wanted": a.env_wanted, "env_work": a.env_work if alive else None,
             "comfyui_version": ((a.stats or {}).get("system") or {}).get("comfyui_version"),
             "problems": a.problems, "agent_version": a.version,
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
@@ -370,6 +383,8 @@ class Desk:
         a.capacity = int(msg.get("capacity") or a.max_inflight + 1)
         a.last_seen, a.seq = now(), int(msg.get("seq") or 0)
         a.checked = False               # its node definitions follow
+        a.env_wanted = self.store.env_wanted(name).get(name, {})
+        a.want_envs = bool(a.env_wanted)    # an agent that restarted knows none of it
         if a.version and a.version != build():
             log.warning("agent %s runs %s, the manager %s: update it (git pull) to run the same code",
                         name, a.version, build())
@@ -402,8 +417,13 @@ class Desk:
         nodes_were, a.farm_nodes = a.farm_nodes, msg.get("farm_nodes") or None
         if isinstance(msg.get("released"), dict):
             a.released = msg["released"]
-        if isinstance(msg.get("environments"), dict):  # what it has built (decision 0029); kept, not acted on yet
+        if isinstance(msg.get("environments"), dict):  # what it has built (decision 0029)
             a.envs = {str(k): v for k, v in msg["environments"].items() if isinstance(v, dict)}
+        if "env_wanted" in msg:         # an agent with an environment manager (decision 0030)
+            a.env_work = msg.get("env_work") if isinstance(msg.get("env_work"), dict) else None
+            if msg.get("env_wanted") != wanted_hash(a.env_wanted):
+                a.want_envs = True      # it holds another version: a reply was lost, or it restarted
+                self.wake()
         if "gpus" in msg:               # an agent with gpu_probe on; shown, not placed by yet (decision 0022)
             a.gpus = [g for g in msg.get("gpus") or [] if isinstance(g, dict)]
             a.gpu_error = msg.get("gpu_error") or None
@@ -537,7 +557,36 @@ class Desk:
             out["nodes"], a.want_nodes = True, False
         if a.want_release:
             out["release_vram"], a.want_release = True, False
+        if a.want_envs:
+            out["environments"] = {"wanted": dict(a.env_wanted), "hash": wanted_hash(a.env_wanted),
+                                   "bank": self.farm.cfg.share.dir or None}
+            a.want_envs = False
         return out
+
+    def want_environment(self, name: str, release: str | None, machines: list[str] | None, by: str | None,
+                         forget: bool = False) -> dict[str, str | None]:
+        """What these machines (default: every one the manager knows) should have of an
+        environment: a release's fingerprint, None to remove it, or, with forget, nothing:
+        it is left as it is (decision 0030). Told to each in its next check-in reply."""
+        names = list(machines) if machines else sorted(self.agents)
+        unknown = [m for m in names if m not in self.agents]
+        if unknown:
+            raise ValueError(f"no machine {', '.join(unknown)} (known: {', '.join(sorted(self.agents)) or 'none'})")
+        if not names:
+            raise ValueError("no machine has checked in yet")
+        for m in names:
+            a = self.agents[m]
+            if forget:
+                self.store.forget_env_wanted(m, name)
+                a.env_wanted.pop(name, None)
+            else:
+                self.store.set_env_wanted(m, name, release, by)
+                a.env_wanted[name] = release
+            a.want_envs = True
+        log.info("environment %s on %s: %s (by %s)", name, ", ".join(names),
+                 "not managed" if forget else release or "removed", by or "?")
+        self.wake()
+        return {m: (None if forget else release) for m in names}
 
     def _claim(self, a: AgentState) -> list[dict]:
         """The queued jobs this agent takes now.

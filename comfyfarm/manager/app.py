@@ -50,6 +50,22 @@ class Identity:
     admin: bool
 
 
+class EnvironmentWant(BaseModel):
+    release: str | None = None          # a fingerprint, "latest", or none: remove it
+    machines: list[str] | None = None   # default: every machine the manager knows
+    forget: bool = False                # stop managing it there: what is built stays as it is
+
+
+LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+def from_this_host(host: str | None) -> bool:
+    """A request from the manager's own machine. Until the farm has API keys, anyone could
+    send a request with any user name (CLAUDE.md: identity), so what changes the machines'
+    environments is taken only from here (decision 0030)."""
+    return (host or "") in LOOPBACK or (host or "").startswith("::ffff:127.")
+
+
 class JobRequest(BaseModel):
     workflow: str
     params: dict = Field(default_factory=dict)
@@ -480,10 +496,33 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
 
     @app.get("/api/v1/environments")
     async def environments(ident: Identity = Depends(identity)):
-        """Runner environments: the releases in the bank and what each machine has built
-        (decisions 0028, 0029). Read-only: what each machine should have comes with rollouts."""
+        """Runner environments: the releases in the bank, what each machine has built, what it
+        should have and what its environment manager is doing about it (decisions 0028-0030)."""
         releases = await asyncio.to_thread(share.releases, cfg)
-        return {"bank": cfg.share.dir or None, "releases": releases, "machines": desk.environments()}
+        alive = [a for a in list(desk.agents.values()) if desk.alive(a.name)]
+        return {"bank": cfg.share.dir or None, "releases": releases, "machines": desk.environments(),
+                "wanted": {a.name: a.env_wanted for a in desk.agents.values() if a.env_wanted},
+                "work": {a.name: a.env_work for a in alive if a.env_work}}
+
+    @app.post("/api/v1/environments/{name}/want")
+    async def want_environment(name: str, req: EnvironmentWant, request: Request,
+                               ident: Identity = Depends(identity)):
+        """What the machines should have of an environment: a release, none (removed), or
+        forget (no longer managed). From the manager's host only (`env want` there)."""
+        if not from_this_host(request.client.host if request.client else None):
+            raise HTTPException(403, "Environments are changed from the manager's host only, until the farm has "
+                                     "API keys: run `python -m comfyfarm env want ...` there.")
+        release = None
+        if not req.forget and req.release and req.release.lower() != "none":
+            try:
+                release = await asyncio.to_thread(share.release_fingerprint, cfg, name, req.release)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from None
+        try:
+            machines = desk.want_environment(name, release, req.machines, ident.user, forget=req.forget)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return {"name": name, "release": release, "forget": req.forget, "machines": machines}
 
     @app.get("/api/v1/run-times")
     def run_times(ident: Identity = Depends(identity)):

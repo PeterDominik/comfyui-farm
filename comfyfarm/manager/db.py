@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS drained (
     by TEXT,
     since REAL
 );
+CREATE TABLE IF NOT EXISTS env_wanted (       -- the runner environments each machine should have (0030)
+    worker TEXT NOT NULL,
+    name TEXT NOT NULL,
+    release TEXT,                             -- its fingerprint; NULL: removed
+    by TEXT,
+    since REAL,
+    PRIMARY KEY (worker, name)
+);
 CREATE TABLE IF NOT EXISTS run_stats (
     workflow TEXT NOT NULL,
     gpu TEXT NOT NULL,
@@ -398,6 +406,24 @@ class JobStore:
                                  (worker, by, now()))
             else:
                 self._db.execute("DELETE FROM drained WHERE worker=?", (worker,))
+
+    # ---------------------------------------------------------------- environments wanted
+    def env_wanted(self, worker: str | None = None) -> dict[str, dict[str, str | None]]:
+        """worker -> {environment: release fingerprint, or None to remove it} (decision 0030)."""
+        rows = self._q("SELECT * FROM env_wanted" + (" WHERE worker=?" if worker else ""), (worker,) if worker else ())
+        out: dict[str, dict] = {}
+        for r in rows:
+            out.setdefault(r["worker"], {})[r["name"]] = r["release"]
+        return out
+
+    def set_env_wanted(self, worker: str, name: str, release: str | None, by: str | None) -> None:
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO env_wanted (worker, name, release, by, since) VALUES (?,?,?,?,?)",
+                             (worker, name, release, by, now()))
+
+    def forget_env_wanted(self, worker: str, name: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM env_wanted WHERE worker=? AND name=?", (worker, name))
 
     # ---------------------------------------------------------------- publishes
     @staticmethod

@@ -483,6 +483,31 @@ them again every 30 s, so an `env install` on a machine shows within half a minu
 `GET /api/v1/environments` lists the bank's releases and what each machine has built; the
 same is in `/api/v1/workers` as each machine's `environments`.
 
+#### The manager installs them
+
+The manager keeps what each machine should have of an environment, and each agent's
+environment manager makes it so (decision 0030). Set it on the manager's host. Its API
+takes this from its own host only, until the farm has API keys:
+
+```bash
+python -m comfyfarm env want gpu-test latest                     # every machine: install or update to the latest release
+python -m comfyfarm env want gpu-test 30cee042f35be171 --machine tor-flame02-a6000   # one machine, one release
+python -m comfyfarm env want gpu-test none                       # remove it
+python -m comfyfarm env want gpu-test --forget                   # stop managing it: what is built stays
+```
+
+Each agent hears it at its next check-in. It installs from the bank's release (checked
+against its hashes), builds beside the current build, checks it, and only then makes it
+current. The build before stays as previous, so wanting the previous release again is a
+rollback that switches back without building. It waits while a job is running in that
+environment. It doesn't try a release that failed on it again until it is told something
+else. An environment the manager doesn't name is left as it is.
+
+It is off on each machine until `agent.yaml` says `envs: {managed: true}`. Until then the
+agent says it is off. `GET /api/v1/environments` shows what each machine should have
+(`wanted`) and what its environment manager is doing about it (`work`: installing,
+waiting, failed and why, off).
+
 A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
 from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
 if a disk can't, uv copies, and `env install` says so.

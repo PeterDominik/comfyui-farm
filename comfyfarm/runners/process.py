@@ -206,6 +206,15 @@ class ProcessRunner:
     def knows(self, process: str) -> bool:
         return process in self._definitions()
 
+    def environments_in_use(self) -> set[str]:
+        """The environments its runs are in: not to be removed or switched under them (decision 0030)."""
+        used = set()
+        for h in self.host.runs() if self.host else []:
+            wf = self._definitions().get(h.job.get("workflow")) if getattr(h, "runner", None) is self else None
+            if wf is not None and not getattr(h, "finished", False):
+                used.add(wf.environment)
+        return used
+
     def _environment_problem(self, wf: ProcessDefinition) -> str | None:
         """Why this machine has no current build of the definition's environment at the
         version this checkout has (None: it has)."""

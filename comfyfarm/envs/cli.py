@@ -10,6 +10,9 @@
     env publish <name>          on the manager's host: the environment as committed, as a release
                                 in the bank (share.dir), for agents to install
     env releases [<name>]       what the bank has
+    env want <name> <fingerprint|latest|none> [--machine NAME ...] [--forget]
+                                on the manager's host: what the machines should have of it; their
+                                environment managers install or remove it (decision 0030)
 
 Builds go into agent.yaml's envs.dir (default data/envs in this checkout); --dir and --uv
 override it, so these run on a machine without an agent too. The bank is --bank, else the
@@ -17,6 +20,7 @@ folder of agent.yaml's manager.json, else config.yaml's share.dir."""
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -153,6 +157,42 @@ def cmd_releases(args) -> int:
     return 0
 
 
+def cmd_want(args) -> int:
+    """Tell the manager, on this host, what the machines should have (its API takes this
+    from its own host only, until the farm has API keys)."""
+    import getpass
+    import urllib.error
+    import urllib.request
+    from ..config import default_config_path, load_config
+    if not args.forget and not args.release:
+        raise S.SpecError("say which release (a fingerprint from `env releases`, or latest), none to remove it, "
+                          "or --forget")
+    path = getattr(args, "manager_config", None) or default_config_path()
+    port = load_config(path).server.port if Path(path).exists() else 8000
+    body = json.dumps({"release": None if args.forget else args.release, "machines": args.machine or None,
+                       "forget": bool(args.forget)}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/v1/environments/{args.name}/want", data=body,
+                                 method="POST", headers={"Content-Type": "application/json",
+                                                         "X-User": getpass.getuser()})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            said = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("detail")
+        except ValueError:
+            detail = None
+        raise S.SpecError(f"the manager said no: {detail or e}") from None
+    except urllib.error.URLError as e:
+        raise S.SpecError(f"no manager on 127.0.0.1:{port} ({e.reason}): run this on the manager's host, with its "
+                          f"config.yaml") from None
+    what = "not managed any more (left as it is)" if said["forget"] else said["release"] or "removed"
+    for machine in sorted(said["machines"]):
+        print(f"{machine}: {said['name']} {what}")
+    print("Each machine does it once its agent checks in; `env releases` and the Machines tab show how it went.")
+    return 0
+
+
 def cmd_remove(args) -> int:
     root, _ = _where(args)
     print(f"Removed {args.name}'s builds from {root}." if B.remove(root, args.name)
@@ -169,10 +209,18 @@ def add_parser(sub) -> None:
                            ("remove", "remove what this machine has built of an environment"),
                            ("publish", "on the manager's host: publish an environment as committed, as a release in "
                                        "the bank"),
-                           ("releases", "the releases in the bank")):
+                           ("releases", "the releases in the bank"),
+                           ("want", "on the manager's host: what the machines should have of an environment")):
         c = cmds.add_parser(name, help=helptext)
         if name == "releases":
             c.add_argument("name", nargs="?", help="one environment's (default: all)")
+        elif name == "want":
+            c.add_argument("name", help="the environment")
+            c.add_argument("release", nargs="?", help="a fingerprint from `env releases`, latest, or none (remove it)")
+            c.add_argument("--machine", action="append", help="this machine only (again for more; default: all)")
+            c.add_argument("--forget", action="store_true", help="stop managing it: what is built stays as it is")
+            c.add_argument("--manager-config", dest="manager_config",
+                           help="the manager's config.yaml, for its port (default: repo root, or $COMFYFARM_CONFIG)")
         elif name != "list":
             c.add_argument("name", help="its folder in environments/")
         if name == "install":
@@ -194,7 +242,7 @@ def add_parser(sub) -> None:
 def run(args) -> int:
     try:
         return {"list": cmd_list, "lock": cmd_lock, "install": cmd_install, "remove": cmd_remove,
-                "publish": cmd_publish, "releases": cmd_releases}[args.env_cmd](args)
+                "publish": cmd_publish, "releases": cmd_releases, "want": cmd_want}[args.env_cmd](args)
     except (S.SpecError, B.BuildError, R.ReleaseError) as e:
         print(f"STOPPED: {e}")
         return 1
