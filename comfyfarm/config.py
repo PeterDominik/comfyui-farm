@@ -332,6 +332,15 @@ class AgentPathsConfig(BaseModel):
     mappings: list[PathMapping] = Field(default_factory=list)
 
 
+class GpuProbeConfig(BaseModel):
+    """The agent reads this machine's GPUs itself with nvidia-smi (agent/gpus.py, decision 0022)
+    and reports them with its status: the Machines tab shows each card's memory in use by any
+    program. Placement doesn't use it yet."""
+    enabled: bool = False
+    seconds: float = 30.0                       # read this often
+    command: list[str] = ["nvidia-smi"]         # comes with the NVIDIA driver, on Linux and Windows
+
+
 class ComfyUILaunchConfig(BaseModel):
     """How the agent starts this machine's ComfyUI when it isn't running (optional). ComfyUI
     runs on its own once started: restarting the agent leaves it, and its jobs, running."""
@@ -358,6 +367,7 @@ class AgentConfig(BaseModel):
     comfyui_dir: str = ""
     comfyui_python: str = ""
     environment_seconds: float = 900.0  # the environment is checked this often (and when ComfyUI starts)
+    gpu_probe: GpuProbeConfig = Field(default_factory=GpuProbeConfig)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []

@@ -18,6 +18,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -28,6 +29,7 @@ from test_comfyenv import COMMIT_A
 from test_comfyenv import Farm as ComfyInstall
 from test_workflows import fake_object_info, plate_matte_workflow
 from test_preview import FFMPEG, png
+from test_gpus import FAKE as FAKE_NVIDIA_SMI
 
 from comfyfarm.comfyenv import spec as ES
 from comfyfarm.config import AgentConfig, Config
@@ -1467,6 +1469,47 @@ class AgentTests(unittest.TestCase):
         own.workflows[workflow].digest = "0" * 16
         a.runner._registry = own
         return a
+
+    # ------------------------------------------------------------ its GPUs (gpu_probe, decision 0022)
+    def test_with_gpu_probe_on_the_machines_tab_shows_each_card(self):
+        line = "0, GPU-1, NVIDIA GeForce RTX 5090, 32607, 24500, 7614, 97, 610.47\n"
+        sent = []
+        with mock.patch.dict(os.environ, {"FAKE_NVIDIA_SMI": json.dumps({"out": line})}):
+            a = self.ready(self.agent(gpu_probe={"enabled": True, "command": FAKE_NVIDIA_SMI}))
+            status = a.link.status
+
+            async def spy(msg):
+                sent.append(msg)
+                return await status(msg)
+            a.link.status = spy
+            self.wait(a.probe_gpus())
+            self.wait(a.send_status())
+        self.assertEqual([(g["name"], g["vram_used"]) for g in sent[-1]["gpus"]],
+                         [("NVIDIA GeForce RTX 5090", 24500 * 2**20)])
+        shown = self.desk.summary(self.desk.agents["gpu1"])
+        self.assertEqual((shown["gpus"], shown["gpu_error"]), (sent[-1]["gpus"], None))
+        self.assertEqual(shown["gpu"]["name"], "cuda:0 fake")           # placement still goes by ComfyUI's
+        with mock.patch.dict(os.environ, {"FAKE_NVIDIA_SMI": json.dumps({"exit": 9, "err": "no driver\n"})}):
+            self.wait(a.probe_gpus())
+            self.wait(a.send_status())
+        shown = self.desk.summary(self.desk.agents["gpu1"])
+        self.assertEqual(shown["gpus"], [])
+        self.assertIn("failed: no driver", shown["gpu_error"])
+
+    def test_with_gpu_probe_off_nothing_changes(self):
+        sent = []
+        a = self.ready(self.agent())
+        status = a.link.status
+
+        async def spy(msg):
+            sent.append(msg)
+            return await status(msg)
+        a.link.status = spy
+        self.wait(a.send_status())
+        self.assertNotIn("gpus", sent[-1])
+        self.assertIsNone(a.gpus)
+        self.assertEqual([t.get_name() for t in a._tasks if t.get_name().startswith("gpus-")], [])
+        self.assertIsNone(self.desk.summary(self.desk.agents["gpu1"])["gpus"])
 
     def test_the_agent_says_what_it_can_run_and_sends_no_node_definitions(self):
         sent = []

@@ -8,7 +8,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              mention (after a restart): it picks them up again from ComfyUI, or reports
              them lost.
   status     its ComfyUI's state: reachable, connected, GPU, queue (on change, and every
-             few seconds for the dashboard).
+             few seconds for the dashboard). With gpu_probe on, also `gpus`: each card
+             as nvidia-smi reads it (index, uuid, name, memory total, used and free,
+             utilization, driver), and `gpu_error` when it can't be read.
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
              the agent's checkout with its fingerprint, what its ComfyUI lacks for it,
              what is wrong with how the definition wires the graph (`broken`, which

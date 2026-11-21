@@ -76,6 +76,8 @@ class AgentState:
     last_workflow: str | None = None    # its models are probably still loaded
     tags: list[str] = field(default_factory=list)   # agent.yaml's tags and its OS (requires.tags)
     environment: dict | None = None     # how its backend differs from the farm's, as its agent reported it
+    gpus: list[dict] | None = None      # its GPUs as its agent read them with nvidia-smi (gpu_probe); None: not read
+    gpu_error: str | None = None        # why they couldn't be read
 
 
 def vram(a: AgentState) -> int:
@@ -268,6 +270,7 @@ class Desk:
             "enabled": True, "max_inflight": a.max_inflight, "inflight": self.store.count_on_worker(a.name),
             "running_job": running[0]["id"] if running else None, "queue_remaining": a.queue_remaining,
             "last_seen": a.last_seen, "error": error, "gpu": gpu,
+            "gpus": a.gpus if alive else None, "gpu_error": a.gpu_error if alive else None,
             "comfyui_version": ((a.stats or {}).get("system") or {}).get("comfyui_version"),
             "problems": a.problems, "agent_version": a.version,
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
@@ -379,6 +382,9 @@ class Desk:
         a.online, a.connected = bool(msg.get("online")), bool(msg.get("connected"))
         a.stats, a.queue_remaining, a.error = msg.get("stats"), msg.get("queue_remaining"), msg.get("error")
         nodes_were, a.farm_nodes = a.farm_nodes, msg.get("farm_nodes") or None
+        if "gpus" in msg:               # an agent with gpu_probe on; shown, not placed by yet (decision 0022)
+            a.gpus = [g for g in msg.get("gpus") or [] if isinstance(g, dict)]
+            a.gpu_error = msg.get("gpu_error") or None
         if a.farm_nodes and (nodes_were or {}).get("state") != a.farm_nodes.get("state"):
             log.warning("worker %s takes no new jobs: %s", a.name, a.farm_nodes.get("message"))
         if not a.connected:

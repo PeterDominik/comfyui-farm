@@ -171,6 +171,18 @@ def check_tools(convert) -> int:
     return bad
 
 
+def check_gpus(command: list[str]) -> int:
+    """This machine's GPUs as the agent's gpu_probe reads them: a warning when it can't (it's optional)."""
+    from .agent import gpus as G
+    found, error = G.probe(command)
+    if error:
+        _line("WARN", f"GPUs: {error}")
+    for g in found:
+        size = f"{g['vram_total'] / 2**30:.0f} GB" if g["vram_total"] else "memory unknown"
+        _line(" ok ", f"GPU {g['index']}: {g['name']}, {size}, driver {g['driver']}")
+    return 0
+
+
 async def check_comfyui(name: str, url: str, reg: WorkflowRegistry) -> int:
     """A ComfyUI answers, and has every node, input and model each workflow needs."""
     from .runners.comfy import ComfyClient   # here, so check_ocio and --help don't need httpx
@@ -293,6 +305,7 @@ async def run_agent_check(cfg, path) -> int:
         _line(" ok " if ok else "FAIL", f"storage {root}" + (f" -> {local}" if local != root else "")
               + ("" if ok else "  (not reachable from this machine/account: add it to paths.mappings)"))
     bad += check_folder("scratch", str(cfg.resolve(cfg.convert.scratch_dir)), min_free_gb=20)
+    bad += check_gpus(cfg.gpu_probe.command)
     bad += check_tools(cfg.convert)
     bad += check_ocio(Config.model_validate({"workers": [], "ocio": OcioConfig().model_dump(),
                                              "convert": cfg.convert.model_dump(),

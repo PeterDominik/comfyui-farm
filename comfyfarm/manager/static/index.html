@@ -452,7 +452,18 @@ function applyDeepLink() {
 // ------------------------------------------------------------- machines
 const ON_MACHINE = ["preparing", "dispatched", "running", "postprocessing"];
 const ACTIVE = ["queued", ...ON_MACHINE];
-const gpuName = w => ((w.gpu?.name || "").split(" : ")[0]).replace(/^cuda:\d+\s+/, "");
+const gpuName = w => w.gpus?.length ? w.gpus.map(g => g.name).join(" + ")
+  : ((w.gpu?.name || "").split(" : ")[0]).replace(/^cuda:\d+\s+/, "");
+// Its GPUs as its agent reads them (gpu_probe): memory in use by any program, not only ComfyUI.
+function gpuMemory(w) {
+  if (!w.gpus?.length) return [w.gpu?.vram_total ? `${gb(w.gpu.vram_free)} of ${gb(w.gpu.vram_total)}` : "",
+                               w.gpu_error || ""];
+  const used = w.gpus.reduce((n, g) => n + (g.vram_used || 0), 0);
+  const total = w.gpus.reduce((n, g) => n + (g.vram_total || 0), 0);
+  const tip = w.gpus.map(g => `GPU ${g.index} ${g.name}: ${gb(g.vram_used)} of ${gb(g.vram_total)} in use` +
+    (g.utilization != null ? `, ${g.utilization}% busy` : "") + `, driver ${g.driver}`).join("\n");
+  return [`${gb(used)} used of ${gb(total)}`, tip];
+}
 // Its ComfyUI runs other farm nodes than its checkout (after a git pull): no new jobs.
 const FARM_NODES = {waiting: "new farm nodes: restarting ComfyUI when idle", restarting: "restarting ComfyUI (new farm nodes)",
                     manual: "farm nodes out of date", syncing: "updating ComfyUI (sync)"};
@@ -477,7 +488,7 @@ function renderWorkers() {
     const running = [...state.jobs.values(), ...[...state.batches.values()].flatMap(m => [...m.values()])]
       .filter(j => j.worker === w.name && ON_MACHINE.includes(j.status))
       .map(j => `<span title="${esc(j.short_id)}">${esc(j.name || j.short_id)}</span>`).join(", ");
-    const vram = w.gpu?.vram_total ? `${gb(w.gpu.vram_free)} of ${gb(w.gpu.vram_total)}` : "";
+    const [vram, vramTip] = gpuMemory(w);
     const probs = Object.entries(w.problems || {});
     // Its ComfyUI against the farm's (deploy/comfyui/environment.yaml): shown, never holds jobs back.
     const env = w.environment, envDiff = env?.differs || [];
@@ -489,7 +500,7 @@ function renderWorkers() {
       <td><b>${esc(w.name)}</b></td>
       <td class="${cls}" title="${esc(w.error || "")}">${esc(st)}</td>
       <td>${esc(gpuName(w))}</td>
-      <td class="muted">${esc(vram)}</td>
+      <td class="muted" title="${esc(vramTip)}">${esc(vram)}</td>
       <td>${w.inflight}/${w.max_inflight}</td>
       <td>${running || '<span class="muted">—</span>'}</td>
       <td class="${envDiff.length ? "warn" : "muted"}" title="${esc(envTip)}">${esc(w.comfyui_version || "")}${envDiff.length ? " ≠" : env?.file && !env.notes?.length ? " ✓" : ""}</td>
