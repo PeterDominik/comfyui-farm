@@ -139,7 +139,7 @@ class Environment(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
         self.workflows = self.root / "workflows"
         definition(self.workflows, "demo")
-        definition(self.workflows, "slow", limits={"max_minutes": 0.02})       # 1.2 s
+        definition(self.workflows, "slow", limits={"max_minutes": 0.05})       # 3 s
 
 
 class Definitions(Environment):
@@ -168,7 +168,7 @@ class Definitions(Environment):
                          [str(Path("/env/bin/python")), f"{self.workflows / 'args'}/run.py", "--job",
                           str(run / "job.json"), f"--out={run}/x"])
         self.assertEqual(wf.seconds(60), 3600)
-        self.assertAlmostEqual(ProcessDefinition(self.workflows / "slow").seconds(60), 1.2)
+        self.assertAlmostEqual(ProcessDefinition(self.workflows / "slow").seconds(60), 3.0)
 
     def test_what_is_wrong_with_its_block_is_the_same_everywhere(self):
         definition(self.workflows, "noenv", runner={"environment": "nope"})
@@ -386,7 +386,7 @@ class Runs(Environment):
         h = self.held("slow", mode="hang")
         self.wait(self.runner.submit(h))
         self.pump(h, lambda: "failed" in self.kinds())
-        self.assertIn("slow was stopped after 0.02 minutes, its time limit (limits.max_minutes", self.host.said[-1][1])
+        self.assertIn("slow was stopped after 0.05 minutes, its time limit (limits.max_minutes", self.host.said[-1][1])
         pid = int((self.root / "runs" / h.attempt / "command.pid").read_text())
         self.assertTrue(gone(pid))
 
@@ -424,14 +424,14 @@ class Runs(Environment):
     def test_a_run_whose_supervisor_died_is_lost(self):
         h = self.held(mode="wait")
         self.wait(self.runner.submit(h))
-        self.pump(h, lambda: "started" in self.kinds())
+        run = self.root / "runs" / h.attempt
+        self.pump(h, lambda: "started" in self.kinds() and (run / "command.pid").exists())
         again = self.make_runner()
         h2 = Held(job=dict(h.job), attempt=h.attempt, status="running", pid=h.pid, runner=again)
         h.rt.proc.kill()                # the supervisor and, on Linux, its command with it
         h.rt.proc.wait(10)
         if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(int((self.root / "runs" / h.attempt /
-                                                                     "command.pid").read_text()))], capture_output=True)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", (run / "command.pid").read_text()], capture_output=True)
         # Windows lets go of a dead process's lock when it gets round to it.
         end = time.time() + 15
         while self.wait(again.locate(h2)) != ("absent", None) and time.time() < end:
