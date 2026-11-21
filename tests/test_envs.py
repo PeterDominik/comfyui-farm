@@ -81,6 +81,33 @@ class Folders(unittest.TestCase):
                 S.load(name, self.root)
             self.assertIn(said, str(e.exception))
 
+    def test_a_lock_made_for_another_pyproject_is_said(self):
+        project = {"project": {"name": "demo", "requires-python": "==3.12.*",
+                               "dependencies": ["torch==2.13.0", "numpy==2.5.2",
+                                                'pillow==12.3.0; sys_platform == "linux"']},
+                   "tool": {"uv": {"index": [{"name": "pt", "url": "https://download.pytorch.org/whl/cu130"}],
+                                   "sources": {"torch": {"index": "pt"}}}}}
+        lock = {"requires-python": "==3.12.*", "package": [
+            {"name": "demo", "source": {"virtual": "."}, "metadata": {"requires-dist": [
+                {"name": "numpy", "specifier": "==2.5.2"},
+                {"name": "pillow", "specifier": "==12.3.0", "marker": "sys_platform == 'linux'"},
+                {"name": "torch", "specifier": "==2.13.0", "index": "https://download.pytorch.org/whl/cu130"}]}}]}
+        self.assertIsNone(S.lock_differs(project, lock))       # quotes in a marker don't count
+        def changed(**kw):
+            p = {**project, "project": {**project["project"], **kw}}
+            return S.lock_differs(p, lock)
+        pillow = 'pillow==12.3.0; sys_platform == "linux"'
+        self.assertEqual(changed(dependencies=["torch==2.13.1", "numpy==2.5.2", pillow]), "torch changed (its version)")
+        self.assertEqual(changed(dependencies=["torch==2.13.0", pillow]),
+                         "numpy is in the lock but no longer in pyproject.toml")
+        self.assertEqual(changed(dependencies=[*project["project"]["dependencies"], "scipy==1.17.0"]),
+                         "scipy is in pyproject.toml but not in the lock")
+        self.assertIn("made for Python ==3.12.*", changed(**{"requires-python": "==3.13.*"}))
+        self.assertIn("no entry for the project other", changed(name="other"))
+        cu128 = [{"name": "pt", "url": "https://download.pytorch.org/whl/cu128"}]
+        moved = {**project, "tool": {"uv": {**project["tool"]["uv"], "index": cu128}}}
+        self.assertEqual(S.lock_differs(moved, lock), "torch changed (its index)")
+
     def test_the_repos_environments_load_and_name_their_indexes(self):
         names = S.names()
         self.assertIn("gpu-test", names)
@@ -97,6 +124,10 @@ class Folders(unittest.TestCase):
                     self.assertTrue(by_name[torch["index"]]["url"].startswith("https://download.pytorch.org/whl/"))
                     self.assertTrue(by_name[torch["index"]].get("explicit"))
                 self.assertEqual(spec.check[0], "python")
+                # A changed pyproject.toml comes with its new lock, or CI says so here.
+                self.assertTrue(spec.locked, f"{name} has no uv.lock: run `python -m comfyfarm env lock {name}`")
+                self.assertIsNone(spec.stale,
+                                  f"{name}'s uv.lock: {spec.stale}: run `python -m comfyfarm env lock {name}`")
 
 
 class Builds(unittest.TestCase):
@@ -138,6 +169,18 @@ class Builds(unittest.TestCase):
         self.assertIn("python -m comfyfarm env lock demo", str(e.exception))
         self.assertIn("commit environments/demo/uv.lock", str(e.exception))
         self.assertEqual(self.calls(), [])
+
+    def test_it_wont_build_a_lock_out_of_date(self):
+        spec = self.locked()
+        make(self.envs, deps=("torch==2.13.0", "numpy==2.6.0"))        # changed, not locked again
+        stale = S.load("demo", self.envs)
+        self.assertEqual(stale.stale, "numpy changed (its version)")
+        with self.assertRaises(B.BuildError) as e:
+            self.install(stale)
+        self.assertIn("uv.lock doesn't match its pyproject.toml: numpy changed (its version)", str(e.exception))
+        self.assertIn("python -m comfyfarm env lock demo", str(e.exception))
+        self.assertEqual(self.calls("sync"), [])
+        self.assertIsNone(spec.stale)
 
     def test_lock_writes_the_folders_uv_lock(self):
         spec = self.spec()
@@ -280,6 +323,11 @@ class Command(unittest.TestCase):
         (self.envs / "demo" / "env.yaml").write_text("check: [python, -c, 'pass']\n", encoding="utf-8")
         code, said = self.run_cli("list", "--dir", str(self.root))
         self.assertIn(f"this machine has {fp}, an older version: run `env install demo`", said)
+        make(self.envs, deps=("torch==2.13.0",))
+        code, said = self.run_cli("list", "--dir", str(self.root))
+        self.assertIn("LOCK OUT OF DATE", said)
+        self.assertIn("uv.lock doesn't match pyproject.toml: numpy is in the lock but no longer in pyproject.toml",
+                      said)
         code, said = self.run_cli("remove", "demo", "--dir", str(self.root))
         self.assertIn("Removed demo's builds", said)
 

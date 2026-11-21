@@ -43,7 +43,10 @@ def cmd_list(args) -> int:
             state = f"this machine has {have.current}, an older version: run `env install {name}`"
         else:
             state = "not built here"
-        print(f"{name}  {fp}  Python {spec.python}  {'locked' if spec.locked else 'NOT LOCKED'}  {state}")
+        lock = "LOCK OUT OF DATE" if spec.stale else "locked" if spec.locked else "NOT LOCKED"
+        print(f"{name}  {fp}  Python {spec.python}  {lock}  {state}")
+        if spec.stale:
+            print(f"    uv.lock doesn't match pyproject.toml: {spec.stale}")
         if spec.description:
             print(f"    {spec.description}")
         if have.previous:

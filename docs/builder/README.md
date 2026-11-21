@@ -68,4 +68,5 @@ and `environments/` and `python -m comfyfarm env` for how environments are built
 
 On both Linux machines uv copied packages instead of linking them from its cache (14.1 GB
 for two builds and the cache, against 3.0 GB on Windows): uv clones on Linux by default,
-and those disks can't. `env install` asks uv for hard links instead.
+and those disks can't. `env install` asks uv for hard links instead, and on the 3090 that
+brought one torch build and uv's cache to 4.8 GB in all (decision 0024).

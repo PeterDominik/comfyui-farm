@@ -93,8 +93,18 @@ def uv(args: list) -> None:
     elif args[:1] == ["lock"]:
         fail_if("uv lock")
         project = Path(args[args.index("--project") + 1])
-        deps = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-        (project / "uv.lock").write_text("version = 1\n# fake\n" + "".join(f"# {d}\n" for d in deps), encoding="utf-8")
+        meta = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+        deps = meta["dependencies"]
+        # The part of a real lock the farm reads: what the project asked for when it was locked.
+        reqs = []
+        for d in deps:
+            name, _, version = d.partition("==")
+            reqs.append(f'{{ name = "{name.strip()}", specifier = "=={version.strip()}" }}' if version
+                        else f'{{ name = "{name.strip()}" }}')
+        (project / "uv.lock").write_text(
+            f'version = 1\nrequires-python = "{meta.get("requires-python", "")}"\n\n[[package]]\n'
+            f'name = "{meta["name"]}"\nversion = "{meta.get("version", "0")}"\nsource = {{ virtual = "." }}\n\n'
+            f'[package.metadata]\nrequires-dist = [{", ".join(reqs)}]\n', encoding="utf-8")
         print(f"Resolved {len(deps)} packages (fake)")
     elif args[:1] == ["sync"]:
         fail_if("uv sync")

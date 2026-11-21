@@ -64,6 +64,15 @@ on Windows. Neither Linux disk can clone, so uv copied; Windows linked.
 - A torch environment is about 4.6 GB on Linux and 2.9 GB on Windows. With hard links a
   second build that shares torch costs little, but only if `envs.dir` and uv's cache are on
   the same disk, which they are by default. `copied: true` shows where linking failed.
+- First builds of `gpu-test` (2026-11-21): 24 s on the 3090, 26 s on the A6000, 40 s on the
+  5090, each checked and `copied: false`. On the 3090 the build's `libtorch_cuda.so` has
+  two links (the build and uv's cache) and `data/envs` takes 4.8 GB in all, against 14.1 GB
+  for the builder test's two copied builds: asking for hard links fixed Linux.
+- A `uv.lock` that no longer matches its `pyproject.toml` (a package, version, index or
+  Python changed without locking again) is refused by `env install`, shown by `env list`,
+  and fails CI (`tests/test_envs.py`): `uv sync --frozen` would otherwise build the old lock
+  without a word. The farm compares what uv recorded the project asked for with what
+  `pyproject.toml` asks for now, without uv or a network.
 - Locking can't happen on a machine without pypi.org. Building can, if uv's cache already
   holds the packages; otherwise it needs pypi.org and download.pytorch.org too, as the
   builder test did.
