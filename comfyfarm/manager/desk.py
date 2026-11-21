@@ -78,6 +78,8 @@ class AgentState:
     environment: dict | None = None     # how its backend differs from the farm's, as its agent reported it
     gpus: list[dict] | None = None      # its GPUs as its agent read them with nvidia-smi (gpu_probe); None: not read
     gpu_error: str | None = None        # why they couldn't be read
+    want_release: bool = False          # ask it to free its VRAM (the Machines tab's Free VRAM)
+    released: dict | None = None        # the last time it did, and how it went (decision 0023)
 
 
 def vram(a: AgentState) -> int:
@@ -207,6 +209,15 @@ class Desk:
             return f"The machines that can run it ({names}) are {state}: the job waits until one takes jobs."
         return None
 
+    def request_release(self, name: str, by: str | None = None) -> dict:
+        """Ask a machine's runner to free its VRAM; its agent does so when the farm has nothing
+        running in it, and reports how it went with its status (`released`)."""
+        a = self.agents[name]
+        a.want_release = True
+        log.info("worker %s: %s asked it to free its VRAM", name, by or "?")
+        self.wake()
+        return {"worker": name, "asked": True}
+
     def set_drained(self, name: str, on: bool, by: str | None = None) -> dict:
         """Drain a machine (it finishes what it holds and takes nothing new) or resume it.
         Kept in the database, so it lasts across manager restarts."""
@@ -271,6 +282,7 @@ class Desk:
             "running_job": running[0]["id"] if running else None, "queue_remaining": a.queue_remaining,
             "last_seen": a.last_seen, "error": error, "gpu": gpu,
             "gpus": a.gpus if alive else None, "gpu_error": a.gpu_error if alive else None,
+            "released": a.released if alive else None,
             "comfyui_version": ((a.stats or {}).get("system") or {}).get("comfyui_version"),
             "problems": a.problems, "agent_version": a.version,
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
@@ -382,6 +394,8 @@ class Desk:
         a.online, a.connected = bool(msg.get("online")), bool(msg.get("connected"))
         a.stats, a.queue_remaining, a.error = msg.get("stats"), msg.get("queue_remaining"), msg.get("error")
         nodes_were, a.farm_nodes = a.farm_nodes, msg.get("farm_nodes") or None
+        if isinstance(msg.get("released"), dict):
+            a.released = msg["released"]
         if "gpus" in msg:               # an agent with gpu_probe on; shown, not placed by yet (decision 0022)
             a.gpus = [g for g in msg.get("gpus") or [] if isinstance(g, dict)]
             a.gpu_error = msg.get("gpu_error") or None
@@ -513,6 +527,8 @@ class Desk:
         out: dict = {"drop": drop, "cancel": cancel, "jobs": jobs}
         if a.want_nodes:
             out["nodes"], a.want_nodes = True, False
+        if a.want_release:
+            out["release_vram"], a.want_release = True, False
         return out
 
     def _claim(self, a: AgentState) -> list[dict]:

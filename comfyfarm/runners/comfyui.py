@@ -568,6 +568,52 @@ class ComfyUIRunner:
         self._cant_restart = False
         self.object_info = None         # read again when it's back (its websocket reconnects)
 
+    # ================================================================ ComfyUI: VRAM
+    RELEASED = 2**30                    # torch holding less than this counts as released
+    RELEASE_SECONDS = 30.0              # how long ComfyUI gets to unload
+
+    @staticmethod
+    def _held(stats: dict | None) -> int | None:
+        """What ComfyUI's torch holds on its card (torch_vram_total: reserved, models and cache)."""
+        for dev in (stats or {}).get("devices") or []:
+            held = dev.get("torch_vram_total")
+            return int(held) if isinstance(held, (int, float)) else None
+        return None
+
+    async def release(self) -> dict:
+        """Unload ComfyUI's models and empty its cache (ComfyUI's /free), and wait until its
+        torch holds less than RELEASED. Only when its queue is empty: ComfyUI frees between
+        prompts, and a prompt queued after would load the models again."""
+        if not self.online:
+            return {"ok": False, "before": None, "after": None, "error": "ComfyUI isn't running"}
+        before = self._held(self.stats)
+        try:
+            running, pending = await self.client.queue()
+            if running or pending:
+                return {"ok": False, "before": before, "after": before,
+                        "error": f"ComfyUI has {len(running | pending)} prompt(s) running or queued: free its "
+                                 f"VRAM once they're done"}
+            await self.client.free()
+            after = before
+            deadline = asyncio.get_running_loop().time() + self.RELEASE_SECONDS
+            while True:
+                self.stats = await self.client.system_stats()
+                after = self._held(self.stats)
+                if after is not None and after < self.RELEASED:
+                    break
+                if asyncio.get_running_loop().time() >= deadline:
+                    gb = f"{after / 2**30:.1f} GB" if after is not None else "an unknown amount"
+                    return {"ok": False, "before": before, "after": after,
+                            "error": f"ComfyUI still holds {gb} after {self.RELEASE_SECONDS:g} s"}
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "before": before, "after": None, "error": f"ComfyUI didn't free its VRAM: {e}"}
+        log.info("worker %s: ComfyUI freed its VRAM (%s -> %s GiB)", self.name,
+                 f"{before / 2**30:.1f}" if before is not None else "?", f"{after / 2**30:.1f}")
+        return {"ok": True, "before": before, "after": after, "error": None}
+
     async def refresh_object_info(self) -> None:
         """Read ComfyUI's node definitions and send them to the manager, which checks the
         workflows against them."""

@@ -455,14 +455,24 @@ const ACTIVE = ["queued", ...ON_MACHINE];
 const gpuName = w => w.gpus?.length ? w.gpus.map(g => g.name).join(" + ")
   : ((w.gpu?.name || "").split(" : ")[0]).replace(/^cuda:\d+\s+/, "");
 // Its GPUs as its agent reads them (gpu_probe): memory in use by any program, not only ComfyUI.
+const FREE_VRAM = "Unload ComfyUI's models and free the card's memory, when the farm has nothing running on it. " +
+                  "The next job loads its models again.";
+// The last Free VRAM on it, for the memory cell's tooltip.
+function releasedText(r) {
+  if (!r) return "";
+  const held = b => b == null ? "?" : gb(b);
+  return r.ok ? `VRAM freed ${ago(r.at)}: ComfyUI held ${held(r.before)}, now ${held(r.after)}`
+              : `VRAM not freed ${ago(r.at)}: ${r.error}`;
+}
 function gpuMemory(w) {
+  const rel = releasedText(w.released);
   if (!w.gpus?.length) return [w.gpu?.vram_total ? `${gb(w.gpu.vram_free)} of ${gb(w.gpu.vram_total)}` : "",
-                               w.gpu_error || ""];
+                               [w.gpu_error, rel].filter(Boolean).join("\n")];
   const used = w.gpus.reduce((n, g) => n + (g.vram_used || 0), 0);
   const total = w.gpus.reduce((n, g) => n + (g.vram_total || 0), 0);
   const tip = w.gpus.map(g => `GPU ${g.index} ${g.name}: ${gb(g.vram_used)} of ${gb(g.vram_total)} in use` +
     (g.utilization != null ? `, ${g.utilization}% busy` : "") + `, driver ${g.driver}`).join("\n");
-  return [`${gb(used)} used of ${gb(total)}`, tip];
+  return [`${gb(used)} used of ${gb(total)}`, [tip, rel].filter(Boolean).join("\n")];
 }
 // Its ComfyUI runs other farm nodes than its checkout (after a git pull): no new jobs.
 const FARM_NODES = {waiting: "new farm nodes: restarting ComfyUI when idle", restarting: "restarting ComfyUI (new farm nodes)",
@@ -508,7 +518,8 @@ function renderWorkers() {
       <td class="muted">${ago(w.last_seen)}</td>
       <td>${w.drained
         ? `<button class="small" type="button" data-resume="${esc(w.name)}" title="Take jobs again">Resume</button>`
-        : `<button class="small" type="button" data-drain="${esc(w.name)}" title="Finish what it holds, then take no new jobs (e.g. before working on that machine)">Drain</button>`}</td>
+        : `<button class="small" type="button" data-drain="${esc(w.name)}" title="Finish what it holds, then take no new jobs (e.g. before working on that machine)">Drain</button>`}
+        ${w.online ? `<button class="small" type="button" data-free-vram="${esc(w.name)}" title="${FREE_VRAM}">Free VRAM</button>` : ""}</td>
     </tr>${probs.length ? `<tr><td></td><td></td><td colspan="9" class="problems">${probs.map(([wf, p]) => `<b>${esc(wf)}</b>: ${esc(p.join("; "))}`).join("<br>")}</td></tr>` : ""}
     ${w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="problems">${esc(w.farm_nodes.message)}</td></tr>` : ""}
     ${envDiff.length || env?.notes?.length ? `<tr><td></td><td></td><td colspan="9" class="${envDiff.length ? "warn" : "muted"}">${envDiff.length
@@ -537,6 +548,14 @@ $("#machines").addEventListener("toggle", e => {
 
 // Drain / Resume (Machines tab): a drained machine finishes what it holds, takes nothing new.
 $("#machines").addEventListener("click", async e => {
+  const free = e.target.dataset.freeVram;
+  if (free) {           // its agent frees it when nothing runs there; the memory cell then says how it went
+    e.target.disabled = true;
+    try {
+      await api(`/api/v1/workers/${encodeURIComponent(free)}/free-vram`, { method: "POST" });
+    } catch (err) { alert(err.message); e.target.disabled = false; }
+    return;
+  }
   const name = e.target.dataset.drain || e.target.dataset.resume;
   if (!name) return;
   e.target.disabled = true;

@@ -10,7 +10,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
   status     its ComfyUI's state: reachable, connected, GPU, queue (on change, and every
              few seconds for the dashboard). With gpu_probe on, also `gpus`: each card
              as nvidia-smi reads it (index, uuid, name, memory total, used and free,
-             utilization, driver), and `gpu_error` when it can't be read.
+             utilization, driver), and `gpu_error` when it can't be read. `released`:
+             the last time its runner freed its VRAM, as asked (`release_vram` in a
+             check-in reply): when, ok, bytes held before and after, and why not.
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
              the agent's checkout with its fingerprint, what its ComfyUI lacks for it,
              what is wrong with how the definition wires the graph (`broken`, which

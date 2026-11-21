@@ -82,5 +82,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   it builds the same environment with uv and with the installers' method, cold and warm,
   and checks it. It ran on the three pilot machines and uv passed on all of them
   (`docs/builder/`). Agents read their GPUs with nvidia-smi, off by default (`gpu_probe`,
-  0022). Left: GPU claim, VRAM release, the process runner with time limits, the
+  0022). A resident runner frees its VRAM on request, and only when idle; the Machines tab's
+  Free VRAM asks for it (0023). Left: the GPU claim (with the process runner, as it only
+  matters once two runners share a card), the process runner with time limits, the
   environment spec and `comfyfarm env install` with uv, and a test Python process.

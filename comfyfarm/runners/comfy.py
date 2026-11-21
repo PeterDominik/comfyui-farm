@@ -44,6 +44,12 @@ class ComfyClient:
         r.raise_for_status()
         return r.json()
 
+    async def free(self, unload_models: bool = True, free_memory: bool = True) -> None:
+        """Ask ComfyUI to unload its models and empty torch's cache. It does so once its queue
+        is idle; /system_stats then shows torch holding less (torch_vram_total)."""
+        r = await self.http.post("/free", json={"unload_models": unload_models, "free_memory": free_memory})
+        r.raise_for_status()
+
     async def object_info(self) -> dict:
         r = await self.http.get("/object_info", timeout=120)
         r.raise_for_status()

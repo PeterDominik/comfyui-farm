@@ -21,6 +21,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+import httpx
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,10 +72,14 @@ class FakeComfy:
     """ComfyUI's HTTP API as the agent uses it, in memory. Tests move prompts along by
     hand: running/pending, history, websocket messages."""
 
-    def __init__(self, object_info: dict | None = None, vram: int = 32 * 2**30, card: str = "fake"):   # a 5090
+    def __init__(self, object_info: dict | None = None, vram: int = 32 * 2**30, card: str = "fake",
+                 frees: bool = True):   # a 5090
         self.oi = dict(object_info or INSTALLED)
         self.vram = vram
         self.card = card
+        self.held = 20 * 2**30          # what its torch holds: models loaded
+        self.frees = frees              # /free unloads them (a ComfyUI that doesn't: False)
+        self.freed = 0
         self.prompts: dict[str, dict] = {}
         self.running: set[str] = set()
         self.pending: set[str] = set()
@@ -84,7 +89,13 @@ class FakeComfy:
 
     async def system_stats(self):
         return {"system": {"comfyui_version": "test"},
-                "devices": [{"name": f"cuda:0 {self.card}", "vram_total": self.vram, "vram_free": self.vram}]}
+                "devices": [{"name": f"cuda:0 {self.card}", "vram_total": self.vram, "vram_free": self.vram,
+                             "torch_vram_total": self.held}]}
+
+    async def free(self, unload_models=True, free_memory=True):
+        self.freed += 1
+        if self.frees and not self.running:
+            self.held = 300 * 2**20     # the CUDA context and a little cache stay
 
     async def object_info(self):
         return self.oi
@@ -1469,6 +1480,56 @@ class AgentTests(unittest.TestCase):
         own.workflows[workflow].digest = "0" * 16
         a.runner._registry = own
         return a
+
+    # ------------------------------------------------------------ freeing VRAM (decision 0023)
+    def released(self, a):
+        """Free VRAM on the Machines tab, the check-in that carries it, and what the agent reports."""
+        self.desk.request_release(a.name, by="ann")
+        reply = self.beat(a)
+        self.assertTrue(reply.get("release_vram"))
+        self.until(lambda: self.desk.agents[a.name].released is not None, what="the release reported")
+        return self.desk.summary(self.desk.agents[a.name])["released"]
+
+    def test_free_vram_unloads_comfyuis_models(self):
+        a = self.ready(self.agent())
+        r = self.released(a)
+        self.assertEqual((r["ok"], r["before"], r["after"], r["error"]), (True, 20 * 2**30, 300 * 2**20, None))
+        self.assertEqual(a.runner.client.freed, 1)
+        self.assertFalse(self.beat(a).get("release_vram"))             # asked once
+
+    def test_not_while_the_farm_runs_a_job_on_it(self):
+        a = self.ready(self.agent())
+        self.dispatched(a)
+        r = self.released(a)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "1 job(s) in ComfyUI: drain the machine and wait for them, then free its VRAM")
+        self.assertEqual(a.runner.client.freed, 0)
+
+    def test_not_while_comfyui_runs_a_prompt_the_farm_didnt_send(self):
+        a = self.ready(self.agent())
+        a.runner.client.running.add("someone-elses")
+        r = self.released(a)
+        self.assertEqual(r["error"], "ComfyUI has 1 prompt(s) running or queued: free its VRAM once they're done")
+        self.assertEqual(a.runner.client.freed, 0)
+
+    def test_a_comfyui_that_keeps_its_models_says_how_much(self):
+        a = self.ready(self.agent(comfy=FakeComfy(frees=False)))
+        with mock.patch.object(type(a.runner), "RELEASE_SECONDS", 0.6):
+            r = self.released(a)
+        self.assertEqual((r["ok"], r["after"]), (False, 20 * 2**30))
+        self.assertEqual(r["error"], "ComfyUI still holds 20.0 GB after 0.6 s")
+
+    def test_comfyui_down_or_gone(self):
+        a = self.ready(self.agent())
+        a.runner.online = False
+        self.assertEqual(self.released(a)["error"], "ComfyUI isn't running")
+        a.runner.online = True
+
+        async def broken(*_a, **_k):
+            raise httpx.ConnectError("refused")
+        a.runner.client.free = broken
+        self.desk.agents[a.name].released = None
+        self.assertEqual(self.released(a)["error"], "ComfyUI didn't free its VRAM: refused")
 
     # ------------------------------------------------------------ its GPUs (gpu_probe, decision 0022)
     def test_with_gpu_probe_on_the_machines_tab_shows_each_card(self):

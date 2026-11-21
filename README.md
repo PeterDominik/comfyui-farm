@@ -1553,6 +1553,10 @@ outputs:                       # nodes the gateway points at each job's versione
   agent on another machine logs to `logs/agent-<name>.log` there, and ComfyUI, when its agent
   starts it, to `logs/comfyui-<name>.log`. `farmctl.sh` keeps console output in
   `logs/manager.out` and `logs/agent.out`.
+- **Free VRAM:** *Free VRAM* on the dashboard's Machines tab asks that machine's ComfyUI to
+  unload its models and empty its cache, when the farm has no job on it (drain it first) and
+  ComfyUI has no prompt queued. The memory cell's tooltip then says what ComfyUI held
+  before and after, or why it wasn't freed. The next job there loads its models again.
 - **GPU probe:** set `gpu_probe: {enabled: true}` in an agent's `agent.yaml` to have it read
   its GPUs with `nvidia-smi` (it comes with the NVIDIA driver) every 30 s. The Machines tab
   then shows each card's memory in use by any program, not only ComfyUI, with its driver
