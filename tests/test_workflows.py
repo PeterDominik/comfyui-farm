@@ -46,7 +46,7 @@ def tiny_workflow(directory: Path) -> Workflow:
     manifest = {
         "name": "tiny", "template": "workflow_api.json",
         "params": {
-            "input": {"type": "sequence", "required": True},
+            "input": {"type": "sequence", "required": True, "own_folder": True},   # VHS reads the whole folder
             "seed": {"type": "int", "default": 42, "min": 0, "targets": target("1", "noise_seed", "RandomNoise")},
             "enhance": {"type": "bool", "default": False, "targets": target("2", "value", "PrimitiveBoolean")},
             "shorter_side": {"type": "int", "default": 1088, "multiple_of": 32,
@@ -193,7 +193,12 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual((wf.loader.cls, wf.loader.lists_folder), ("ComfyFarmLoadImages", False))
         with tempfile.TemporaryDirectory() as d:
             wf = tiny_workflow(Path(d) / "tiny")                 # VHS: downloaded workflows still work
-            self.assertEqual((wf.problems, wf.loader.lists_folder), ([], True))
+            self.assertEqual((wf.problems, wf.loader.lists_folder, wf.port.reads_folder), ([], True, True))
+            wf.port.own_folder = None                           # not said: refused, whichever file it is
+            self.assertIn("sequence: its loader VHS_LoadImagesPath reads every file in the input's folder: say "
+                          "own_folder: true, so the farm gives it a folder of its own", wf.static_check())
+            self.assertFalse(wf.port.reads_folder)
+            wf.port.own_folder = True
             wf.port.loader["class"] = "LoadImage"
             self.assertIn("sequence.loader: class 'LoadImage' isn't a loader the farm can fill "
                           "(use ComfyFarmLoadImages, ComfyFarmLoadImage, VHS_LoadImagesPath)", wf.static_check())

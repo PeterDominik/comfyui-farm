@@ -277,8 +277,7 @@ class Port:
     (a matte for a plate). An optional input (required: false) left empty writes its
     `empty` values into the graph (e.g. a switch that skips its branch); given, its
     `given` values. own_folder: the runner reads every file in the input's folder, so the
-    farm gives it a folder of its own (a process.yaml says so in its head; a manifest's
-    comes from its loader)."""
+    farm gives it a folder of its own."""
     name: str                       # its param
     takes: str = "images"
     loader: dict = field(default_factory=dict)      # {node, class}
@@ -291,7 +290,7 @@ class Port:
     required: bool = True
     empty: list = field(default_factory=list)       # [{node, input, class, value}] when left empty
     given: list = field(default_factory=list)       # [{node, input, class, value}] when given
-    own_folder: Any = None                           # True / False as said; None: not said (a manifest)
+    own_folder: Any = None                           # True / False as said; None: not said
 
     @property
     def adapter(self) -> L.Loader | None:
@@ -300,11 +299,9 @@ class Port:
     @property
     def reads_folder(self) -> bool:
         """The runner reads the input's whole folder, not the files it is given: the manager
-        stages it into a folder of its own."""
-        if self.own_folder is not None:
-            return self.own_folder is True
-        ad = self.adapter
-        return bool(ad and ad.lists_folder)
+        stages it into a folder of its own. Said in the definition (own_folder), so it is
+        known without the runner's loaders; the runner checks it against its loader."""
+        return self.own_folder is True
 
 
 @dataclass
@@ -435,7 +432,11 @@ def fit_to_options(prompt: dict, object_info: dict | None) -> dict:
 
 
 class Workflow:
-    def __init__(self, directory: Path):
+    """A definition. `wiring=False` (the manager, docs/decisions/0020): only its head is
+    checked here; its runner's checks are the agents', which report a definition they find
+    broken (`reported`), and that disables it too."""
+
+    def __init__(self, directory: Path, wiring: bool = True):
         self.dir = directory
         m, head, self.source = read_definition(directory)
         self.runner_type = "comfyui"
@@ -484,7 +485,7 @@ class Workflow:
             .encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
         self._own_folder_elsewhere = sorted(n for n, p in (m.get("params") or {}).items()
-                                            if "own_folder" in (p or {}) and (p or {}).get("type") != "input")
+                                            if "own_folder" in (p or {}) and (p or {}).get("type") not in INPUT_TYPES)
         for pname, p in (m.get("params") or {}).items():
             self.params[pname] = Param(
                 name=pname, type=p.get("type", "string"), label=p.get("label", ""),
@@ -511,7 +512,8 @@ class Workflow:
                                          own_folder=p.get("own_folder"))
             elif p.get("type") == "sequence":
                 self.ports[pname] = Port(pname, loader=legacy.get("loader") or {}, path_node=legacy.get("path_node"),
-                                         required=bool(p.get("required", False)))
+                                         required=bool(p.get("required", False)),
+                                         own_folder=p.get("own_folder", legacy.get("own_folder")))
         # Inputs larger than this (pixels, longer side) are scaled down to it before the
         # workflow runs, keeping their aspect (convert.resolve_input). None = as they are.
         self.manifest_work_resolution = m.get("work_resolution") or None    # for every input without its own
@@ -524,9 +526,15 @@ class Workflow:
         pr = self.port.per_run if self.port else None
         if self.textures and isinstance(pr, int) and not isinstance(pr, bool) and pr >= 1:
             self.textures.batch = pr                    # textures.batch: the older name
-        self.problems: list[str] = self.static_check()
+        self.head_problems: list[str] = self.check_head()
+        self.wiring_problems: list[str] = self.check_wiring() if wiring else []
+        self.reported: list[str] = []           # what agents holding this fingerprint found (the manager)
 
     # ------------------------------------------------------------------ checks
+    @property
+    def problems(self) -> list[str]:
+        return sorted(set(self.head_problems + self.wiring_problems + self.reported))
+
     @property
     def enabled(self) -> bool:
         return not self.problems
@@ -619,7 +627,9 @@ class Workflow:
             problems.append("eval: needs to be a section (the reference job: inputs, params, tolerance)")
         return problems
 
-    def static_check(self) -> list[str]:
+    def check_head(self) -> list[str]:
+        """What is wrong with the definition's head: what any runner shares, checked without
+        reading its runner block's wiring or graph."""
         problems = self._check_head()
         problems += [f"param {n}: own_folder is for inputs (type: input)" for n in self._own_folder_elsewhere]
         if self.publish is not None and ("bad" in self.publish or
@@ -632,26 +642,12 @@ class Workflow:
                                           and isinstance(sg.get("submit", True), bool)
                                           and isinstance(sg.get("title", ""), str))):
             problems.append("shotgrid: needs to be false, or a section like {submit: false, title: <its name in the menu>}")
-        packs = self.node_packs
-        if not (isinstance(packs, list) and all(isinstance(p, str) and p.strip() and not re.search(r"[/\\]", p)
-                                                 for p in packs)):
-            problems.append("node_packs: needs to be a list of node pack folder names (as in custom_nodes), "
-                            "e.g. [RES4LYF]")
         for p in self.params.values():
-            if p.type in GATEWAY_TYPES or p.naming:
-                if p.targets:
-                    problems.append(f"param {p.name}: " + (f"type {p.type} is wired in by the gateway"
-                                    if p.type in GATEWAY_TYPES else "naming params only go into file names")
-                                    + "; remove its targets")
-            elif not p.targets:
-                problems.append(f"param {p.name}: no targets")
             if p.pattern:
                 try:
                     re.compile(p.pattern)
                 except re.error as e:
                     problems.append(f"param {p.name}: bad pattern ({e})")
-            for t in p.targets:
-                problems += self._check_target(f"param {p.name}", t.node, t.cls, t.input)
         for t in ("sequence", "output_folder"):         # several inputs are written `type: input`
             names = [n for n, p in self.params.items() if p.type == t]
             if len(names) > 1:
@@ -667,9 +663,6 @@ class Workflow:
                 problems.append("textures and outputs.frames can't be used together")
             naming = {n for n, p in self.params.items() if p.naming}
             problems += self.textures.check(naming)
-            for mp in self.textures.maps:
-                for key in (self.textures.path_input, self.textures.prefix_input):
-                    problems += self._check_target(f"textures map {mp.channel}", mp.node, mp.cls, key)
         wr = self.work_resolution
         if wr is not None and (isinstance(wr, bool) or not isinstance(wr, int) or wr < 64):
             problems.append(f"work_resolution: {wr!r} isn't a size in pixels (64 or more), "
@@ -692,7 +685,34 @@ class Workflow:
         if len(self.ports) > 1 and self.textures:
             problems.append("texture workflows take one input")
         for port in self.ports.values():
-            problems += self._check_port(port)
+            problems += self._check_port_head(port)
+        return sorted(set(problems))
+
+    def check_wiring(self) -> list[str]:
+        """What is wrong with how the runner block wires the head to ComfyUI's graph: the
+        same on every machine holding this fingerprint (an agent reports it, 0020)."""
+        problems = []
+        packs = self.node_packs
+        if not (isinstance(packs, list) and all(isinstance(p, str) and p.strip() and not re.search(r"[/\\]", p)
+                                                 for p in packs)):
+            problems.append("node_packs: needs to be a list of node pack folder names (as in custom_nodes), "
+                            "e.g. [RES4LYF]")
+        for p in self.params.values():
+            if p.type in GATEWAY_TYPES or p.naming:
+                if p.targets:
+                    problems.append(f"param {p.name}: " + (f"type {p.type} is wired in by the gateway"
+                                    if p.type in GATEWAY_TYPES else "naming params only go into file names")
+                                    + "; remove its targets")
+            elif not p.targets:
+                problems.append(f"param {p.name}: no targets")
+            for t in p.targets:
+                problems += self._check_target(f"param {p.name}", t.node, t.cls, t.input)
+        if self.textures:
+            for mp in self.textures.maps:
+                for key in (self.textures.path_input, self.textures.prefix_input):
+                    problems += self._check_target(f"textures map {mp.channel}", mp.node, mp.cls, key)
+        for port in self.ports.values():
+            problems += self._check_port_wiring(port)
         for nid, n in self.template.items():
             if n.get("class_type") in L.VIDEO_LOADERS:
                 problems.append(f"node {nid} '{self.title(nid)}' loads a movie ({n['class_type']}): farm workflows "
@@ -711,27 +731,19 @@ class Workflow:
             problems += self._check_target("outputs.preview", str(pv["node"]), pv.get("class"), pv.get("prefix_input"))
         return sorted(set(problems))
 
-    def _check_port(self, port: Port) -> list[str]:
+    def static_check(self) -> list[str]:
+        """Both: what `python -m comfyfarm check` and CI see."""
+        return sorted(set(self.check_head() + self.check_wiring()))
+
+    def _where(self, port: Port) -> str:
         legacy = getattr(self.params.get(port.name), "type", None) == "sequence"
-        where = "sequence" if legacy else f"param {port.name}"
+        return "sequence" if legacy else f"param {port.name}"
+
+    def _check_port_head(self, port: Port) -> list[str]:
+        where = self._where(port)
         problems = []
         if port.takes not in TAKES:
             return [f"{where}: takes must be image or images, not {port.takes!r}"]
-        pn = port.path_node
-        if pn:
-            problems += self._check_target(f"{where}.path_node", str(pn["node"]), pn.get("class"), pn.get("input"))
-        ld = port.loader
-        if not ld:
-            return problems + [f"{where}.loader missing"]
-        ad = port.adapter
-        if ad is None:
-            return problems + [f"{where}.loader: class {ld.get('class')!r} isn't a loader the farm can fill "
-                               f"(use {', '.join(L.LOADERS)})"]
-        if ad.takes != port.takes:
-            problems.append(f"{where}.loader: {ad.cls} loads {'one image' if ad.takes == 'image' else 'frames'}, so "
-                            f"the input takes {ad.takes}, not {port.takes}")
-        for inp in ad.inputs:
-            problems += self._check_target(f"{where}.loader", str(ld["node"]), ld.get("class"), inp)
         mx = port.max_frames
         if mx is not None and (isinstance(mx, bool) or not isinstance(mx, int) or mx < 1):
             problems.append(f"{where}: frames.max {mx!r} isn't a number of frames (1 or more)")
@@ -760,11 +772,32 @@ class Workflow:
                 problems.append(f"{where}: takes one image, so it can't match {main.name}'s frames")
         if port.own_folder not in (None, True, False):
             problems.append(f"{where}: own_folder is true or false, not {port.own_folder!r}")
-        elif ad.lists_folder and port.own_folder is not True and (port.own_folder is False
-                                                                   or self.source == "process.yaml"):
+        return problems
+
+    def _check_port_wiring(self, port: Port) -> list[str]:
+        where = self._where(port)
+        if port.takes not in TAKES:
+            return []                   # the head's check says so
+        problems = []
+        pn = port.path_node
+        if pn:
+            problems += self._check_target(f"{where}.path_node", str(pn["node"]), pn.get("class"), pn.get("input"))
+        ld = port.loader
+        if not ld:
+            return problems + [f"{where}.loader missing"]
+        ad = port.adapter
+        if ad is None:
+            return problems + [f"{where}.loader: class {ld.get('class')!r} isn't a loader the farm can fill "
+                               f"(use {', '.join(L.LOADERS)})"]
+        if ad.takes != port.takes:
+            problems.append(f"{where}.loader: {ad.cls} loads {'one image' if ad.takes == 'image' else 'frames'}, so "
+                            f"the input takes {ad.takes}, not {port.takes}")
+        for inp in ad.inputs:
+            problems += self._check_target(f"{where}.loader", str(ld["node"]), ld.get("class"), inp)
+        if ad.lists_folder and port.own_folder in (None, False):
             problems.append(f"{where}: its loader {ad.cls} reads every file in the input's folder: say own_folder: "
                             f"true, so the farm gives it a folder of its own")
-        if not port.required and port is not main and ad.lists_folder:
+        if not port.required and port is not self.port and ad.lists_folder:
             problems.append(f"{where}: an optional input needs a ComfyFarm loader ({ad.cls} can't be left empty)")
         for kind in ("empty", "given"):
             sets = getattr(port, kind)
@@ -957,8 +990,9 @@ class Workflow:
 
 
 class WorkflowRegistry:
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, wiring: bool = True):
         self.directory = directory
+        self.wiring = wiring                    # False on the manager: it checks the heads only (0020)
         self.workflows: dict[str, Workflow] = {}
         self.load_errors: dict[str, str] = {}
         self.reload()
@@ -973,7 +1007,7 @@ class WorkflowRegistry:
             if not (d / "manifest.yaml").exists() and not (d / "process.yaml").exists():
                 continue
             try:
-                wf = Workflow(d)
+                wf = Workflow(d, wiring=self.wiring)
                 self.workflows[wf.name] = wf
                 for p in wf.problems:
                     log.error("workflow %s: %s", wf.name, p)

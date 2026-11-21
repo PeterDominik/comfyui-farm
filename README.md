@@ -1351,7 +1351,9 @@ studio's rez moves (another OS, another path), change `menu_sync.command` to wha
    codes out of git.
 2. Write `workflows/<name>/process.yaml` (copy one of the farm's, e.g. `ltx25_alpha_gen`; see below).
    A `manifest.yaml` still loads.
-3. `python -m comfyfarm check`, then restart the gateway.
+3. `python -m comfyfarm check`, then restart the gateway. The check reads both halves of the
+   definition. The manager itself checks only the head; each agent checks the wiring of its
+   copy and tells the manager, which disables a workflow any agent finds broken.
 
 Paths left in the export from your last ComfyUI session are harmless: the gateway
 overwrites the input, output and save-path nodes on every job.
@@ -1399,7 +1401,8 @@ A texture workflow says `writes.textures` instead of `writes.frames`: `name`, `d
 `batch`, and `maps` with each map's `channel`, `name`, `colorspace`, `color` and `bits`.
 Its `runner.textures` has `path_input`, `prefix_input` and `maps` keyed by channel, each
 with the `node` and `class` that saves it. An input whose loader reads every file in its
-folder (VHS Load Images Path) says `own_folder: true` in the head.
+folder (VHS Load Images Path) says `own_folder: true` in the head (in a manifest, on the
+input param).
 
 Each half needs the other (frames in `writes` and their node in `runner.outputs`), and a
 key in the wrong half is refused with a message saying where it goes.

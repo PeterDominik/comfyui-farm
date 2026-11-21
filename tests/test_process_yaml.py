@@ -133,14 +133,17 @@ class ProcessYamlTests(unittest.TestCase):
         wf = Workflow(folder)
         self.assertEqual(wf.problems, [])
         self.assertTrue(wf.port.reads_folder)
-        # The converter says it for such a manifest; a manifest itself goes by its loader.
+        # A manifest says it too (decision 0020), and the converter adds it for one that doesn't.
         m, _ = WF.from_process(p)
-        del m["params"]["input"]["own_folder"]
-        self.assertIs(WF.to_process(m)["params"]["input"]["own_folder"], True)
         (folder / "process.yaml").unlink()
         (folder / "manifest.yaml").write_text(yaml.safe_dump(m), encoding="utf-8")
         self.assertEqual(Workflow(folder).problems, [])
         self.assertTrue(Workflow(folder).port.reads_folder)
+        del m["params"]["input"]["own_folder"]
+        self.assertIs(WF.to_process(m)["params"]["input"]["own_folder"], True)
+        (folder / "manifest.yaml").write_text(yaml.safe_dump(m), encoding="utf-8")
+        self.assertIn("param input: its loader VHS_LoadImagesPath reads every file in the input's folder: say "
+                      "own_folder: true, so the farm gives it a folder of its own", Workflow(folder).problems)
 
     def test_own_folder_is_checked(self):
         for value, problem in ((False, "its loader ComfyFarmLoadImages reads"), ("yes", "true or false")):
