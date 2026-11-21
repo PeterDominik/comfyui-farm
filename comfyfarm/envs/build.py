@@ -150,6 +150,9 @@ def install(spec: Spec, root: Path, uv: list[str], force: bool = False, log=prin
     if not spec.locked:
         raise BuildError(f"{spec.name} has no uv.lock: run `python -m comfyfarm env lock {spec.name}` on a machine "
                          f"that reaches pypi.org, and commit environments/{spec.name}/uv.lock")
+    if spec.stale:
+        raise BuildError(f"{spec.name}'s uv.lock doesn't match its pyproject.toml: {spec.stale}. Run `python -m "
+                         f"comfyfarm env lock {spec.name}` on a machine that reaches pypi.org, and commit the lock")
     fp = spec.fingerprint
     folder = root / spec.name
     build = folder / fp

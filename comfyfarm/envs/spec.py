@@ -31,6 +31,7 @@ class Spec:
     check: list[str] = field(default_factory=list)    # run in a build; "python" is the build's own
     locked: bool = False                # has its uv.lock
     fingerprint: str = ""               # of its files as they were read (fingerprint())
+    stale: str | None = None            # why uv.lock doesn't match pyproject.toml (lock_differs())
 
 
 def fingerprint(folder: Path) -> str:
@@ -44,6 +45,68 @@ def fingerprint(folder: Path) -> str:
             h.update(path.read_bytes().replace(b"\r\n", b"\n"))
         h.update(b"\0")
     return h.hexdigest()[:16]
+
+
+def _name(n: str) -> str:
+    return re.sub(r"[-_.]+", "-", n).lower()        # PEP 503, as uv writes names
+
+
+def _marker(m: str | None) -> str:
+    return re.sub(r"\s+", " ", (m or "").replace('"', "'")).strip()
+
+
+def _spec(s: str | None) -> tuple:
+    return tuple(sorted(p.replace(" ", "") for p in (s or "").split(",") if p.strip()))
+
+
+REQ = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\]]*)\])?\s*([^;]*?)\s*(?:;(.*))?$")
+
+
+def _wanted(project: dict) -> dict:
+    """pyproject.toml's dependencies, keyed by name: (extras, specifier, marker, index URL)."""
+    uv = (project.get("tool") or {}).get("uv") or {}
+    urls = {i.get("name"): i.get("url") for i in uv.get("index") or []}
+    sources = uv.get("sources") or {}
+    out = {}
+    for d in (project.get("project") or {}).get("dependencies") or []:
+        m = REQ.match(d)
+        if not m:
+            raise SpecError(f"can't read the dependency {d!r} in pyproject.toml")
+        name = _name(m.group(1))
+        src = next((v for k, v in sources.items() if _name(k) == name), None)
+        index = urls.get(src.get("index")) if isinstance(src, dict) else None
+        extras = tuple(sorted(_name(e) for e in (m.group(2) or "").split(",") if e.strip()))
+        out[name] = (extras, _spec(m.group(3)), _marker(m.group(4)), index)
+    return out
+
+
+def lock_differs(project: dict, lock: dict) -> str | None:
+    """Why uv.lock was made for another pyproject.toml, or None. uv records what the project
+    asked for when it locked (its own package's requires-dist); a farm build uses the lock
+    as it is (uv sync --frozen), so a pyproject.toml changed without locking again would
+    build the old packages without a word."""
+    name = _name((project.get("project") or {}).get("name") or "")
+    me = next((p for p in lock.get("package") or [] if _name(p.get("name", "")) == name
+               and (p.get("source") or {}).get("virtual")), None)
+    if me is None:
+        return f"it has no entry for the project {name or '(no name)'}"
+    wanted = (project.get("project") or {}).get("requires-python")
+    if wanted and _spec(lock.get("requires-python")) != _spec(wanted):
+        return f"it was made for Python {lock.get('requires-python')}, pyproject.toml asks for {wanted}"
+    locked = {_name(r["name"]): (tuple(sorted(_name(e) for e in r.get("extras") or [])), _spec(r.get("specifier")),
+                                 _marker(r.get("marker")), r.get("index"))
+              for r in (me.get("metadata") or {}).get("requires-dist") or []}
+    asked = _wanted(project)
+    for n in sorted(set(asked) | set(locked)):
+        if n not in locked:
+            return f"{n} is in pyproject.toml but not in the lock"
+        if n not in asked:
+            return f"{n} is in the lock but no longer in pyproject.toml"
+        if asked[n] != locked[n]:
+            a, b = asked[n], locked[n]
+            what = "its index" if a[:3] == b[:3] else "its version" if a[1] != b[1] else "its extras or markers"
+            return f"{n} changed ({what})"
+    return None
 
 
 def load(name: str, root: Path | None = None) -> Spec:
@@ -69,10 +132,16 @@ def load(name: str, root: Path | None = None) -> Spec:
     check = (meta or {}).get("check") or []
     if not (isinstance(check, list) and check and all(isinstance(c, str) for c in check)):
         raise SpecError(f"{name}/env.yaml: needs check: [python, -c, ...], the command that tells a good build")
+    stale = None
+    if (folder / "uv.lock").exists():
+        try:
+            stale = lock_differs(project, tomllib.loads((folder / "uv.lock").read_text(encoding="utf-8")))
+        except tomllib.TOMLDecodeError as e:
+            stale = f"it can't be read ({e})"
     return Spec(name=name, folder=folder, python=version,
                 dependencies=list((project.get("project") or {}).get("dependencies") or []),
                 description=str((meta or {}).get("description") or "").strip(), check=check,
-                locked=(folder / "uv.lock").exists(), fingerprint=fingerprint(folder))
+                locked=(folder / "uv.lock").exists(), fingerprint=fingerprint(folder), stale=stale)
 
 
 def names(root: Path | None = None) -> list[str]:

@@ -454,6 +454,10 @@ a build that fails leaves `current` as it was. Installing an environment that is
 built does nothing (`--force` builds it again). The first run installs uv itself into
 `data/envs/.uv-tool` with pip from pypi.org (or set `envs.uv` to a uv the machine has).
 
+A `uv.lock` that no longer matches its `pyproject.toml` is refused: `env install` and
+`env list` say what changed (*LOCK OUT OF DATE*), and CI fails. Lock it again and commit
+both files together.
+
 A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
 from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
 if a disk can't, uv copies, and `env install` says so.
