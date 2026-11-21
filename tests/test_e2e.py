@@ -705,6 +705,17 @@ convert:
         self.assertIsInstance(envs["machines"].get("mock"), dict, envs)
         w = {x["name"]: x for x in farm._request("GET", "/api/v1/workers")["workers"]}["mock"]
         self.assertEqual(w["environments"], envs["machines"]["mock"])
+        self.assertEqual((envs["wanted"], envs["work"]), ({}, {}))
+        # What the machines should have (decision 0030), from this host: with no bank there is
+        # no release to install, and the manager says so; removing or forgetting needs none.
+        with self.assertRaises(farm.FarmError) as e:
+            farm._request("POST", "/api/v1/environments/gpu-test/want", {"release": "latest"})
+        self.assertIn("the manager has no bank", str(e.exception))
+        said = farm._request("POST", "/api/v1/environments/gpu-test/want", {"release": None, "machines": ["mock"]})
+        self.assertEqual(said["machines"], {"mock": None})
+        self.assertEqual(farm._request("GET", "/api/v1/environments")["wanted"], {"mock": {"gpu-test": None}})
+        farm._request("POST", "/api/v1/environments/gpu-test/want", {"forget": True})
+        self.assertEqual(farm._request("GET", "/api/v1/environments")["wanted"], {})
 
     def test_0501_publishing_off(self):
         """Publishing is off until publish.enabled: no Publish buttons, and asking says why."""

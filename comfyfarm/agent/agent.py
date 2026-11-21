@@ -46,6 +46,7 @@ from ..protocol import ON_WORKER, TERMINAL, LinkError, build, now
 from ..runners import make_runners
 from ..runners.base import Runner, RunRejected, RunState
 from . import gpus as G
+from .envman import EnvManager
 
 log = logging.getLogger("comfyfarm")
 _DEFAULT_PATHS = PathsConfig()
@@ -121,6 +122,7 @@ class Agent:
         self.gpu_error: str | None = None
         self.released: dict | None = None       # the last time its runner freed its VRAM, and how it went
         self.environments: dict | None = None   # what it has built (envs/build.report), as last read
+        self.envman = EnvManager(self)          # makes them what the manager wants (decision 0030)
         self._releasing = False
 
     # ================================================================ lifecycle
@@ -137,6 +139,7 @@ class Agent:
         if self.cfg.gpu_probe.enabled:
             self._tasks.append(asyncio.create_task(self._gpu_loop(), name=f"gpus-{self.name}"))
         self._tasks.append(asyncio.create_task(self._envs_loop(), name=f"envs-{self.name}"))
+        self._tasks.append(asyncio.create_task(self.envman.loop(), name=f"envman-{self.name}"))
         log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
                  getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process"))
 
@@ -256,6 +259,8 @@ class Agent:
             self.spawn(self.runner.refresh_object_info())
         if reply.get("release_vram") and not self._releasing:
             self.spawn(self.release_vram())
+        if isinstance(reply.get("environments"), dict):
+            self.envman.want(reply["environments"])
 
     async def release_vram(self) -> dict:
         """The manager asked (the Machines tab's Free VRAM): the runner frees what it keeps on
@@ -338,6 +343,9 @@ class Agent:
         msg = {"name": self.name, **self.runner.status()}
         if self.environments is not None:
             msg["environments"] = self.environments
+        # Which version of what the manager wants it holds (sent again if not the manager's),
+        # and what its environment manager is doing about it.
+        msg["env_wanted"], msg["env_work"] = self.envman.hash, dict(self.envman.work)
         if self.cfg.gpu_probe.enabled:
             msg.update(gpus=self.gpus, gpu_error=self.gpu_error)
         if self.released is not None:

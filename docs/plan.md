@@ -101,4 +101,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   on the manager's host copies an environment, as committed, to the bank with its hashes,
   and `env install --release` builds from a checked copy (0028). Agents report what they
   have built with their status, and `GET /api/v1/environments` lists it beside the bank's
-  releases (0029).
+  releases (0029). The manager keeps what each machine should have of each environment
+  (`env want` on its host), says it in the check-in reply, and the agent's environment
+  manager installs, updates (switching back is a rollback) and removes, off by default
+  (`envs.managed`, 0030).

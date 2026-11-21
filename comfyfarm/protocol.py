@@ -17,6 +17,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              (envs/build.report): for each, its current and previous build and each
              build's fingerprint, when it was built and where from (a release or its
              checkout). Read again every 30 s, and sent at once when it changes.
+             `env_wanted`: which version of the manager's wanted environments it holds
+             (sent again when it isn't the manager's); `env_work`: what its environment
+             manager is doing about them (installing, waiting, failed and why, off).
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
              the agent's checkout with its fingerprint, what its ComfyUI lacks for it,
              what is wrong with how the definition wires the graph (`broken`, which
@@ -28,7 +31,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              checkout's copy of the file; the manager shows the report.
   heartbeat  the jobs it holds, which renews their leases. The manager answers as soon as
              it has something for the agent (new jobs, cancels, jobs to drop) or after
-             `wait` seconds.
+             `wait` seconds. When what the machine should have of its runner
+             environments changed, the reply carries `environments`: {wanted: {name:
+             release fingerprint, or None to remove it}, hash, bank} (decision 0030).
   report     one step of one job's run: preparing progress, dispatched, running,
              progress, postprocessing, done, failed, cancelled, lost. `dispatched` may
              carry `submitted`: what the runner handed its backend, which the manager
