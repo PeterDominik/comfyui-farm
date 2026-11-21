@@ -54,6 +54,7 @@ class Runner(Protocol):
     """What the agent asks of a runner."""
     label: str                              # the backend's name in messages ("ComfyUI")
     ready: bool                             # up and checked: runs can be started
+    max_runs: int | None                    # its runs on the card at once (None: max_inflight; decision 0026)
 
     def attach(self, host: Host) -> None: ...
     def start(self) -> list: ...            # its background tasks

@@ -385,6 +385,9 @@ class AgentConfig(BaseModel):
     gpu_probe: GpuProbeConfig = Field(default_factory=GpuProbeConfig)
     envs: EnvsConfig = Field(default_factory=EnvsConfig)
     process_runner: ProcessRunnerConfig = Field(default_factory=ProcessRunnerConfig)
+    # The GPU claim (decision 0026): how long a run waits for the runner that used the card
+    # before (ComfyUI) to free its memory, before it starts anyway with a warning on the job.
+    claim_wait_seconds: float = Field(300.0, ge=0)
     max_inflight: int = 2                       # jobs in ComfyUI at once; one more is prepared ahead
     # Labels workflows can ask for (a manifest's requires.tags). linux or windows is added.
     tags: list[str] = []

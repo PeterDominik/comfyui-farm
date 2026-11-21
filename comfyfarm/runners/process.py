@@ -146,6 +146,7 @@ def _tail(path: Path, chars: int = 3000) -> str:
 
 class ProcessRunner:
     label = "process"
+    max_runs = 1                        # one run on the card at a time (the GPU claim, decision 0026)
 
     def __init__(self, cfg: AgentConfig, registry: ProcessRegistry | None = None, tick: float = 0.5):
         self.cfg = cfg

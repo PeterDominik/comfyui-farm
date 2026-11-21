@@ -570,6 +570,10 @@ class ThroughTheFarm(Environment):
         self.assertEqual(Path(row["output_dir"], frames[0]).read_bytes(), b"frame 1001")
         self.assertEqual(self.agent.held, {})
         self.assertEqual(self.agent._in_comfy, 0)
+        # The GPU claim (decision 0026): ComfyUI freed its models before the process used the card.
+        self.assertEqual((self.agent.runner.client.freed, self.agent.released["ok"]), (1, True))
+        self.assertIs(self.agent.card_owner, self.process)
+        self.assertEqual(row["warnings"], [])
 
     def test_a_process_job_that_fails_and_one_cancelled(self):
         job = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "fail"}, "ann")

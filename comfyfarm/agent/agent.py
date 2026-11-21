@@ -1,7 +1,8 @@
 """An agent: runs the manager's jobs on this machine through its runners (protocol.py,
 runners/base.py): ComfyUI (runners/comfyui.py) and the process runner (runners/process.py).
-Each job goes to the runner whose definition it is; until the GPU claim, the agent runs at
-most max_inflight runs at once, whichever runner has them (decision 0025).
+Each job goes to the runner whose definition it is (decision 0025). The runs of one runner
+at a time hold the machine's card, and a runner that held it frees what it keeps there
+before another one's run starts (the GPU claim, decision 0026).
 
 It checks in with the manager and takes the jobs the manager gives it: one for its GPU,
 and one prepared ahead when every GPU on the farm is busy (never more than its ComfyUI runs
@@ -58,6 +59,7 @@ class Held:
     pid: str | None = None          # its id in the runner (the attempt id, unless the runner minted its own)
     rt: RunState | None = None      # its live progress, kept by the runner
     runner: Runner | None = None    # the runner whose definition it is (Agent.runner_for)
+    notes: list = field(default_factory=list)   # warnings for the job from before it ran (the GPU claim)
     task: asyncio.Task | None = None
     slot: bool = False              # has one of the runner's max_inflight places
     submitting: bool = False
@@ -76,6 +78,8 @@ class Held:
 
 
 class Agent:
+    CLAIM_RETRY_SECONDS = 10.0          # between asking the card's last runner to free it (the GPU claim)
+
     def __init__(self, cfg: AgentConfig, link, runner: Runner | None = None, runners: list | None = None):
         self.cfg = cfg
         self.link = link
@@ -100,7 +104,12 @@ class Agent:
         self.lease_seconds: float | None = None
         self._seq = 0
         self._cleaned = False
-        self._in_comfy = 0                       # runs holding one of the runner's places
+        self._in_comfy = 0                       # runs holding a place on the card, whichever runner has them
+        self._waiting: list[Held] = []           # runs waiting for one, in the order they came
+        # The runner that used the card last: it may keep memory there (ComfyUI's models), so it
+        # frees it before another runner's run starts. ComfyUI is resident: it may hold models now.
+        self.card_owner: Runner | None = self.runner
+        self._claim_lock: asyncio.Lock | None = None
         self._slots: asyncio.Condition | None = None
         self._convert_sem: asyncio.Semaphore | None = None
         self._tasks: list[asyncio.Task] = []
@@ -115,6 +124,7 @@ class Agent:
     def _ensure_sync(self) -> None:
         if self._slots is None:
             self._slots = asyncio.Condition()
+            self._claim_lock = asyncio.Lock()
             self._convert_sem = asyncio.Semaphore(max(1, self.cfg.convert.max_parallel_jobs))
 
     def start(self) -> None:
@@ -247,26 +257,35 @@ class Agent:
         """The manager asked (the Machines tab's Free VRAM): the runner frees what it keeps on
         the card, when the farm has nothing running in it (decision 0023). Reported with the
         status, with the GPUs read again when gpu_probe is on."""
+        self._ensure_sync()
         self._releasing = True
         try:
-            busy = sum(1 for h in self.held.values() if h.slot and h.runner is self.runner)
-            if busy:
-                result = {"ok": False, "before": None, "after": None,
-                          "error": f"{busy} job(s) in {self.runner.label}: drain the machine and wait "
-                                   f"for them, then free its VRAM"}
-            else:
-                result = await self.runner.release()
-            if self.cfg.gpu_probe.enabled:
-                await self.probe_gpus()
-            self.released = {"at": now(), **result}
-            if result["ok"]:
-                log.info("agent %s: %s freed its VRAM", self.name, self.runner.label)
-            else:
-                log.warning("agent %s: VRAM not freed: %s", self.name, result["error"])
-            await self.send_status()
-            return self.released
+            async with self._claim_lock:
+                return await self._release_vram()
         finally:
             self._releasing = False
+
+    async def _release_vram(self) -> dict:
+        busy = sum(1 for h in self.held.values() if h.slot and h.runner is self.runner)
+        if busy:
+            result = {"ok": False, "before": None, "after": None,
+                      "error": f"{busy} job(s) in {self.runner.label}: drain the machine and wait "
+                               f"for them, then free its VRAM"}
+        else:
+            result = await self.runner.release()
+        await self._record_release(self.runner, result)
+        return self.released
+
+    async def _record_release(self, runner: Runner, result: dict, quiet: bool = False) -> None:
+        """Kept for the Machines tab (status `released`), with the GPUs read again when gpu_probe is on."""
+        if self.cfg.gpu_probe.enabled:
+            await self.probe_gpus()
+        self.released = {"at": now(), **result}
+        if result["ok"]:
+            log.info("agent %s: %s freed its VRAM", self.name, runner.label)
+        elif not quiet:
+            log.warning("agent %s: %s didn't free its VRAM: %s", self.name, runner.label, result["error"])
+        await self.send_status()
 
     async def probe_gpus(self) -> None:
         """Read this machine's GPUs (agent/gpus.py), off the event loop: nvidia-smi can be slow."""
@@ -455,19 +474,78 @@ class Agent:
         return True
 
     async def _take_slot(self, h: Held) -> None:
-        """Wait for one of the runner's places (max_inflight), and for the runner to be up."""
+        """Wait for a place on the card (the GPU claim, decision 0026), for the runner to be up,
+        and for the runner that used the card before to free it."""
         async with self._slots:
-            await self._slots.wait_for(lambda: self._in_comfy < self.cfg.max_inflight)
+            self._waiting.append(h)
+            try:
+                await self._slots.wait_for(lambda: self._may_start(h))
+            finally:
+                self._waiting.remove(h)
+                self._slots.notify_all()        # a run that stopped waiting may have held others back
             self._in_comfy += 1
             h.slot = True
         while not h.runner.ready:
             await asyncio.sleep(0.25)
+        await self._claim_card(h)
+
+    def _max_runs(self, runner: Runner) -> int:
+        """How many of a runner's runs share the card at once: ComfyUI's max_inflight (it queues
+        them itself); the process runner's one."""
+        return getattr(runner, "max_runs", None) or self.cfg.max_inflight
+
+    def _may_start(self, h: Held) -> bool:
+        mine = others = 0
+        for x in self.held.values():
+            if x.slot:
+                if x.runner is h.runner:
+                    mine += 1
+                else:
+                    others += 1
+        if others or mine >= self._max_runs(h.runner):
+            return False            # the card is another runner's until its runs end, or this one's is full
+        for w in self._waiting:     # first come, first served between runners: none jumps the other's queue
+            if w is h:
+                break
+            if w.runner is not h.runner:
+                return False
+        return True
+
+    async def _claim_card(self, h: Held) -> None:
+        """The runner that used the card last frees what it keeps there (ComfyUI's models)
+        before this run's runner uses it. If it can't (ComfyUI busy with prompts that aren't the
+        farm's), the run waits, saying why, for claim_wait_seconds; then it starts anyway and
+        the job says so."""
+        async with self._claim_lock:
+            prev = self.card_owner
+            if prev is not None and prev is not h.runner and getattr(prev, "online", True):
+                deadline = now() + self.cfg.claim_wait_seconds
+                tries = 0
+                while not h.dropped:
+                    result = await prev.release()
+                    tries += 1
+                    await self._record_release(prev, result, quiet=tries > 1)     # said once, not every try
+                    if result["ok"]:
+                        break
+                    if now() >= deadline:
+                        log.warning("agent %s: job %s starts on a card %s didn't free (%s)", self.name, h.id[:8],
+                                    prev.label, result["error"])
+                        h.notes.append(f"{prev.label} didn't free the GPU before this job started ({result['error']}), "
+                                       f"so it shared the card")
+                        break
+                    await self._report(h, "progress", lossy=True, status="preparing",
+                                       stage=f"waiting for {prev.label} to free the GPU: {result['error']}")
+                    await asyncio.sleep(max(0.05, min(self.CLAIM_RETRY_SECONDS, deadline - now())))
+            if not h.dropped:           # dropped while waiting: the card is still the other runner's
+                self.card_owner = h.runner
 
     def _hold_slot(self, h: Held) -> None:
-        """A run already in the runner (picked up again after a restart) takes a place as it is."""
+        """A run already in the runner (picked up again after a restart) takes a place as it is,
+        and its runner has the card."""
         if not h.slot:
             h.slot = True
             self._in_comfy += 1
+        self.card_owner = h.runner
 
     def _release(self, h: Held) -> None:
         if h.slot:
@@ -508,6 +586,8 @@ class Agent:
     async def run_failed(self, h: Held, message: str, traceback: str | None = None) -> None:
         if h.finished or h.dropped:
             return
+        if h.notes:
+            message = f"{message} ({'; '.join(h.notes)})"     # e.g. the card it had to share
         self._release(h)
         if not self.cfg.convert.keep_failed:
             S.cleanup(h.job, self.scratch_root)
@@ -683,6 +763,7 @@ class Agent:
             if hist is None:
                 hist = await h.runner.result(h)
             outputs, warnings = await self._collect_outputs(h, hist or {})
+            warnings = [*h.notes, *warnings]
             t = now()
             started = h.started_at or h.dispatched_at or t
             nodes = rt.nodes() if rt else None

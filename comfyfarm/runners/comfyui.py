@@ -77,6 +77,7 @@ def _titles(prompt: dict) -> dict:
 
 class ComfyUIRunner:
     label = "ComfyUI"
+    max_runs = None                     # agent.yaml's max_inflight: ComfyUI queues them itself
 
     def __init__(self, cfg: AgentConfig, client: ComfyClient | None = None):
         self.cfg = cfg
