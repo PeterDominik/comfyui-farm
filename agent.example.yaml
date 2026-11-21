@@ -39,6 +39,13 @@ comfyui_launch:
 # comfyui_python: C:/ProgramData/miniconda3/envs/comfyui/python.exe
 # environment_seconds: 900       # checked this often, and whenever ComfyUI starts
 
+# Off by default: read this machine's GPUs with nvidia-smi (it comes with the NVIDIA driver)
+# and show each card's memory in use, by any program, on the dashboard's Machines tab.
+# gpu_probe:
+#   enabled: true
+#   seconds: 30                  # read this often
+#   command: [nvidia-smi]        # or its full path, if it isn't on PATH
+
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 # log_json: true                # also logs/agent-<name>.jsonl: the same lines, one JSON object each
 

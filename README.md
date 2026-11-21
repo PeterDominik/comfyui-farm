@@ -1553,6 +1553,12 @@ outputs:                       # nodes the gateway points at each job's versione
   agent on another machine logs to `logs/agent-<name>.log` there, and ComfyUI, when its agent
   starts it, to `logs/comfyui-<name>.log`. `farmctl.sh` keeps console output in
   `logs/manager.out` and `logs/agent.out`.
+- **GPU probe:** set `gpu_probe: {enabled: true}` in an agent's `agent.yaml` to have it read
+  its GPUs with `nvidia-smi` (it comes with the NVIDIA driver) every 30 s. The Machines tab
+  then shows each card's memory in use by any program, not only ComfyUI, with its driver
+  and how busy it is in the tooltip. `python -m comfyfarm agent --check` lists the cards it
+  finds either way. Jobs are still placed by what ComfyUI reports; the process runner will
+  place by the probe.
 - **JSON logs:** set `log_json: true` in `config.yaml` (and in an agent's `agent.yaml`) to also get
   `logs/comfyfarm.jsonl` and `logs/agent-<name>.jsonl`: the same lines as the text log, one JSON
   object each, for a log collector. Fields: `ts` (UTC), `level`, `logger`, `role` (`manager` or

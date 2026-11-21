@@ -41,6 +41,7 @@ from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, TERMINAL, LinkError, build, now
 from ..runners import make_runner
 from ..runners.base import Runner, RunRejected, RunState
+from . import gpus as G
 
 log = logging.getLogger("comfyfarm")
 _DEFAULT_PATHS = PathsConfig()
@@ -97,6 +98,9 @@ class Agent:
         self._convert_sem: asyncio.Semaphore | None = None
         self._tasks: list[asyncio.Task] = []
         self._bg: set[asyncio.Task] = set()
+        # This machine's GPUs as nvidia-smi reads them (gpu_probe), and why it couldn't.
+        self.gpus: list[dict] | None = None
+        self.gpu_error: str | None = None
 
     # ================================================================ lifecycle
     def _ensure_sync(self) -> None:
@@ -107,6 +111,8 @@ class Agent:
     def start(self) -> None:
         self._ensure_sync()
         self._tasks = [asyncio.create_task(self._manager_loop(), name=f"manager-{self.name}"), *self.runner.start()]
+        if self.cfg.gpu_probe.enabled:
+            self._tasks.append(asyncio.create_task(self._gpu_loop(), name=f"gpus-{self.name}"))
         log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
                  getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process"))
 
@@ -220,9 +226,31 @@ class Agent:
         if reply.get("nodes"):
             self.spawn(self.runner.refresh_object_info())
 
+    async def probe_gpus(self) -> None:
+        """Read this machine's GPUs (agent/gpus.py), off the event loop: nvidia-smi can be slow."""
+        gpus, error = await asyncio.to_thread(G.probe, self.cfg.gpu_probe.command)
+        if error and error != self.gpu_error:
+            log.warning("agent %s: can't read its GPUs: %s", self.name, error)
+        self.gpus, self.gpu_error = gpus, error
+
+    async def _gpu_loop(self) -> None:
+        while True:
+            try:
+                await self.probe_gpus()
+                if self.registered:
+                    await self.send_status()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                log.exception("agent %s: reading its GPUs failed", self.name)
+            await asyncio.sleep(max(1.0, self.cfg.gpu_probe.seconds))
+
     async def send_status(self) -> None:
+        msg = {"name": self.name, **self.runner.status()}
+        if self.cfg.gpu_probe.enabled:
+            msg.update(gpus=self.gpus, gpu_error=self.gpu_error)
         try:
-            reply = await self.link.status({"name": self.name, **self.runner.status()})
+            reply = await self.link.status(msg)
             if reply.get("hello"):
                 self.registered = False
         except LinkError:
