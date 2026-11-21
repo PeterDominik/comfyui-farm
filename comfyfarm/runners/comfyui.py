@@ -145,10 +145,12 @@ class ComfyUIRunner:
 
     def processes(self) -> dict:
         """What this machine can run, for the manager: each workflow of this checkout with its
-        fingerprint, what its ComfyUI lacks for it (node packs, inputs, models), and how many
-        nodes a run goes through."""
+        fingerprint, what its ComfyUI lacks for it (node packs, inputs, models), what is wrong
+        with how the definition wires ComfyUI's graph (`broken`: the same on every machine with
+        that fingerprint, so it disables the workflow on the manager), and how many nodes a run
+        goes through."""
         oi = self.object_info or {}
-        return {name: {"digest": wf.digest, "problems": wf.check_object_info(oi),
+        return {name: {"digest": wf.digest, "problems": wf.check_object_info(oi), "broken": wf.wiring_problems,
                        "expected_nodes": wf.expected_nodes(self.output_classes)}
                 for name, wf in self._workflows().items()}
 

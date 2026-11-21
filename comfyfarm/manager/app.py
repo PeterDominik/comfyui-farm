@@ -104,7 +104,9 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     """The manager. With local_agents (standalone), an agent for each of config.yaml's
     workers runs in this process too; agents on other machines can check in either way."""
     store = JobStore(cfg.resolve(cfg.database))
-    registry = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
+    # The heads only: how a definition wires its runner is checked by the agents, which
+    # report one they find broken (docs/decisions/0020).
+    registry = WorkflowRegistry(cfg.resolve(cfg.workflows_dir), wiring=False)
     events = EventBus()
     farm = Farm(cfg, store, registry, events)
     desk = Desk(farm)

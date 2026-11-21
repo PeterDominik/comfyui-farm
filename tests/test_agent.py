@@ -16,8 +16,11 @@ import shutil
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_textures import FAKE_OIIOTOOL, OCIO_CONFIG
@@ -1164,6 +1167,31 @@ class AgentTests(unittest.TestCase):
         full = self.store.get(job["id"], with_prompt=True)
         self.assertNotIn("node", keys(full["info"]) | keys(full["request"]))     # texture jobs: test_sets
 
+    def test_a_definition_an_agent_finds_broken_is_disabled_on_the_manager(self):
+        """The manager checks a definition's head; how it wires the graph is checked where
+        the graph is, and the agent's report disables it for everyone (decision 0020)."""
+        folder = Path(self.tmp, "wf-broken", "wan_broken")
+        shutil.copytree(REPO / "workflows/wan22_i2i", folder)
+        p = yaml.safe_load((folder / "process.yaml").read_text(encoding="utf-8"))
+        p["id"] = "wan_broken"
+        p["runner"]["params"]["prompt"]["targets"][0]["node"] = "999"      # a node the graph doesn't have
+        (folder / "process.yaml").write_text(yaml.safe_dump(p, sort_keys=False), encoding="utf-8")
+        why = "param prompt: node 999 is not in the workflow (re-exported? update the manifest)"
+        mine = Workflow(folder, wiring=False)                               # the manager's copy
+        self.assertEqual((mine.problems, mine.enabled), ([], True))
+        self.assertIn(why, Workflow(folder).problems)                       # `comfyfarm check`, CI, the agent
+        REGISTRY.workflows["wan_broken"] = mine
+        self.addCleanup(REGISTRY.workflows.pop, "wan_broken", None)
+        a = self.agent()
+        a.runner._registry = types.SimpleNamespace(workflows={**REGISTRY.workflows, "wan_broken": Workflow(folder)})
+        self.ready(a)
+        self.assertEqual((mine.enabled, mine.reported), (False, [why]))
+        self.assertEqual(mine.schema()["problems"], [why])
+        self.assertIn(why, self.desk.agents["gpu1"].problems["wan_broken"])  # and the machine is passed over
+        with self.assertRaisesRegex(ParamError, "Workflow 'wan_broken' is disabled: param prompt: node 999"):
+            self.farm.submit("wan_broken", {"input": f"{SEQ} 1001"}, "ann")
+        self.assertEqual(self.desk.agents["gpu1"].problems.get("wan22_i2i"), None)  # the others run as before
+
     def own_preview(self) -> "Agent":
         """The plate/matte workflow with a video node of its own (outputs.preview)."""
         wf = plate_matte_workflow(Path(self.tmp, "wf-op"))
@@ -1453,7 +1481,7 @@ class AgentTests(unittest.TestCase):
         told = sent[0]["processes"]
         self.assertEqual(sorted(told), sorted(REGISTRY.workflows))
         wf = REGISTRY.workflows["wan22_i2i"]
-        self.assertEqual(told["wan22_i2i"], {"digest": wf.digest, "problems": [],
+        self.assertEqual(told["wan22_i2i"], {"digest": wf.digest, "problems": [], "broken": [],
                                              "expected_nodes": wf.expected_nodes(a.runner.output_classes)})
         state = self.desk.agents["gpu1"]
         self.assertEqual((state.problems, state.checked), ({}, True))

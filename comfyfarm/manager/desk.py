@@ -402,6 +402,7 @@ class Desk:
             if held is None:            # an agent from before agents reported this (it sent node definitions)
                 probs = [f"{a.name} runs farm code too old to say what it can run: update the farm's code on it"]
             else:
+                self._broken(a, wf, held.get(name))
                 probs = self._held_problems(a, wf, held.get(name))
                 if not probs and held[name].get("expected_nodes"):
                     a.expected[name] = int(held[name]["expected_nodes"])
@@ -415,6 +416,18 @@ class Desk:
         return {"problems": a.problems}
 
     @staticmethod
+    def _broken(a: AgentState, wf, held: dict | None) -> None:
+        """A definition the agent found broken (how it wires its runner's graph). The same
+        on every machine with that fingerprint, so it disables the workflow for everyone
+        until the definition is fixed (decision 0020)."""
+        if not held or held.get("digest") != wf.digest or not held.get("broken"):
+            return
+        new = sorted(set(str(p) for p in held["broken"]) - set(wf.reported))
+        if new:
+            wf.reported = sorted(set(wf.reported) | set(new))
+            log.error("workflow %s is disabled: %s found its definition broken: %s", wf.name, a.name, "; ".join(new))
+
+    @staticmethod
     def _held_problems(a: AgentState, wf, held: dict | None) -> list[str]:
         """Why this agent can't run the workflow, from what it reported about its own copy."""
         if not held:
@@ -422,7 +435,7 @@ class Desk:
         if held.get("digest") != wf.digest:
             return [f"its copy of the workflow ({held.get('digest')}) and the manager's ({wf.digest}) differ: update "
                     f"the farm's code on {a.name} and on the manager (a change not committed on either causes this too)"]
-        return list(held.get("problems") or [])
+        return list(held.get("broken") or []) + list(held.get("problems") or [])
 
     def environment(self, msg: dict) -> dict:
         """How the agent's backend differs from the farm's environment file, as the agent

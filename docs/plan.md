@@ -80,6 +80,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   (0017); jobs name no node, so the manager plans with what a definition takes and writes
   and the agent finds the nodes in its own copy (0018). The process.yaml head says what a
   definition takes and writes, and the runner block which node does it (0019), and the
-  five workflows are written that way, with their fingerprints unchanged. Left, the
-  phase's last step: `workflows.py` is split along the head and the runner block (a move),
-  so the manager imports nothing ComfyUI-specific.
+  five workflows are written that way, with their fingerprints unchanged. The manager checks a
+  definition's head only; agents check how it wires the graph and report one they find
+  broken, which disables it on the manager (0020). Left, the phase's last step:
+  `workflows.py` is split along the head and the runner block (a move), so the manager
+  imports nothing ComfyUI-specific.

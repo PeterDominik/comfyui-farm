@@ -10,8 +10,10 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
   status     its ComfyUI's state: reachable, connected, GPU, queue (on change, and every
              few seconds for the dashboard).
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
-             the agent's checkout with its fingerprint, what its ComfyUI lacks for it, and
-             how many nodes a run goes through. The node definitions stay on the agent.
+             the agent's checkout with its fingerprint, what its ComfyUI lacks for it,
+             what is wrong with how the definition wires the graph (`broken`, which
+             disables the workflow on the manager), and how many nodes a run goes
+             through. The node definitions stay on the agent.
   environment  how its ComfyUI differs from the farm's environment file (`report`: what
              differs and what couldn't be checked, as text), when ComfyUI starts and
              every agent.environment_seconds. The agent compares, with its own
