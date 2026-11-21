@@ -1,0 +1,226 @@
+{
+  "facts": {
+    "machine": "wrk59467w",
+    "os": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9",
+    "gpus": [
+      "NVIDIA GeForce RTX 5090, 610.47"
+    ],
+    "settings_in_environment": [],
+    "pip_config": []
+  },
+  "wanted": {
+    "python": "3.12",
+    "torch": [
+      "torch==2.13.0+cu130",
+      "torchvision==0.28.0+cu130"
+    ],
+    "torch_index": "https://download.pytorch.org/whl/cu130",
+    "small": [
+      "numpy==2.5.2",
+      "pillow==12.3.0"
+    ]
+  },
+  "methods": {
+    "uv": {
+      "builds": [
+        {
+          "method": "uv",
+          "run": "cold",
+          "folder": "D:\\comfyui-farm\\run\\builder-test\\uv-cold",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 4.4,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "venv",
+              "seconds": 0.7,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "torch",
+              "seconds": 35.8,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 2.3,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 15.7,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"D:\\\\comfyui-farm\\\\run\\\\builder-test\\\\uv-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA GeForce RTX 5090\"}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "D:\\comfyui-farm\\run\\builder-test\\uv-cold",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA GeForce RTX 5090"
+          },
+          "size_mb": 2866.9,
+          "problems": []
+        },
+        {
+          "method": "uv",
+          "run": "warm",
+          "folder": "D:\\comfyui-farm\\run\\builder-test\\uv-warm",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 0.1,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "venv",
+              "seconds": 0.1,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "torch",
+              "seconds": 6.9,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 1.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 11.1,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"D:\\\\comfyui-farm\\\\run\\\\builder-test\\\\uv-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA GeForce RTX 5090\"}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "D:\\comfyui-farm\\run\\builder-test\\uv-warm",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA GeForce RTX 5090"
+          },
+          "size_mb": 2866.9,
+          "problems": []
+        }
+      ],
+      "tool": "uv 0.13.9 (6b2d39dcc 2026-11-17 x86_64-pc-windows-msvc)",
+      "get_uv_seconds": 7.9,
+      "disk_mb": 3007.7,
+      "pass": true
+    },
+    "installers": {
+      "builds": [
+        {
+          "method": "installers",
+          "run": "cold",
+          "folder": "D:\\comfyui-farm\\run\\builder-test\\installers-cold",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 6.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "torch",
+              "seconds": 106.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 9.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 4.2,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.13\", \"prefix\": \"D:\\\\comfyui-farm\\\\run\\\\builder-test\\\\installers-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA GeForce RTX 5090\"}"
+            }
+          ],
+          "check": {
+            "python": "3.12.13",
+            "prefix": "D:\\comfyui-farm\\run\\builder-test\\installers-cold",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA GeForce RTX 5090"
+          },
+          "size_mb": 2986.8,
+          "problems": []
+        },
+        {
+          "method": "installers",
+          "run": "warm",
+          "folder": "D:\\comfyui-farm\\run\\builder-test\\installers-warm",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 6.2,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "torch",
+              "seconds": 82.5,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 9.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 4.0,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.13\", \"prefix\": \"D:\\\\comfyui-farm\\\\run\\\\builder-test\\\\installers-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": \"2.13.0+cu130\", \"cuda\": true, \"gpu\": \"NVIDIA GeForce RTX 5090\"}"
+            }
+          ],
+          "check": {
+            "python": "3.12.13",
+            "prefix": "D:\\comfyui-farm\\run\\builder-test\\installers-warm",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": "2.13.0+cu130",
+            "cuda": true,
+            "gpu": "NVIDIA GeForce RTX 5090"
+          },
+          "size_mb": 2986.8,
+          "problems": []
+        }
+      ],
+      "tool": "venv of D:\\conda_shared_env\\comfyui\\python.exe",
+      "disk_mb": 7862.8,
+      "pass": true
+    }
+  },
+  "at": "2026-11-20 22:47:27"
+}
