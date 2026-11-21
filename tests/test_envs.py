@@ -56,9 +56,11 @@ class Folders(unittest.TestCase):
 
     def test_the_fingerprint_follows_the_files_and_not_their_line_endings(self):
         folder = make(self.root)
+        # Bytes, not text: on Windows write_text already writes CRLF.
+        text = (folder / "pyproject.toml").read_bytes().replace(b"\r\n", b"\n")
+        (folder / "pyproject.toml").write_bytes(text)
         first = S.load("demo", self.root).fingerprint
         self.assertEqual(len(first), 16)
-        text = (folder / "pyproject.toml").read_bytes()
         (folder / "pyproject.toml").write_bytes(text.replace(b"\n", b"\r\n"))      # a Windows checkout
         self.assertEqual(S.load("demo", self.root).fingerprint, first)
         (folder / "uv.lock").write_text("version = 1\n", encoding="utf-8")
@@ -286,7 +288,8 @@ class Command(unittest.TestCase):
         agent.parent.mkdir()
         agent.write_text("name: test-agent\nenvs:\n  dir: envs-here\n  uv: [/opt/uv]\n", encoding="utf-8")
         code, said = self.run_cli("list", "--config", str(agent))
-        self.assertIn(f"(builds in {agent.parent / 'envs-here'})", said)
+        # Resolved, as the config resolves it (Windows' temp folder can come as a short 8.3 name).
+        self.assertIn(f"(builds in {agent.resolve().parent / 'envs-here'})", said)
         from comfyfarm.config import load_agent_config
         cfg = load_agent_config(agent)
         self.assertEqual((cfg.envs.dir, cfg.envs.uv), ("envs-here", ["/opt/uv"]))
