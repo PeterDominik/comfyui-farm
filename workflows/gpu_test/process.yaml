@@ -1,0 +1,79 @@
+# The farm's test process (decision 0027): a small job on the GPU with torch, run by the
+# process runner in the gpu-test environment. It checks a farm machine end to end: the
+# runner, its environment, the time limit, cancelling, and the GPU claim (decision 0026):
+# hold most of the card after a ComfyUI job, and it only fits if ComfyUI freed its models.
+# Full reference: "Process runner" in README.md.
+
+id: gpu_test
+label: GPU test (process runner)
+description: >
+  Reads the input frames onto the GPU with torch, blurs, inverts or grades them there, and
+  writes PNGs numbered like the input. "Hold GPU memory" keeps that much of the card while
+  it runs: after a ComfyUI job, a hold close to the card's size only fits if ComfyUI freed
+  its models first. It writes gpu_test.<job>.json beside the frames: the card, how much of
+  it was free when it started, and the most it used. A test of the farm, not for shots.
+tag: gputest                    # in the output file names: <source>.gputest_vNNN.<frame>.png
+class: interactive
+limits: {max_minutes: 10}       # it stops after this, whatever "Seconds per frame" says
+publish: false                  # nothing to publish
+shotgrid: false                 # not in ShotGrid's right-click menu
+
+params:
+  input:
+    type: input
+    takes: images
+    label: Input frames
+    required: true
+    frames: {max: 300}
+    help: >
+      A sequence, a movie or one image, e.g. /rdo/shows/<show>/.../<shot>.plate.%04d.exr
+      1001-1010. EXRs are converted with the shot's OCIO look first, as for the workflows.
+
+  operation:
+    type: choice
+    label: Operation
+    choices: [blur, invert, grade]
+    default: blur
+
+  strength:
+    type: float
+    label: Strength
+    default: 4
+    min: 0
+    max: 50
+    help: Blur radius in pixels, or the gain of grade (1 leaves the image as it is).
+
+  hold_gb:
+    type: float
+    label: Hold GPU memory (GB)
+    default: 0
+    min: 0
+    max: 96
+    help: >
+      Keeps this much of the card while it runs. On a 24 GB card after an LTX job, 20 GB
+      only fits if ComfyUI freed its models. It fails, saying how much was free, if it
+      doesn't fit.
+
+  pause:
+    type: float
+    label: Seconds per frame
+    default: 0
+    min: 0
+    max: 120
+    help: Waits this long after each frame, to try cancelling a running job or its 10-minute limit.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      The frames go into a folder named after the shot inside this one. Leave empty for the
+      show's renders folder. Never inside .published.
+
+writes:
+  frames: {ext: png}
+  preview: true                 # the farm makes its preview movie, as for a workflow's frames
+
+runner:
+  type: process
+  environment: gpu-test         # environments/gpu-test: torch 2.13 (CUDA 13.0), numpy, pillow
+  command: [python, "{definition}/run.py"]

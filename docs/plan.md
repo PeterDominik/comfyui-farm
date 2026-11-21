@@ -89,5 +89,6 @@ A4 launchers (xStudio, Daiquiri Automate).
   time limit, kept by a supervisor per run that outlives the agent; the agent gives each
   job to the runner that knows its definition (0025). Off by default. One runner's runs at a
   time hold the card, first come first served, and ComfyUI frees its models before a
-  process runs (the GPU claim, 0026). Left: a test Python process, and the gate on the
-  three machines.
+  process runs (the GPU claim, 0026). The test process, `workflows/gpu_test`, runs torch in
+  `gpu-test` and holds as much of the card as it is asked (0027). Left: the gate on the
+  three machines (README.md, "The GPU test").

@@ -75,15 +75,16 @@ if mode == "wait":                      # until the test says go, or the farm sa
         if os.path.exists(job["cancel"]):
             sys.exit(0)
         time.sleep(0.05)
-seq = job.get("input")
-frames = range(seq["first"], seq["last"] + 1) if seq else range(1, 4)
-for i, n in enumerate(frames, 1):
+files = (job.get("input") or {}).get("files") or [None] * 3     # the input's files, in order
+for i, src in enumerate(files, 1):
     dst = os.path.join(job["output_dir"], f"{job['frames_prefix']}_{i:05d}.png")
-    if seq:
-        shutil.copyfile(os.path.join(seq["directory"], seq["filename"] % n), dst)
+    if src:
+        shutil.copyfile(src, dst)
     else:
         open(dst, "wb").write(b"png")
-    event(progress=i / len(frames), stage=f"frame {i}/{len(frames)}")
+    event(progress=i / len(files), stage=f"frame {i}/{len(files)}")
+if mode == "warn":
+    json.dump({"warnings": ["the frames came out dark"]}, open(job["result"], "w"))
 '''
 
 
@@ -230,6 +231,17 @@ class Supervisor(unittest.TestCase):
         p.wait(30)
         self.assertEqual(json.loads((self.run / "exit.json").read_text())["reason"], "cancelled")
         self.assertFalse(PR.alive(self.run))
+
+    def test_a_command_that_stops_itself_when_asked_was_cancelled(self):
+        p = self.supervise([PYTHON, "-c", "import os, time\nwhile not os.path.exists('cancel'): time.sleep(0.05)"],
+                           wait=False)
+        end = time.time() + 10
+        while not (self.run / "state.json").exists() and time.time() < end:
+            time.sleep(0.05)
+        (self.run / "cancel").touch()
+        p.wait(30)
+        ended = json.loads((self.run / "exit.json").read_text())
+        self.assertEqual((ended["reason"], ended["code"]), ("cancelled", 0))     # not a run that went well
 
     def test_the_time_limit_is_kept_here(self):
         t0 = time.time()
@@ -497,7 +509,7 @@ class ThroughTheFarm(Environment):
         Path(f"{root}/ocio/config.ocio").write_text(OCIO_CONFIG)
         definition(self.workflows, "copy", params={
             "input": {"type": "input", "takes": "images", "label": "Frames", "required": True},
-            "mode": {"type": "choice", "choices": ["ok", "fail", "hang"], "default": "ok"}})
+            "mode": {"type": "choice", "choices": ["ok", "fail", "hang", "warn"], "default": "ok"}})
         mappings = [{"posix": "/rdo/shows", "windows": f"{root}/shows"}]
         cfg = Config.model_validate({
             "database": f"{root}/farm.db", "workflows_dir": str(self.workflows), "workers": [],
@@ -567,13 +579,19 @@ class ThroughTheFarm(Environment):
         self.assertEqual((out["frames"], out["first"], out["last"]), (3, 1001, 1003))
         frames = sorted(n for n in os.listdir(row["output_dir"]) if n.endswith(".png"))
         self.assertEqual(len(frames), 3)
-        self.assertEqual(Path(row["output_dir"], frames[0]).read_bytes(), b"frame 1001")
+        self.assertEqual(Path(row["output_dir"], frames[0]).read_bytes(), b"frame 1001")   # read from job.json's files
         self.assertEqual(self.agent.held, {})
         self.assertEqual(self.agent._in_comfy, 0)
         # The GPU claim (decision 0026): ComfyUI freed its models before the process used the card.
         self.assertEqual((self.agent.runner.client.freed, self.agent.released["ok"]), (1, True))
         self.assertIs(self.agent.card_owner, self.process)
         self.assertEqual(row["warnings"], [])
+
+    def test_what_a_command_says_about_its_job_are_its_warnings(self):
+        job = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "warn"}, "ann")
+        self.beat()
+        self.until(lambda: self.store.get(job["id"])["status"] == "done", what="done")
+        self.assertEqual(self.store.get(job["id"])["warnings"], ["the frames came out dark"])
 
     def test_a_process_job_that_fails_and_one_cancelled(self):
         job = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "fail"}, "ann")

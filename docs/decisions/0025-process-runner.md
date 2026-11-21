@@ -84,4 +84,6 @@ may become a command (CLAUDE.md: identity).
   keep working.
 
 Later: 0026 replaced the shared `max_inflight` with the GPU claim: one runner's runs at a
-time on the card, and ComfyUI frees its models before a process runs.
+time on the card, and ComfyUI frees its models before a process runs. 0027 added each
+input's `files` to job.json and `warnings` to result.json, and counts a command that
+stops on its own after `cancel` as cancelled.
