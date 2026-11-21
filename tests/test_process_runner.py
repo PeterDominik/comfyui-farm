@@ -147,9 +147,10 @@ class Definitions(Environment):
         wf = ProcessDefinition(self.workflows / "demo")
         self.assertEqual((wf.runner_type, wf.environment, wf.template), ("process", "py", None))
         self.assertEqual((wf.frames_ext, wf.wiring_problems, wf.problems), ("png", [], []))
-        first = wf.digest
         run = self.workflows / "demo" / "run.py"
-        run.write_bytes(run.read_bytes().replace(b"\n", b"\r\n"))       # a Windows checkout
+        run.write_bytes(RUN_PY.encode())                                # bytes: write_text on Windows writes CRLF
+        first = ProcessDefinition(self.workflows / "demo").digest
+        run.write_bytes(RUN_PY.encode().replace(b"\n", b"\r\n"))       # a Windows checkout
         self.assertEqual(ProcessDefinition(self.workflows / "demo").digest, first)
         run.write_text(RUN_PY + "\n# changed\n", encoding="utf-8")
         self.assertNotEqual(ProcessDefinition(self.workflows / "demo").digest, first)
