@@ -477,6 +477,12 @@ which release it came from. An agent finds the bank through the `manager.json` i
 `agent.yaml` names; otherwise give `--bank`. The manager rolling releases out to its agents
 by itself comes in the next steps of phase 4.
 
+Each agent tells the manager what it has built: for each environment, its current and
+previous build, when each was built and from which release (or its checkout). It reads
+them again every 30 s, so an `env install` on a machine shows within half a minute.
+`GET /api/v1/environments` lists the bank's releases and what each machine has built; the
+same is in `/api/v1/workers` as each machine's `environments`.
+
 A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
 from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
 if a disk can't, uv copies, and `env install` says so.

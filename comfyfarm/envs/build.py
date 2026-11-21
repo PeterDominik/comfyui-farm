@@ -122,6 +122,27 @@ def builds(root: Path, name: str) -> Builds:
     return Builds(name, pointer("current"), pointer("previous"), info)
 
 
+REPORTED = ("ok", "built_at", "build_seconds", "copied", "origin")
+
+
+def report(root: Path) -> dict:
+    """What this machine has built, for the manager (status `environments`, decision 0029):
+    {name: {current, previous, builds: {fingerprint: {ok, built_at, build_seconds, copied,
+    origin}}}}. Only what is on disk: nothing is checked or run."""
+    out = {}
+    root = Path(root)
+    for folder in sorted(root.iterdir()) if root.is_dir() else []:
+        if not folder.is_dir() or folder.name.startswith("."):
+            continue                    # uv's cache and Pythons, uv itself, release copies
+        have = builds(root, folder.name)
+        if not have.info and not have.current:
+            continue
+        out[folder.name] = {"current": have.current, "previous": have.previous,
+                            "builds": {fp: {k: v for k, v in info.items() if k in REPORTED}
+                                       for fp, info in have.info.items()}}
+    return out
+
+
 def current_python(root: Path, name: str) -> Path | None:
     """The Python of the build jobs run in (None: not built here)."""
     b = builds(root, name)

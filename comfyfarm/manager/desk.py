@@ -80,6 +80,7 @@ class AgentState:
     gpu_error: str | None = None        # why they couldn't be read
     want_release: bool = False          # ask it to free its VRAM (the Machines tab's Free VRAM)
     released: dict | None = None        # the last time it did, and how it went (decision 0023)
+    envs: dict | None = None            # the runner environments it has built (decision 0029)
 
 
 def vram(a: AgentState) -> int:
@@ -283,6 +284,7 @@ class Desk:
             "last_seen": a.last_seen, "error": error, "gpu": gpu,
             "gpus": a.gpus if alive else None, "gpu_error": a.gpu_error if alive else None,
             "released": a.released if alive else None,
+            "environments": a.envs if alive else None,
             "comfyui_version": ((a.stats or {}).get("system") or {}).get("comfyui_version"),
             "problems": a.problems, "agent_version": a.version,
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
@@ -300,6 +302,10 @@ class Desk:
             # (shown, never a reason to hold jobs back).
             "environment": a.environment,
         }
+
+    def environments(self) -> dict:
+        """What each agent that is checking in has built (decision 0029)."""
+        return {a.name: a.envs for a in list(self.agents.values()) if self.alive(a.name) and a.envs is not None}
 
     def summaries(self) -> list[dict]:
         ranks = self.ranks()
@@ -396,6 +402,8 @@ class Desk:
         nodes_were, a.farm_nodes = a.farm_nodes, msg.get("farm_nodes") or None
         if isinstance(msg.get("released"), dict):
             a.released = msg["released"]
+        if isinstance(msg.get("environments"), dict):  # what it has built (decision 0029); kept, not acted on yet
+            a.envs = {str(k): v for k, v in msg["environments"].items() if isinstance(v, dict)}
         if "gpus" in msg:               # an agent with gpu_probe on; shown, not placed by yet (decision 0022)
             a.gpus = [g for g in msg.get("gpus") or [] if isinstance(g, dict)]
             a.gpu_error = msg.get("gpu_error") or None
