@@ -40,7 +40,8 @@ from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm, FarmError
 from comfyfarm.protocol import LinkError
-from comfyfarm.workflows import ParamError, Workflow, WorkflowRegistry
+from comfyfarm.definitions import Definition, ParamError
+from comfyfarm.runners.comfyui_workflow import Workflow, WorkflowRegistry
 
 try:   # the agent talks to ComfyUI with httpx and websockets
     from comfyfarm.agent.agent import Agent
@@ -1177,7 +1178,7 @@ class AgentTests(unittest.TestCase):
         p["runner"]["params"]["prompt"]["targets"][0]["node"] = "999"      # a node the graph doesn't have
         (folder / "process.yaml").write_text(yaml.safe_dump(p, sort_keys=False), encoding="utf-8")
         why = "param prompt: node 999 is not in the workflow (re-exported? update the manifest)"
-        mine = Workflow(folder, wiring=False)                               # the manager's copy
+        mine = Definition(folder)                                           # the manager's copy: its head
         self.assertEqual((mine.problems, mine.enabled), ([], True))
         self.assertIn(why, Workflow(folder).problems)                       # `comfyfarm check`, CI, the agent
         REGISTRY.workflows["wan_broken"] = mine

@@ -18,7 +18,7 @@ from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm, FarmError
 from comfyfarm.shotgrid import ShotGrid
 from comfyfarm.shotgrid import query as Q
-from comfyfarm.workflows import WorkflowRegistry
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 NOW = datetime(2026, 11, 9, 12, tzinfo=timezone.utc)

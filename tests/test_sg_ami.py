@@ -19,7 +19,7 @@ import unittest
 from pathlib import Path
 
 from comfyfarm.shotgrid import menu as M
-from comfyfarm.workflows import WorkflowRegistry
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("sg_ami", REPO / "tools" / "sg_ami.py")

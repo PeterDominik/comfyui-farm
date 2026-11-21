@@ -27,7 +27,8 @@ from comfyfarm.fileio.errors import SequenceError
 from comfyfarm.fileio.inputs import (Sequence, loaded_names, resolve_input, resolve_sequence, summary, texture_input,
                                      texture_numbers)
 from comfyfarm.fileio.ocio import ocio_roles
-from comfyfarm.workflows import ParamError, Workflow
+from comfyfarm.definitions import ParamError
+from comfyfarm.runners.comfyui_workflow import Workflow
 
 REPO = Path(__file__).resolve().parent.parent
 WF = REPO / "workflows" / "chord_pbr"

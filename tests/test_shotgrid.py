@@ -203,7 +203,8 @@ class PublishCheckTests(unittest.TestCase):
         from comfyfarm.manager.db import JobStore
         from comfyfarm.manager.events import EventBus
         from comfyfarm.manager.farm import Farm
-        from comfyfarm.workflows import ParamError, WorkflowRegistry
+        from comfyfarm.definitions import ParamError
+        from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         templates = tmp / "Nuke" / "ltx25_alpha_gen"

@@ -20,7 +20,7 @@ from pathlib import Path
 from comfyfarm.config import MenuSyncConfig
 from comfyfarm.shotgrid import menu as M
 from comfyfarm.shotgrid.menusync import MenuSync, counts, digest
-from comfyfarm.workflows import WorkflowRegistry
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 REGISTRY = WorkflowRegistry(REPO / "workflows")

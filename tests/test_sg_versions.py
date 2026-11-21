@@ -19,7 +19,7 @@ from comfyfarm.manager.farm import Farm
 from comfyfarm.shotgrid import ShotGrid
 from comfyfarm.shotgrid import versions as V
 from comfyfarm.shotgrid.lookup import NotFound, Refused, Unavailable
-from comfyfarm.workflows import WorkflowRegistry
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 SITE = "https://rodeofx.shotgrid.autodesk.com/"

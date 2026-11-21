@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def convert(folder: Path) -> str:
-    from comfyfarm.workflows import to_process
+    from comfyfarm.runners.comfyui_workflow import to_process
     m = yaml.safe_load((folder / "manifest.yaml").read_text(encoding="utf-8")) or {}
     return yaml.safe_dump(to_process(m), sort_keys=False, allow_unicode=True, width=100)
 

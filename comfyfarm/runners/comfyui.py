@@ -32,7 +32,8 @@ from ..fileio import farmnodes as FN
 from ..fileio import wire as W
 from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, duration, now
-from ..workflows import ParamError, WorkflowRegistry, fit_to_options
+from ..definitions import ParamError
+from .comfyui_workflow import WorkflowRegistry, fit_to_options
 from .base import Host, RunRejected
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
 

@@ -21,7 +21,8 @@ from comfyfarm.fileio import media as M
 from comfyfarm.fileio import preview as PV
 from comfyfarm.fileio.errors import ConvertError
 from comfyfarm.fileio.tools import find_tool
-from comfyfarm.workflows import Workflow, WorkflowRegistry, from_process
+from comfyfarm.definitions import from_process
+from comfyfarm.runners.comfyui_workflow import Workflow, WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 REGISTRY = WorkflowRegistry(REPO / "workflows")

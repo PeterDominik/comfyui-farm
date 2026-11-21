@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from comfyfarm.fileio import wire as W
-from comfyfarm.workflows import ParamError, WorkflowRegistry
+from comfyfarm.definitions import ParamError
+from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 
 REPO = Path(__file__).resolve().parent.parent
 

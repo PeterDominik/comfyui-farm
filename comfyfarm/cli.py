@@ -28,7 +28,7 @@ from .config import Config, load_config
 from .fileio import farmnodes
 from .fileio.ocio import REPO, nuke_ramp, ocio_roles
 from .logs import json_handler
-from .workflows import WorkflowRegistry
+from .runners.comfyui_workflow import WorkflowRegistry
 
 
 def setup_logging(cfg, verbose: bool = False, filename: str = "comfyfarm.log") -> None:

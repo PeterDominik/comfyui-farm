@@ -230,7 +230,7 @@ class SpecTests(unittest.TestCase):
 
     def test_the_farms_workflows(self):
         from comfyfarm.fileio.ocio import REPO
-        from comfyfarm.workflows import WorkflowRegistry
+        from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
         need = S.needs(WorkflowRegistry(REPO / "workflows"), {})
         self.assertIn("LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors", need["models"])    # / on every OS
         self.assertIn("chord_v1.safetensors", need["models"])
@@ -264,7 +264,7 @@ class SpecTests(unittest.TestCase):
         """A pack a manifest names must be in the environment file: snapshot on the
         reference machine (wrk59467w-5090) records it."""
         from comfyfarm.fileio.ocio import REPO
-        from comfyfarm.workflows import WorkflowRegistry
+        from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
         need = S.needs(WorkflowRegistry(REPO / "workflows"), {})
         missing = sorted(set(need["packs"]) - set((S.load() or {}).get("node_packs") or {}))
         self.assertEqual(missing, [], "run `comfyfarm comfyui snapshot` on the reference machine and commit "
@@ -454,7 +454,7 @@ class CliTests(unittest.TestCase):
                 mock.patch.object(envcli.S, "SPEC", self.out), \
                 mock.patch.object(envcli.S, "FARM_MODEL_PATHS", self.tmp / "farm_paths.yaml"), \
                 mock.patch.object(envcli.S, "LIBRARIES", self.farm.libraries), \
-                mock.patch("comfyfarm.workflows.WorkflowRegistry", lambda d: REGISTRY), \
+                mock.patch("comfyfarm.runners.comfyui_workflow.WorkflowRegistry", lambda d: REGISTRY), \
                 mock.patch("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))):
             code = main(["comfyui", *argv])
         return code, "\n".join(printed)

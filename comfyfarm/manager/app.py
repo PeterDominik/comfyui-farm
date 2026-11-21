@@ -22,7 +22,7 @@ from ..publish.publisher import PublishError
 from ..shotgrid import menu as SM
 from ..shotgrid.menusync import MenuSync
 from ..shotgrid import versions as SV
-from ..workflows import ParamError, WorkflowRegistry
+from ..definitions import DefinitionRegistry, ParamError
 from .db import ACTIVE, JobStore
 from .desk import Desk
 from .events import EventBus
@@ -106,7 +106,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     store = JobStore(cfg.resolve(cfg.database))
     # The heads only: how a definition wires its runner is checked by the agents, which
     # report one they find broken (docs/decisions/0020).
-    registry = WorkflowRegistry(cfg.resolve(cfg.workflows_dir), wiring=False)
+    registry = DefinitionRegistry(cfg.resolve(cfg.workflows_dir))
     events = EventBus()
     farm = Farm(cfg, store, registry, events)
     desk = Desk(farm)

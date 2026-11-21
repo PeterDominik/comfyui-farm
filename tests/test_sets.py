@@ -28,7 +28,7 @@ REPO = Path(__file__).resolve().parent.parent
 try:   # the manager's farm needs pydantic and yaml (not the web stack)
     from comfyfarm.manager.events import EventBus
     from comfyfarm.manager.farm import Farm, FarmError
-    from comfyfarm.workflows import WorkflowRegistry
+    from comfyfarm.runners.comfyui_workflow import WorkflowRegistry
 except ImportError:   # pragma: no cover
     Farm = None
 
