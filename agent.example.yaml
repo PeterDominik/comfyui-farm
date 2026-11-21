@@ -46,6 +46,13 @@ comfyui_launch:
 #   seconds: 30                  # read this often
 #   command: [nvidia-smi]        # or its full path, if it isn't on PATH
 
+# Runner environments built on this machine (environments/ in the repo; `python -m
+# comfyfarm env install <name>`). Each build takes several GB with torch: put dir on a
+# local disk with room. uv links packages from its cache, which must be on the same disk.
+# envs:
+#   dir: data/envs               # relative = next to this file
+#   uv: []                       # a uv to use, e.g. [/usr/local/bin/uv]; empty: installed with pip into <dir>
+
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 # log_json: true                # also logs/agent-<name>.jsonl: the same lines, one JSON object each
 

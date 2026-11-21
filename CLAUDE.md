@@ -38,6 +38,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
 | `comfyfarm/comfyenv/` | the farm's ComfyUI environment: spec, compare, sync |
+| `comfyfarm/envs/`, `environments/` | runner environments: uv projects in the repo, locked; built and checked on each machine (`comfyfarm env`) |
 | `comfyfarm/publish/`, `comfyfarm/shotgrid/` | publishing through Daiquiri and Tractor; ShotGrid |
 | `client/` | the shared client and the Nuke panel |
 | `workflows/` | one folder per workflow: `process.yaml` (or the older `manifest.yaml`) and the ComfyUI graph |

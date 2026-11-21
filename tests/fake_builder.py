@@ -1,4 +1,4 @@
-"""Stand-ins for uv, conda and pip, for tools/builder_test.py's tests: no network.
+"""Stand-ins for uv, conda and pip, for tools/builder_test.py's and comfyfarm/envs' tests: no network.
 
     python fake_builder.py uv <uv's arguments>
     python fake_builder.py conda <conda's arguments>
@@ -6,10 +6,12 @@
 Environments are real venvs (made without pip), so the builder test's check runs in them.
 "Installing" a package writes a stub of it (torch says it sees a GPU) into the
 environment. Every call is logged as a JSON line to $FAKE_BUILDER_LOG. FAKE_BUILDER_FAIL
-names a step to fail (e.g. "uv pip").
+names a step to fail (e.g. "uv pip"). FAKE_UV_COPIES=1 makes `uv sync` say, as uv does,
+that it couldn't hard-link from its cache.
 """
 
 import json
+import tomllib
 import os
 import subprocess
 import sys
@@ -33,7 +35,7 @@ def log(tool: str, args: list) -> None:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"tool": tool, "args": args, "env": {k: os.environ.get(k) for k in (
                 "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_PYTHON_PREFERENCE", "UV_NO_CONFIG", "PIP_CACHE_DIR",
-                "PYTHONPATH", "PYTHONNOUSERSITE")}}) + "\n")
+                "PYTHONPATH", "PYTHONNOUSERSITE", "UV_PROJECT_ENVIRONMENT", "UV_LINK_MODE", "UV_INDEX_URL")}}) + "\n")
 
 
 def fail_if(step: str) -> None:
@@ -88,6 +90,28 @@ def uv(args: list) -> None:
         py = args[args.index("--python") + 1]
         Path(os.environ["UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
         install(purelib_of(py), args[2:])
+    elif args[:1] == ["lock"]:
+        fail_if("uv lock")
+        project = Path(args[args.index("--project") + 1])
+        deps = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        (project / "uv.lock").write_text("version = 1\n# fake\n" + "".join(f"# {d}\n" for d in deps), encoding="utf-8")
+        print(f"Resolved {len(deps)} packages (fake)")
+    elif args[:1] == ["sync"]:
+        fail_if("uv sync")
+        project = Path(args[args.index("--project") + 1])
+        if "--frozen" in args and not (project / "uv.lock").exists():
+            sys.exit("error: Unable to find lockfile at `uv.lock`, but `--frozen` was provided")
+        target = os.environ["UV_PROJECT_ENVIRONMENT"]
+        if not Path(target).exists():
+            make_env(target, with_pip=False)
+        py = next(p for p in (Path(target) / "bin/python", Path(target) / "Scripts/python.exe") if p.exists())
+        Path(os.environ["UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
+        deps = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+        install(purelib_of(str(py)), deps)
+        if os.environ.get("FAKE_UV_COPIES"):
+            print("warning: Failed to hardlink files; falling back to full copy. This may lead to degraded "
+                  "performance.", file=sys.stderr)
+        print(f"Installed {len(deps)} packages (fake)")
     else:
         sys.exit(f"fake uv: {args} isn't faked")
 

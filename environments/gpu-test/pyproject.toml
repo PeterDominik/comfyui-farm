@@ -1,0 +1,30 @@
+# The test process's environment (phase 3): torch on the GPU, and the image libraries the
+# test writes its result with. A uv project, built by `python -m comfyfarm env install
+# gpu-test` (docs/decisions/0024). After changing it, run `python -m comfyfarm env lock
+# gpu-test` on a machine that reaches pypi.org and commit uv.lock with it.
+[project]
+name = "gpu-test"
+version = "1"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.13.0",            # the CUDA 13.0 build, as the farm's ComfyUI has it
+    "numpy==2.5.2",
+    "pillow==12.3.0",
+]
+
+[tool.uv]
+package = false                 # an environment, not a package to install
+environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]   # what the farm runs on
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true                  # never the studio's mirror, whatever pip is told
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true                 # only for what [tool.uv.sources] sends there
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
