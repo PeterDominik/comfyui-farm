@@ -73,7 +73,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; Batch Submit's ShotGrid query; where ShotGrid's right-click goes |
 | `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
-| `comfyfarm/envs/` | Runner environments: reading `environments/<name>/`, locking it, building this machine's copy with uv and checking it (see *Runner environments*) |
+| `comfyfarm/envs/` | Runner environments: reading `environments/<name>/`, locking it, publishing it to the bank as a release, building this machine's copy with uv and checking it (see *Runner environments*) |
 | `environments/<name>/` | A runner environment as a uv project: `pyproject.toml`, `.python-version`, `env.yaml` (its check) and `uv.lock`. `gpu-test`: torch, numpy and pillow, for the test process |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check`, `comfyui snapshot\|verify\|sync` and `env list\|lock\|install\|remove` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
@@ -457,6 +457,25 @@ built does nothing (`--force` builds it again). The first run installs uv itself
 A `uv.lock` that no longer matches its `pyproject.toml` is refused: `env install` and
 `env list` say what changed (*LOCK OUT OF DATE*), and CI fails. Lock it again and commit
 both files together.
+
+#### Releases
+
+The manager hands environments to its agents as *releases* in the bank (the farm's shared
+folder, `share.dir`, where `manager.json` is; decision 0028). A release is an environment's
+four files as committed, with their hashes, and is never changed once published:
+
+```bash
+python -m comfyfarm env publish gpu-test      # on the manager's host: into <share.dir>/environments/gpu-test/<fingerprint>/
+python -m comfyfarm env releases              # what the bank has, newest first
+python -m comfyfarm env install gpu-test --release latest     # on a machine: from the bank, not its checkout
+```
+
+`env publish` refuses an environment that isn't locked, whose lock is out of date, or with
+changes not committed. `env install --release` copies the release to the machine, checks
+every file against its hash, and builds from the copy. The build's `farm-env.json` says
+which release it came from. An agent finds the bank through the `manager.json` its
+`agent.yaml` names; otherwise give `--bank`. The manager rolling releases out to its agents
+by itself comes in the next steps of phase 4.
 
 A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
 from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;

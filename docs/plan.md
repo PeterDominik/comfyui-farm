@@ -78,7 +78,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   which node does it (0015, 0019), and the five are written that way; the manager checks
   the head and agents check the wiring (0020); `definitions.py` holds the head and
   `runners/comfyui_workflow.py` the ComfyUI half (0021).
-- Phase 3, in progress. The builder test is in (`tools/builder_test.py`, `docs/builder/`):
+- Phase 3: done. The builder test is in (`tools/builder_test.py`, `docs/builder/`):
   it builds the same environment with uv and with the installers' method, cold and warm,
   and checks it. It ran on the three pilot machines and uv passed on all of them
   (`docs/builder/`). Agents read their GPUs with nvidia-smi, off by default (`gpu_probe`,
@@ -90,5 +90,13 @@ A4 launchers (xStudio, Daiquiri Automate).
   job to the runner that knows its definition (0025). Off by default. One runner's runs at a
   time hold the card, first come first served, and ComfyUI frees its models before a
   process runs (the GPU claim, 0026). The test process, `workflows/gpu_test`, runs torch in
-  `gpu-test` and holds as much of the card as it is asked (0027). Left: the gate on the
-  three machines (README.md, "The GPU test").
+  `gpu-test` and holds as much of the card as it is asked (0027). The gate passed on
+  21 November on all three machines: an LTX job, then the test holding most of the card
+  (28 of 31.8 GB on the 5090, 44 of 47.4 on the A6000, 20 of 23.6 on the 3090, with 93 to
+  97% of it free at the start), then LTX again, with no out-of-memory.
+- Phase 4, in progress. Steps: releases in the bank; agents report their environments;
+  desired state in the check-in reply, and the environment manager in the agent installing,
+  updating and removing; rollouts with a canary (the A6000), pause and rollback; the
+  Machines tab; today's ComfyUI sync started by the manager. Releases are in: `env publish`
+  on the manager's host copies an environment, as committed, to the bank with its hashes,
+  and `env install --release` builds from a checked copy (0028).
