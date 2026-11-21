@@ -17,7 +17,8 @@ Each run has a folder (process_runner.runs_dir/<attempt id>) and a supervisor
 command reads job.json and writes, as it goes:
 
     events.jsonl   one JSON object a line: {"progress": 0.4, "stage": "denoising 12/30"}
-    result.json    {"error": "<for the artist>"} when it fails, optional
+    result.json    optional: {"error": "<for the artist>"} when it fails, and "warnings":
+                   ["..."] for the job
     frames         into job.json's output_dir, named <frames_prefix>_<number>.<ext>, the
                    numbers zero-padded so they sort in order (writes.frames)
 
@@ -42,6 +43,8 @@ from ..config import AgentConfig
 from ..definitions import Definition, DefinitionRegistry
 from ..envs import build as EB
 from ..envs import spec as ES
+from ..fileio import inputs as I
+from ..fileio import paths as FP
 from ..fileio import wire as W
 from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER
@@ -125,6 +128,19 @@ class ProcRun:
 
     def nodes(self) -> int | None:
         return None
+
+
+def with_files(d: dict | None) -> dict | None:
+    """An input as job.json gives it: as the farm resolved it, and its `files` in order, with
+    their frame `numbers` (None: one image read as it is). A converted input's are the PNGs
+    the agent converted it into."""
+    if not d:
+        return d
+    try:
+        path, numbers = I.load_path(I.Sequence(**d))
+    except (TypeError, KeyError):
+        return d                        # a shape this farm doesn't know: the command gets it as it is
+    return {**d, "files": [FP.frame_file(path, n) for n in numbers] if numbers else [path], "numbers": numbers}
 
 
 def _read_json(path: Path) -> dict | None:
@@ -251,7 +267,8 @@ class ProcessRunner:
         seconds = wf.seconds(self.pc.default_minutes)
         job = W.localize({
             "contract": CONTRACT, "job": h.id, "attempt": h.attempt, "process": wf.name, "definition": wf.digest,
-            "params": request.get("values") or {}, "input": request.get("seq"), "inputs": request.get("inputs") or {},
+            "params": request.get("values") or {}, "input": with_files(request.get("seq")),
+            "inputs": {k: with_files(v) for k, v in (request.get("inputs") or {}).items()},
             "output_dir": request.get("out_dir"), "frames_prefix": request.get("frames_prefix"),
             "writes": {"frames": {"ext": wf.frames_ext}} if wf.frames_ext else {},
             "seconds": seconds, "events": str(run / "events.jsonl"), "result": str(run / "result.json"),
@@ -328,6 +345,11 @@ class ProcessRunner:
 
     async def result(self, h) -> dict | None:
         return _read_json(self._folder(h.pid) / "exit.json")
+
+    def warnings(self, h, result) -> list[str]:
+        """What the command said about its job (result.json's warnings), for the job's warnings."""
+        said = (_read_json(self._folder(h.pid) / "result.json") or {}).get("warnings")
+        return [str(w)[:500] for w in said if str(w).strip()][:20] if isinstance(said, list) else []
 
     def preview(self, h, result) -> list:
         return []                       # a process doesn't make its own preview video (writes.preview: own)

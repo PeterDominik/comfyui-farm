@@ -598,8 +598,8 @@ class Definition:
         reading its runner block's wiring or graph."""
         problems = self._check_head()
         problems += [f"param {n}: own_folder is for inputs (type: input)" for n in self._own_folder_elsewhere]
-        if self.publish is not None and ("bad" in self.publish or
-                                         (self.publish["step"] is not None and not isinstance(self.publish["step"], str))):
+        step = (self.publish or {}).get("step")         # publish: false is {"off": True}: no step
+        if self.publish is not None and ("bad" in self.publish or (step is not None and not isinstance(step, str))):
             problems.append("publish: needs to be a section like {step: lay}")
         if not isinstance(self.preview_movie, bool):
             problems.append("preview: needs to be true or false (false: no preview movie of the frames)")

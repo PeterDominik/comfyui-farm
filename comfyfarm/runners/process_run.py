@@ -151,6 +151,8 @@ def supervise(run: Path) -> int:
                 break
             time.sleep(TICK)
         code = proc.wait()
+        if reason == "exited" and (run / "cancel").exists():
+            reason = "cancelled"        # it stopped on its own when asked, as a command should
         if not WINDOWS:
             # Whatever it started and left behind goes with it: it would hold the GPU.
             try:

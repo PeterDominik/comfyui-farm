@@ -763,7 +763,8 @@ class Agent:
             if hist is None:
                 hist = await h.runner.result(h)
             outputs, warnings = await self._collect_outputs(h, hist or {})
-            warnings = [*h.notes, *warnings]
+            said = getattr(h.runner, "warnings", None)
+            warnings = [*h.notes, *(said(h, hist) if said else []), *warnings]
             t = now()
             started = h.started_at or h.dispatched_at or t
             nodes = rt.nodes() if rt else None

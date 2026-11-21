@@ -297,6 +297,9 @@ class ComfyUIRunner:
             await asyncio.sleep(0.5)
         return hist
 
+    def warnings(self, h, hist: dict | None) -> list[str]:
+        return []                       # what goes wrong in ComfyUI fails the run, and the agent checks the frames
+
     def preview(self, h, hist: dict | None) -> list:
         """The preview video the graph made itself (its definition's outputs.preview), as
         ComfyUI lists the files: the node is this checkout's, the copy the run was built from."""

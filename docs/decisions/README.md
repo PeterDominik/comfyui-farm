@@ -32,3 +32,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0024](0024-environments-are-uv-projects.md) | Runner environments are uv projects in the repo, built on each machine with uv | accepted |
 | [0025](0025-process-runner.md) | The process runner: a reviewed command in a runner environment, kept by a supervisor | accepted |
 | [0026](0026-the-gpu-claim.md) | One runner's runs at a time on the card; the last one frees it first | accepted |
+| [0027](0027-the-test-process.md) | The test process: a torch job that checks the process runner and the GPU claim | accepted |

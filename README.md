@@ -77,7 +77,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `environments/<name>/` | A runner environment as a uv project: `pyproject.toml`, `.python-version`, `env.yaml` (its check) and `uv.lock`. `gpu-test`: torch, numpy and pillow, for the test process |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check`, `comfyui snapshot\|verify\|sync` and `env list\|lock\|install\|remove` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `process.yaml` (what's exposed and written, and which nodes do it): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha` |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `process.yaml` (what's exposed and written, and which nodes do it): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha`. `gpu_test`: a process (`process.yaml` + `run.py`), the farm's test of its process runner (see *The GPU test*) |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -489,14 +489,14 @@ in `$COMFYFARM_JOB`):
 | Field | What |
 |---|---|
 | `params` | the job's parameters, checked against the definition |
-| `input`, `inputs` | the image inputs as the farm resolved them (`directory`, `filename`, `first`, `last`); one that needed converting (EXR, movie) is in `load_dir`, a PNG per frame |
+| `input`, `inputs` | the image inputs as the farm resolved them, with `files`: the files to read, in order (a converted EXR or movie's PNGs), and their frame `numbers` |
 | `output_dir`, `frames_prefix` | where its frames go and what they start with: `<frames_prefix>_00001.png`, ... |
 | `events`, `result`, `cancel` | the files it writes and watches (below) |
 | `seconds` | its time limit |
 
-It writes progress to `events` as JSON lines (`{"progress": 0.5, "stage": "frame 2/4"}`),
-an error for the artist to `result` if it fails (`{"error": "..."}`), and stops when the
-`cancel` file appears. At a cancel or the time limit, it gets `process_runner.grace_seconds`
+It writes progress to `events` as JSON lines (`{"progress": 0.5, "stage": "frame 2/4"}`).
+It can write `result`: an error for the artist if it fails (`{"error": "..."}`), and
+`"warnings": [...]` for the job. It stops when the `cancel` file appears. At a cancel or the time limit, it gets `process_runner.grace_seconds`
 (15) to stop, then it is killed with what it started. The agent then collects the frames as
 it does a workflow's: renamed to the job's names, with a preview movie.
 
@@ -516,6 +516,29 @@ has prompts queued that aren't the farm's, the job waits, saying why, for
 `claim_wait_seconds` (5 minutes). Then it starts anyway, and the job carries a warning that
 it shared the card. The process runner runs one job at a time; ComfyUI keeps
 `max_inflight`. ComfyUI's next job after a process loads its models again.
+
+#### The GPU test
+
+`gpu_test` (`workflows/gpu_test`, decision 0027) is the farm's own test of all this: torch
+reads the input frames onto the GPU, blurs, inverts or grades them there, and writes PNGs
+like a workflow. *Hold GPU memory* keeps that much of the card while it runs. It writes
+`gpu_test.<job>.json` beside the frames: the card, how much was free when it started, and
+the most it used.
+
+Phase 3's gate, on each machine:
+
+1. In `agent.yaml`, set `process_runner: {enabled: true}`; restart the agent. `agent --check`
+   should say *process gpu_test: its environment is built here* (otherwise `env install
+   gpu-test`).
+2. Drain the other machines on the Machines tab, so the jobs go to this one.
+3. Run a ComfyUI workflow (`ltx25_alpha_gen`), so ComfyUI holds its models.
+4. Run `gpu_test` on a few frames with *Hold GPU memory* at most of the card: 20 on the 3090,
+   28 on the 5090, 44 on the A6000. It should finish with no warning. The Machines tab's
+   memory tooltip shows ComfyUI freeing its models just before, and the report shows the
+   card free.
+5. Run the ComfyUI workflow again: it loads its models again, and finishes.
+
+To try a cancel or the time limit, give it *Seconds per frame*.
 
 ### How the manager and agents work together
 
