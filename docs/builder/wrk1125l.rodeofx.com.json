@@ -1,0 +1,174 @@
+{
+  "facts": {
+    "machine": "wrk1125l.rodeofx.com",
+    "os": "Linux-4.18.0-553.50.1.el8_10.x86_64-x86_64-with-glibc2.28",
+    "python": "3.12.14",
+    "gpus": [
+      "NVIDIA GeForce RTX 3090, 580.82.09"
+    ],
+    "settings_in_environment": [
+      "REZ_CONFIG_FILE"
+    ],
+    "pip_config": [
+      "global.index",
+      "global.index-url"
+    ]
+  },
+  "wanted": {
+    "python": "3.12",
+    "torch": [],
+    "torch_index": null,
+    "small": [
+      "numpy==2.5.2",
+      "pillow==12.3.0"
+    ]
+  },
+  "methods": {
+    "uv": {
+      "builds": [
+        {
+          "method": "uv",
+          "run": "cold",
+          "folder": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/uv-cold",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 1.4,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "venv",
+              "seconds": 0.2,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 1.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 0.5,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/mntx/raid/pdominik/comfyui-farm/run/builder-test/uv-cold\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/uv-cold",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": null
+          },
+          "size_mb": 75.3,
+          "problems": []
+        },
+        {
+          "method": "uv",
+          "run": "warm",
+          "folder": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/uv-warm",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 0.1,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "venv",
+              "seconds": 0.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 0.1,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "check",
+              "seconds": 0.3,
+              "ok": true,
+              "tail": "CHECK {\"python\": \"3.12.16\", \"prefix\": \"/mntx/raid/pdominik/comfyui-farm/run/builder-test/uv-warm\", \"foreign_paths\": [], \"numpy\": \"2.5.2\", \"PIL\": \"12.3.0\", \"torch\": null}"
+            }
+          ],
+          "check": {
+            "python": "3.12.16",
+            "prefix": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/uv-warm",
+            "foreign_paths": [],
+            "numpy": "2.5.2",
+            "PIL": "12.3.0",
+            "torch": null
+          },
+          "size_mb": 75.3,
+          "problems": []
+        }
+      ],
+      "tool": "uv 0.13.9 (x86_64-unknown-linux-gnu)",
+      "get_uv_seconds": 4.3,
+      "disk_mb": 321.6,
+      "pass": true
+    },
+    "installers": {
+      "builds": [
+        {
+          "method": "installers",
+          "run": "cold",
+          "folder": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/installers-cold",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 4.9,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 0.0,
+              "ok": false,
+              "tail": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/installers-cold/bin/python: No module named pip"
+            }
+          ],
+          "check": null,
+          "size_mb": 153.6,
+          "problems": [
+            "step packages failed"
+          ]
+        },
+        {
+          "method": "installers",
+          "run": "warm",
+          "folder": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/installers-warm",
+          "steps": [
+            {
+              "name": "python",
+              "seconds": 3.0,
+              "ok": true,
+              "tail": ""
+            },
+            {
+              "name": "packages",
+              "seconds": 0.0,
+              "ok": false,
+              "tail": "/mntx/raid/pdominik/comfyui-farm/run/builder-test/installers-warm/bin/python: No module named pip"
+            }
+          ],
+          "check": null,
+          "size_mb": 153.6,
+          "problems": [
+            "step packages failed"
+          ]
+        }
+      ],
+      "tool": "conda /mntx/raid/pdominik/miniconda3/bin/conda",
+      "disk_mb": 229.5,
+      "pass": false
+    }
+  },
+  "at": "2026-11-20 22:14:44"
+}
