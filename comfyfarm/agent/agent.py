@@ -101,6 +101,8 @@ class Agent:
         # This machine's GPUs as nvidia-smi reads them (gpu_probe), and why it couldn't.
         self.gpus: list[dict] | None = None
         self.gpu_error: str | None = None
+        self.released: dict | None = None       # the last time its runner freed its VRAM, and how it went
+        self._releasing = False
 
     # ================================================================ lifecycle
     def _ensure_sync(self) -> None:
@@ -225,6 +227,32 @@ class Agent:
             await self._take(p)
         if reply.get("nodes"):
             self.spawn(self.runner.refresh_object_info())
+        if reply.get("release_vram") and not self._releasing:
+            self.spawn(self.release_vram())
+
+    async def release_vram(self) -> dict:
+        """The manager asked (the Machines tab's Free VRAM): the runner frees what it keeps on
+        the card, when the farm has nothing running in it (decision 0023). Reported with the
+        status, with the GPUs read again when gpu_probe is on."""
+        self._releasing = True
+        try:
+            if self._in_comfy:
+                result = {"ok": False, "before": None, "after": None,
+                          "error": f"{self._in_comfy} job(s) in {self.runner.label}: drain the machine and wait "
+                                   f"for them, then free its VRAM"}
+            else:
+                result = await self.runner.release()
+            if self.cfg.gpu_probe.enabled:
+                await self.probe_gpus()
+            self.released = {"at": now(), **result}
+            if result["ok"]:
+                log.info("agent %s: %s freed its VRAM", self.name, self.runner.label)
+            else:
+                log.warning("agent %s: VRAM not freed: %s", self.name, result["error"])
+            await self.send_status()
+            return self.released
+        finally:
+            self._releasing = False
 
     async def probe_gpus(self) -> None:
         """Read this machine's GPUs (agent/gpus.py), off the event loop: nvidia-smi can be slow."""
@@ -249,6 +277,8 @@ class Agent:
         msg = {"name": self.name, **self.runner.status()}
         if self.cfg.gpu_probe.enabled:
             msg.update(gpus=self.gpus, gpu_error=self.gpu_error)
+        if self.released is not None:
+            msg["released"] = self.released
         try:
             reply = await self.link.status(msg)
             if reply.get("hello"):

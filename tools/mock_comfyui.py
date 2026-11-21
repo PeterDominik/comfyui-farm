@@ -222,11 +222,21 @@ def create_app(output: Path, delay: float, drop_classes: list[str] | None = None
 
     app = FastAPI(lifespan=lifespan)
 
+    # What its torch holds (models loaded): /free unloads them, as ComfyUI does when idle.
+    held = {"torch": 4_000_000_000}
+
     @app.get("/system_stats")
     def system_stats():
         return {"system": {"comfyui_version": "mock", "python_version": sys.version.split()[0]},
                 "devices": [{"name": "Mock RTX 5090", "type": "cuda", "vram_total": 34_000_000_000,
-                             "vram_free": 30_000_000_000}]}
+                             "vram_free": 34_000_000_000 - held["torch"], "torch_vram_total": held["torch"]}]}
+
+    @app.post("/free")
+    async def free(request: Request):
+        body = await request.json()
+        if body.get("unload_models") or body.get("free_memory"):
+            held["torch"] = 300_000_000
+        return {}
 
     @app.get("/object_info")
     def object_info():

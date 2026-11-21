@@ -493,6 +493,16 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             raise HTTPException(404, f"No machine called {name} has checked in.")
         return desk.set_drained(name, req.drain, by=ident.user)
 
+    @app.post("/api/v1/workers/{name}/free-vram")
+    def free_vram(name: str, ident: Identity = Depends(identity)):
+        """Ask a machine's ComfyUI to unload its models and free its VRAM (decision 0023). Its
+        agent does it when the farm has no job in it; the machine's `released` says how it went."""
+        if cfg.auth.api_keys and not ident.admin:
+            raise HTTPException(403, "Admins only.")
+        if name not in desk.agents:
+            raise HTTPException(404, f"No machine called {name} has checked in.")
+        return desk.request_release(name, by=ident.user)
+
     @app.post("/api/v1/workers/check")
     async def check_workers(ident: Identity = Depends(identity)):
         """Agents send their ComfyUI's node definitions again (shortly; the reply shows

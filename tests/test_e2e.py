@@ -637,6 +637,22 @@ convert:
         with self.assertRaisesRegex(farm.FarmError, "No machine called nobody has checked in"):
             farm._request("POST", "/api/v1/workers/nobody/drain", {"drain": True})
 
+    def test_0498b_free_vram(self):
+        """Free VRAM on the Machines tab (its HTTP call): the agent asks its ComfyUI to unload,
+        and the machine then says what it held before and after."""
+        self.assertEqual(farm._request("POST", "/api/v1/workers/mock/free-vram"), {"worker": "mock", "asked": True})
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            w = {x["name"]: x for x in farm._request("GET", "/api/v1/workers")["workers"]}["mock"]
+            if w.get("released"):
+                break
+            time.sleep(0.2)
+        r = w["released"]
+        self.assertEqual((r["ok"], r["error"]), (True, None), r)
+        self.assertLess(r["after"], 2**30)
+        with self.assertRaisesRegex(farm.FarmError, "No machine called nobody has checked in"):
+            farm._request("POST", "/api/v1/workers/nobody/free-vram")
+
     def test_0499_run_times(self):
         """Finished runs are timed per workflow and GPU type, and queued jobs get an ETA and
         the machine expected to take them."""

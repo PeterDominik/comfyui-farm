@@ -60,6 +60,9 @@ class Runner(Protocol):
     async def close(self) -> None: ...
     def status(self) -> dict: ...           # for the manager: online, connected, stats, ...
     def processes(self) -> dict: ...        # what it can run: {name: {digest, problems, expected_nodes}}
+    # Free the GPU memory it keeps while idle (a resident runner's models and caches), before
+    # another runner uses the card (decision 0023): {ok, before, after, error}, bytes it held.
+    async def release(self) -> dict: ...
 
     async def submit(self, run) -> None: ...            # sets run.pid and run.rt; RunRejected if refused
     def submitted(self, run) -> dict | None: ...        # what it handed its backend, for a person to look at
