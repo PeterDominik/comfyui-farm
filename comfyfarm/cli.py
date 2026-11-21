@@ -330,6 +330,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
     from .comfyenv import cli as envcli
     envcli.add_parser(sub)
+    from .envs import cli as runnerenvs
+    runnerenvs.add_parser(sub)
     args = ap.parse_args(argv)
 
     # Node titles contain emoji (VHS nodes); a service's redirected stdout on Windows
@@ -342,6 +344,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "comfyui":
         return envcli.run(args)
+    if args.cmd == "env":
+        return runnerenvs.run(args)
     if args.cmd == "agent":
         if args.check:
             from .config import default_agent_config_path, load_agent_config

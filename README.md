@@ -73,7 +73,9 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; Batch Submit's ShotGrid query; where ShotGrid's right-click goes |
 | `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
 | `comfyfarm/comfyenv/` | The farm's ComfyUI environment: what each machine runs, how it differs from `deploy/comfyui/environment.yaml`, and `sync` to bring it there |
-| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check` and `comfyui snapshot\|verify\|sync` |
+| `comfyfarm/envs/` | Runner environments: reading `environments/<name>/`, locking it, building this machine's copy with uv and checking it (see *Runner environments*) |
+| `environments/<name>/` | A runner environment as a uv project: `pyproject.toml`, `.python-version`, `env.yaml` (its check) and `uv.lock`. `gpu-test`: torch, numpy and pillow, for the test process |
+| `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check`, `comfyui snapshot\|verify\|sync` and `env list\|lock\|install\|remove` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
 | `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `process.yaml` (what's exposed and written, and which nodes do it): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha` |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
@@ -420,6 +422,41 @@ updated. The Machines tab marks
 ComfyUI's version ✓ (matches) or ≠, and lists the differences under the machine. A
 machine that differs keeps taking jobs; missing nodes or models still keep a workflow off
 it, as before. `agent --check` lists the differences as warnings.
+
+### Runner environments
+
+The process runner (and later runners) run their jobs in environments the farm builds
+itself, never in the pipeline's Python. Each is a folder in `environments/` of this repo, a
+small uv project (decision 0024):
+
+| File | What |
+|---|---|
+| `pyproject.toml` | Python and the packages, pinned; PyPI as the index, and PyTorch's index for torch only |
+| `.python-version` | The Python version uv installs (its own, whatever the machine has) |
+| `env.yaml` | What it is, and the command that checks a build (`python` is the build's own) |
+| `uv.lock` | Every package, with its hashes, for Linux and Windows. Made with `env lock`, committed |
+
+```bash
+python -m comfyfarm env list                  # the repo's environments, and what this machine has built
+python -m comfyfarm env lock gpu-test         # after changing its pyproject.toml: needs pypi.org; commit uv.lock
+python -m comfyfarm env install gpu-test      # build this machine's copy, check it, make it current
+python -m comfyfarm env remove gpu-test       # remove this machine's builds of it
+```
+
+Run them with the farm's Python, as for `agent --check`: `env -u PYTHONPATH -u PYTHONHOME
+"$(cat run/python)" -m comfyfarm env ...` on Linux, `.venv\Scripts\python.exe -m comfyfarm
+env ...` on Windows.
+
+`env install` builds into `data/envs/<name>/<fingerprint>/` (`envs.dir` in `agent.yaml`),
+with `uv sync --frozen`: exactly the committed lock. It runs the check in the build and only
+then makes it `current`. The build before stays as `previous`, older ones are removed, and
+a build that fails leaves `current` as it was. Installing an environment that is already
+built does nothing (`--force` builds it again). The first run installs uv itself into
+`data/envs/.uv-tool` with pip from pypi.org (or set `envs.uv` to a uv the machine has).
+
+A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
+from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
+if a disk can't, uv copies, and `env install` says so.
 
 ### How the manager and agents work together
 

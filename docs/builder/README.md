@@ -53,5 +53,19 @@ names only, not the studio mirror's address).
 
 ## Results
 
-None yet. When all three machines have a report, the pull request that adds the
-environment spec and `comfyfarm env install` names the builder in a decision record.
+uv passed on all three machines; the installers' method failed on two of the four runs
+(the 3090's Miniconda Python has no pip; Windows' Python 3.11 can't take numpy 2.5.2). uv
+is the builder: see `docs/decisions/0024-environments-are-uv-projects.md` for the numbers,
+and `environments/` and `python -m comfyfarm env` for how environments are built now.
+
+| Report | Machine |
+|---|---|
+| `wrk1125l.rodeofx.com_torch.json` | 3090, Linux |
+| `tor-flame02_torch.json` | A6000, Linux |
+| `wrk59467w_torch_condaPython.json` | 5090, Windows, run with ComfyUI's Python |
+| `wrk59467w_torch_defaultPython.json` | 5090, Windows, run with the farm's Python 3.11 |
+| `<machine>.json` | the same machines, `--no-torch` |
+
+On both Linux machines uv copied packages instead of linking them from its cache (14.1 GB
+for two builds and the cache, against 3.0 GB on Windows): uv clones on Linux by default,
+and those disks can't. `env install` asks uv for hard links instead.
