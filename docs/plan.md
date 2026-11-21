@@ -73,13 +73,13 @@ A4 launchers (xStudio, Daiquiri Automate).
   with the definition's fingerprint pinned per job (0013); agents report which definitions
   they hold and can run (0014); `process.yaml` loads beside `manifest.yaml` (0015), with
   head fields (class, targets, limits, models, eval) checked now and used from later
-  phases, and the five workflows still manifests; the manager's own graph building, the
+  phases; the manager's own graph building, the
   stored graph and the `farm.build_on_agent` switch are gone, and the API JSON is what the
   agent reports it queued (0016); each agent compares its own ComfyUI with the environment
   file and reports what differs, so the manager imports neither `comfyenv` nor a runner
   (0017); jobs name no node, so the manager plans with what a definition takes and writes
   and the agent finds the nodes in its own copy (0018). The process.yaml head says what a
-  definition takes and writes, and the runner block which node does it (0019). Left: the
-  five workflows are converted to process.yaml by hand, comments kept;
-  then `workflows.py` is split along the head and the runner block (a move), so the manager
-  imports nothing ComfyUI-specific.
+  definition takes and writes, and the runner block which node does it (0019), and the
+  five workflows are written that way, with their fingerprints unchanged. Left, the
+  phase's last step: `workflows.py` is split along the head and the runner block (a move),
+  so the manager imports nothing ComfyUI-specific.

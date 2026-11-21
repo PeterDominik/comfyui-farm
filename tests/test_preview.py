@@ -14,12 +14,14 @@ import unittest
 import zlib
 from pathlib import Path
 
+import yaml
+
 from comfyfarm.config import Config, ConvertConfig
 from comfyfarm.fileio import media as M
 from comfyfarm.fileio import preview as PV
 from comfyfarm.fileio.errors import ConvertError
 from comfyfarm.fileio.tools import find_tool
-from comfyfarm.workflows import Workflow, WorkflowRegistry
+from comfyfarm.workflows import Workflow, WorkflowRegistry, from_process
 
 REPO = Path(__file__).resolve().parent.parent
 REGISTRY = WorkflowRegistry(REPO / "workflows")
@@ -131,21 +133,30 @@ class WhichJobs(unittest.TestCase):
         self.assertFalse(wfs["chord_pbr"].makes_preview)                         # texture maps: no movie
         self.assertTrue(wfs["ltx25_alpha_gen"].schema()["preview"])
 
-    def manifest(self, d: Path, **extra) -> Workflow:
-        src = REPO / "workflows" / "wan22_i2i"
-        shutil.copytree(src, d / "wf")
-        m = (d / "wf" / "manifest.yaml").read_text(encoding="utf-8")
-        (d / "wf" / "manifest.yaml").write_text(m + "".join(f"\n{k}: {json.dumps(v)}\n" for k, v in extra.items()),
-                                                encoding="utf-8")
+    def definition(self, d: Path, preview, as_manifest=False) -> Workflow:
+        """wan22_i2i saying `preview`: in its process.yaml's writes, or as a manifest's top-level key."""
+        shutil.copytree(REPO / "workflows" / "wan22_i2i", d / "wf")
+        p = yaml.safe_load((d / "wf" / "process.yaml").read_text(encoding="utf-8"))
+        if as_manifest:
+            m, _ = from_process(p)
+            (d / "wf" / "process.yaml").unlink()
+            (d / "wf" / "manifest.yaml").write_text(json.dumps({**m, "preview": preview}), encoding="utf-8")
+        else:
+            p["writes"]["preview"] = preview
+            (d / "wf" / "process.yaml").write_text(yaml.safe_dump(p, sort_keys=False), encoding="utf-8")
         return Workflow(d / "wf")
 
     def test_a_workflow_can_opt_out(self):
+        for as_manifest in (False, True):
+            with self.subTest(manifest=as_manifest), tempfile.TemporaryDirectory() as d:
+                wf = self.definition(Path(d), False, as_manifest)
+                self.assertFalse(wf.makes_preview)
+                self.assertEqual([p for p in wf.problems if "preview" in p], [])
         with tempfile.TemporaryDirectory() as d:
-            wf = self.manifest(Path(d), preview=False)
-            self.assertFalse(wf.makes_preview)
-            self.assertEqual([p for p in wf.problems if "preview" in p], [])
+            with self.assertRaisesRegex(ValueError, "writes.preview: true .*, false or own"):
+                self.definition(Path(d), "no")
         with tempfile.TemporaryDirectory() as d:
-            wf = self.manifest(Path(d), preview="no")
+            wf = self.definition(Path(d), "no", as_manifest=True)
             self.assertIn("preview: needs to be true or false", " ".join(wf.problems))
 
     def test_settings_frozen_per_job(self):

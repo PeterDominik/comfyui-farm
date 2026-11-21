@@ -1,10 +1,10 @@
-# What the farm exposes for this workflow, and which nodes each parameter drives.
-# Full reference: "Workflow manifests" in README.md.
+# What the farm exposes for this workflow and what it writes (the head), and which ComfyUI
+# nodes do each (runner:). Full reference: "process.yaml" and "Workflow manifests" in README.md.
 #
-# Every target names the node id AND its class_type, so a re-export that renumbers nodes
-# fails `python -m comfyfarm check` instead of writing into the wrong node.
+# Every node is named with its class_type too, so a re-export that renumbers nodes fails
+# `python -m comfyfarm check` instead of writing into the wrong node.
 
-name: sam3_ltx_alpha
+id: sam3_ltx_alpha
 label: SAM3 x LTX alpha (one subject)
 description: >
   Mattes one subject of a plate, named by a word (person, car, dog): SAM3 finds it on the
@@ -12,22 +12,11 @@ description: >
   everything else SAM3 finds is painted out so only the subject is matted. Outputs a
   16-bit PNG alpha sequence numbered like the input, at the input's size.
 tag: matte                      # in the output file names: <source>.matte_vNNN.<frame>.png
-template: workflow_api.json
 # The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
 # 32 GB 5090 and up, so the 24 GB 3090 never gets it.
 requires: {vram_gb: 32}
 # Published through Daiquiri's update_and_render_nuke (README: Publishing), like the other
 # frame workflows.
-#
-# ComfyFarm Pro Alpha (node 4, comfyui_nodes/comfyfarm_nodes/pro_alpha.py) adds the
-# Comfy Pro Alpha Generator and its SAM3 and LTX nodes to the graph when it runs, so none
-# of their classes shows in this file: the packs are named here for the environment file.
-# Fixed in the node: Best quality (two LTX passes), the whole shot tracked forward and
-# backward from the pick frame, 24 fps, seed 42, alpha only, plates bigger than 1920x1088
-# matted at that size and the alpha scaled up to theirs. SAM3's and ViTMatte's models must
-# be in the machine's ComfyUI/models folder (see README: Parameters for sam3_ltx_alpha).
-# Folder names in custom_nodes: comfyui-sam3 is where the Nodes Manager (Comfy registry) puts SAM3.
-node_packs: [ComfyUI-Comfy-Pro-Alpha-Generator, comfyui-sam3, ComfyUI-LTXVideo]
 
 params:
   input:
@@ -35,7 +24,6 @@ params:
     takes: images
     label: Input sequence
     required: true
-    loader: {node: "1", class: ComfyFarmLoadImages}                  # INPUT Image Sequence
     # The generator renders up to 24 chunks of 49 frames, overlapping by 9.
     frames: {max: 960}
     help: >
@@ -52,8 +40,6 @@ params:
     help: >
       What to matte: one word or a short phrase (person, car, dog, red car). When SAM3
       finds several, the one it scores highest is matted and the others are painted out.
-    targets:
-      - {node: "2", input: value, class: PrimitiveString}             # INPUT Subject SAM3
 
   pick_frame:
     type: int
@@ -63,8 +49,6 @@ params:
       The frame number SAM3 looks for the subject on. Empty = the first frame. Give one
       where the subject is clearly visible when it enters later or is hidden at the start;
       it is tracked backward as well as forward from there.
-    targets:
-      - {node: "3", input: value, class: PrimitiveInt}                # INPUT Pick Frame
 
   output_path:
     type: output_folder
@@ -74,7 +58,33 @@ params:
       <source>.matte_vNNN.<frame>.png. Each run takes the next free version. Its parent
       folder must exist. Leave empty for the show's renders folder. Never inside .published.
 
-outputs:
-  # Writes the 16-bit frames. The farm points it at the job's folder, then renames them to
-  # paths.frame_name with the input's frame numbers.
-  frames: {node: "6", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix, ext: png}
+writes:
+  # The 16-bit frames, renamed to paths.frame_name with the input's frame numbers.
+  frames: {ext: png}
+
+runner:
+  type: comfyui
+  template: workflow_api.json
+  # ComfyFarm Pro Alpha (node 4, comfyui_nodes/comfyfarm_nodes/pro_alpha.py) adds the
+  # Comfy Pro Alpha Generator and its SAM3 and LTX nodes to the graph when it runs, so none
+  # of their classes shows in this file: the packs are named here for the environment file.
+  # Fixed in the node: Best quality (two LTX passes), the whole shot tracked forward and
+  # backward from the pick frame, 24 fps, seed 42, alpha only, plates bigger than 1920x1088
+  # matted at that size and the alpha scaled up to theirs. SAM3's and ViTMatte's models must
+  # be in the machine's ComfyUI/models folder (see README: Parameters for sam3_ltx_alpha).
+  # Folder names in custom_nodes: comfyui-sam3 is where the Nodes Manager (Comfy registry) puts SAM3.
+  node_packs: [ComfyUI-Comfy-Pro-Alpha-Generator, comfyui-sam3, ComfyUI-LTXVideo]
+
+  params:
+    input:
+      loader: {node: "1", class: ComfyFarmLoadImages}                  # INPUT Image Sequence
+    subject:
+      targets:
+        - {node: "2", input: value, class: PrimitiveString}             # INPUT Subject SAM3
+    pick_frame:
+      targets:
+        - {node: "3", input: value, class: PrimitiveInt}                # INPUT Pick Frame
+
+  outputs:
+    # Writes the 16-bit frames. The farm points it at the job's folder, then renames them.
+    frames: {node: "6", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix}

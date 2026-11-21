@@ -40,7 +40,7 @@ class Fit(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         shutil.copytree(REPO / "workflows" / "ltx25_alpha_gen", d / "wf")
-        m = d / "wf" / "manifest.yaml"
+        m = d / "wf" / "process.yaml"         # head keys: the same in a manifest
         m.write_bytes(m.read_bytes() + b"\n" + extra.encode() + b"\n")
         return Workflow(d / "wf")
 

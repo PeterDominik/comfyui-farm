@@ -42,7 +42,7 @@ def touch(d, *names):
 
 MAPS = [{"name": "basecolor", "channel": "color01", "colorspace": "acescg", "color": True, "bits": "half"},
         {"name": "height", "channel": "bmp02", "colorspace": "acescg", "color": False, "bits": "float"}]
-# All five, as workflows/chord_pbr/manifest.yaml has them.
+# All five, as workflows/chord_pbr/process.yaml has them.
 CHORD_MAPS = MAPS + [{"name": n, "channel": c, "colorspace": "acescg", "color": False, "bits": "half"}
                      for n, c in (("normal", "nrm02"), ("roughness", "spcr01"), ("metalness", "metal01"))]
 TOKENS = {"uvset": "map1", "tile": "noTile", "state": "defState", "description": ""}
