@@ -51,7 +51,8 @@ class Host(Protocol):
 
 
 class Runner(Protocol):
-    """What the agent asks of a runner."""
+    """What the agent asks of a runner. A runner judges only its own runs (Held.runner): the
+    agent's other runs never reached its backend, so it can't find them there, or lose them."""
     label: str                              # the backend's name in messages ("ComfyUI")
     ready: bool                             # up and checked: runs can be started
     max_runs: int | None                    # its runs on the card at once (None: max_inflight; decision 0026)

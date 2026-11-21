@@ -527,7 +527,7 @@ class ThroughTheFarm(Environment):
                            heartbeat_wait=0, retry_seconds=0.05, health_seconds=999, reconcile_seconds=999,
                            workflows_dir=str(self.workflows), envs={"dir": str(self.builds)},
                            process_runner={"enabled": True, "runs_dir": f"{root}/runs", "grace_seconds": 0.5})
-        comfy = ComfyUIRunner(acfg, client=FakeComfy())
+        self.comfy = comfy = ComfyUIRunner(acfg, client=FakeComfy())
         comfy._registry = WorkflowRegistry(self.workflows)          # no ComfyUI workflow among them
         self.process = ProcessRunner(acfg, registry=ProcessRegistry(self.workflows), tick=0.05)
         self.agent = Agent(acfg, FlakyLink(self.desk), runners=[comfy, self.process])
@@ -592,6 +592,25 @@ class ThroughTheFarm(Environment):
         self.beat()
         self.until(lambda: self.store.get(job["id"])["status"] == "done", what="done")
         self.assertEqual(self.store.get(job["id"])["warnings"], ["the frames came out dark"])
+
+    def test_comfyui_leaves_the_process_runners_runs_alone(self):
+        """ComfyUI checks its runs against its queue every reconcile_seconds, and loses them all
+        when it is unreachable too long. A process run never was in its queue: the pilot's A6000
+        and 3090 lost every gpu_test job 20 s in this way, and killed it mid-frame."""
+        job = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "hang"}, "ann")
+        self.beat()
+        self.until(lambda: self.store.get(job["id"])["status"] == "running", what="running")
+        h = next(iter(self.agent.held.values()))
+        h.dispatched_at -= 60                       # older than the reconcile's grace
+        self.wait(self.comfy._reconcile())
+        self.wait(self.comfy._lost_with_comfyui())
+        self.wait(asyncio.sleep(0.3))
+        self.assertEqual(self.store.get(job["id"])["status"], "running")
+        self.assertFalse((Path(self.process.runs_dir) / h.attempt / "cancel").exists())
+        self.assertIs(self.agent.held.get(h.id), h)
+        self.wait(self.farm.cancel(job["id"]))
+        self.beat()
+        self.until(lambda: self.store.get(job["id"])["status"] == "cancelled", what="cancelled")
 
     def test_a_process_job_that_fails_and_one_cancelled(self):
         job = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "fail"}, "ann")
