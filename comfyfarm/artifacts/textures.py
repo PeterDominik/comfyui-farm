@@ -134,4 +134,10 @@ class Textures:
                                   progress), []
 
 
+    def record(self, outputs: dict) -> dict | None:
+        if not outputs.get("maps"):
+            return None
+        return {"kind": self.kind, "files": outputs.get("files"), "maps": outputs["maps"]}
+
+
 HANDLER = Textures()

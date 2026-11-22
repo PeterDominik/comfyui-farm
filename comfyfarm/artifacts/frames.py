@@ -157,5 +157,13 @@ class Frames:
                 warnings.append(f"Couldn't make the preview movie: {ex}")
         return outputs, warnings
 
+    def record(self, outputs: dict) -> dict | None:
+        if not (outputs.get("frames") or outputs.get("preview")):
+            return None
+        return {"kind": self.kind, "count": outputs.get("frames"), "first": outputs.get("first"),
+                "last": outputs.get("last"), "pattern": outputs.get("frame_pattern"),
+                "pattern_posix": outputs.get("frame_pattern_posix"), "preview": outputs.get("preview"),
+                "preview_posix": outputs.get("preview_posix")}
+
 
 HANDLER = Frames()

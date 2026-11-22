@@ -760,6 +760,8 @@ async function updateDest(wf, seqP, outP) {
     const what = r.what || (r.frames ? r.frames + " frames" : "frames");
     el.innerHTML = `<b>Will write</b> ${esc(what)} to <code>${esc(dir)}/</code><br>as ${files}`
       + (r.maps ? `<br>Maps: ${r.maps.map(m => `<code>${esc(m)}</code>`).join(" ")}` : "")
+      // Other kinds of output beside them (a report: file), named after the job (decision 0036).
+      + (r.artifacts || []).map(a => `<br>And ${esc(a.kind)}: <code>${esc(a.name)}</code>`).join("")
       + (r.version > 1 ? `<br><span class="warn">Earlier versions already exist there (or are queued), so this run is v${String(r.version).padStart(3, "0")}.</span>` : "")
       + convertLine(r.convert)
       + Object.entries(r.inputs || {}).map(([name, x]) => {   // the other inputs
@@ -869,6 +871,8 @@ function detail(j) {
              : o.frames ? `<div>Frames out</div><div>${o.frames} (${o.first}-${o.last})</div>` : ""}
     ${o.preview ? `<div>Preview</div><div class="vslot" data-vid="${j.id}" data-src="/api/v1/jobs/${j.id}/preview${keyq}"></div>` : ""}
     ${pathRow("Preview movie", o.preview_posix)}
+    ${(o.artifacts || []).filter(a => Array.isArray(a.files)).flatMap(a =>   // the other kinds' files (0036)
+      a.files.map((f, n) => pathRow(n ? "" : a.kind[0].toUpperCase() + a.kind.slice(1), (a.files_posix || [])[n] || f))).join("")}
     ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
     ${j.kind === "set" ? setDetail(j) : ""}
     ${pathRow("Output (Windows)", windows)}

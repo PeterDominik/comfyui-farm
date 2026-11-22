@@ -5,8 +5,9 @@ It reads the input frames onto the GPU with torch, blurs, inverts or grades them
 writes them as <frames_prefix>_00001.png, ... into the output folder, where the farm renames
 them. With hold_gb it first keeps that much of the card, which only fits if nothing else
 holds it. It reports progress in events.jsonl, stops when the cancel file appears, says what
-went wrong in result.json, and writes gpu_test.<job>.json beside the frames: the card, how
-much of it was free when it started, and the most it used.
+went wrong in result.json, and writes its report where job.json's writes.file says (the
+farm names it after the job, <source>.gputest_vNNN.json): the card, how much of it was
+free when it started, and the most it used.
 
 torch, numpy and PIL are imported when they are needed, so the farm's tests can read this
 file and run its frame reading and writing without them."""
@@ -49,6 +50,11 @@ class Job:
         return os.path.join(self.d["output_dir"], f"{self.d['frames_prefix']}_{i:05d}.png")
 
     def report_path(self) -> str:
+        """Where its report goes: as job.json's writes.file says, for the farm to name it after
+        the job; without one (a job.json written by hand), beside the frames."""
+        w = (self.d.get("writes") or {}).get("file")
+        if w:
+            return os.path.join(w["dir"], f"{w['prefix']}.json")
         return os.path.join(self.d["output_dir"], f"gpu_test.{self.d['job'][:8]}.json")
 
 

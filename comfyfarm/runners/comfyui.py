@@ -318,6 +318,17 @@ class ComfyUIRunner:
         node_out = ((hist or {}).get("outputs") or {}).get(str(pv["node"])) or {}
         return node_out.get("gifs") or node_out.get("videos") or node_out.get("images") or []
 
+    def files(self, h, hist: dict | None, kind: str, spec: dict) -> list:
+        """What the run wrote of a kind on the generic route (decision 0036): the files ComfyUI
+        lists for the node this checkout's definition names (runner.outputs.<kind>.node)."""
+        wf = self._workflows().get(h.job.get("workflow"))
+        node = ((wf.outputs.get(kind) if wf else None) or {}).get("node")
+        if not node:
+            return []
+        node_out = ((hist or {}).get("outputs") or {}).get(str(node)) or {}
+        return [e for v in node_out.values() if isinstance(v, list) for e in v
+                if isinstance(e, dict) and e.get("filename")]
+
     async def fetch(self, entry: dict, dest) -> None:
         await self.client.download(entry["filename"], entry.get("subfolder", ""), entry.get("type", "output"), dest)
 

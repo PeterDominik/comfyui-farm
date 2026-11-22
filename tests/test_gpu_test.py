@@ -93,14 +93,15 @@ class Script(unittest.TestCase):
             Image.fromarray(a).save(self.tmp / f"plate.{n}.png")
             self.frames.append(a)
 
-    def run_it(self, env=None, **params):
+    def run_it(self, env=None, writes=None, **params):
         job = {"contract": 1, "job": "0123456789ab", "params": {"operation": "blur", "strength": 4, "hold_gb": 0,
                                                                 "pause": 0, **params},
                "input": with_files({"raw": "", "farm_path": "", "directory": f"{self.tmp}/",
                                     "filename": "plate.%04d.png", "first": 1001, "last": 1002, "frame_count": 2,
                                     "skip": 0, "cap": 0, "show": None, "shot": None}),
                "output_dir": str(self.out), "frames_prefix": "_raw", "events": str(self.tmp / "events.jsonl"),
-               "result": str(self.tmp / "result.json"), "cancel": str(self.tmp / "cancel")}
+               "result": str(self.tmp / "result.json"), "cancel": str(self.tmp / "cancel"),
+               **({"writes": writes} if writes else {})}
         (self.tmp / "job.json").write_text(json.dumps(job), encoding="utf-8")
         path = os.pathsep.join([str(FAKE_TORCH), *filter(None, [os.environ.get("PYTHONPATH")])])
         r = subprocess.run([sys.executable, str(RUN)], cwd=self.tmp, capture_output=True, text=True, timeout=120,
@@ -136,12 +137,14 @@ class Script(unittest.TestCase):
         self.assertTrue(np.array_equal(self.written(2), self.frames[1]))
 
     def test_it_reports_progress_and_the_card(self):
-        r, _ = self.run_it(hold_gb=10)
+        # Its report where job.json's writes.file says, for the farm to name it (decision 0036).
+        file = {"dir": str(self.out), "prefix": "_comfyfarm_01234567_file", "ext": "json"}
+        r, _ = self.run_it(hold_gb=10, writes={"frames": {"ext": "png"}, "file": file})
         self.assertEqual(r.returncode, 0, r.stderr)
         events = [json.loads(line) for line in (self.tmp / "events.jsonl").read_text().splitlines()]
         self.assertEqual(events[0]["stage"], "holding 10 GB of the GPU (23.0 GB free)")
         self.assertEqual(events[-1], {"progress": 1.0, "stage": "frame 2/2"})
-        report = json.loads((self.out / "gpu_test.01234567.json").read_text())
+        report = json.loads((self.out / "_comfyfarm_01234567_file.json").read_text())
         self.assertEqual((report["gpu"], report["total_gb"], report["free_gb_at_start"], report["held_gb"],
                           report["frames"]), ("Fake GPU", 24.0, 23.0, 10.0, 2))
         self.assertGreaterEqual(report["peak_gb"], 10.0)

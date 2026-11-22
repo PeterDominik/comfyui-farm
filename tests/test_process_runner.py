@@ -85,6 +85,9 @@ for i, src in enumerate(files, 1):
     event(progress=i / len(files), stage=f"frame {i}/{len(files)}")
 if mode == "warn":
     json.dump({"warnings": ["the frames came out dark"]}, open(job["result"], "w"))
+report = (job.get("writes") or {}).get("file")          # writes.file: a report beside the frames
+if report:
+    json.dump({"frames": len(files)}, open(os.path.join(report["dir"], report["prefix"] + ".json"), "w"))
 '''
 
 
@@ -325,12 +328,12 @@ class Runs(Environment):
         if pending:
             self.loop.run_until_complete(asyncio.wait(pending, timeout=30))
 
-    def held(self, process="demo", mode="ok", digest=None, runner=None):
+    def held(self, process="demo", mode="ok", digest=None, runner=None, writes=None):
         runner = runner or self.runner
         wf = runner._definitions()[process]
         job = {"job": f"job-{process}-{mode}", "attempt": f"att-{process}-{mode}", "workflow": process,
                "request": {"definition": digest or wf.digest, "values": {"mode": mode}, "seq": None, "inputs": {},
-                           "out_dir": str(self.out), "frames_prefix": "_raw"}}
+                           "out_dir": str(self.out), "frames_prefix": "_raw", **({"writes": writes} if writes else {})}}
         h = Held(job=job, attempt=job["attempt"], status="dispatched", pid=job["attempt"], runner=runner)
         self.host.held.append(h)
         return h
@@ -351,6 +354,26 @@ class Runs(Environment):
 
     def kinds(self):
         return [s[0] for s in self.host.said]
+
+    def test_other_kinds_of_output_go_where_job_json_says(self):
+        """Decision 0036: job.json's writes names each kind's folder and prefix; the runner lists
+        what the run wrote of it and renames it where it is."""
+        spec = {"dir": str(self.out), "prefix": "_comfyfarm_1234abcd_file", "ext": "json"}
+        h = self.held(writes={"file": spec})
+        self.wait(self.runner.submit(h))
+        self.pump(h, lambda: "done" in self.kinds())
+        seen = json.loads((self.root / "runs" / h.attempt / "seen.json").read_text())
+        self.assertEqual(seen["job"]["writes"], {"frames": {"ext": "png"}, "file": spec})
+        for n in ("_comfyfarm_1234abcd_file.json", "_comfyfarm_1234abcd_file_stats.json",
+                  "_comfyfarm_1234abcd_file.txt", "other.json"):
+            (self.out / n).write_text("{}")
+        found = self.runner.files(h, None, "file", spec)
+        self.assertEqual([os.path.basename(f) for f in found],
+                         ["_comfyfarm_1234abcd_file.json", "_comfyfarm_1234abcd_file_stats.json"])
+        self.wait(self.runner.fetch(found[0], str(self.out / "plate.gputest_v001.json")))
+        self.assertTrue((self.out / "plate.gputest_v001.json").exists())
+        self.assertFalse((self.out / "_comfyfarm_1234abcd_file.json").exists())
+        self.assertEqual(self.runner.files(h, None, "file", dict(spec, dir=str(self.root / "nowhere"))), [])
 
     def test_a_run_goes_well(self):
         h = self.held()
@@ -510,6 +533,9 @@ class ThroughTheFarm(Environment):
         definition(self.workflows, "copy", params={
             "input": {"type": "input", "takes": "images", "label": "Frames", "required": True},
             "mode": {"type": "choice", "choices": ["ok", "fail", "hang", "warn"], "default": "ok"}})
+        definition(self.workflows, "report", params={
+            "input": {"type": "input", "takes": "images", "label": "Frames", "required": True}},
+            writes={"frames": {"ext": "png"}, "file": {"ext": "json"}})
         mappings = [{"posix": "/rdo/shows", "windows": f"{root}/shows"}]
         cfg = Config.model_validate({
             "database": f"{root}/farm.db", "workflows_dir": str(self.workflows), "workers": [],
@@ -568,6 +594,23 @@ class ThroughTheFarm(Environment):
         async def go():
             await self.agent._obey(await self.agent._heartbeat())
         self.wait(go())
+
+    def test_a_report_comes_back_named_after_the_job(self):
+        """A file a process writes besides its frames (writes.file, decision 0036): named like
+        the frames, in their folder, and listed with them in the job's artifacts."""
+        job = self.farm.submit("report", {"input": f"{self.SEQ} 1001-1003"}, "ann")
+        self.assertEqual(job["info"]["writes"]["file"]["prefix"], f"_comfyfarm_{job['id'][:8]}_file")
+        self.beat()
+        self.until(lambda: self.store.get(job["id"])["status"] == "done", what="done")
+        row = self.store.get(job["id"])
+        out = row["outputs"]
+        self.assertEqual([a["kind"] for a in out["artifacts"]], ["frames", "file"])
+        self.assertEqual((out["artifacts"][0]["count"], out["artifacts"][1]["files"]), (3, out["file"]["files"]))
+        [report] = out["file"]["files"]
+        frames = sorted(n for n in os.listdir(row["output_dir"]) if n.endswith(".png"))
+        self.assertEqual(os.path.basename(report), frames[0].rsplit(".", 2)[0] + ".json")   # <source>.report_v001
+        self.assertEqual(json.loads(Path(report).read_text()), {"frames": 3})
+        self.assertFalse([n for n in os.listdir(row["output_dir"]) if n.startswith("_comfyfarm")])
 
     def test_a_process_job_runs_and_its_frames_are_collected(self):
         self.assertEqual(self.desk.agents["gpu1"].problems, {})        # it said it can run them

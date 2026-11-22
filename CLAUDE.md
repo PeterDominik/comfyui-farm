@@ -37,7 +37,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
-| `comfyfarm/artifacts/` | each kind of output, one handler file named by its `writes:` key: where it goes (manager), prepare and collect (agent) |
+| `comfyfarm/artifacts/` | each kind of output, one handler file named by its `writes:` key: where it goes (manager), prepare and collect (agent); `base.Generic` is the route a new kind takes |
 | `comfyfarm/comfyenv/` | the farm's ComfyUI environment: spec, compare, sync |
 | `comfyfarm/envs/`, `environments/` | runner environments: uv projects in the repo, locked; published to the bank as releases; built and checked on each machine (`comfyfarm env`) |
 | `comfyfarm/publish/`, `comfyfarm/shotgrid/` | publishing through Daiquiri and Tractor; ShotGrid |

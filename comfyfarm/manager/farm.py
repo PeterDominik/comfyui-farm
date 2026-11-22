@@ -172,8 +172,9 @@ class Farm:
                           finished_at=max((r["finished_at"] or 0) for r in rows) or now())
         if done and tex:
             items = [i for r in done for i in json.loads(r["items"] or "[]")]
+            maps = T.map_outputs(tex, parent["output_dir"], self.cfg.paths.mappings, items)
             fields["outputs"] = {"output_dir": parent["output_dir"], "output_dir_posix": info.get("output_dir_posix"),
-                                 **T.map_outputs(tex, parent["output_dir"], self.cfg.paths.mappings, items)}
+                                 **maps, "artifacts": [A.by_kind("textures").record(maps)]}
         starts = [r["started_at"] or r["dispatched_at"] for r in rows if r["started_at"] or r["dispatched_at"]]
         fields["started_at"] = min(starts) if starts else None
         fields["dispatched_at"] = min((r["dispatched_at"] for r in rows if r["dispatched_at"]), default=None)
@@ -303,18 +304,26 @@ class Farm:
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
                 "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
-                "source": source, "out_dir": None, "version": None, "picked": None, "artifact": None}
+                "source": source, "out_dir": None, "version": None, "picked": None, "artifacts": []}
         # No machine may take it now (requires, drained, offline): shown before submitting
         # and as a queued job's stage, but not kept as a warning (it passes).
         plan["waits"] = self.desk.requires_note(wf.name) if self.desk else None
-        # Where what it writes goes and what it's called: the handler of its kind (decision 0034).
-        handler = plan["artifact"] = A.for_definition(wf)
-        if handler is None:
-            return plan
+        # Where what it writes goes and what it's called: the handler of each kind (decisions 0034,
+        # 0036). Frames or a texture set first: they choose the folder, other kinds write into it.
+        plan["artifacts"] = A.for_definition(wf)
         try:
-            return handler.plan(plan, self._artifact_context(job_id))
+            for handler in plan["artifacts"]:
+                plan = handler.plan(plan, self._artifact_context(job_id))
         except A.PlanError as e:
             raise FarmError(str(e), e.status) from None
+        return plan
+
+    def _artifacts(self, plan: dict, part: str, job_id: str | None = None) -> dict:
+        """What the handlers of its kinds give of a plan (info, request or summary), together."""
+        out: dict = {}
+        for h in plan.get("artifacts") or []:
+            A.merge(out, h.info(plan, self._artifact_context(job_id)) if part == "info" else getattr(h, part)(plan))
+        return out
 
     def _artifact_context(self, job_id: str) -> A.PlanContext:
         return A.PlanContext(cfg=self.cfg, job_id=job_id, scratch_root=self.scratch_root,
@@ -532,8 +541,9 @@ class Farm:
             "inputs": {n: ({"frames": x.frame_count, "first": x.first, "last": x.last, "kind": x.kind,
                             "convert": I.summary(x, pc)} if x else None)
                        for n, x in (plan.get("inputs") or {}).items()},
-            # What the handler of its kind of output adds (decision 0034): a texture set's maps.
-            **(plan["artifact"].summary(plan) if plan.get("artifact") else {}),
+            # What the handlers of its kinds of output add (decision 0034): a texture set's maps,
+            # the other kinds' file names (artifacts).
+            **self._artifacts(plan, "summary"),
         }
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
@@ -560,10 +570,8 @@ class Farm:
                 self.wake()
                 return job
             # What the machine that runs it builds its graph from (decision 0013).
-            handler = plan["artifact"]
-            request = wf.request(values, seq, out_dir, inputs=plan["inputs"],
-                                 **(handler.request(plan) if handler else {}))
-            info = self._info(plan, seq, handler.info(plan, self._artifact_context(job_id)) if handler else {})
+            request = wf.request(values, seq, out_dir, inputs=plan["inputs"], **self._artifacts(plan, "request"))
+            info = self._info(plan, seq, self._artifacts(plan, "info", job_id))
             if pub:
                 info["publish_request"] = pub
             job = self.store.insert({

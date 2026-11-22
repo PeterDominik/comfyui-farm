@@ -202,6 +202,9 @@ class Workflow(Definition):
         if o.get("preview"):
             pv = o["preview"]
             problems += self._check_target("outputs.preview", str(pv["node"]), pv.get("class"), pv.get("prefix_input"))
+        for kind in self.writes:            # the other kinds of output (decision 0036)
+            w = o.get(kind) or {}
+            problems += self._check_target(f"outputs.{kind}", str(w.get("node")), w.get("class"), w.get("prefix_input"))
         return sorted(set(problems))
 
     def static_check(self) -> list[str]:
@@ -309,9 +312,10 @@ class Workflow(Definition):
     # ------------------------------------------------------------------ build
     def build(self, values: dict, seq=None, out_dir: str | None = None,
               frames_prefix: str | None = None, preview_prefix: str | None = None,
-              textures: dict | None = None, inputs: dict | None = None) -> dict:
+              textures: dict | None = None, inputs: dict | None = None, writes: dict | None = None) -> dict:
         """The prompt for one run. `seq` is the primary input as resolved, `inputs` the
-        others by name (missing or None: left empty)."""
+        others by name (missing or None: left empty). `writes`: the other kinds of output
+        (decision 0036), each node's file name prefix set to the job's."""
         prompt = copy.deepcopy(self.template)
         for name, p in self.params.items():
             if p.type in INPUT_TYPES or p.naming or name not in values:
@@ -336,6 +340,10 @@ class Workflow(Definition):
         if preview_prefix and o.get("preview"):
             pv = o["preview"]
             prompt[str(pv["node"])]["inputs"][pv["prefix_input"]] = preview_prefix
+        for kind, spec in (writes or {}).items():
+            wiring = o.get(kind) or {}
+            if wiring.get("prefix_input"):
+                prompt[str(wiring["node"])]["inputs"][wiring["prefix_input"]] = spec["prefix"]
         if textures and self.textures:
             # Each map's save node writes PNGs into the job's scratch folder; the gateway
             # turns them into the named EXRs afterwards (textures.write_maps). The plan names
@@ -360,7 +368,8 @@ class Workflow(Definition):
         return self.build(request["values"], seq(request.get("seq")), request.get("out_dir"),
                           request.get("frames_prefix"), request.get("preview_prefix"),
                           textures=request.get("textures"),
-                          inputs={k: seq(v) for k, v in (request.get("inputs") or {}).items()})
+                          inputs={k: seq(v) for k, v in (request.get("inputs") or {}).items()},
+                          writes=request.get("writes"))
 
     @staticmethod
     def _fill_port(prompt: dict, port: Port, seq) -> None:

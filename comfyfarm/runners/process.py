@@ -21,6 +21,9 @@ command reads job.json and writes, as it goes:
                    ["..."] for the job
     frames         into job.json's output_dir, named <frames_prefix>_<number>.<ext>, the
                    numbers zero-padded so they sort in order (writes.frames)
+    other kinds    a file, a movie...: into job.json's writes.<kind>.dir, each named
+                   <writes.<kind>.prefix><anything>, with writes.<kind>.ext when it says one
+                   (decision 0036); the farm names them after the job
 
 It stops when job.json's `cancel` file appears. Runs outlive the agent: the next agent finds
 them again by their folder and the supervisor's lock."""
@@ -279,7 +282,8 @@ class ProcessRunner:
             "params": request.get("values") or {}, "input": with_files(request.get("seq")),
             "inputs": {k: with_files(v) for k, v in (request.get("inputs") or {}).items()},
             "output_dir": request.get("out_dir"), "frames_prefix": request.get("frames_prefix"),
-            "writes": {"frames": {"ext": wf.frames_ext}} if wf.frames_ext else {},
+            "writes": {**({"frames": {"ext": wf.frames_ext}} if wf.frames_ext else {}),
+                       **(request.get("writes") or {})},
             "seconds": seconds, "events": str(run / "events.jsonl"), "result": str(run / "result.json"),
             "cancel": str(run / "cancel")}, self.host.view)
         spec = {"command": wf.argv(python, run), "seconds": seconds, "grace": self.pc.grace_seconds,
@@ -363,8 +367,20 @@ class ProcessRunner:
     def preview(self, h, result) -> list:
         return []                       # a process doesn't make its own preview video (writes.preview: own)
 
+    def files(self, h, result, kind: str, spec: dict) -> list:
+        """What the run wrote of a kind: the files in the folder job.json gave it, starting with
+        its prefix (and with its extension, when the definition says one), in name order."""
+        folder, prefix, ext = spec.get("dir") or "", spec.get("prefix") or "", spec.get("ext")
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        return [os.path.join(folder, n) for n in sorted(names)
+                if n.startswith(prefix) and (not ext or n.lower().endswith("." + ext.lower()))]
+
     async def fetch(self, entry, dest) -> None:
-        raise RuntimeError("a process has no preview video of its own to fetch")
+        """One of its files, renamed: the run wrote it where it goes."""
+        await asyncio.to_thread(os.replace, entry, dest)
 
     async def forget(self, pid: str | None) -> None:
         """A run that went well leaves nothing behind; a failed one's folder is kept a while."""
