@@ -1,8 +1,9 @@
 """The retention sweeper (decisions 0006, 0041): once a day, the finished jobs whose outputs
 have expired, and for each the exact files it would delete: only those its provenance file
 lists (decision 0038), and only when that file is the job's own and sits in the job's
-output folder. For now it is a dry run: it writes what it would do, and deletes nothing
-(plan, phase 6, step 4).
+output folder, and only in the farm's own renders folders: never in a folder the artist
+picked (decision 0042). For now it is a dry run: it writes what it would do, and deletes
+nothing (plan, phase 6, step 4).
 
 A job expires `retention.keep_days` after it finished, or after it was last sent to Tractor
 to be published (dispatching a publish restarts the clock). A job with a publish on its way
@@ -18,6 +19,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ..fileio import naming as N
 from ..fileio import paths as P
 from ..protocol import FINISHED, now
 
@@ -62,6 +64,28 @@ def _same_folder(a: str, b: str) -> bool:
     return a == b or (os.name == "nt" and a.lower() == b.lower())
 
 
+def _under(folder: str, root: str) -> bool:
+    f, r = P.normalize(folder).rstrip("/") + "/", P.normalize(root).rstrip("/") + "/"
+    return f.startswith(r) or (os.name == "nt" and f.lower().startswith(r.lower()))
+
+
+def not_the_farms(job: dict, folder: str, pc) -> str | None:
+    """Why the job's folder isn't one of the farm's own renders folders (decision 0042), or
+    None when it is: under paths.output_root for the job's show, and not one the artist
+    picked. A comp may read from a folder the artist picked, so its files are never swept."""
+    info = job.get("info") or {}
+    if info.get("output_dir_picked"):
+        return "The artist picked its output folder, so its files stay: only its record goes."
+    try:
+        root = N.output_root(pc, info.get("show"), info.get("seq"), info.get("shot"))
+    except Exception:  # noqa: BLE001  (no show to work the renders root out from)
+        return "Its show isn't known, so its folder can't be checked against the renders root: its files stay."
+    if not _under(folder, root):
+        return (f"Its folder isn't in the farm's renders root ({P.to_posix(root, pc.mappings) or root}), so its "
+                f"files stay: only its record goes.")
+    return None
+
+
 def _provenance(run: dict, folder: str) -> tuple[dict | None, str | None]:
     """A run's provenance file and its name, or why it can't be used."""
     path = (run.get("outputs") or {}).get("provenance")
@@ -84,22 +108,27 @@ def _provenance(run: dict, folder: str) -> tuple[dict | None, str | None]:
     return doc, None
 
 
-def _entry(job: dict, runs: list[dict], expires: float, sent: float | None, mappings) -> dict:
-    """What the sweeper would do for one expired job (and its batches, for a set)."""
+def _entry(job: dict, runs: list[dict], expires: float, sent: float | None, pc) -> dict:
+    """What the sweeper would do for one expired job (and its batches, for a set). Why its
+    files stay, when they all do for a reason that is the rule (`files_stay`), is kept apart
+    from what went wrong (`problems`)."""
     folder = job.get("output_dir") or ""
     e = {"job": job["id"], "kind": job.get("kind") or "job", "workflow": job["workflow"], "user": job["user"],
          "show": (job.get("info") or {}).get("show"), "status": job["status"],
          "finished": _when(job.get("finished_at")), "published": _when(sent), "expired": _when(expires),
-         "folder": P.to_posix(folder, mappings) or folder, "records": len(runs) + (job.get("kind") == "set"),
-         "provenance": [], "delete": [], "bytes": 0, "missing": [], "problems": [], "left": None,
+         "folder": P.to_posix(folder, pc.mappings) or folder, "records": len(runs) + (job.get("kind") == "set"),
+         "files_stay": None, "provenance": [], "delete": [], "bytes": 0, "missing": [], "problems": [], "left": None,
          "empties_folder": False}
     if not folder:
-        e["problems"].append("No output folder: only its record goes.")
+        e["files_stay"] = "No output folder: only its record goes."
+        return e
+    e["files_stay"] = not_the_farms(job, folder, pc)
+    if e["files_stay"]:
         return e
     listed = [r for r in runs if (r.get("outputs") or {}).get("provenance")]
     if not listed:
-        e["problems"].append("No provenance file (provenance was off when it was submitted, or it didn't finish), "
-                             "so its files stay: only its record goes.")
+        e["files_stay"] = ("No provenance file (provenance was off when it was submitted, or it didn't finish), "
+                           "so its files stay: only its record goes.")
         return e
     delete: dict[str, int] = {}
     for run in listed:
@@ -139,7 +168,7 @@ def sweep(store, cfg, t: float | None = None) -> dict:
     """The dry run: every finished job (and texture set) whose outputs have expired, with
     the files it would delete; nothing is deleted. `cfg` is the manager's Config."""
     t = now() if t is None else t
-    rc, mappings = cfg.retention, cfg.paths.mappings
+    rc = cfg.retention
     jobs, kept, publishing = [], 0, 0
     for job in store.list(statuses=FINISHED, limit=10_000_000):
         expires, sent = expiry(job, store.publishes(job["id"]), rc.keep_days)
@@ -150,11 +179,12 @@ def sweep(store, cfg, t: float | None = None) -> dict:
             kept += 1
             continue
         runs = store.list(parent=job["id"], limit=10_000_000) if job.get("kind") == "set" else [job]
-        jobs.append(_entry(job, runs, expires, sent, mappings))
+        jobs.append(_entry(job, runs, expires, sent, cfg.paths))
     jobs.sort(key=lambda e: e["finished"] or "")
     return {"comfyfarm_sweep": 1, "at": _when(t), "dry_run": True, "keep_days": rc.keep_days,
             "expired": len(jobs), "files": sum(len(e["delete"]) + len(e["provenance"]) for e in jobs),
             "bytes": sum(e["bytes"] for e in jobs), "records": sum(e["records"] for e in jobs),
+            "files_stay": sum(1 for e in jobs if e["files_stay"]),
             "problems": sum(len(e["problems"]) for e in jobs), "kept": kept, "publishing": publishing,
             "jobs": jobs}
 
@@ -173,7 +203,8 @@ def text(report: dict) -> str:
              f"Outputs are kept {report['keep_days']:g} days after a job finished or was last sent to be published.",
              f"{report['expired']} expired job(s): {report['files']} file(s), {_size(report['bytes'])}, and "
              f"{report['records']} record(s) would go. {report['kept']} not expired yet; {report['publishing']} kept "
-             f"while a publish is on its way. {report['problems']} problem(s).", ""]
+             f"while a publish is on its way. {report.get('files_stay', 0)} job(s) keep their files (no provenance "
+             f"file, or a folder the farm didn't make). {report['problems']} problem(s).", ""]
     for e in report["jobs"]:
         lines.append(f"{e['job']}  {e['kind']}  {e['workflow']}  {e['user']}  {e['status']}  "
                      f"finished {e['finished']}" + (f"  published {e['published']}" if e["published"] else ""))
@@ -187,6 +218,8 @@ def text(report: dict) -> str:
                 lines.append(f"    {name}")
         for name in e["missing"]:
             lines.append(f"  already gone: {name}")
+        if e.get("files_stay"):
+            lines.append(f"  - {e['files_stay']}")
         for p in e["problems"]:
             lines.append(f"  ! {p}")
         lines.append("")
@@ -267,8 +300,8 @@ class Sweeper:
             except (OSError, ValueError):
                 continue
             out.append({"name": p.stem, "date": p.stem[:10], "at": r.get("at"), "dry_run": r.get("dry_run"),
-                        **{k: r.get(k) for k in ("expired", "files", "bytes", "records", "problems", "kept",
-                                                 "publishing")}})
+                        **{k: r.get(k) for k in ("expired", "files", "bytes", "records", "files_stay", "problems",
+                                                 "kept", "publishing")}})
         return out
 
     def report(self, name: str) -> dict | None:

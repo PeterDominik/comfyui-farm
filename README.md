@@ -1051,7 +1051,10 @@ retention:
   to be published. A job with a publish on its way (queued, or asked for at submit and not
   made yet) is kept.
 - **What it would delete:** only the files the job's own provenance file lists (README,
-  Provenance), in the job's own output folder, and the provenance file itself.
+  Provenance), in the job's own output folder, and the provenance file itself. And only in
+  the farm's own renders folders (`paths.output_root` for the job's show): a job whose
+  artist picked its output folder keeps all its files, since a comp may read them
+  (decision 0042).
   - A provenance file that belongs to another job, isn't the farm's, can't be read or sits
     in another folder means nothing of that job is deleted.
   - A listed name that leads out of the folder, or isn't a plain file, is left alone.
@@ -1063,7 +1066,9 @@ retention:
 - **The reports** are kept in `data/sweeps/<date>.json`, the last `reports` (60) of them:
   - each expired job, its folder, the files it would delete and their size;
   - files already gone, and whether the folder would then be empty;
-  - every problem, and the totals.
+  - why a job's files all stay, when that is the rule (no provenance file, or a folder
+    the farm didn't make);
+  - every problem (anything else: those are what to look at), and the totals.
 
   To read them:
   - `GET /api/v1/sweeps` lists them;

@@ -166,4 +166,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   each expired job and the exact files it would delete to `data/sweeps/<date>.json`, only
   what the job's own provenance file lists in its own folder, and deletes nothing (0041).
   The gate starts when it is switched on: a week of these reports listing only files the
-  farm wrote.
+  farm wrote. Peter's first report (217 expired jobs, all from before provenance) listed no
+  files. It showed jobs written into artists' comp folders, so the sweeper now leaves any
+  folder the artist picked and sweeps only the farm's renders folders (0042). The first
+  jobs with provenance files expire on 2026-11-25.
