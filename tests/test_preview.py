@@ -161,25 +161,18 @@ class WhichJobs(unittest.TestCase):
             self.assertIn("preview: needs to be true or false", " ".join(wf.problems))
 
     def test_settings_frozen_per_job(self):
-        from comfyfarm.manager.db import JobStore
-        from comfyfarm.manager.events import EventBus
-        from comfyfarm.manager.farm import Farm
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        cfg = Config.model_validate({"workers": [], "database": str(tmp / "f.db"),
-                                     "preview": {"fps": 25, "max_width": 1280, "crf": 20}})
-        store = JobStore(tmp / "f.db")
-        self.addCleanup(store.close)
-        farm = Farm(cfg, store, REGISTRY, EventBus())
+        """The frames handler's (artifacts/frames.py, decision 0034), kept in each job's info."""
+        from comfyfarm.artifacts.frames import Frames
+        cfg = Config.model_validate({"workers": [], "preview": {"fps": 25, "max_width": 1280, "crf": 20}})
         ltx, chord = REGISTRY.workflows["ltx25_alpha_gen"], REGISTRY.workflows["chord_pbr"]
         images = types.SimpleNamespace(convert=None)
-        self.assertEqual(farm._movie(ltx, images), {"fps": 25.0, "fps_str": "25/1", "max_width": 1280, "crf": 20})
+        self.assertEqual(Frames._movie(ltx, images, cfg.preview),
+                         {"fps": 25.0, "fps_str": "25/1", "max_width": 1280, "crf": 20})
         movie = types.SimpleNamespace(convert={"kind": "movie", "fps": 24000 / 1001, "fps_str": "24000/1001"})
-        self.assertEqual(farm._movie(ltx, movie)["fps_str"], "24000/1001")     # the input movie's own rate
-        self.assertIsNone(farm._movie(chord, images))
+        self.assertEqual(Frames._movie(ltx, movie, cfg.preview)["fps_str"], "24000/1001")   # the input movie's own rate
+        self.assertIsNone(Frames._movie(chord, images, cfg.preview))
         cfg.preview.enabled = False
-        self.assertIsNone(farm._movie(ltx, images))
-
+        self.assertIsNone(Frames._movie(ltx, images, cfg.preview))
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,8 +92,17 @@ class Textures:
                     first_frame=seq.first,
                     first_file=T.file_name(spec.name, shown, tokens, *items[0]),
                     last_file=T.file_name(spec.name, shown, tokens, *items[-1]) if len(items) > 1 else None,
-                    what=what, asset=asset, batches=batches)
+                    what=what, asset=asset, batches=batches, units=len(items))
         return plan
+
+    def info(self, plan: dict, ctx: PlanContext) -> dict:
+        return {"textures": plan["textures"]}          # every map's file names, frozen per job
+
+    def request(self, plan: dict) -> dict:
+        return {"textures": plan["textures"]}          # where the runner writes the maps' images
+
+    def summary(self, plan: dict) -> dict:
+        return {"maps": [m["channel"] for m in plan["textures"]["maps"]]}
 
     def collects(self, job: dict) -> bool:
         return bool((job.get("info") or {}).get("textures"))

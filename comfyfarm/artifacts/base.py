@@ -5,7 +5,10 @@ A handler is one kind of artifact: what a definition says it writes under the he
 
   the manager's   writes(wf) says whether a definition writes this kind; plan() works out,
                   when a job is planned, where its files go and what they are called (an
-                  output folder with a free version), into the plan the job is made from
+                  output folder with a free version), into the plan the job is made from;
+                  from that plan, info() is what the job keeps of it (frozen at submit, for
+                  the agent), request() what the runner is told, summary() what the
+                  dashboard shows before submitting
   the agent's     collects(job) says whether a job writes this kind, from the job alone;
                   prepare() runs before the run (folders the runner writes into), and
                   collect() after it: what the runner wrote turned into the farm's files,
@@ -66,6 +69,9 @@ class Handler(Protocol):
 
     def writes(self, wf) -> bool: ...                   # the definition writes this kind (the manager)
     def plan(self, plan: dict, ctx: PlanContext) -> dict: ...    # where it goes; PlanError if it can't
+    def info(self, plan: dict, ctx: PlanContext) -> dict: ...    # kept with the job, for the agent
+    def request(self, plan: dict) -> dict: ...          # told to the runner: where it writes, what it starts with
+    def summary(self, plan: dict) -> dict: ...          # shown before submitting
     def collects(self, job: dict) -> bool: ...          # the job writes this kind (the agent)
     async def prepare(self, ctx: RunContext) -> None: ...        # before the run; PrepareError
     async def collect(self, ctx: RunContext) -> tuple[dict, list[str]]: ...   # after: outputs, warnings

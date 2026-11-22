@@ -122,10 +122,12 @@ A4 launchers (xStudio, Daiquiri Automate).
   ComfyUI stopped, the farm's file written, ComfyUI started again, the machine checked and
   resumed.
 - Phase 5, in progress. Steps: the handler interface, with frames and texture sets ported
-  (code moved, nothing new); the core blind to the kind of output (the handler gives the
-  job's info, the dashboard's summary and what the runner is told, and each job's outputs
-  are listed by kind); movie, model and file added, each one handler file (the gate). The
-  interface is in: each kind of output is a handler in `comfyfarm/artifacts/`, one file
-  named by its key under `writes:`, found by listing the package, with the manager's half
-  (where it goes) and the agent's (prepare, collect), and frames and texture sets are
-  ported unchanged (0034).
+  (code moved, nothing new); the core leaves each kind to its handler (code moved); the
+  generic route for a new kind, with `file` the first and each job's outputs listed by
+  kind; movie and model added, each one handler file (the gate). The interface is in:
+  each kind of output is a handler in `comfyfarm/artifacts/`, one file named by its key
+  under `writes:`, found by listing the package, with the manager's half (where it goes)
+  and the agent's (prepare, collect), and frames and texture sets are ported unchanged
+  (0034). The core leaves them to their handlers: what the job keeps, what the runner is
+  told and the dashboard's summary come from the handler; texture sets (batches across
+  jobs) stay the core's (0035).

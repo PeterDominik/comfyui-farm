@@ -35,6 +35,10 @@ class Frames:
         """The versioned folder the frames go into and their names, from the first input frame."""
         pc, wf, values, seq = ctx.cfg.paths, plan["wf"], plan["values"], plan["seq"]
         show_, shot_, seq_name, source = plan["show"], plan["shot"], plan["seq_name"], plan["source"]
+        job_id = ctx.job_id
+        # What the run's frames and its own video start with, until they're renamed.
+        plan["frames_prefix"] = f"_comfyfarm_{job_id[:8]}_raw"
+        plan["preview_prefix"] = f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"
         picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
         root = N.resolve_output_folder(picked, pc) if picked else N.output_root(pc, show_, seq_name, shot_)
         dir_template = pc.output_dir
@@ -67,6 +71,35 @@ class Frames:
         plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
         plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
         return plan
+
+    def info(self, plan: dict, ctx: PlanContext) -> dict:
+        pc = ctx.cfg.paths
+        return {
+            "frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"],
+            # Frozen per job, so a config edit can't rename frames of jobs already queued.
+            "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
+            "preview_name": pc.preview_name,
+            # What the agent collects when the run is done, and the preview movie it makes of
+            # the frames (fileio.preview). No node ids: the agent's runner has its own copy.
+            "collect": plan["wf"].collect(self._movie(plan["wf"], plan["seq"], ctx.cfg.preview)),
+        }
+
+    @staticmethod
+    def _movie(wf, seq, pv) -> dict | None:
+        """The preview movie's settings for a job (None: no movie): preview.*, at the
+        input movie's frame rate when the input is one."""
+        if not pv.enabled or not wf.makes_preview:
+            return None
+        c = (seq.convert if seq else None) or {}
+        fps = c.get("fps") if c.get("kind") == "movie" and c.get("fps") else pv.fps
+        fps_str = c.get("fps_str") if c.get("kind") == "movie" and c.get("fps_str") else PV.rate_text(pv.fps)
+        return {"fps": float(fps), "fps_str": fps_str, "max_width": pv.max_width, "crf": pv.crf}
+
+    def request(self, plan: dict) -> dict:
+        return {"frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"]}
+
+    def summary(self, plan: dict) -> dict:
+        return {}
 
     def collects(self, job: dict) -> bool:
         c = job.get("collect") or {}
