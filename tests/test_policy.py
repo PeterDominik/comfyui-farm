@@ -198,6 +198,7 @@ class Paths(unittest.TestCase):
         cfg.policy.file = "/rdo/bank/elsewhere/rules.yaml"
         self.assertEqual(PO.policy_path(cfg)[1], "/rdo/bank/elsewhere/rules.yaml")
         cfg.share.dir = ""                                          # no bank folder: beside config.yaml
+        cfg.base_dir = REPO
         cfg.policy.file = "policy.yaml"
         local, shown = PO.policy_path(cfg)
         self.assertTrue(local.endswith("/policy.yaml") and "\\" not in local, local)       # forward slashes, Windows too
