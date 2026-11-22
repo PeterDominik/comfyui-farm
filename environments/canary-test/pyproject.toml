@@ -1,0 +1,17 @@
+# A runner environment broken on purpose (decision 0031): its check always fails, so a
+# rollout of it stops at the canary and goes no further. It installs nothing but Python, and
+# nothing runs in it: it is how the farm's rollouts are tried.
+[project]
+name = "canary-test"
+version = "1"
+requires-python = "==3.12.*"
+dependencies = []
+
+[tool.uv]
+package = false                 # an environment, not a package to install
+environments = ["sys_platform == 'linux'", "sys_platform == 'win32'"]   # what the farm runs on
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true                  # never the studio's mirror, whatever pip is told

@@ -716,6 +716,14 @@ convert:
         self.assertEqual(farm._request("GET", "/api/v1/environments")["wanted"], {"mock": {"gpu-test": None}})
         farm._request("POST", "/api/v1/environments/gpu-test/want", {"forget": True})
         self.assertEqual(farm._request("GET", "/api/v1/environments")["wanted"], {})
+        # Rollouts (decision 0031): none yet; with no bank none can start, and there is none to pause.
+        self.assertEqual((envs["rollouts"], farm._request("GET", "/api/v1/rollouts")["rollouts"]), ([], []))
+        with self.assertRaises(farm.FarmError) as e:
+            farm._request("POST", "/api/v1/environments/gpu-test/rollout", {"release": "latest"})
+        self.assertIn("the manager has no bank", str(e.exception))
+        with self.assertRaises(farm.FarmError) as e:
+            farm._request("POST", "/api/v1/environments/gpu-test/rollout/pause")
+        self.assertIn("no rollout of gpu-test to pause", str(e.exception))
 
     def test_0501_publishing_off(self):
         """Publishing is off until publish.enabled: no Publish buttons, and asking says why."""

@@ -156,6 +156,14 @@ class AgentsConfig(BaseModel):
     order: list[str] = []
 
 
+class RolloutsConfig(BaseModel):
+    """Rollouts of runner environments (manager/rollouts.py, decision 0031)."""
+    # The machines in this order first: the canary first. The pilot's: the A6000, the 5090,
+    # then the manager's host last. Machines not listed follow, by name.
+    order: list[str] = []
+    step_minutes: float = Field(30.0, gt=0)     # a machine that hasn't the release by then stops the rollout
+
+
 class FarmConfig(BaseModel):
     max_attempts: int = 2            # resubmits when a worker loses a job (crash/restart)
     reconcile_seconds: float = 20.0  # cross-check job state against ComfyUI this often
@@ -302,6 +310,7 @@ class ShotGridConfig(BaseModel):
 class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     share: ShareConfig = Field(default_factory=ShareConfig)
+    rollouts: RolloutsConfig = Field(default_factory=RolloutsConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line

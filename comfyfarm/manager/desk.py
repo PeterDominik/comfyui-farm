@@ -36,6 +36,7 @@ from ..fileio.ocio import REPO
 from ..protocol import HELD, ON_WORKER, build, duration, now
 from . import eta as E
 from .farm import Farm
+from .rollouts import Rollouts
 
 log = logging.getLogger("comfyfarm")
 
@@ -129,6 +130,7 @@ class Desk:
         self._changed: asyncio.Event | None = None
         self._tasks: list[asyncio.Task] = []
         self.view = W.View(mappings=self.cfg.paths.mappings, scratch=farm.scratch_root, repo=P.normalize(str(REPO)))
+        self.rollouts = Rollouts(self)      # environment releases going to the machines (decision 0031)
 
     @property
     def lease_seconds(self) -> float:
@@ -142,6 +144,7 @@ class Desk:
         if n:
             log.info("%d job(s) on agents: waiting for them to check in", n)
         self._tasks.append(asyncio.create_task(self._lease_loop(), name="leases"))
+        self._tasks.append(asyncio.create_task(self.rollouts.loop(), name="rollouts"))
 
     async def stop(self) -> None:
         for t in self._tasks:

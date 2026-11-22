@@ -458,6 +458,10 @@ A `uv.lock` that no longer matches its `pyproject.toml` is refused: `env install
 `env list` say what changed (*LOCK OUT OF DATE*), and CI fails. Lock it again and commit
 both files together.
 
+A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
+from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
+if a disk can't, uv copies, and `env install` says so.
+
 #### Releases
 
 The manager hands environments to its agents as *releases* in the bank (the farm's shared
@@ -508,9 +512,28 @@ agent says it is off. `GET /api/v1/environments` shows what each machine should 
 (`wanted`) and what its environment manager is doing about it (`work`: installing,
 waiting, failed and why, off).
 
-A build with torch takes about 4.6 GB on Linux and 2.9 GB on Windows. uv hard-links packages
-from its cache (`data/envs/.uv-cache`), so a second build with the same torch costs little;
-if a disk can't, uv copies, and `env install` says so.
+#### Rollouts
+
+`env want` tells the machines it names all at once. A rollout takes a release to them one
+at a time instead: the canary first, then each next machine once the one before has it
+installed and checked (decision 0031). The order is `rollouts.order` in `config.yaml`; for
+the pilot that's the A6000, then the 5090, then the manager's host. On the manager's host:
+
+```bash
+python -m comfyfarm env publish gpu-test             # the release, from the repo as committed
+python -m comfyfarm env rollout gpu-test latest      # to every machine, the canary first
+python -m comfyfarm env rollouts                     # how they go: running at <machine>, done, failed and why
+python -m comfyfarm env rollout gpu-test --pause     # before the next machine (--resume goes on)
+python -m comfyfarm env rollout gpu-test --rollback  # the machines it reached go back to what they had
+python -m comfyfarm env rollout gpu-test --cancel    # stop; the machines keep what they have
+```
+
+A machine whose install fails (a hash, the build, its check), or whose agent has
+`envs.managed` off, stops the rollout there: the machines after it never hear of the
+release. So does a machine that hasn't the release within `rollouts.step_minutes` (30).
+A stopped rollout is rolled back or cancelled; a new one of that environment can start
+once it is. A rollout outlives a manager restart. `environments/canary-test` is broken on
+purpose: its check always fails, so a rollout of it shows one stopping at the canary.
 
 ### Process runner
 
