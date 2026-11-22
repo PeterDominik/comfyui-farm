@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from comfyfarm.config import Config
@@ -55,7 +56,8 @@ class TheFile(unittest.TestCase):
     def test_the_example_is_one_the_manager_takes(self):
         known = set(DefinitionRegistry(REPO / "workflows").workflows)
         pf = PO.parse((REPO / "policy.example.yaml").read_text(encoding="utf-8"), known)
-        self.assertEqual((pf.version, pf.other_shows, pf.unknown_show, len(pf.shows)), (1, "allow", "allow", 3))
+        self.assertEqual((pf.version, pf.other_shows, pf.unknown_show, len(pf.shows), len(pf.licences),
+                          pf.unlisted_models), (1, "allow", "allow", 3, 1, "allow"))
 
     def test_what_is_wrong_is_said(self):
         for text, says in (
@@ -190,6 +192,114 @@ class InForce(unittest.TestCase):
         self.assertIsNone(p.status()["in_force"])
 
 
+RESEARCH = "ubisoft-machine-learning-license-research-only-copyleft"
+LICENCES = """
+version: 1
+licences:
+  - name: no-research-only
+    shows: ["*"]
+    except: [rnd*]
+    deny: [Ubisoft-Machine-Learning-License-Research-Only-Copyleft]
+    reason: Research-only weights can't be used on client work
+  - name: bri3-apache-only
+    shows: [bri3]
+    allow: [apache-2.0]
+    reason: Only Apache-licensed weights are cleared on this show
+"""
+CHORD = [{"file": "chord_v1.safetensors", "licence": RESEARCH}]
+WAN = [{"file": "WAN/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors", "licence": "Apache-2.0"},
+       {"file": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "licence": "apache-2.0"}]
+
+
+class Licences(unittest.TestCase):
+    """Decision 0044: the licences of the models a definition lists, by show."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self.file = tmp / "policy.yaml"
+        self.saved = tmp / "policy.json"
+
+    def policy(self, text: str) -> PO.Policy:
+        self.file.write_text(text, encoding="utf-8")
+        return PO.Policy(True, str(self.file), self.saved, lambda: KNOWN)
+
+    def test_a_licence_a_rule_denies_is_refused_with_the_file_named(self):
+        p = self.policy(LICENCES)
+        with self.assertRaises(PO.Refused) as e:
+            p.check("chord_pbr", "guem2609", CHORD)
+        self.assertEqual(str(e.exception), f"chord_pbr can't run for show guem2609: it uses chord_v1.safetensors, "
+                                           f"licensed {RESEARCH}. Research-only weights can't be used on client "
+                                           f"work. (Policy rule no-research-only.)")
+        self.assertEqual(e.exception.rule, "no-research-only")
+        p.check("chord_pbr", "rnd2601", CHORD)                              # except: [rnd*]
+        p.check("wan22_i2i", "guem2609", WAN)
+        with self.assertRaisesRegex(PO.Refused, "chord_pbr can't run without a known show: it uses chord_v1"):
+            p.check("chord_pbr", None, CHORD)                               # * is every job, a known show or not
+
+    def test_a_rule_that_allows_only_some_licences(self):
+        p = self.policy(LICENCES)
+        p.check("wan22_i2i", "bri3", WAN)                                   # case doesn't matter
+        with self.assertRaisesRegex(PO.Refused, r"it uses chord_v1.safetensors, licensed .*\(Policy rule "
+                                                r"no-research-only\.\)"):
+            p.check("chord_pbr", "bri3", CHORD)                             # the first rule that refuses is named
+        with self.assertRaisesRegex(PO.Refused, r"it uses x.safetensors, licensed cc-by-nc-4.0\. Only Apache.*"
+                                                r"bri3-apache-only"):
+            p.check("wan22_i2i", "bri3", [*WAN, {"file": "x.safetensors", "licence": "cc-by-nc-4.0"}])
+        p.check("gpu_test", "bri3", [])                                     # models: [] uses no weights
+
+    def test_a_definition_that_doesnt_list_its_models(self):
+        p = self.policy(LICENCES)
+        p.check("ltx25_alpha_gen", "guem2609", None)                        # unlisted_models: allow
+        p = self.policy(LICENCES + "unlisted_models: deny\n")
+        with self.assertRaisesRegex(PO.Refused, "ltx25_alpha_gen can't run for show guem2609: its process.yaml "
+                                                "doesn't list its models and their licences"):
+            p.check("ltx25_alpha_gen", "guem2609", None)
+        p.check("ltx25_alpha_gen", "rnd2601", None)                         # no licence rule for it: not asked
+
+    def test_what_is_wrong_is_said(self):
+        for text, says in (
+                ("version: 1\nlicences:\n  - {name: a, shows: [x], reason: r}\n", "rule a: give either deny"),
+                ("version: 1\nlicences:\n  - {name: a, shows: [x], deny: all, reason: r}\n",
+                 "licences.0.deny: Input should be a valid list"),
+                ("version: 1\nshows:\n  - {name: a, shows: [x], deny: all, reason: r}\n"
+                 "licences:\n  - {name: a, shows: [x], deny: [mit], reason: r}\n", "two rules are named a"),
+                ("version: 1\nunlisted_models: maybe\n", "unlisted_models: Input should be 'allow' or 'deny'")):
+            with self.assertRaisesRegex(ValueError, __import__("re").escape(says), msg=text):
+                PO.parse(text, KNOWN)
+
+    def test_except_works_for_show_rules_too_and_is_shown_as_written(self):
+        p = self.policy("version: 1\nshows:\n  - {name: all-but-rnd, shows: ['*'], except: [rnd*], deny: all, "
+                        "reason: Closed}\n")
+        p.check("wan22_i2i", "rnd2601", WAN)
+        with self.assertRaisesRegex(PO.Refused, "all-but-rnd"):
+            p.check("wan22_i2i", "bri3", WAN)
+        self.assertEqual(p.status()["in_force"]["shows"][0]["except"], ["rnd*"])
+
+    def test_the_definitions_say_what_they_use(self):
+        wfs = DefinitionRegistry(REPO / "workflows").workflows
+        self.assertEqual((wfs["chord_pbr"].models_listed, wfs["chord_pbr"].models), (True, CHORD))
+        self.assertEqual((wfs["gpu_test"].models_listed, wfs["gpu_test"].models), (True, []))
+        self.assertFalse(wfs["wan22_i2i"].models_listed)
+
+    def test_notes_for_the_admin(self):
+        from comfyfarm.cli import model_notes
+        defs = {"chord_pbr": SimpleNamespace(models_listed=True, models=CHORD),
+                "wan22_i2i": SimpleNamespace(models_listed=True, models=WAN[:1]),
+                "ltx": SimpleNamespace(models_listed=False, models=[])}
+        env = {"models": {"chord_v1.safetensors": {"for": ["chord_pbr"]},
+                          "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors": {"for": ["wan22_i2i"]},
+                          "umt5_xxl_fp8_e4m3fn_scaled.safetensors": {"for": ["wan22_i2i"]},
+                          "ltx.safetensors": {"for": ["ltx"]}}}
+        typo = PO.parse(LICENCES.replace("allow: [apache-2.0]", "allow: [apache2]"))
+        self.assertEqual(model_notes(defs, env, typo), [
+            "these don't list their models (licence rules treat them as unlisted_models says): ltx",
+            "wan22_i2i loads umt5_xxl_fp8_e4m3fn_scaled.safetensors (deploy/comfyui/environment.yaml), which its "
+            "models: doesn't list",
+            "rule bri3-apache-only names licence apache2, which no definition's models carry"])
+        self.assertEqual(len(model_notes(defs, env, PO.parse(LICENCES))), 2)   # Apache-2.0 is carried, any case
+
+
 class Paths(unittest.TestCase):
     def test_in_the_bank_folder_or_a_path_of_its_own(self):
         cfg = Config.model_validate({"workers": [], "share": {"dir": "/rdo/bank/comfy_farm"},
@@ -201,7 +311,7 @@ class Paths(unittest.TestCase):
         cfg.base_dir = REPO
         cfg.policy.file = "policy.yaml"
         local, shown = PO.policy_path(cfg)
-        self.assertTrue(local.endswith("/policy.yaml") and "\\" not in local, local)       # forward slashes, Windows too
+        self.assertTrue(local.endswith("/policy.yaml") and "\\" not in local, local)     # forward slashes on Windows
         cfg.policy.file = ""
         self.assertEqual(PO.policy_path(cfg), (None, None))
 
@@ -251,6 +361,14 @@ class WhenPlanned(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         shutil.rmtree(self.tmp)
+
+    def test_a_licence_a_show_doesnt_take_is_refused_at_plan(self):
+        """Decision 0044: CHORD's own models: list, against the show's licence rules."""
+        Path(f"{self.root}/bank/policy.yaml").write_text(LICENCES.replace('["*"]', "[xyz]"))
+        self.farm.policy.refresh(force=True)
+        with self.assertRaisesRegex(FarmError, "chord_pbr can't run for show xyz: it uses chord_v1.safetensors, "
+                                               f"licensed {RESEARCH}.*no-research-only"):
+            self.farm.plan("chord_pbr", {"input": "/rdo/shows/xyz/_asset/rockA/cg/textures/src"})
 
     def test_a_barred_show_is_refused_at_plan_with_the_rule_named(self):
         with self.assertRaises(FarmError) as e:

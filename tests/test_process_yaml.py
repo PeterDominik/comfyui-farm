@@ -38,11 +38,19 @@ class ProcessYamlTests(unittest.TestCase):
         """One of the farm's workflows, as its process.yaml says it."""
         return yaml.safe_load((REPO / "workflows" / name / "process.yaml").read_text(encoding="utf-8"))
 
+    # The head-only fields the farm's ComfyUI workflows set: CHORD lists its models (decision 0044).
+    HEAD_SET = {"chord_pbr": {"models"}}
+
     def manifest_of(self, name: str) -> dict:
-        """The manifest.yaml that one of the farm's workflows is equal to."""
+        """The manifest.yaml that one of the farm's workflows is equal to, but for its head-only
+        fields (a manifest can't hold them)."""
         m, head = D.from_process(self.process_of(name))
-        self.assertEqual(head, {})
+        self.assertEqual(set(head), self.HEAD_SET.get(name, set()))
         return m
+
+    def process_without_head(self, name: str) -> dict:
+        """Its process.yaml without the head-only fields: what the manifest converts back to."""
+        return {k: v for k, v in self.process_of(name).items() if k not in D.HEAD_ONLY}
 
     def as_process(self, name: str, edit=None, keep_manifest=False) -> Path:
         """A copy of one of the farm's workflow folders, its process.yaml edited."""
@@ -73,9 +81,10 @@ class ProcessYamlTests(unittest.TestCase):
                 self.assertEqual((new.source, old.source, new.runner_type),
                                  ("process.yaml", "manifest.yaml", "comfyui"))
                 self.assertEqual((new.problems, old.problems), ([], []))
-                self.assertEqual(new.digest, old.digest)            # no head-only field set: the same definition
-                # What the converter writes for that manifest is the farm's file.
-                self.assertEqual(CW.to_process(self.manifest_of(name)), self.process_of(name))
+                # No head-only field set: the same definition. One set (CHORD's models) makes a new one.
+                self.assertEqual(new.digest == old.digest, name not in self.HEAD_SET)
+                # What the converter writes for that manifest is the farm's file, but for its head-only fields.
+                self.assertEqual(CW.to_process(self.manifest_of(name)), self.process_without_head(name))
                 self.assertEqual(new.schema(), old.schema())
                 self.assertEqual((new.params, new.ports, new.outputs, new.requires, new.publish, new.node_packs),
                                  (old.params, old.ports, old.outputs, old.requires, old.publish, old.node_packs))
@@ -83,8 +92,9 @@ class ProcessYamlTests(unittest.TestCase):
                 values = old.validate({k: "/rdo/shows/x/a.%04d.png 1-2" if p.type in D.INPUT_TYPES else "a subject"
                                        for k, p in old.params.items() if p.required})
                 self.assertEqual(new.build(values), old.build(values))
-                self.assertEqual((new.job_class, new.targets, new.limits, new.models, new.eval, new.version),
-                                 ("interactive", ["pool"], {}, [], None, None))
+                self.assertEqual((new.job_class, new.targets, new.limits, new.eval, new.version),
+                                 ("interactive", ["pool"], {}, None, None))
+                self.assertEqual(new.models, self.process_of(name).get("models", []))
 
     def test_the_two_files_keep_the_wiring_in_different_places(self):
         m = self.manifest_of("wan22_i2i")

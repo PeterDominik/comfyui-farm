@@ -185,4 +185,10 @@ A4 launchers (xStudio, Daiquiri Automate).
 
   Step 1 is in, off by default (`policy.enabled`). Both halves of the gate are in it: a
   barred show is refused with its rule named, and a broken file leaves the last valid one
-  in force (0043).
+  in force (0043). Peter tested it on the pilot manager.
+
+  Step 2 is in: licence rules (`licences:` in policy.yaml) against the `models:` each
+  definition lists, `unlisted_models` for those that list none, and `except:` on every
+  rule (0044). CHORD lists its weights (Ubisoft's research-only licence) and the GPU test
+  lists none. The LTX, SAM 3 and Wan definitions don't list theirs yet: their licences
+  are Rodeo's call.

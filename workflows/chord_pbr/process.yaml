@@ -22,6 +22,11 @@ work_resolution: 1024
 # ShotGrid are mostly plates and precomps, whose frames CHORD would read as UDIM tiles, so
 # it isn't submitted from a Version without a look at the form first.
 shotgrid: {submit: false}
+# The weights it loads and their licence (decision 0044), for the farm's policy: a show's
+# licence rules can refuse it. CHORD's are the Ubisoft Machine Learning License,
+# research-only (huggingface.co/Ubisoft/ubisoft-laforge-chord).
+models:
+  - {file: chord_v1.safetensors, licence: ubisoft-machine-learning-license-research-only-copyleft}
 
 params:
   input:
