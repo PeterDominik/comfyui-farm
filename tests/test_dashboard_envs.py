@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import shutil
+from html.parser import HTMLParser
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parent.parent / "comfyfarm" / "manager" / "static" / "environments.js"
+STATIC = Path(__file__).resolve().parent.parent / "comfyfarm" / "manager" / "static"
+SCRIPT = STATIC / "environments.js"
 NODE = shutil.which("node")
 
 # Loads the script into a context of its own (no page: setInterval does nothing) and calls
@@ -138,6 +140,54 @@ class Dashboard(unittest.TestCase):
              "before": {"tor-flame02-a6000": OLDER, "wrk59467w-5090": None}}
         tips = [s["tip"] for s in self.run_js(["rolloutSteps", [r]])[0]]
         self.assertEqual(tips, ["told to go back to 30cee042", "told to remove it (it had none before)"])
+
+
+class Panels(HTMLParser):
+    """The panels (sections) directly inside the Machines tab, each with its id and heading."""
+
+    def __init__(self):
+        super().__init__()
+        self.depth, self.tab, self.panels, self.in_h2 = 0, None, [], False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag in ("meta", "link", "input", "br", "img", "hr"):
+            return
+        self.depth += 1
+        if a.get("id") == "tab-machines":
+            self.tab = self.depth
+        elif tag == "section" and self.tab is not None and self.depth == self.tab + 1:
+            self.panels.append({"id": a.get("id"), "hidden": "hidden" in a, "h2": "", "tables": 0})
+        elif self.tab is not None and self.panels and self.depth > self.tab + 1:
+            self.panels[-1]["tables"] += tag == "table"
+            self.in_h2 = tag == "h2"
+
+    def handle_endtag(self, tag):
+        if tag in ("meta", "link", "input", "br", "img", "hr"):
+            return
+        if self.tab is not None and self.depth == self.tab:
+            self.tab = None
+        self.depth -= 1
+        self.in_h2 = False
+
+    def handle_data(self, data):
+        if self.in_h2 and self.panels:
+            self.panels[-1]["h2"] += data.strip()
+
+
+class MachinesTab(unittest.TestCase):
+    def test_machines_environments_and_rollouts_are_panels_of_their_own(self):
+        """Each its own table under its own heading, not one table whose columns change part way."""
+        parser = Panels()
+        parser.feed((STATIC / "index.html").read_text(encoding="utf-8"))
+        self.assertEqual([(p["h2"], p["id"], p["hidden"], p["tables"]) for p in parser.panels], [
+            ("Machines", None, False, 1),
+            ("Runner environments", "envsPanel", True, 1),     # shown once there is an environment
+            ("Rollouts", "rolloutsPanel", True, 1),            # or a rollout
+        ])
+        script = SCRIPT.read_text(encoding="utf-8")
+        for panel in ("envsPanel", "rolloutsPanel"):
+            self.assertIn(f'$("#{panel}")', script)
 
 
 if __name__ == "__main__":
