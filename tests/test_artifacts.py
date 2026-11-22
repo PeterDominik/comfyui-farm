@@ -64,6 +64,35 @@ class Seam(unittest.TestCase):
         self.assertIsNone(A.for_job({"info": None}))
 
 
+class TheCore(unittest.TestCase):
+    def test_the_planner_leaves_a_frame_sequence_to_its_handler(self):
+        """Decision 0035: the job's info, what the runner is told and the summary come from the
+        handler of its kind. Texture sets (batches across jobs) are the core's still."""
+        src = (REPO / "comfyfarm" / "manager" / "farm.py").read_text(encoding="utf-8")
+        for name in ("frames_prefix", "preview_prefix", "name_tokens", "frame_name", "preview_name", ".collect(",
+                     "_movie", "_plan_textures"):
+            self.assertFalse(name in src, f"farm.py names {name}")
+
+    def test_each_kind_says_what_the_job_keeps_and_the_runner_is_told(self):
+        frames, textures = (next(h for h in A.handlers() if h.kind == k) for k in ("frames", "textures"))
+        wf = SimpleNamespace(collect=lambda movie: {"frames": {"ext": "png"}, "preview": False, "movie": movie},
+                             makes_preview=False)
+        plan = {"wf": wf, "seq": None, "frames_prefix": "_comfyfarm_1234abcd_raw",
+                "preview_prefix": "comfyfarm/1234abcd_plate_wan", "name_tokens": {"version": 3}}
+        ctx = A.PlanContext(cfg=SimpleNamespace(paths=PathsConfig(), preview=SimpleNamespace(enabled=True)),
+                            job_id="1234abcd", scratch_root="/s", reserved=lambda key: False)
+        info = frames.info(plan, ctx)
+        self.assertEqual((info["frames_prefix"], info["name_tokens"], info["collect"]["frames"]),
+                         ("_comfyfarm_1234abcd_raw", {"version": 3}, {"ext": "png"}))
+        self.assertEqual(frames.request(plan), {"frames_prefix": "_comfyfarm_1234abcd_raw",
+                                                "preview_prefix": "comfyfarm/1234abcd_plate_wan"})
+        self.assertEqual(frames.summary(plan), {})
+        tex = {"raw_dir": "/s/1234abcd/maps", "maps": [{"channel": "color01"}, {"channel": "nrm02"}]}
+        plan = {"textures": tex}
+        self.assertEqual((textures.info(plan, ctx), textures.request(plan)), ({"textures": tex}, {"textures": tex}))
+        self.assertEqual(textures.summary(plan), {"maps": ["color01", "nrm02"]})
+
+
 class Errors(unittest.TestCase):
     """What the handlers say when they can't: the manager answers with PlanError's status,
     the agent fails the job with PrepareError's message."""

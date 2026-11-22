@@ -19,7 +19,6 @@ from .. import artifacts as A
 from ..config import Config
 from ..fileio import inputs as I
 from ..fileio import paths as P
-from ..fileio import preview as PV
 from ..fileio import scratch as S
 from ..fileio import textures as T
 from ..fileio.errors import SequenceError
@@ -237,7 +236,7 @@ class Farm:
                     for i, (a, b) in enumerate(plan["batches"])]
         else:
             seq = plan["seq"]
-            size = len(plan["textures"]["items"]) if plan.get("textures") else (seq.frame_count if seq else 1)
+            size = plan.get("units") or (seq.frame_count if seq else 1)
             jobs = [{"id": "plan-0", "workflow": wf.name, "info": {"expected_frames": size or 1}}]
         fc = self.desk.forecast(extra=jobs)
         got = [fc.get(j["id"]) or {} for j in jobs]
@@ -304,21 +303,22 @@ class Farm:
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
                 "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
-                "source": source, "out_dir": None, "version": None, "picked": None,
-                "frames_prefix": f"_comfyfarm_{job_id[:8]}_raw",
-                "preview_prefix": f"comfyfarm/{job_id[:8]}_{source}_{wf.tag}"}
+                "source": source, "out_dir": None, "version": None, "picked": None, "artifact": None}
         # No machine may take it now (requires, drained, offline): shown before submitting
         # and as a queued job's stage, but not kept as a warning (it passes).
         plan["waits"] = self.desk.requires_note(wf.name) if self.desk else None
         # Where what it writes goes and what it's called: the handler of its kind (decision 0034).
-        handler = A.for_definition(wf)
+        handler = plan["artifact"] = A.for_definition(wf)
         if handler is None:
             return plan
         try:
-            return handler.plan(plan, A.PlanContext(cfg=self.cfg, job_id=job_id, scratch_root=self.scratch_root,
-                                                    reserved=self.store.output_reserved))
+            return handler.plan(plan, self._artifact_context(job_id))
         except A.PlanError as e:
             raise FarmError(str(e), e.status) from None
+
+    def _artifact_context(self, job_id: str) -> A.PlanContext:
+        return A.PlanContext(cfg=self.cfg, job_id=job_id, scratch_root=self.scratch_root,
+                             reserved=self.store.output_reserved)
 
     def publish_preview(self, plan: dict, publish: dict) -> dict:
         """What publishing a job of this plan when it's done would be, checked as submit
@@ -527,12 +527,13 @@ class Farm:
             "input_kind": seq.kind if seq else None, "convert": I.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
             "what": plan.get("what"), "asset": plan.get("asset"),
-            "maps": [m["channel"] for m in plan["textures"]["maps"]] if plan.get("textures") else None,
             "sources": plan.get("sources") or {},          # ShotGrid Versions given as inputs, by param
             "batches": len(plan["batches"]) if plan.get("batches") else None,
             "inputs": {n: ({"frames": x.frame_count, "first": x.first, "last": x.last, "kind": x.kind,
                             "convert": I.summary(x, pc)} if x else None)
                        for n, x in (plan.get("inputs") or {}).items()},
+            # What the handler of its kind of output adds (decision 0034): a texture set's maps.
+            **(plan["artifact"].summary(plan) if plan.get("artifact") else {}),
         }
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
@@ -559,9 +560,10 @@ class Farm:
                 self.wake()
                 return job
             # What the machine that runs it builds its graph from (decision 0013).
-            request = wf.request(values, seq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
-                                 textures=plan.get("textures"), inputs=plan["inputs"])
-            info = self._info(plan, seq, plan.get("textures"), plan.get("what"))
+            handler = plan["artifact"]
+            request = wf.request(values, seq, out_dir, inputs=plan["inputs"],
+                                 **(handler.request(plan) if handler else {}))
+            info = self._info(plan, seq, handler.info(plan, self._artifact_context(job_id)) if handler else {})
             if pub:
                 info["publish_request"] = pub
             job = self.store.insert({
@@ -578,8 +580,9 @@ class Farm:
         self.wake()
         return job
 
-    def _info(self, plan: dict, seq, textures: dict | None, what: str | None) -> dict:
-        """A job's frozen info: everything about it worked out at submit."""
+    def _info(self, plan: dict, seq, artifact: dict, what: str | None = None) -> dict:
+        """A job's frozen info: everything about it worked out at submit. `artifact`: what the
+        handler of its kind of output keeps (decision 0034), frozen per job with the rest."""
         pc, wf, out_dir = self.cfg.paths, plan["wf"], plan["out_dir"]
         return {
             "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"], "source": plan["source"],
@@ -598,27 +601,9 @@ class Farm:
             "output_dir_posix": P.to_posix(out_dir, pc.mappings) if out_dir else None,
             "notes": plan["notes"], "input_kind": seq.kind if seq else None,
             "convert_summary": I.summary(seq, pc),
-            "frames_prefix": plan["frames_prefix"], "preview_prefix": plan["preview_prefix"],
-            # Frozen per job, so a config edit can't rename frames of jobs already queued.
-            "name_tokens": plan.get("name_tokens"), "frame_name": pc.frame_name,
-            "preview_name": pc.preview_name,
-            # Texture workflows: every map's file names, also frozen per job.
-            "textures": textures, "what": what,
-            # What the agent collects when the run is done, and the preview movie it makes of
-            # the frames (fileio.preview). No node ids: the agent's runner has its own copy.
-            "collect": wf.collect(self._movie(wf, seq)),
+            "what": what if what is not None else plan.get("what"),
+            **artifact,
         }
-
-    def _movie(self, wf, seq) -> dict | None:
-        """The preview movie's settings for a job (None: no movie): preview.*, at the
-        input movie's frame rate when the input is one."""
-        pv = self.cfg.preview
-        if not pv.enabled or not wf.makes_preview:
-            return None
-        c = (seq.convert if seq else None) or {}
-        fps = c.get("fps") if c.get("kind") == "movie" and c.get("fps") else pv.fps
-        fps_str = c.get("fps_str") if c.get("kind") == "movie" and c.get("fps_str") else PV.rate_text(pv.fps)
-        return {"fps": float(fps), "fps_str": fps_str, "max_width": pv.max_width, "crf": pv.crf}
 
     def _insert_set(self, plan: dict, set_id: str, user: str, name: str | None, priority: int) -> dict:
         """A texture set: the set the artist sees (one output folder, reserved by it) and
@@ -629,7 +614,7 @@ class Farm:
         name = name or plan["shot"] or plan["source"]
         unit = "UDIMs" if tex["has_udim"] else ("frames" if tex["numbering"] == "frame" else "textures")
         t = now()
-        info = self._info(plan, seq, tex, plan["what"])
+        info = self._info(plan, seq, {"textures": tex})
         info["input"]["convert"] = None        # the batches convert their own tiles
         info["set"] = {"batches": len(ranges), "tiles": len(items), "batch": wf.textures.batch}
         rows = [{"id": set_id, "kind": "set", "workflow": wf.name, "user": user, "name": name, "status": "queued",
@@ -644,15 +629,14 @@ class Farm:
             btex = dict(tex, items=tex["items"][a:b], raw_dir=f"{self.scratch_root}/{bid}/maps",
                         maps=[dict(m, prefix=f"_cf{bid[:8]}_{m['channel']}") for m in tex["maps"]])
             label = T.batch_label(items[a:b], tex["has_udim"])
-            binfo = self._info(plan, bseq, btex, T.describe(len(btex["maps"]), items[a:b], tex["has_udim"],
-                                                             tex["numbering"]))
+            binfo = self._info(plan, bseq, {"textures": btex},
+                               T.describe(len(btex["maps"]), items[a:b], tex["has_udim"], tex["numbering"]))
             binfo["batch"] = {"set": set_id, "index": k + 1, "of": len(ranges), "tiles": b - a, "label": label}
             rows.append({"id": bid, "kind": "batch", "parent_id": set_id, "workflow": wf.name, "user": user,
                          "name": f"{name} · {label}", "status": "queued",
                          "priority": priority, "params": values, "info": binfo,
                          "prompt": None,
-                         "request": wf.request(values, bseq, out_dir, plan["frames_prefix"], plan["preview_prefix"],
-                                               textures=btex),
+                         "request": wf.request(values, bseq, out_dir, textures=btex),
                          "output_dir": out_dir, "output_key": None, "created_at": t,
                          "stage": "queued", "warnings": []})
         self.store.insert_many(rows)

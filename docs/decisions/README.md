@@ -40,3 +40,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0032](0032-environments-on-the-machines-tab.md) | Environments and rollouts on the Machines tab: shown, not changed | accepted |
 | [0033](0033-comfyui-sync-started-by-the-manager.md) | ComfyUI sync started by the manager, one machine at a time | accepted |
 | [0034](0034-typed-artifacts.md) | Typed artifacts: one handler per kind of output | accepted |
+| [0035](0035-the-core-leaves-outputs-to-their-handlers.md) | The core leaves each kind of output to its handler; texture sets stay the core's | accepted |
