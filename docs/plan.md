@@ -121,7 +121,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   21 November it synced the A6000 after its `extra_model_paths.yaml` was moved aside:
   ComfyUI stopped, the farm's file written, ComfyUI started again, the machine checked and
   resumed.
-- Phase 5, in progress. Steps: the handler interface, with frames and texture sets ported
+- Phase 5: done. Steps: the handler interface, with frames and texture sets ported
   (code moved, nothing new); the core leaves each kind to its handler (code moved); the
   generic route for a new kind, with `file` the first and each job's outputs listed by
   kind; movie and model added, each one handler file (the gate). The interface is in:
@@ -134,4 +134,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   definition says `writes.<kind>` (for ComfyUI, the node that writes it), the files go
   beside the frames or into a version of their own, named after the job, a job may write
   several kinds, and each job's outputs are listed by kind (`artifacts`). The GPU test
-  writes its report as a file (0036).
+  writes its report as a file (0036). Movie and model are in, each one file
+  (`artifacts/movie.py`, `artifacts/model.py`), with no other source file changed: the
+  gate. A test also adds a kind none of the farm knows as one module and runs a job of it
+  through the manager and an agent (0037).

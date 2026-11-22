@@ -76,7 +76,10 @@ if mode == "wait":                      # until the test says go, or the farm sa
             sys.exit(0)
         time.sleep(0.05)
 files = (job.get("input") or {}).get("files") or [None] * 3     # the input's files, in order
+writes = job.get("writes") or {}
 for i, src in enumerate(files, 1):
+    if "frames" not in writes:
+        break
     dst = os.path.join(job["output_dir"], f"{job['frames_prefix']}_{i:05d}.png")
     if src:
         shutil.copyfile(src, dst)
@@ -85,9 +88,10 @@ for i, src in enumerate(files, 1):
     event(progress=i / len(files), stage=f"frame {i}/{len(files)}")
 if mode == "warn":
     json.dump({"warnings": ["the frames came out dark"]}, open(job["result"], "w"))
-report = (job.get("writes") or {}).get("file")          # writes.file: a report beside the frames
-if report:
-    json.dump({"frames": len(files)}, open(os.path.join(report["dir"], report["prefix"] + ".json"), "w"))
+for kind, w in writes.items():                          # each other kind: one file (writes.<kind>)
+    if kind != "frames":
+        name = w["prefix"] + "." + (w.get("ext") or "out")
+        json.dump({"frames": len(files)}, open(os.path.join(w["dir"], name), "w"))
 '''
 
 
@@ -506,10 +510,9 @@ class Runs(Environment):
 
 
 
-@unittest.skipIf(Agent is None, "the agent needs httpx and websockets")
-class ThroughTheFarm(Environment):
-    """A process job submitted to the manager, placed on an agent that has ComfyUI and the
-    process runner, run there and its frames collected, as a workflow's are."""
+class Farmed(Environment):
+    """A manager, and an agent that has ComfyUI and the process runner, on the temp repo's
+    definitions (`definitions()`). Tests are its subclasses'."""
 
     def setUp(self):
         super().setUp()
@@ -530,12 +533,7 @@ class ThroughTheFarm(Environment):
             (hi / f"abc_0010.pre.v1.{f}.png").write_bytes(f"frame {f}".encode())
         os.makedirs(f"{root}/ocio")
         Path(f"{root}/ocio/config.ocio").write_text(OCIO_CONFIG)
-        definition(self.workflows, "copy", params={
-            "input": {"type": "input", "takes": "images", "label": "Frames", "required": True},
-            "mode": {"type": "choice", "choices": ["ok", "fail", "hang", "warn"], "default": "ok"}})
-        definition(self.workflows, "report", params={
-            "input": {"type": "input", "takes": "images", "label": "Frames", "required": True}},
-            writes={"frames": {"ext": "png"}, "file": {"ext": "json"}})
+        self.definitions()
         mappings = [{"posix": "/rdo/shows", "windows": f"{root}/shows"}]
         cfg = Config.model_validate({
             "database": f"{root}/farm.db", "workflows_dir": str(self.workflows), "workers": [],
@@ -594,6 +592,84 @@ class ThroughTheFarm(Environment):
         async def go():
             await self.agent._obey(await self.agent._heartbeat())
         self.wait(go())
+
+    FRAMES = {"input": {"type": "input", "takes": "images", "label": "Frames", "required": True}}
+
+    def definitions(self):
+        definition(self.workflows, "copy", params={
+            **self.FRAMES, "mode": {"type": "choice", "choices": ["ok", "fail", "hang", "warn"], "default": "ok"}})
+        definition(self.workflows, "report", params=self.FRAMES, writes={"frames": {"ext": "png"},
+                                                                        "file": {"ext": "json"}})
+        definition(self.workflows, "clip", params=self.FRAMES, writes={"movie": {"ext": "mp4"}})
+        definition(self.workflows, "lora", params=self.FRAMES, writes={"model": {"ext": "safetensors"}})
+
+    def done(self, job):
+        self.beat()
+        self.until(lambda: self.store.get(job["id"])["status"] in ("done", "failed"), what="the job to end")
+        row = self.store.get(job["id"])
+        self.assertEqual(row["status"], "done", row["error"])
+        return row
+
+
+@unittest.skipIf(Agent is None, "the agent needs httpx and websockets")
+class TheGate(Farmed):
+    """Phase 5's gate (docs/plan.md): a new kind of output needs one handler file and no core
+    edit. A kind none of the farm's code knows, `sound`, is written as one module next to the
+    handlers; a process definition says it writes it, and a job of it goes through the
+    manager and an agent like any other."""
+
+    SOUND = ("from comfyfarm.artifacts.base import Generic\n\n\n"
+             "class Sound(Generic):\n    kind = \"sound\"\n\n\nHANDLER = Sound()\n")
+
+    def setUp(self):
+        from comfyfarm import artifacts as A
+        kinds = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, kinds, True)
+        (kinds / "sound.py").write_text(self.SOUND, encoding="utf-8")
+        A.__path__.append(str(kinds))                   # as if it were in comfyfarm/artifacts/
+        A._found = None
+
+        def forget():
+            A.__path__.remove(str(kinds))
+            A._found = None
+            sys.modules.pop("comfyfarm.artifacts.sound", None)
+        self.addCleanup(forget)
+        super().setUp()
+
+    def definitions(self):
+        definition(self.workflows, "chime", params=self.FRAMES, writes={"frames": {"ext": "png"},
+                                                                        "sound": {"ext": "wav"}})
+
+    def test_a_kind_in_one_file_goes_through_the_farm(self):
+        row = self.done(self.farm.submit("chime", {"input": f"{self.SEQ} 1001-1003"}, "ann"))
+        out = row["outputs"]
+        self.assertEqual([a["kind"] for a in out["artifacts"]], ["frames", "sound"])
+        [wav] = out["sound"]["files"]
+        frames = sorted(n for n in os.listdir(row["output_dir"]) if n.endswith(".png"))
+        self.assertEqual(os.path.basename(wav), frames[0].rsplit(".", 2)[0] + ".wav")
+
+
+@unittest.skipIf(Agent is None, "the agent needs httpx and websockets")
+class ThroughTheFarm(Farmed):
+    """A process job submitted to the manager, placed on an agent that has ComfyUI and the
+    process runner, run there and its frames collected, as a workflow's are."""
+
+    def test_a_movie_alone_takes_a_version_and_is_what_the_dashboard_plays(self):
+        """Decision 0037: a movie with no frames chooses the folder's version and is the job's preview."""
+        first = self.done(self.farm.submit("clip", {"input": f"{self.SEQ} 1001-1003"}, "ann"))
+        second = self.done(self.farm.submit("clip", {"input": f"{self.SEQ} 1001-1003"}, "ann"))
+        names = [os.path.basename(r["outputs"]["movie"]["files"][0]) for r in (first, second)]
+        self.assertTrue(names[0].endswith(".clip_v001.mp4") and names[1].endswith(".clip_v002.mp4"), names)
+        out = second["outputs"]
+        self.assertEqual((out["preview"], [a["kind"] for a in out["artifacts"]]), (out["movie"]["files"][0], ["movie"]))
+        self.assertEqual(sorted(os.listdir(second["output_dir"])), sorted(names))      # no frames, nothing else
+
+    def test_a_model_comes_back_with_its_size(self):
+        row = self.done(self.farm.submit("lora", {"input": f"{self.SEQ} 1001-1003"}, "ann"))
+        model = row["outputs"]["model"]
+        self.assertTrue(model["files"][0].endswith(".lora_v001.safetensors"), model)
+        self.assertEqual(model["bytes"], [os.path.getsize(model["files"][0])])
+        self.assertNotIn("preview", row["outputs"])
 
     def test_a_report_comes_back_named_after_the_job(self):
         """A file a process writes besides its frames (writes.file, decision 0036): named like

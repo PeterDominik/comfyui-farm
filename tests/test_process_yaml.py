@@ -221,7 +221,7 @@ class ProcessYamlTests(unittest.TestCase):
             p["runner"]["outputs"]["preview"] = {"node": "1", "prefix_input": "filename_prefix"}
 
         def unknown_writes(p):
-            p["writes"]["movie"] = True
+            p["writes"]["sound"] = True             # no handler: movie is a kind since decision 0037
 
         def unknown_param(p):
             p["runner"]["params"]["nope"] = {"targets": []}
@@ -244,7 +244,7 @@ class ProcessYamlTests(unittest.TestCase):
                           (node_in_writes, "writes.frames.node: belongs in runner.outputs.frames"),
                           (own_preview_without_its_node, "writes.preview: own needs runner.outputs.preview"),
                           (preview_node_without_own, "say writes.preview: own"),
-                          (unknown_writes, "writes: unknown key movie"),
+                          (unknown_writes, "writes: unknown key sound"),
                           (unknown_param, "runner.params.nope: no such parameter"),
                           (no_runner, "needs a runner block with a type")):
             with self.subTest(case=edit.__name__):
