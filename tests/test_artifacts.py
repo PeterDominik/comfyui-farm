@@ -34,7 +34,7 @@ class Seam(unittest.TestCase):
     def test_every_handler_is_a_file_named_by_its_kind(self):
         """A new kind of output is one module here, named by its key under writes:."""
         found = {h.kind: h for h in A.handlers()}
-        self.assertEqual(sorted(found), ["file", "frames", "textures"])
+        self.assertEqual(sorted(found), ["file", "frames", "model", "movie", "textures"])
         for kind, h in found.items():
             self.assertEqual(type(h).__module__, f"comfyfarm.artifacts.{kind}")
 
@@ -248,6 +248,54 @@ class GenericRoute(unittest.TestCase):
         ctx = A.RunContext(job={"info": {"writes": {"file": spec}}}, cfg=None)
         asyncio.run(self.file.prepare(ctx))
         self.assertEqual(os.listdir(self.tmp), ["plate.gputest_v002.json"])
+
+
+class MovieAndModel(unittest.TestCase):
+    """The kinds of phase 5's gate (decision 0037), each one file on the generic route."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_their_heads(self):
+        movie, model = A.by_kind("movie"), A.by_kind("model")
+        self.assertEqual((movie.head({"ext": "mov"}), model.head(None)), ({"ext": "mov"}, {}))
+        with self.assertRaisesRegex(ValueError, r"writes.movie.ext: a video's extension \(mp4, mov"):
+            movie.head({"ext": "png"})
+        with self.assertRaisesRegex(ValueError, r"writes.model.ext: a weights file's extension \(safetensors"):
+            model.head({"ext": "json"})
+
+    def collect(self, kind, wrote, collect=None):
+        spec = {"dir": str(self.tmp), "prefix": f"_comfyfarm_1234abcd_{kind}", "ext": None, "base": "plate.clip_v001"}
+        for n, data in wrote.items():
+            (self.tmp / n).write_bytes(data)
+        tmp = self.tmp
+
+        class Runner:
+            def files(self, run, result, k, s):
+                return sorted(str(tmp / n) for n in os.listdir(tmp) if n.startswith(s["prefix"]))
+
+            async def fetch(self, entry, dest):
+                os.replace(entry, dest)
+        ctx = A.RunContext(job={"info": {"writes": {kind: spec}}, "collect": collect or {}},
+                           cfg=SimpleNamespace(paths=PathsConfig()), runner=Runner())
+        return asyncio.run(A.by_kind(kind).collect(ctx))[0]
+
+    def test_a_movie_alone_is_what_the_dashboard_plays(self):
+        out = self.collect("movie", {"_comfyfarm_1234abcd_movie.mov": b"m", "_comfyfarm_1234abcd_movie.mp4": b"m"})
+        self.assertEqual([os.path.basename(f) for f in out["movie"]["files"]],
+                         ["plate.clip_v001.mov", "plate.clip_v001.mp4"])
+        self.assertEqual(out["preview"], out["movie"]["files"][1])               # the MP4: the dashboard plays MP4
+        for n in os.listdir(self.tmp):
+            os.remove(self.tmp / n)
+        out = self.collect("movie", {"_comfyfarm_1234abcd_movie.mp4": b"m"}, collect={"frames": {"ext": "png"}})
+        self.assertNotIn("preview", out)                                         # beside frames: theirs
+
+    def test_a_model_says_its_size(self):
+        out = self.collect("model", {"_comfyfarm_1234abcd_model.safetensors": b"x" * 1234})
+        self.assertEqual((os.path.basename(out["model"]["files"][0]), out["model"]["bytes"]),
+                         ("plate.clip_v001.safetensors", [1234]))
+        self.assertEqual(A.by_kind("model").record(out)["bytes"], [1234])
 
 
 class ComfyUI(unittest.TestCase):

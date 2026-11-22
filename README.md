@@ -68,7 +68,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/agent/` | The agent, one per ComfyUI: takes jobs from the manager, converts their inputs, hands them to its runner, writes the outputs |
 | `comfyfarm/runners/` | What runs a job on the GPU, behind one interface (`base.py`). `comfyui.py`: ComfyUI's client and websocket, its health, node definitions and environment. `comfyui_workflow.py`: a workflow's ComfyUI half, checking how it wires the graph and building the API JSON. `process.py`: the process runner and a process definition's half; `process_run.py`: the supervisor of each run (standard library only) |
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
-| `comfyfarm/artifacts/` | Each kind of output the farm writes, one file each, named by its key under `writes:`: where its files go (the manager), and what the agent does before and after the run. `frames.py`: a frame sequence and its preview movie; `textures.py`: a texture set's EXR maps; `file.py`: other files a run writes, such as a report (the generic route, `base.py`) |
+| `comfyfarm/artifacts/` | Each kind of output the farm writes, one file each, named by its key under `writes:`: where its files go (the manager), and what the agent does before and after the run. `frames.py`: a frame sequence and its preview movie; `textures.py`: a texture set's EXR maps; on the generic route (`base.py`), `file.py` (other files, such as a report), `movie.py` (a video) and `model.py` (trained weights) |
 | `comfyfarm/definitions.py` | A definition's head, as the manager uses it: reading `process.yaml` and `manifest.yaml`, parameters and validation, inputs and what it writes, the fingerprint |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
 | `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; Batch Submit's ShotGrid query; where ShotGrid's right-click goes |
@@ -630,6 +630,13 @@ farm names them after the job, beside the frames and with their version:
 fails, since its definition said it would. Without frames, the files choose the output
 folder and its version themselves. The job lists all it wrote by kind (`outputs.artifacts`:
 `frames`, `file`), and the dashboard shows the files under the job.
+
+Two more kinds take the same route (decision 0037). `movie` is a video (`ext`: mp4, mov,
+webm, mkv or avi); in a job that writes no frames its MP4 is what the dashboard plays.
+`model` is trained weights, such as a LoRA (`ext`: safetensors, ckpt, pt, pth, bin or
+gguf), with each file's size in the outputs. It stays in the job's folder: putting it
+where ComfyUI reads models is a step of its own, for later. A new kind is one file in
+`comfyfarm/artifacts/`, a subclass of `base.Generic` naming its kind.
 
 A small supervisor runs each command and keeps its time limit, also while the agent
 restarts. An agent that comes back finds its runs again by their folders. A run that went
