@@ -535,6 +535,14 @@ A stopped rollout is rolled back or cancelled; a new one of that environment can
 once it is. A rollout outlives a manager restart. `environments/canary-test` is broken on
 purpose: its check always fails, so a rollout of it shows one stopping at the canary.
 
+The dashboard's Machines tab shows all of it below the machines (decision 0032): a table of
+machines by environments, each cell what that machine has current (✓ installed and checked)
+or what its environment manager is doing, green when it is what the manager wants, red when
+its install failed, with the error under the table; and the rollouts, each machine marked
+in order. Hover a cell for where its build came from, its previous build and what the
+manager wants. The tab only shows: changes are made on the manager's host, with the
+commands above, until the farm has API keys.
+
 ### Process runner
 
 Off by default (`process_runner.enabled` in `agent.yaml`; decision 0025). It runs *process

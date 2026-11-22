@@ -197,6 +197,7 @@ def install(spec: Spec, root: Path, uv: list[str], force: bool = False, log=prin
         said = check(spec, build)
     except BuildError:
         shutil.rmtree(build, ignore_errors=True)
+        _drop_if_empty(folder)          # a first install that failed leaves no folder behind
         raise
     meta = {"name": spec.name, "fingerprint": fp, "python": spec.python, "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "build_seconds": round(built, 1), "check": said.strip()[-500:],
@@ -214,6 +215,15 @@ def install(spec: Spec, root: Path, uv: list[str], force: bool = False, log=prin
             log(f"{spec.name}: removed the older build {other.name}")
     log(f"{spec.name} {fp}: built in {built:.0f} s, checked, current")
     return meta
+
+
+def _drop_if_empty(folder: Path) -> None:
+    """The environment's folder once its only build is gone: an empty folder reads as an
+    environment this machine still has (the environment manager's check that one is removed)."""
+    try:
+        folder.rmdir()                  # only when empty: a current or previous build stays
+    except OSError:
+        pass
 
 
 def remove(root: Path, name: str) -> bool:

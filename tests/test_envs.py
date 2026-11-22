@@ -15,6 +15,7 @@ from unittest import mock
 
 from comfyfarm import cli
 from comfyfarm.envs import build as B
+from comfyfarm.envs import cli as envcli
 from comfyfarm.envs import spec as S
 
 REPO = Path(__file__).resolve().parent.parent
@@ -269,6 +270,15 @@ class Builds(unittest.TestCase):
         self.assertEqual(B.builds(self.root, "demo").current, good.fingerprint)
         self.assertFalse((self.root / "demo" / other.fingerprint).exists())
 
+    def test_a_first_install_that_fails_leaves_no_folder(self):
+        """An empty folder would read as an environment this machine has (the environment
+        manager checks a removed one by its folder): the pilot's canary left one."""
+        bad = self.locked(check=["python", "-c", "raise SystemExit('broken on purpose')"])
+        with self.assertRaises(B.BuildError):
+            self.install(bad)
+        self.assertFalse((self.root / "demo").exists())
+        self.assertEqual(B.report(self.root), {})
+
     def test_it_says_when_uv_copied_instead_of_linking(self):
         with mock.patch.dict(os.environ, {"FAKE_UV_COPIES": "1"}):
             meta = self.install(self.locked())
@@ -284,6 +294,21 @@ class Builds(unittest.TestCase):
     def test_uv_named_in_the_config_is_used_as_it_is(self):
         self.assertEqual(B.get_uv(self.root, ["/opt/uv/bin/uv"]), ["/opt/uv/bin/uv"])
         self.assertFalse((self.root / ".uv-tool").exists())
+
+
+class RolloutLine(unittest.TestCase):
+    def test_every_line_of_an_error_is_indented(self):
+        """`env rollouts`: a check's output comes after its command, on lines of its own."""
+        r = {"id": "43cb6d79e918", "name": "canary-test", "release": "0c8de83c166dd7b2", "step": 0, "state": "failed",
+             "machines": ["tor-flame02-a6000", "wrk59467w-5090"], "by": "pdominik",
+             "error": "tor-flame02-a6000: python -c ... failed:\ncanary-test is broken on purpose\nsecond line"}
+        self.assertEqual(envcli._rollout_line(r).splitlines(), [
+            "canary-test 0c8de83c166dd7b2  failed stopped at tor-flame02-a6000  "
+            "[tor-flame02-a6000 > wrk59467w-5090]  (43cb6d79e918, by pdominik)",
+            "    tor-flame02-a6000: python -c ... failed:",
+            "    canary-test is broken on purpose",
+            "    second line"])
+        self.assertNotIn("\n", envcli._rollout_line({**r, "error": None, "state": "done"}))
 
 
 class Command(unittest.TestCase):

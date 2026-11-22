@@ -108,3 +108,11 @@ A4 launchers (xStudio, Daiquiri Automate).
   first (`rollouts.order`), each once the one before has it checked; a machine that fails
   or takes too long stops it there, with pause, resume, rollback and cancel (`env rollout`
   on the manager's host, 0031). `environments/canary-test` is broken on purpose to try it.
+  The Machines tab shows each machine's environments, what the manager wants it to have,
+  what its environment manager is doing and the rollouts, read-only: changes stay on the
+  manager's host until API keys (0032). The gate passed on 21 November on all three
+  machines, from the manager's host: `gpu-test` updated from 30cee042 to c817ab55 by a
+  rollout (A6000, then 5090, then 3090); `canary-test`'s rollout stopped at the A6000 on its
+  failed check, the 5090 and 3090 never told, then rolled back; `gpu-test` removed from all
+  three (`env want gpu-test none`) and installed again by a rollout, the three in 26 s from
+  uv's cache. Left: today's ComfyUI sync started by the manager.
