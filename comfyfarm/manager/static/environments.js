@@ -134,7 +134,7 @@ function envRow(w, names, latest, errors) {
     const note = c.note ? ` <span class="envsub">${esc(c.note)}</span>` : "";
     return `<td class="mono ${c.cls}" title="${esc(c.tip)}">${esc(c.text)}${note}</td>`;
   });
-  return `<tr><td><b>${esc(w.name)}</b></td>${cells.join("")}</tr>`;
+  return `<tr><td><b>${esc(w.name)}</b></td>${cells.join("")}<td></td></tr>`;
 }
 
 function rolloutRow(r) {
@@ -149,11 +149,12 @@ function rolloutRow(r) {
 }
 
 function renderEnvironments() {
-  const box = $("#envs");
-  if (!box) return;
+  const panel = $("#envsPanel"), rolling = $("#rolloutsPanel");
+  if (!panel) return;
   const names = envNames(), rollouts = state.envs?.rollouts || [];
-  box.hidden = !names.length && !rollouts.length && !state.envsError;
-  if (box.hidden) return;
+  panel.hidden = !names.length && !state.envsError;
+  rolling.hidden = panel.hidden && !rollouts.length;
+  if (panel.hidden && rolling.hidden) return;
   const rels = state.envs?.releases || [];
   const latest = n => rels.find(r => r.name === n)?.fingerprint || null;
   // In the Machines table's order.
@@ -162,10 +163,10 @@ function renderEnvironments() {
   $("#envsNote").innerHTML = state.envsError ? `<span class="err">${esc(state.envsError)}</span>`
     : state.envs?.bank ? `Releases from <code>${esc(state.envs.bank)}/environments</code>`
     : state.envs ? "The manager has no bank (share.dir), so no releases" : "";
-  $("#envsHead").innerHTML = `<tr><th>Machine</th>${names.map(n => envHead(n, rels)).join("")}</tr>`;
+  $("#envsHead").innerHTML = `<tr><th>Machine</th>${names.map(n => envHead(n, rels)).join("")}<th></th></tr>`;
   const errors = [];
   $("#envsBody").innerHTML = ws.length ? ws.map(w => envRow(w, names, latest, errors)).join("")
-    : `<tr><td colspan="${names.length + 1}" class="empty">No machines have checked in.</td></tr>`;
+    : `<tr><td colspan="${names.length + 2}" class="empty">No machines have checked in.</td></tr>`;
   $("#envsErrors").innerHTML = errors.map(([m, n, e, cls]) =>
     `<div class="enverr ${cls === "err" ? "err" : "warn"}"><b>${esc(m)} · ${esc(n)}</b>: ${esc(e)}</div>`).join("");
   const open = rollouts.filter(r => ROLLING.includes(r.state));
