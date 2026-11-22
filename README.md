@@ -996,7 +996,7 @@ only the files one lists.
   `GET /api/v1/jobs/{id}` gives it as `outputs.provenance_posix`.
 - **The EXR stamp:** each texture map's EXR carries two string attributes in its header
   (decision 0039), so a map copied away from its folder still says where it came from:
-  - `comfyfarm:job`: the job's id (the dashboard takes it, or its first 8 characters);
+  - `comfyfarm:job`: the job's id (`http://<manager>:9090/#queue?job=<id>` opens it on the dashboard);
   - `comfyfarm:provenance`: the provenance file's name in the map's folder.
 
   Nuke shows them in a Read's metadata as `exr/comfyfarm:job` and `exr/comfyfarm:provenance`
