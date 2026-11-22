@@ -55,6 +55,13 @@ class RolloutStart(BaseModel):
     machines: list[str] | None = None   # default: every machine the manager knows
 
 
+class SyncStart(BaseModel):
+    file: str                           # the version of the farm's environment file (its fingerprint)
+    runner: str = "comfyui"             # whose environment: the machines' resident runner's
+    machines: list[str] | None = None   # default: every machine the manager knows
+    force: bool = False                 # discard local changes in its git checkouts
+
+
 class EnvironmentWant(BaseModel):
     release: str | None = None          # a fingerprint, "latest", or none: remove it
     machines: list[str] | None = None   # default: every machine the manager knows
@@ -513,7 +520,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         return {"bank": cfg.share.dir or None, "releases": releases, "machines": desk.environments(),
                 "wanted": {a.name: a.env_wanted for a in desk.agents.values() if a.env_wanted},
                 "work": {a.name: a.env_work for a in alive if a.env_work},
-                "rollouts": desk.rollouts.recent(10)}
+                "rollouts": desk.rollouts.recent(10), "syncs": desk.syncs.recent(10)}
 
     def _here(request: Request) -> None:
         if not from_this_host(request.client.host if request.client else None):
@@ -542,6 +549,31 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         _here(request)
         try:
             return desk.rollouts.act(name, action, ident.user)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/v1/syncs")
+    def syncs(ident: Identity = Depends(identity)):
+        """The syncs of a runner's environment the manager started, newest first (decision 0033)."""
+        return {"syncs": desk.syncs.recent(20)}
+
+    @app.post("/api/v1/syncs")
+    def start_sync(req: SyncStart, request: Request, ident: Identity = Depends(identity)):
+        """The machines' runner brought to the farm's environment file, one machine at a time,
+        the canary first: each drained, synced by its agent, checked, then resumed. From the
+        manager's host only (`comfyfarm comfyui sync --all` there, which names its file)."""
+        _here(request)
+        try:
+            return desk.syncs.start(req.runner, req.file, req.machines, req.force, ident.user)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/v1/syncs/cancel")
+    def cancel_sync(request: Request, ident: Identity = Depends(identity)):
+        """No next machine for the running sync. From the manager's host only."""
+        _here(request)
+        try:
+            return desk.syncs.cancel(ident.user)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
 

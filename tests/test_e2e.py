@@ -724,6 +724,16 @@ convert:
         with self.assertRaises(farm.FarmError) as e:
             farm._request("POST", "/api/v1/environments/gpu-test/rollout/pause")
         self.assertIn("no rollout of gpu-test to pause", str(e.exception))
+        # ComfyUI syncs the manager runs (decision 0033): none yet, none running to cancel, and one
+        # needs the version of the file and machines the manager knows. None is started here: it
+        # would drain the suite's machine.
+        self.assertEqual((envs["syncs"], farm._request("GET", "/api/v1/syncs")["syncs"]), ([], []))
+        with self.assertRaises(farm.FarmError) as e:
+            farm._request("POST", "/api/v1/syncs/cancel")
+        self.assertIn("no sync is running", str(e.exception))
+        with self.assertRaises(farm.FarmError) as e:
+            farm._request("POST", "/api/v1/syncs", {"file": "3f2a9c41d0b7e655", "machines": ["gpu9"]})
+        self.assertIn("no machine gpu9", str(e.exception))
 
     def test_0501_publishing_off(self):
         """Publishing is off until publish.enabled: no Publish buttons, and asking says why."""

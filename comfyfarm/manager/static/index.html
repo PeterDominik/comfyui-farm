@@ -303,7 +303,9 @@
   <section id="rolloutsPanel" hidden>
     <div class="sechead"><h2>Rollouts</h2></div>
     <div class="envhelp">One machine at a time, the canary first: each once the one before has it checked. Pause,
-      resume, roll back or cancel with <code>comfyfarm env rollout &lt;name&gt;</code> on the manager's host.</div>
+      resume, roll back or cancel with <code>comfyfarm env rollout &lt;name&gt;</code> on the manager's host. A
+      ComfyUI sync (<code>comfyfarm comfyui sync --all</code> there) goes the same way: each machine drained, its
+      ComfyUI synced, checked, then resumed.</div>
     <table>
       <thead><tr><th>Environment</th><th>Release</th><th>State</th><th>Machines, in order</th><th>By</th>
         <th>Started</th><th>Updated</th></tr></thead>

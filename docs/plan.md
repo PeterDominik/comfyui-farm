@@ -115,4 +115,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   rollout (A6000, then 5090, then 3090); `canary-test`'s rollout stopped at the A6000 on its
   failed check, the 5090 and 3090 never told, then rolled back; `gpu-test` removed from all
   three (`env want gpu-test none`) and installed again by a rollout, the three in 26 s from
-  uv's cache. Left: today's ComfyUI sync started by the manager.
+  uv's cache. Today's ComfyUI sync is started by the manager: `comfyui sync --all` on its
+  host takes the machines one at a time, the canary first, each drained, synced by its
+  agent to the manager's version of the environment file, checked and resumed (0033).
+  Left: run it on the three machines.

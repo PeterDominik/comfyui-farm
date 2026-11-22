@@ -141,6 +141,24 @@ class Dashboard(unittest.TestCase):
         tips = [s["tip"] for s in self.run_js(["rolloutSteps", [r]])[0]]
         self.assertEqual(tips, ["told to go back to 30cee042", "told to remove it (it had none before)"])
 
+    # ------------------------------------------------------------ a ComfyUI sync's steps (decision 0033)
+    def sync_steps(self, state: str, step: int, phase: str | None = None, results: dict | None = None):
+        s = {"machines": ["tor-flame02-a6000", "wrk59467w-5090", "wrk1125l-3090"], "state": state, "step": step,
+             "phase": phase, "results": results or {}}
+        return self.run_js(["syncSteps", [s]])[0]
+
+    def test_sync_steps(self):
+        marks = lambda steps: [(x["mark"], x["cls"]) for x in steps]          # noqa: E731
+        running = self.sync_steps("running", 1, "syncing", {"wrk59467w-5090": {"step": "2/3: pip install"}})
+        self.assertEqual(marks(running), [("✓", "ok"), ("…", "warn"), ("○", "muted")])
+        self.assertEqual(running[1]["tip"], "syncing its ComfyUI: 2/3: pip install")
+        self.assertEqual(self.sync_steps("running", 0, "draining")[0]["tip"], "drained: waiting for its jobs to end")
+        self.assertEqual(marks(self.sync_steps("failed", 0)), [("✗", "err"), ("–", "muted"), ("–", "muted")])
+        self.assertEqual(marks(self.sync_steps("cancelled", 1)), [("✓", "ok"), ("■", "muted"), ("–", "muted")])
+        done = self.sync_steps("done", 2, None, {"tor-flame02-a6000": {"note": "synced", "differs": ["torch 2.8.0"]}})
+        self.assertEqual(marks(done), [("✓", "ok")] * 3)
+        self.assertEqual(done[0]["tip"], "synced\nstill different: torch 2.8.0")
+
 
 class Panels(HTMLParser):
     """The panels (sections) directly inside the Machines tab, each with its id and heading."""

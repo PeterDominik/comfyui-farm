@@ -33,10 +33,13 @@ share:
 # Rollouts of runner environments (`env rollout` on this host; decision 0031): a release
 # goes to one machine at a time, these first and in this order, the canary first; the
 # others follow by name. A machine that hasn't the release, checked, by step_minutes
-# stops the rollout there.
+# stops the rollout there. The ComfyUI syncs the manager runs (`comfyui sync --all` on this
+# host; decision 0033) go in the same order: a machine told to sync that hasn't finished
+# by sync_minutes stops the sync there.
 rollouts:
   order: []            # the pilot's: [tor-flame02-a6000, wrk59467w-5090, wrk1125l-3090]
   step_minutes: 30
+  sync_minutes: 60
 
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.

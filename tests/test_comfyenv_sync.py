@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -254,6 +255,55 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("the agent didn't start it, so sync won't stop it", text)
         self.assertEqual(M.git_head(self.farm.comfy)["commit"], self.core[0])
+
+
+class ManagerRunsIt(unittest.TestCase):
+    """`comfyui sync --all` on the manager's host asks the manager (decision 0033)."""
+
+    def run_cli(self, *argv, replies=None):
+        calls = []
+
+        def manager(args, method, path, body=None):
+            calls.append((method, path, body))
+            return (replies or {}).get(path, {})
+        out = io.StringIO()
+        with mock.patch("comfyfarm.envs.cli._manager", manager), redirect_stdout(out), \
+                mock.patch.object(S, "fingerprint", lambda: "3f2a"):
+            from comfyfarm.cli import main
+            code = main(["comfyui", *argv])
+        return code, out.getvalue(), calls
+
+    SYNC = {"id": "s1", "runner": "comfyui", "file": "3f2a", "state": "running", "phase": "syncing", "step": 1,
+            "machines": ["tor-flame02-a6000", "wrk59467w-5090"], "by": "peter", "error": None,
+            "results": {"tor-flame02-a6000": {"state": "done", "note": "synced",
+                                              "steps": [["stop ComfyUI", "stopped (pid 7)"]],
+                                              "differs": ["torch 2.8.0"], "manual": ["torch: by hand"]},
+                        "wrk59467w-5090": {"state": "applying", "step": "1/2: pip install"}}}
+
+    def test_all_names_this_checkouts_file(self):
+        code, said, calls = self.run_cli("sync", "--all", replies={"/api/v1/syncs": self.SYNC})
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [("POST", "/api/v1/syncs", {"file": "3f2a", "runner": "comfyui", "force": False,
+                                                           "machines": None})])
+        self.assertIn("s1  comfyui to the farm's environment 3f2a  running at wrk59467w-5090 (syncing)  "
+                      "[tor-flame02-a6000 > wrk59467w-5090]  (by peter)", said)
+        self.assertIn("    tor-flame02-a6000: done: synced\n      stop ComfyUI: stopped (pid 7)\n"
+                      "      still different: torch 2.8.0\n      by hand: torch: by hand\n"
+                      "    wrk59467w-5090: applying: 1/2: pip install", said)
+        code, said, calls = self.run_cli("sync", "--machine", "wrk59467w-5090", "--force",
+                                         replies={"/api/v1/syncs": self.SYNC})
+        self.assertEqual(calls[0][2]["machines"], ["wrk59467w-5090"])
+        self.assertTrue(calls[0][2]["force"])
+
+    def test_cancel_list_and_not_with_apply(self):
+        cancelled = {**self.SYNC, "state": "cancelled"}
+        code, _, calls = self.run_cli("sync", "--cancel", replies={"/api/v1/syncs/cancel": cancelled})
+        self.assertEqual(calls, [("POST", "/api/v1/syncs/cancel", None)])
+        code, said, _ = self.run_cli("syncs", replies={"/api/v1/syncs": {"syncs": [self.SYNC]}})
+        self.assertIn("s1  comfyui", said)
+        code, said, calls = self.run_cli("sync", "--all", "--apply")
+        self.assertEqual((code, calls), (2, []))
+        self.assertIn("--apply syncs this machine", said)
 
 
 class SafetyTests(unittest.TestCase):

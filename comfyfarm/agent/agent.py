@@ -124,6 +124,8 @@ class Agent:
         self.environments: dict | None = None   # what it has built (envs/build.report), as last read
         self.envman = EnvManager(self)          # makes them what the manager wants (decision 0030)
         self._releasing = False
+        self.synced: dict | None = None         # the last sync of its runner the manager asked for (decision 0033)
+        self._syncing = False
 
     # ================================================================ lifecycle
     def _ensure_sync(self) -> None:
@@ -261,6 +263,39 @@ class Agent:
             self.spawn(self.release_vram())
         if isinstance(reply.get("environments"), dict):
             self.envman.want(reply["environments"])
+        if isinstance(reply.get("sync"), dict):
+            self.spawn(self.sync(reply["sync"]))
+
+    async def sync(self, order: dict) -> None:
+        """The manager asked (a sync it started on its host, decision 0033): the machine's
+        resident runner brings its environment to the farm's file (ComfyUI: what `comfyfarm
+        comfyui sync --apply` does by hand). How it goes is sent with the status (`sync`).
+        Asked again for the one it is doing or has done (a reply lost, the manager
+        restarted), it says how that goes again."""
+        sid = str(order.get("id") or "")
+        if self._syncing or ((self.synced or {}).get("id") == sid and self.synced.get("state") in ("done", "failed")):
+            await self.send_status()
+            return
+        run = getattr(self.runner, "sync", None)
+        self._syncing = True
+        try:
+            if run is None:
+                await self._say_sync({"id": sid, "state": "failed", "error": f"{self.runner.label} on {self.name} "
+                                                                             f"can't be synced by the manager"})
+            else:
+                await run(order, self._say_sync)
+        finally:
+            self._syncing = False
+
+    async def _say_sync(self, rec: dict) -> None:
+        self.synced = rec
+        if rec.get("state") == "done":
+            log.info("agent %s: %s synced (sync %s): %s", self.name, self.runner.label, rec.get("id"),
+                     rec.get("note") or "done")
+        elif rec.get("state") == "failed":
+            log.warning("agent %s: syncing %s failed (sync %s): %s", self.name, self.runner.label, rec.get("id"),
+                        rec.get("error"))
+        await self.send_status()
 
     async def release_vram(self) -> dict:
         """The manager asked (the Machines tab's Free VRAM): the runner frees what it keeps on
@@ -350,6 +385,8 @@ class Agent:
             msg.update(gpus=self.gpus, gpu_error=self.gpu_error)
         if self.released is not None:
             msg["released"] = self.released
+        if self.synced is not None:
+            msg["sync"] = self.synced
         try:
             reply = await self.link.status(msg)
             if reply.get("hello"):

@@ -1,9 +1,13 @@
-"""comfyfarm comfyui snapshot | verify | sync: the farm's ComfyUI environment file, from
-and against this machine, and bringing this machine to it (comfyenv.sync).
+"""comfyfarm comfyui snapshot | verify | sync | syncs: the farm's ComfyUI environment file,
+from and against this machine, and bringing this machine to it (comfyenv.sync).
 
 All read this machine's agent.yaml (--config) for where ComfyUI and its Python are
 (comfyui_dir / comfyui_python, else comfyui_launch) and ComfyUI's address; --comfyui,
---python and --url override it, so they also run on a machine without an agent."""
+--python and --url override it, so they also run on a machine without an agent.
+
+On the manager's host, `sync --all` (or --machine) asks the manager to sync the machines
+instead, one at a time, the canary first, each by its own agent (manager/syncs.py,
+decision 0033); `syncs` shows how that goes, and `sync --cancel` stops it."""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import datetime
 import json
 import os
 import socket
+import textwrap
 import time
 from pathlib import Path
 
@@ -247,10 +252,82 @@ def _print_plan(p) -> None:
             print(f"  - {m}")
 
 
+# ================================================================ syncs the manager runs
+PHASES = {"draining": "waiting for its jobs to end", "told": "told", "syncing": "syncing",
+          "checking": "back: being checked"}
+
+
+def _sync_line(r: dict) -> str:
+    """One sync the manager runs, and how each machine it reached went."""
+    at = r["machines"][r["step"]] if r.get("machines") else "?"
+    where = {"running": f"at {at} ({PHASES.get(r.get('phase'), r.get('phase'))})", "failed": f"stopped at {at}",
+             "cancelled": f"at {at}"}.get(r["state"], "")
+    lines = [f"{r['id']}  {r.get('runner')} to the farm's environment {r.get('file')}  {r['state']} {where}".rstrip() +
+             f"  [{' > '.join(r.get('machines') or [])}]  (by {r.get('by') or '?'})"]
+    for m in r.get("machines") or []:
+        res = (r.get("results") or {}).get(m)
+        if not res:
+            continue
+        said = res.get("note") or res.get("step") or res.get("error") or ""
+        lines.append(f"    {m}: {res.get('state')}" + (f": {said}" if said and res.get("state") != "failed" else ""))
+        lines += [f"      {title}: {how}" for title, how in res.get("steps") or []]
+        lines += [f"      still different: {d}" for d in res.get("differs") or []]
+        lines += [f"      by hand: {x}" for x in res.get("manual") or []]
+    if r.get("error"):
+        lines.append(textwrap.indent(r["error"], "    "))
+    return "\n".join(lines)
+
+
+def _sync_farm(args) -> int:
+    """Ask the manager on this host to sync the machines (or stop its sync)."""
+    from ..envs.cli import _manager
+    from ..envs.spec import SpecError
+
+    try:
+        if args.cancel:
+            print(_sync_line(_manager(args, "POST", "/api/v1/syncs/cancel")))
+            return 0
+        file = S.fingerprint()
+        if file is None:
+            print(f"There's no environment file ({S.SPEC}) in this checkout: nothing to sync to.")
+            return 2
+        r = _manager(args, "POST", "/api/v1/syncs", {"file": file, "runner": "comfyui", "force": args.force,
+                                                   "machines": None if args.all else args.machine})
+    except SpecError as e:
+        print(f"STOPPED: {e}")
+        return 1
+    print(_sync_line(r))
+    print("\nEach machine in turn: drained, then (once it holds no jobs) synced by its agent (ComfyUI stopped, "
+          "updated, started again), checked and resumed. `comfyfarm comfyui syncs` and the dashboard's Machines tab "
+          "show how it goes.")
+    return 0
+
+
+def syncs(args) -> int:
+    from ..envs.cli import _manager
+    from ..envs.spec import SpecError
+
+    try:
+        rows = _manager(args, "GET", "/api/v1/syncs")["syncs"]
+    except SpecError as e:
+        print(f"STOPPED: {e}")
+        return 1
+    if not rows:
+        print("No syncs yet.")
+    for r in rows:
+        print(_sync_line(r))
+    return 0
+
+
 def sync(args) -> int:
     from ..agent import launch as L
     from . import sync as Y
 
+    if args.machine or args.all or args.cancel:
+        if args.apply:
+            print("--apply syncs this machine; --all, --machine and --cancel ask the manager. Use one or the other.")
+            return 2
+        return _sync_farm(args)
     folder, python, url, command = _where(args)
     cfg = args.cfg
     spec, state, skip = _state(folder, python, url, command, args.tags)
@@ -333,8 +410,14 @@ def add_parser(sub) -> None:
     cmds = p.add_subparsers(dest="comfyui_cmd", required=True)
     for name, helptext in (("snapshot", f"write {_shown(S.SPEC)} from this machine's ComfyUI"),
                            ("verify", "list how this machine's ComfyUI differs from the farm's"),
-                           ("sync", "bring this machine's ComfyUI to the farm's (prints the plan; --apply does it)")):
+                           ("sync", "bring this machine's ComfyUI to the farm's (prints the plan; --apply does it); "
+                                    "on the manager's host, --all has the manager sync every machine, one at a time"),
+                           ("syncs", "on the manager's host: the syncs the manager runs, newest first")):
         c = cmds.add_parser(name, help=helptext)
+        if name == "syncs":
+            c.add_argument("--manager-config", dest="manager_config",
+                           help="the manager's config.yaml, for its port (default: repo root, or $COMFYFARM_CONFIG)")
+            continue
         c.add_argument("--config", dest="agent_config", help="agent.yaml (default: repo root, or $COMFYFARM_AGENT_CONFIG)")
         c.add_argument("--comfyui", help="ComfyUI's folder (default: from agent.yaml)")
         c.add_argument("--python", help="ComfyUI's Python (default: from agent.yaml)")
@@ -351,7 +434,15 @@ def add_parser(sub) -> None:
             c.add_argument("--no-manager", action="store_true",
                            help="don't ask the manager whether this machine is drained (it's down; you drained it)")
             c.add_argument("--index-url", help="pip's package index (default: pypi.org; '' for pip's own settings)")
+            c.add_argument("--all", action="store_true",
+                           help="on the manager's host: the manager syncs every machine, one at a time, the canary "
+                                "first: each drained, synced by its agent, checked, resumed")
+            c.add_argument("--machine", action="append",
+                           help="on the manager's host: the manager syncs this machine (again for more)")
+            c.add_argument("--cancel", action="store_true", help="on the manager's host: no next machine for its sync")
+            c.add_argument("--manager-config", dest="manager_config",
+                           help="the manager's config.yaml, for its port (default: repo root, or $COMFYFARM_CONFIG)")
 
 
 def run(args) -> int:
-    return {"snapshot": snapshot, "verify": verify, "sync": sync}[args.comfyui_cmd](args)
+    return {"snapshot": snapshot, "verify": verify, "sync": sync, "syncs": syncs}[args.comfyui_cmd](args)
