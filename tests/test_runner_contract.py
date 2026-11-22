@@ -58,6 +58,21 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(list(inspect.signature(have).parameters), list(inspect.signature(want).parameters), name)
         self.assertFalse(hasattr(ProcessRunner, "sync"))     # its environments are the environment manager's
 
+    def test_the_comfyui_runner_says_what_ran_a_job(self):
+        """For its provenance (decision 0038): ComfyUI's version and commit, Python, torch, and
+        how the machine differed from the farm's environment file when last checked."""
+        from test_agent import FakeComfy
+        r = ComfyUIRunner(AgentConfig(name="gpu1", comfyui="http://gpu1:8188"), client=FakeComfy())
+        self.assertEqual(r.about(None), {"backend": "ComfyUI", "version": None, "commit": None, "python": None,
+                                         "torch": None, "differs": None})
+        r.stats = {"system": {"comfyui_version": "0.3.68", "python_version": "3.12.9 (main, Feb 4 2026) [GCC 11]",
+                              "pytorch_version": "2.9.1+cu128"}}
+        r.environment = {"file": True, "comfyui": {"version": "0.3.68", "commit": "c0ffee1"},
+                         "differs": ["torch 2.9.1 (the farm's file: 2.9.0)"]}
+        self.assertEqual(r.about(None), {"backend": "ComfyUI", "version": "0.3.68", "commit": "c0ffee1",
+                                         "python": "3.12.9", "torch": "2.9.1+cu128",
+                                         "differs": ["torch 2.9.1 (the farm's file: 2.9.0)"]})
+
     def test_the_process_runner_has_all_the_agent_may_call(self):
         for name in sorted(members(base.Runner)):
             self.assertTrue(hasattr(ProcessRunner, name) or name in ("label", "ready"), name)

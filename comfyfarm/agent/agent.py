@@ -45,6 +45,7 @@ from ..protocol import ON_WORKER, TERMINAL, LinkError, build, now
 from ..runners import make_runners
 from ..runners.base import Runner, RunRejected, RunState
 from . import gpus as G
+from . import provenance as PR
 from .envman import EnvManager
 
 log = logging.getLogger("comfyfarm")
@@ -833,11 +834,12 @@ class Agent:
         try:
             if hist is None:
                 hist = await h.runner.result(h)
-            outputs, warnings = await self._collect_outputs(h, hist or {})
+            outputs, warnings, wrote = await self._collect_outputs(h, hist or {})
             said = getattr(h.runner, "warnings", None)
             warnings = [*h.notes, *(said(h, hist) if said else []), *warnings]
             t = now()
             started = h.started_at or h.dispatched_at or t
+            warnings += await self._provenance(h, outputs, wrote, warnings, started, t)
             nodes = rt.nodes() if rt else None
             S.cleanup(h.job, self.scratch_root)
             self._release(h)
@@ -857,13 +859,14 @@ class Agent:
         return A.RunContext(job=h.job, cfg=self.cfg, run=h, runner=h.runner, result=hist, report=report,
                             spawn=self.spawn)
 
-    async def _collect_outputs(self, h: Held, hist: dict) -> tuple[dict, list[str]]:
+    async def _collect_outputs(self, h: Held, hist: dict) -> tuple[dict, list[str], list[str]]:
         """What the run wrote turned into the farm's outputs by the handler of each kind, and
-        listed by kind (`artifacts`, decisions 0034, 0036)."""
+        listed by kind (`artifacts`, decisions 0034, 0036); with every file each kind wrote,
+        for the provenance file (0038)."""
         info = h.job["info"] or {}
         outputs: dict = {"output_dir": info.get("output_dir"), "output_dir_posix": info.get("output_dir_posix")}
         warnings: list[str] = []
-        artifacts = []
+        artifacts, wrote = [], []
         for handler in A.for_job(h.job):
             more, said = await handler.collect(self._artifact_context(h, hist))
             outputs.update(more)
@@ -871,8 +874,48 @@ class Agent:
             record = handler.record(more)
             if record:
                 artifacts.append(record)
+            wrote += handler.written(info, more)
         if artifacts:
             outputs["artifacts"] = artifacts
-        return outputs, warnings
+        return outputs, warnings, wrote
+
+    async def _provenance(self, h: Held, outputs: dict, wrote: list[str], warnings: list[str], started: float,
+                          finished: float) -> list[str]:
+        """The job's provenance file beside its outputs (decision 0038), when the job asks for
+        one; its path goes into the outputs. Never a reason to fail the job: what went wrong
+        is a warning. Returns the warnings."""
+        info = h.job.get("info") or {}
+        out_dir, name = info.get("output_dir"), PR.name_for(h.job)
+        if not info.get("provenance") or not (out_dir and name):
+            return []
+        about = getattr(h.runner, "about", None)
+        try:
+            runner = about(h) if about else {}
+        except Exception as e:  # noqa: BLE001  (what ran it is told as well as it can be)
+            log.warning("provenance of %s: the runner couldn't say what ran it: %s", h.id[:8], e)
+            runner = {"error": str(e)}
+        doc = PR.document(h.job, machine=self.name, gpu=self._gpu(), farm=build(), runner=runner, started=started,
+                          finished=finished, outputs=outputs, wrote=wrote, warnings=warnings)
+        path = os.path.join(out_dir, name)
+        try:
+            await asyncio.to_thread(PR.write, path, W.portable(doc, self.view))
+        except Exception as e:  # noqa: BLE001
+            log.warning("provenance of %s: %s", h.id[:8], e)
+            why = getattr(e, "strerror", None) or e
+            return [f"Couldn't write the provenance file {name} in the output folder: {why}. "
+                    f"The outputs are there; ask the farm admin to check the folder's permissions."]
+        outputs["provenance"] = P.normalize(path)
+        outputs["provenance_posix"] = P.to_posix(outputs["provenance"], self.cfg.paths.mappings)
+        return []
+
+    def _gpu(self) -> dict | None:
+        """This machine's GPU for a provenance file: as nvidia-smi reads it (gpu_probe), or as
+        its resident runner names it (ComfyUI's device)."""
+        if self.gpus:
+            return {"name": " + ".join(g["name"] for g in self.gpus if g.get("name")) or None,
+                    "driver": next((g["driver"] for g in self.gpus if g.get("driver")), None)}
+        for dev in ((self.runner.status() or {}).get("stats") or {}).get("devices") or []:
+            return {"name": G.device_name(dev.get("name")), "driver": None}
+        return None
 
 __all__ = ["Agent", "Held"]

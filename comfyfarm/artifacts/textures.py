@@ -133,11 +133,23 @@ class Textures:
         return await O.write_maps(tex, out_dir, ctx.cfg.textures, ctx.cfg.convert, ctx.cfg.paths.mappings,
                                   progress), []
 
-
     def record(self, outputs: dict) -> dict | None:
         if not outputs.get("maps"):
             return None
         return {"kind": self.kind, "files": outputs.get("files"), "maps": outputs["maps"]}
+
+    def written(self, info: dict, outputs: dict) -> list[str]:
+        """Each map's EXR of each of this run's tiles, named as O.write_maps names them."""
+        tex, out_dir = info.get("textures"), info.get("output_dir")
+        if not (outputs.get("maps") and tex and out_dir):
+            return []
+        return [f"{out_dir}/{T.file_name(tex['name'], m, tex['tokens'], udim, frame)}"
+                for m in tex["maps"] for udim, frame in tex["items"]]
+
+    def provenance(self, info: dict) -> str | None:
+        """The folder is the run's own (or its set's): provenance.json, one per batch in a set."""
+        batch = info.get("batch") or {}
+        return f"provenance.{batch['index']:03d}.json" if batch.get("index") else "provenance.json"
 
 
 HANDLER = Textures()

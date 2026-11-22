@@ -42,7 +42,7 @@ from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import STEAL_SECONDS, Desk
 from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm, FarmError
-from comfyfarm.protocol import LinkError
+from comfyfarm.protocol import LinkError, build
 from comfyfarm.definitions import Definition, ParamError
 from comfyfarm.runners.comfyui_workflow import Workflow, WorkflowRegistry
 
@@ -412,6 +412,65 @@ class AgentTests(unittest.TestCase):
         self.assertIsNone(off["info"]["collect"]["movie"])
         done = self.finish(a, off["id"], self.dispatched(a, off), frame=png(8, 8))
         self.assertNotIn("preview", done["outputs"])
+
+    def test_a_provenance_file_beside_the_frames(self):
+        """Decision 0038: what ran, where, on what, for whom and from what, beside the outputs and
+        named like them, listing the files the farm wrote, in studio paths whichever machine ran it."""
+        self.cfg.provenance.enabled = True
+        a = self.ready(self.agent())
+        job = self.submit()
+        self.assertTrue(job["info"]["provenance"])
+        pid = self.dispatched(a, job)
+        done = self.finish(a, job["id"], pid)
+        self.assertEqual((done["status"], done["warnings"]), ("done", []), done["error"])
+        out = done["outputs"]
+        name = "abc_0010.pre.v1.alpha_v001.provenance.json"
+        self.assertEqual(out["provenance"], f"{done['output_dir']}/{name}")
+        self.assertEqual(out["provenance_posix"], f"{out['output_dir_posix']}/{name}")
+        doc = json.loads(Path(out["provenance"]).read_text(encoding="utf-8"))
+        frames = [f"abc_0010.pre.v1.alpha_v001.{f}.png" for f in (1001, 1002, 1003)]
+        self.assertEqual(doc["files"], frames)
+        self.assertEqual(sorted(os.listdir(done["output_dir"])), sorted(frames + [name]))    # nothing it doesn't list
+        self.assertEqual((doc["comfyfarm_provenance"], doc["job"], doc["attempt"], doc["user"]),
+                         (1, job["id"], pid, "ann"))
+        digest = self.farm.registry.workflows["ltx25_alpha_gen"].digest                 # pinned at submit
+        self.assertEqual(doc["definition"], {"name": "ltx25_alpha_gen", "fingerprint": digest})
+        self.assertEqual(doc["shot"]["show"], "xyz")
+        ran = doc["ran"]
+        self.assertEqual((ran["machine"], ran["gpu"], ran["farm"]), ("gpu1", {"name": "fake", "driver": None}, build()))
+        self.assertEqual((ran["runner"]["backend"], ran["runner"]["version"]), ("ComfyUI", "test"))
+        self.assertLessEqual(ran["started"], ran["finished"])
+        self.assertGreaterEqual(ran["seconds"], 0)
+        self.assertEqual((doc["inputs"]["input"], doc["inputs"]["range"]), (SEQ, [1001, 1003]))
+        self.assertTrue(doc["params"]["input"].startswith("/rdo/shows/"), doc["params"])
+        self.assertEqual(doc["folder"], out["output_dir_posix"])                         # studio paths
+        self.assertEqual(doc["artifacts"][0]["pattern"], out["frame_pattern_posix"])
+
+    def test_a_provenance_file_only_for_jobs_submitted_with_it_on(self):
+        a = self.ready(self.agent())
+        off = self.submit()
+        self.cfg.provenance.enabled = True                  # frozen at submit: not for the job queued before
+        done = self.finish(a, off["id"], self.dispatched(a, off))
+        self.assertNotIn("provenance", done["outputs"])
+        self.assertFalse([n for n in os.listdir(done["output_dir"]) if n.endswith(".json")])
+        on = self.submit()
+        self.cfg.provenance.enabled = False                 # and kept for the one queued with it on
+        a.gpus = [{"index": 0, "name": "NVIDIA RTX A6000", "driver": "570.86"}]          # gpu_probe's, when on
+        done = self.finish(a, on["id"], self.dispatched(a, on))
+        doc = json.loads(Path(done["outputs"]["provenance"]).read_text(encoding="utf-8"))
+        self.assertEqual(doc["ran"]["gpu"], {"name": "NVIDIA RTX A6000", "driver": "570.86"})
+
+    def test_a_provenance_file_that_cant_be_written_is_only_a_warning(self):
+        self.cfg.provenance.enabled = True
+        a = self.ready(self.agent())
+        job = self.submit()
+        with mock.patch("comfyfarm.agent.provenance.write", side_effect=PermissionError(13, "Permission denied")):
+            done = self.finish(a, job["id"], self.dispatched(a, job))
+        self.assertEqual((done["status"], done["outputs"]["frames"]), ("done", 3))
+        self.assertNotIn("provenance", done["outputs"])
+        self.assertEqual(done["warnings"], ["Couldn't write the provenance file abc_0010.pre.v1.alpha_v001.provenance."
+                                            "json in the output folder: Permission denied. The outputs are there; ask "
+                                            "the farm admin to check the folder's permissions."])
 
     @unittest.skipIf(os.name == "nt", "publishing runs on the Linux manager (a POSIX shell)")
     def test_publish_when_done(self):

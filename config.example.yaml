@@ -117,6 +117,11 @@ preview:
   max_width: 1920          # wider frames are scaled down (aspect kept); 0: as they are
   crf: 18                  # H.264 quality: lower is better and bigger
 
+# A provenance file beside each job's outputs (README, Provenance; decision 0038): what ran,
+# where, on what and for whom, and which files are the farm's. Frozen per job at submit.
+provenance:
+  enabled: false
+
 convert:
   # EXR sequences and movies are converted to PNG frames by the worker that runs the job,
   # into its scratch folder, before the workflow runs; deleted when the job finishes.

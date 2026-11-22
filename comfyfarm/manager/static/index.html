@@ -873,6 +873,7 @@ function detail(j) {
     ${pathRow("Preview movie", o.preview_posix)}
     ${(o.artifacts || []).filter(a => Array.isArray(a.files)).flatMap(a =>   // the other kinds' files (0036)
       a.files.map((f, n) => pathRow(n ? "" : a.kind[0].toUpperCase() + a.kind.slice(1), (a.files_posix || [])[n] || f))).join("")}
+    ${pathRow("Provenance", o.provenance_posix || o.provenance)}
     ${!o.maps && i.what ? `<div>Will write</div><div>${esc(i.what)}</div>` : ""}
     ${j.kind === "set" ? setDetail(j) : ""}
     ${pathRow("Output (Windows)", windows)}

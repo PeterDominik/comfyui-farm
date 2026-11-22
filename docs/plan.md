@@ -138,3 +138,18 @@ A4 launchers (xStudio, Daiquiri Automate).
   (`artifacts/movie.py`, `artifacts/model.py`), with no other source file changed: the
   gate. A test also adds a kind none of the farm knows as one module and runs a job of it
   through the manager and an agent (0037).
+- Phase 6: started. Steps:
+  1. A provenance file beside each job's outputs.
+  2. The EXR stamp: each EXR the farm writes (texture maps) carries its job id and its
+     provenance file's name.
+  3. `job_metrics`: one small row per finished job that outlives it (0006).
+  4. The sweeper's dry run: daily, it lists expired jobs and the exact files it would
+     delete (only those their provenance lists; a publish restarts the clock), and
+     deletes nothing.
+  5. After a week of dry runs that list only farm-made files (the gate), deletion is
+     switched on in config.
+
+  The provenance file is in, off by default (`provenance.enabled`). The agent that ran a
+  job writes it beside the outputs, named like them, before it reports the job done. It
+  says what ran, where, on what, for whom and from what, in studio paths, and lists every
+  file the job wrote, as each kind says (0038).
