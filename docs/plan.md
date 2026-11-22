@@ -161,3 +161,9 @@ A4 launchers (xStudio, Daiquiri Automate).
   `job_metrics` is in: one row per finished job, kept when the job is deleted, with no
   params, prompts, paths or errors; read as JSON or CSV (`/api/v1/job-metrics`). Jobs that
   finished before it get their rows when the manager starts (0040).
+
+  The sweeper's dry run is in, off by default (`retention.enabled`): once a day it writes
+  each expired job and the exact files it would delete to `data/sweeps/<date>.json`, only
+  what the job's own provenance file lists in its own folder, and deletes nothing (0041).
+  The gate starts when it is switched on: a week of these reports listing only files the
+  farm wrote.

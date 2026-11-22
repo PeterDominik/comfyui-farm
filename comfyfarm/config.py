@@ -217,6 +217,23 @@ class ProvenanceConfig(BaseModel):
     enabled: bool = False
 
 
+class RetentionConfig(BaseModel):
+    """The retention sweeper (decisions 0006, 0041). For now a dry run once a day: it lists
+    the expired jobs and the files it would delete (only those their provenance files list)
+    in data/sweeps/, and deletes nothing."""
+    enabled: bool = False
+    keep_days: float = Field(3.0, gt=0)   # after a job finished, or was last sent to be published
+    at: str = "03:00"                     # when it runs each day, the manager's local time (HH:MM)
+    reports: int = Field(60, ge=1)        # reports kept in data/sweeps/
+
+    @model_validator(mode="after")
+    def _at(self):
+        hh, _, mm = self.at.partition(":")
+        if not (hh.isdigit() and mm.isdigit() and len(mm) == 2 and int(hh) < 24 and int(mm) < 60):
+            raise ValueError(f"retention.at is a time of day like 03:00, not {self.at!r}")
+        return self
+
+
 class PublishConfig(BaseModel):
     """Publishing jobs through Daiquiri's update_and_render_nuke (comfyfarm.publish). Off
     until enabled; with dry_run, every publish is a dispatchGraph --dry-run (Daiquiri
@@ -337,6 +354,7 @@ class Config(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
+    retention: RetentionConfig = Field(default_factory=RetentionConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
     shotgrid: ShotGridConfig = Field(default_factory=ShotGridConfig)
 

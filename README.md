@@ -1034,6 +1034,45 @@ the farm ran, for whom and on what, after the jobs are gone.
   - `run_seconds`: on the GPU, outputs collected;
   - `total_seconds`: submitted until finished.
 
+### Retention
+
+The sweeper is how the farm's outputs will stop filling show storage (decisions 0006, 0041).
+For now it is a **dry run**: it writes what it would delete, and deletes nothing. Deleting
+comes after a week of dry runs that list only files the farm wrote.
+
+```yaml
+retention:
+  enabled: true            # in the manager's config.yaml; off by default
+  keep_days: 3
+  at: "03:00"
+```
+
+- **When a job expires:** `keep_days` after it finished, or after it was last sent to Tractor
+  to be published. A job with a publish on its way (queued, or asked for at submit and not
+  made yet) is kept.
+- **What it would delete:** only the files the job's own provenance file lists (README,
+  Provenance), in the job's own output folder, and the provenance file itself.
+  - A provenance file that belongs to another job, isn't the farm's, can't be read or sits
+    in another folder means nothing of that job is deleted.
+  - A listed name that leads out of the folder, or isn't a plain file, is left alone.
+  - Files nobody listed stay. A job without a provenance file (provenance was off when it
+    was submitted, or it didn't finish) keeps all its files; only its record would go.
+  - A texture set goes as a whole, with every batch's files.
+- **When it runs:** once a day at `at` (the manager's local time). If the manager was down at
+  that time, it runs when the manager starts.
+- **The reports** are kept in `data/sweeps/<date>.json`, the last `reports` (60) of them:
+  - each expired job, its folder, the files it would delete and their size;
+  - files already gone, and whether the folder would then be empty;
+  - every problem, and the totals.
+
+  To read them:
+  - `GET /api/v1/sweeps` lists them;
+  - `GET /api/v1/sweeps/latest?format=text` is the latest one to read, for example
+    `http://wrk1125l.rodeofx.com:9090/api/v1/sweeps/latest?format=text`.
+
+  To run one now, on the manager's machine:
+  `curl -X POST http://localhost:9090/api/v1/sweeps`.
+
 ### REST API
 
 | Method | Path | |
@@ -1071,6 +1110,9 @@ the farm ran, for whom and on what, after the jobs are gone.
 | POST | `/api/v1/shotgrid/menu/sync` | Make ShotGrid's menu match now (`shotgrid.menu_sync` on; with API keys, admins) |
 | POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
+| GET | `/api/v1/sweeps` | The retention sweeper's reports, newest first, with their totals (Retention) |
+| GET | `/api/v1/sweeps/{name}?format=` | One report (`latest`, or its name such as `2026-11-23`): each expired job and the files it would delete; `format=text` to read it |
+| POST | `/api/v1/sweeps` | A sweep now, as the daily one (a dry run). From the manager's host only |
 | GET | `/api/v1/job-metrics?since=&until=&format=&limit=` | One row per finished job, kept after it (Job metrics): `since` and `until` when it finished (a date, a date and time, or seconds since 1970); `format=csv` for a spreadsheet |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
