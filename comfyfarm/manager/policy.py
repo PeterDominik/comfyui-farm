@@ -1,8 +1,10 @@
 """The farm's policy (decisions 0007, 0043): `policy.yaml` in the bank folder, edited by the
 farm's admins, read by the manager and checked when a job is planned.
 
-Today it holds show rules: which shows may use the farm, and with which definitions. A job a
-rule refuses is never planned, and the artist is told which rule and why.
+It holds show rules (which shows may use the farm, and with which definitions) and licence
+rules (which licences the models a definition uses may carry, on which shows: each
+definition lists its models in its process.yaml, decision 0044). A job a rule refuses is
+never planned, and the artist is told which rule and why.
 
 The file is read again when it changes. A file that can't be read or doesn't validate is
 not taken: the last valid one stays in force (also across a restart: the manager keeps a
@@ -44,14 +46,26 @@ class Refused(Exception):
         self.rule = rule
 
 
-class ShowRule(BaseModel):
-    """A rule for some shows: `deny` all definitions or some, or `allow` only some."""
-    model_config = ConfigDict(extra="forbid")
+class _Rule(BaseModel):
+    """What every rule has: its name, the shows it is for (but not those in `except`), and
+    the reason the artist reads."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
     name: str = Field(min_length=1)                 # named when it refuses a job
-    shows: list[str] = Field(min_length=1)          # show codes; patterns work (ret*)
+    shows: list[str] = Field(min_length=1)          # show codes; patterns work (ret*; * is every job)
+    except_: list[str] = Field(default_factory=list, alias="except")   # shows it isn't for, though `shows` names them
+    reason: str = Field(min_length=1)               # what the artist reads
+
+    def matches(self, show: str) -> bool:
+        """`show` is "" for a job whose show isn't known: only `*` matches it."""
+        s = show.lower()
+        return (any(fnmatch.fnmatchcase(s, p.lower()) for p in self.shows)
+                and not any(fnmatch.fnmatchcase(s, p.lower()) for p in self.except_))
+
+
+class ShowRule(_Rule):
+    """A rule for some shows: `deny` all definitions or some, or `allow` only some."""
     deny: Literal["all"] | list[str] | None = None
     allow: list[str] | None = None
-    reason: str = Field(min_length=1)               # what the artist reads
 
     @field_validator("deny", mode="before")
     @classmethod
@@ -70,16 +84,39 @@ class ShowRule(BaseModel):
     def definitions(self) -> list[str]:
         return list(self.allow or []) + (list(self.deny) if isinstance(self.deny, list) else [])
 
-    def matches(self, show: str) -> bool:
-        s = show.lower()
-        return any(fnmatch.fnmatchcase(s, pattern.lower()) for pattern in self.shows)
-
     def refuses(self, definition: str) -> bool:
         if self.deny == "all":
             return True
         if isinstance(self.deny, list):
             return definition in self.deny
         return definition not in (self.allow or [])
+
+
+class LicenceRule(_Rule):
+    """A rule for the licences of the models a definition uses: `deny` some, or `allow` only
+    some. Licences are compared without case: apache-2.0 is Apache-2.0."""
+    deny: list[str] | None = None
+    allow: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _one(self):
+        if (self.deny is None) == (self.allow is None):
+            raise ValueError(f"rule {self.name}: give either deny (the licences it refuses) or allow (the only "
+                             f"licences it takes)")
+        return self
+
+    def licences(self) -> list[str]:
+        return list(self.deny or []) + list(self.allow or [])
+
+    def offending(self, models: list[dict]) -> dict | None:
+        """The first model whose licence this rule refuses."""
+        deny = {x.strip().lower() for x in self.deny or []}
+        allow = {x.strip().lower() for x in self.allow or []}
+        for m in models:
+            lic = str(m.get("licence", "")).strip().lower()
+            if (self.deny is not None and lic in deny) or (self.allow is not None and lic not in allow):
+                return m
+        return None
 
 
 class PolicyFile(BaseModel):
@@ -90,11 +127,14 @@ class PolicyFile(BaseModel):
     other_shows: Literal["allow", "deny"] = "allow"  # shows no rule names
     unknown_show: Literal["allow", "deny"] = "allow"  # a job whose show can't be worked out
     shows: list[ShowRule] = Field(default_factory=list)
+    licences: list[LicenceRule] = Field(default_factory=list)
+    # A definition that doesn't list its models, where a licence rule is for its show.
+    unlisted_models: Literal["allow", "deny"] = "allow"
 
     @model_validator(mode="after")
     def _names(self):
         seen = set()
-        for r in self.shows:
+        for r in [*self.shows, *self.licences]:
             if r.name in seen:
                 raise ValueError(f"two rules are named {r.name}: each needs its own name")
             seen.add(r.name)
@@ -214,8 +254,10 @@ class Policy:
                 log.warning("policy: couldn't keep a copy in %s: %s", self.saved, e)
 
     # ---------------------------------------------------------------- checking
-    def check(self, definition: str, show: str | None) -> None:
-        """Raise Refused if the policy in force doesn't allow `definition` for `show`."""
+    def check(self, definition: str, show: str | None, models: list[dict] | None = None) -> None:
+        """Raise Refused if the policy in force doesn't allow `definition` for `show`.
+        `models`: the definition's models with their licences (process.yaml), None when it
+        doesn't list them."""
         if not self.enabled:
             return
         self.refresh()
@@ -224,19 +266,29 @@ class Policy:
             raise Refused(f"The farm's policy can't be read, so no job can be planned until it is fixed: "
                           f"{self.error or 'no valid policy.yaml yet'}.", None)
         ask = f" Ask {rules.contact} if this is wrong." if rules.contact else ""
-        if not show:
-            if rules.unknown_show == "deny":
-                raise Refused("The farm's policy needs the show to be known: give a Show (or an input path "
-                              f"inside a show), so its rules can be checked.{ask}", "unknown_show")
-            return
-        matched = [r for r in rules.shows if r.matches(show)]
+        if not show and rules.unknown_show == "deny":
+            raise Refused("The farm's policy needs the show to be known: give a Show (or an input path "
+                          f"inside a show), so its rules can be checked.{ask}", "unknown_show")
+        where = f"for show {show}" if show else "without a known show"
+        matched = [r for r in rules.shows if r.matches(show or "")]
         for r in matched:
             if r.refuses(definition):
-                raise Refused(f"{definition} can't run for show {show}: {r.reason.rstrip('.')}. "
+                raise Refused(f"{definition} can't run {where}: {r.reason.rstrip('.')}. "
                               f"(Policy rule {r.name}.){ask}", r.name)
-        if not matched and rules.other_shows == "deny":
+        if show and not matched and rules.other_shows == "deny":
             raise Refused(f"Show {show} isn't cleared to use the farm: no policy rule allows it. "
                           f"(Policy: other_shows is deny.){ask}", "other_shows")
+        for r in (r for r in rules.licences if r.matches(show or "")):
+            if models is None:
+                if rules.unlisted_models == "deny":
+                    raise Refused(f"{definition} can't run {where}: its process.yaml doesn't list its models and "
+                                  f"their licences, which this show's policy checks. (Policy: unlisted_models is "
+                                  f"deny.) Its models: need listing.{ask}", "unlisted_models")
+                return
+            bad = r.offending(models)
+            if bad:
+                raise Refused(f"{definition} can't run {where}: it uses {bad.get('file')}, licensed "
+                              f"{bad.get('licence')}. {r.reason.rstrip('.')}. (Policy rule {r.name}.){ask}", r.name)
 
     def status(self) -> dict:
         """What GET /api/v1/policy shows: the file, the rules in force and any error."""
@@ -245,7 +297,7 @@ class Policy:
         return {"enabled": self.enabled, "file": self.shown_path, "error": self.error,
                 "in_force": None if r is None else {
                     "fingerprint": self.fingerprint, "taken_at": _when(self.taken_at), "source": self.source,
-                    **r.model_dump()}}
+                    **r.model_dump(by_alias=True)}}
 
 
 def policy_path(cfg) -> tuple[str | None, str | None]:

@@ -454,6 +454,7 @@ class Definition:
         self.targets: list = head["targets"] if "targets" in head else ["pool"]
         self.limits: dict = head.get("limits") or {}
         self.models: list = head.get("models") or []
+        self.models_listed: bool = "models" in head     # models: [] says it uses no weights (decision 0044)
         self.eval: dict | None = head.get("eval")
         self._head = head
         self.name: str = m.get("name") or directory.name

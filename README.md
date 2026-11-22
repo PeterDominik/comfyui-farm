@@ -1047,16 +1047,27 @@ policy:
   file: policy.yaml        # a name in share.dir, or a path of its own
 ```
 
-- **Start from `policy.example.yaml`.** Each rule names its shows (patterns work: `ret*`), a
-  reason the artist reads, and either `deny: all`, `deny: [definitions]`, or
-  `allow: [definitions]` (only those).
+- **Start from `policy.example.yaml`.** Each rule names its shows (patterns work: `ret*`;
+  `*` is every job, its show known or not), shows to leave out (`except: [rnd*]`), and a
+  reason the artist reads.
+  - A show rule says `deny: all`, `deny: [definitions]` or `allow: [definitions]` (only
+    those).
+  - A licence rule (under `licences:`) says `deny: [licences]` or `allow: [licences]`.
+    These are the licences of the model weights a definition lists under `models:` in its
+    `process.yaml` (decision 0044). Licences are compared without case.
+  - `unlisted_models` (allow or deny) is for a definition that doesn't list its models, on a
+    show a licence rule is for. `models: []` says it uses no weights.
   - Every rule naming a job's show is checked, and the first that refuses it is named.
   - `other_shows` (allow or deny) is for shows no rule names.
   - `unknown_show` is for a job whose show can't be worked out.
   - `contact` is named in every refusal.
 - **Check a file before it goes in the bank:**
   `python -m comfyfarm policy check /path/to/policy.yaml`. It validates the file and every
-  definition it names against this checkout's `workflows/`, and lists the rules.
+  definition it names against this checkout's `workflows/`, and lists the rules and the
+  models and licences each definition lists. Notes point out:
+  - definitions that don't list their models;
+  - files `deploy/comfyui/environment.yaml` gives a definition that its `models:` leaves out;
+  - licences a rule names that no definition carries, which may be a typo.
 - **The manager reads it again when it changes** (within seconds).
 - **A file that doesn't validate isn't taken.** The last valid one stays in force, and the
   manager keeps a copy in `data/policy.json` so a restart keeps it too.
@@ -1819,7 +1830,9 @@ Each half needs the other (frames in `writes` and their node in `runner.outputs`
 key in the wrong half is refused with a message saying where it goes.
 
 `class`, `targets`, `limits`, `models`, `eval` and `version` are optional. They are checked
-when the workflow loads and not used yet. `python tools/manifest_to_process.py workflows/<name>`
+when the workflow loads. `models` (every weights file the workflow loads, with its licence)
+is what the farm's policy checks licences against (see *Policy*; `models: []` for none); the
+others are not used yet. `python tools/manifest_to_process.py workflows/<name>`
 prints a manifest as a process.yaml (`--write` saves it; comments are not carried over, and
 you remove the manifest yourself). A converted workflow keeps its fingerprint until a head
 field is added, so machines on the old and the new file still agree.

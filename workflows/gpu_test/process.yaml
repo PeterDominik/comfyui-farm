@@ -16,6 +16,7 @@ description: >
 tag: gputest                    # in the output file names: <source>.gputest_vNNN.<frame>.png
 class: interactive
 limits: {max_minutes: 10}       # it stops after this, whatever "Seconds per frame" says
+models: []                      # it loads no model weights: torch filters only (decision 0044)
 publish: false                  # nothing to publish
 shotgrid: false                 # not in ShotGrid's right-click menu
 

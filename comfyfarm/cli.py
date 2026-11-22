@@ -402,27 +402,72 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _name(f: str) -> str:
+    return f.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def model_notes(definitions: dict, env: dict | None, pf=None) -> list[str]:
+    """What an admin should know before trusting licence rules (decision 0044): definitions
+    that don't list their models, files the farm's ComfyUI environment gives a definition
+    that its models: doesn't list, and licences a rule names that no definition carries
+    (a typo would refuse or allow nothing)."""
+    notes = []
+    unlisted = sorted(n for n, wf in definitions.items() if not wf.models_listed)
+    if unlisted:
+        notes.append(f"these don't list their models (licence rules treat them as unlisted_models says): "
+                     f"{', '.join(unlisted)}")
+    for file, entry in sorted(((env or {}).get("models") or {}).items()):
+        for n in entry.get("for") or []:
+            wf = definitions.get(n)
+            if wf is not None and wf.models_listed and _name(file) not in {_name(m["file"]) for m in wf.models}:
+                notes.append(f"{n} loads {file} (deploy/comfyui/environment.yaml), which its models: doesn't list")
+    if pf is not None:
+        carried = {m["licence"].strip().lower() for wf in definitions.values() for m in wf.models}
+        for r in pf.licences:
+            for lic in r.licences():
+                if lic.strip().lower() not in carried:
+                    notes.append(f"rule {r.name} names licence {lic}, which no definition's models carry")
+    return notes
+
+
 def run_policy_check(cfg: Config, file: str | None) -> int:
     """`comfyfarm policy check [file]`: is this policy file one the manager would take? Its
-    definitions are checked against this checkout's workflows/."""
+    definitions are checked against this checkout's workflows/, and its licence rules
+    against the licences their models carry."""
+    from .comfyenv import spec as ES
     from .definitions import DefinitionRegistry
     from .manager.policy import parse, policy_path
     path = file or policy_path(cfg)[0]
     if not path:
         print("No policy file: give one, or set policy.file in config.yaml.")
         return 1
-    known = set(DefinitionRegistry(cfg.resolve(cfg.workflows_dir)).workflows)
+    definitions = DefinitionRegistry(cfg.resolve(cfg.workflows_dir)).workflows
     try:
-        pf = parse(Path(path).read_text(encoding="utf-8"), known)
+        pf = parse(Path(path).read_text(encoding="utf-8"), set(definitions))
     except (OSError, ValueError) as e:
         print(f"  [FAIL] {path}: {getattr(e, 'strerror', None) or e}")
         return 1
-    print(f"  [ ok ] {path}: {len(pf.shows)} show rule(s); shows no rule names: {pf.other_shows}; "
-          f"a job whose show isn't known: {pf.unknown_show}")
+    print(f"  [ ok ] {path}: {len(pf.shows)} show rule(s), {len(pf.licences)} licence rule(s); shows no rule "
+          f"names: {pf.other_shows}; a job whose show isn't known: {pf.unknown_show}; a definition that doesn't "
+          f"list its models: {pf.unlisted_models}")
+
+    def shows(r) -> str:
+        return ", ".join(r.shows) + (f" (not {', '.join(r.except_)})" if r.except_ else "")
+
     for r in pf.shows:
         what = ("denies everything" if r.deny == "all" else f"denies {', '.join(r.deny)}" if r.deny
                 else f"allows only {', '.join(r.allow or [])}")
-        print(f"         {r.name}: {', '.join(r.shows)} {what}: {r.reason}")
+        print(f"         {r.name}: {shows(r)} {what}: {r.reason}")
+    for r in pf.licences:
+        what = f"denies licences {', '.join(r.deny)}" if r.deny is not None else \
+            f"allows only licences {', '.join(r.allow or [])}"
+        print(f"         {r.name}: {shows(r)} {what}: {r.reason}")
+    for n, wf in sorted(definitions.items()):
+        if wf.models_listed:
+            print(f"         {n} uses " + (", ".join(f"{m['file']} ({m['licence']})" for m in wf.models)
+                                          or "no model weights"))
+    for note in model_notes(definitions, ES.load(), pf):
+        print(f"  [note] {note}")
     if not cfg.policy.enabled:
         print("         (policy.enabled is off in config.yaml: the manager doesn't read it yet)")
     return 0

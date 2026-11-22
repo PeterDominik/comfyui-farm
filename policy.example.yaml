@@ -37,3 +37,18 @@ shows:
     shows: [exmpl2603]
     deny: [wan22_i2i, ltx25_layout_render]
     reason: The client hasn't cleared generated imagery in the frame
+
+# Rules for the licences of the model weights a definition uses (each definition lists them
+# under models: in its process.yaml, with their licence). A rule either denies some licences
+# or allows only some; licences are compared without case. `except` leaves out shows that
+# `shows` names: shows: ["*"] with except: [rnd*] is every job but R&D's. `check` lists
+# which licences each definition carries.
+licences:
+  - name: example-no-research-only
+    shows: [exmpl26*]
+    except: [exmpl2699]
+    deny: [ubisoft-machine-learning-license-research-only-copyleft]
+    reason: Research-only weights can't be used on client work
+
+# A definition that doesn't list its models, on a show a licence rule is for: allow or deny.
+unlisted_models: allow

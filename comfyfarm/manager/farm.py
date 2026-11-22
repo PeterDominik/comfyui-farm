@@ -311,9 +311,9 @@ class Farm:
         others = self._plan_other_inputs(wf, use, seq, show, shot, job_id) if seq is not None else {}
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
-        # The farm's policy, once the show is known (decision 0043): a refused job is never planned.
+        # The farm's policy, once the show is known (decisions 0043, 0044): a refused job is never planned.
         try:
-            self.policy.check(wf.name, show_)
+            self.policy.check(wf.name, show_, wf.models if wf.models_listed else None)
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
         seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
@@ -675,8 +675,10 @@ class Farm:
         job = self.store.get(job_id)
         if not job:
             raise FarmError("Job not found.", 404)
+        wf = self.registry.workflows.get(job["workflow"])
         try:                                # a set's show may have been barred since it was planned
-            self.policy.check(job["workflow"], (job.get("info") or {}).get("show"))
+            self.policy.check(job["workflow"], (job.get("info") or {}).get("show"),
+                              wf.models if wf is not None and wf.models_listed else None)
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
         if job["kind"] == "set":
