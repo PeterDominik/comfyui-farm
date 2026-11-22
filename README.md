@@ -68,7 +68,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/agent/` | The agent, one per ComfyUI: takes jobs from the manager, converts their inputs, hands them to its runner, writes the outputs |
 | `comfyfarm/runners/` | What runs a job on the GPU, behind one interface (`base.py`). `comfyui.py`: ComfyUI's client and websocket, its health, node definitions and environment. `comfyui_workflow.py`: a workflow's ComfyUI half, checking how it wires the graph and building the API JSON. `process.py`: the process runner and a process definition's half; `process_run.py`: the supervisor of each run (standard library only) |
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
-| `comfyfarm/artifacts/` | Each kind of output the farm writes, one file each, named by its key under `writes:`: where its files go (the manager), and what the agent does before and after the run. `frames.py`: a frame sequence and its preview movie; `textures.py`: a texture set's EXR maps |
+| `comfyfarm/artifacts/` | Each kind of output the farm writes, one file each, named by its key under `writes:`: where its files go (the manager), and what the agent does before and after the run. `frames.py`: a frame sequence and its preview movie; `textures.py`: a texture set's EXR maps; `file.py`: other files a run writes, such as a report (the generic route, `base.py`) |
 | `comfyfarm/definitions.py` | A definition's head, as the manager uses it: reading `process.yaml` and `manifest.yaml`, parameters and validation, inputs and what it writes, the fingerprint |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
 | `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; Batch Submit's ShotGrid query; where ShotGrid's right-click goes |
@@ -610,6 +610,7 @@ in `$COMFYFARM_JOB`):
 | `params` | the job's parameters, checked against the definition |
 | `input`, `inputs` | the image inputs as the farm resolved them, with `files`: the files to read, in order (a converted EXR or movie's PNGs), and their frame `numbers` |
 | `output_dir`, `frames_prefix` | where its frames go and what they start with: `<frames_prefix>_00001.png`, ... |
+| `writes` | what it writes: `frames` (`ext`), and each other kind its definition says (`file`, see below) with its `dir`, `prefix` and `ext` |
 | `events`, `result`, `cancel` | the files it writes and watches (below) |
 | `seconds` | its time limit |
 
@@ -618,6 +619,17 @@ It can write `result`: an error for the artist if it fails (`{"error": "..."}`),
 `"warnings": [...]` for the job. It stops when the `cancel` file appears. At a cancel or the time limit, it gets `process_runner.grace_seconds`
 (15) to stop, then it is killed with what it started. The agent then collects the frames as
 it does a workflow's: renamed to the job's names, with a preview movie.
+
+**Other files** (decision 0036). A process that writes something besides frames, such as a
+report, says so in its definition: `writes: {frames: {ext: png}, file: {ext: json}}`.
+`job.json`'s `writes.file` then gives it a `dir` and a `prefix`. It writes its files there,
+each named `<prefix><anything>` (with that extension, when the definition says one). The
+farm names them after the job, beside the frames and with their version:
+`_comfyfarm_1234abcd_file.json` becomes `abc_0010.gputest_v001.json`, and
+`..._file_stats.json` becomes `abc_0010.gputest_v001_stats.json`. A run that writes none
+fails, since its definition said it would. Without frames, the files choose the output
+folder and its version themselves. The job lists all it wrote by kind (`outputs.artifacts`:
+`frames`, `file`), and the dashboard shows the files under the job.
 
 A small supervisor runs each command and keeps its time limit, also while the agent
 restarts. An agent that comes back finds its runs again by their folders. A run that went
@@ -640,9 +652,9 @@ it shared the card. The process runner runs one job at a time; ComfyUI keeps
 
 `gpu_test` (`workflows/gpu_test`, decision 0027) is the farm's own test of all this: torch
 reads the input frames onto the GPU, blurs, inverts or grades them there, and writes PNGs
-like a workflow. *Hold GPU memory* keeps that much of the card while it runs. It writes
-`gpu_test.<job>.json` beside the frames: the card, how much was free when it started, and
-the most it used.
+like a workflow. *Hold GPU memory* keeps that much of the card while it runs. It writes a
+report beside the frames, named like them (`<source>.gputest_v001.json`, a `file`): the
+card, how much was free when it started, and the most it used.
 
 Phase 3's gate, on each machine:
 
@@ -1634,6 +1646,11 @@ runner:
   outputs:
     frames: {node: "256", class: ComfyFarmSaveImage, path_input: output_path, prefix_input: filename_prefix}
 ```
+
+Other kinds of output take the generic route (decision 0036): `writes.file: {ext: txt}`, with
+the node that writes the files in `runner.outputs.file: {node: "12", prefix_input:
+filename_prefix}`. The node gets the job's prefix, and the agent fetches the files ComfyUI
+lists for it and names them after the job, as for a process (see *Process runner*).
 
 A texture workflow says `writes.textures` instead of `writes.frames`: `name`, `dir`, `ext`,
 `batch`, and `maps` with each map's `channel`, `name`, `colorspace`, `color` and `bits`.

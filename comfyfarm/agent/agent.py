@@ -488,9 +488,8 @@ class Agent:
                 except OSError as e:
                     await self.run_failed(h, f"Can't create the output folder {out_dir}: {e.strerror or e}")
                     return
-            # What the run writes, readied by the handler of its kind (decision 0034).
-            handler = A.for_job(h.job)
-            if handler is not None:
+            # What the run writes, readied by the handler of each kind (decisions 0034, 0036).
+            for handler in A.for_job(h.job):
                 try:
                     await handler.prepare(self._artifact_context(h))
                 except A.PrepareError as e:
@@ -859,14 +858,21 @@ class Agent:
                             spawn=self.spawn)
 
     async def _collect_outputs(self, h: Held, hist: dict) -> tuple[dict, list[str]]:
-        """What the run wrote turned into the farm's outputs by the handler of its kind (decision 0034)."""
+        """What the run wrote turned into the farm's outputs by the handler of each kind, and
+        listed by kind (`artifacts`, decisions 0034, 0036)."""
         info = h.job["info"] or {}
         outputs: dict = {"output_dir": info.get("output_dir"), "output_dir_posix": info.get("output_dir_posix")}
-        handler = A.for_job(h.job)
-        if handler is None:
-            return outputs, []
-        more, warnings = await handler.collect(self._artifact_context(h, hist))
-        outputs.update(more)
+        warnings: list[str] = []
+        artifacts = []
+        for handler in A.for_job(h.job):
+            more, said = await handler.collect(self._artifact_context(h, hist))
+            outputs.update(more)
+            warnings += said
+            record = handler.record(more)
+            if record:
+                artifacts.append(record)
+        if artifacts:
+            outputs["artifacts"] = artifacts
         return outputs, warnings
 
 __all__ = ["Agent", "Held"]

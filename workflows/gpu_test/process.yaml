@@ -10,8 +10,9 @@ description: >
   Reads the input frames onto the GPU with torch, blurs, inverts or grades them there, and
   writes PNGs numbered like the input. "Hold GPU memory" keeps that much of the card while
   it runs: after a ComfyUI job, a hold close to the card's size only fits if ComfyUI freed
-  its models first. It writes gpu_test.<job>.json beside the frames: the card, how much of
-  it was free when it started, and the most it used. A test of the farm, not for shots.
+  its models first. It writes a report beside the frames, named like them
+  (<source>.gputest_vNNN.json): the card, how much of it was free when it started, and the
+  most it used. A test of the farm, not for shots.
 tag: gputest                    # in the output file names: <source>.gputest_vNNN.<frame>.png
 class: interactive
 limits: {max_minutes: 10}       # it stops after this, whatever "Seconds per frame" says
@@ -72,6 +73,7 @@ params:
 writes:
   frames: {ext: png}
   preview: true                 # the farm makes its preview movie, as for a workflow's frames
+  file: {ext: json}             # its report, named after the job by the farm (decision 0036)
 
 runner:
   type: process

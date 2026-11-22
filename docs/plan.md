@@ -130,4 +130,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   and the agent's (prepare, collect), and frames and texture sets are ported unchanged
   (0034). The core leaves them to their handlers: what the job keeps, what the runner is
   told and the dashboard's summary come from the handler; texture sets (batches across
-  jobs) stay the core's (0035).
+  jobs) stay the core's (0035). The generic route is in, with `file` the first kind: a
+  definition says `writes.<kind>` (for ComfyUI, the node that writes it), the files go
+  beside the frames or into a version of their own, named after the job, a job may write
+  several kinds, and each job's outputs are listed by kind (`artifacts`). The GPU test
+  writes its report as a file (0036).

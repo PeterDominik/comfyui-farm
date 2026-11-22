@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from . import artifacts as A
 from .fileio import textures as T
 
 log = logging.getLogger(__name__)
@@ -46,9 +47,12 @@ RUNNER_TYPES = ("comfyui", "process")
 PROCESS_KEYS = ("environment", "command")
 # What a definition writes (the head's `writes:`, docs/decisions/0019) and which nodes write
 # it (the runner block's `outputs:` and `textures:`). A manifest's outputs and textures
-# sections hold both halves.
+# sections hold both halves. Other kinds of output take the generic route (decision 0036):
+# writes.<kind>, said by the handler of that kind (comfyfarm/artifacts), and for ComfyUI
+# the node that writes them, runner.outputs.<kind>.
 WRITES_KEYS = ("frames", "preview", "textures")
 OUTPUTS_KEYS = ("root_node", "frames", "preview")
+GENERIC_WIRING_KEYS = ("node", "class", "prefix_input")
 TEX_HEAD_KEYS = ("name", "dir", "ext", "batch", "maps")
 TEX_RUNNER_KEYS = ("path_input", "prefix_input", "maps")
 MAP_HEAD_KEYS = ("channel", "name", "colorspace", "color", "bits")
@@ -83,9 +87,10 @@ def _writes_to_manifest(writes: dict, runner: dict) -> tuple[dict | None, dict |
     """The head's writes and the runner block's outputs and textures as a manifest's
     outputs and textures sections, and its top-level preview (None when not said)."""
     w = _section(writes, "writes")
-    _keys(w, "writes", WRITES_KEYS, {"root_node": "runner.outputs"})
+    generic = A.generic_kinds()
+    _keys(w, "writes", (*WRITES_KEYS, *generic), {"root_node": "runner.outputs"})
     ro = _section(runner.get("outputs"), "runner.outputs")
-    _keys(ro, "runner.outputs", OUTPUTS_KEYS)
+    _keys(ro, "runner.outputs", (*OUTPUTS_KEYS, *generic))
     outputs: dict = {}
     if "root_node" in ro:
         outputs["root_node"] = ro["root_node"]
@@ -132,7 +137,18 @@ def _writes_to_manifest(writes: dict, runner: dict) -> tuple[dict | None, dict |
             merged.append({**m, **maps_r[m["channel"]]})
         textures = {**{k: tw[k] for k in TEX_HEAD_KEYS if k in tw and k != "maps"},
                     **{k: tr[k] for k in TEX_RUNNER_KEYS if k in tr and k != "maps"}, "maps": merged}
-    return outputs or None, textures, preview
+    kinds = {}
+    for kind in (k for k in generic if k in w or k in ro):
+        _together(w, ro, kind, "writes", "runner.outputs", f"that it writes {kind}")
+        kinds[kind] = A.by_kind(kind).head(w[kind])
+        wiring = _section(ro[kind], f"runner.outputs.{kind}")
+        _keys(wiring, f"runner.outputs.{kind}", GENERIC_WIRING_KEYS)
+        if "node" not in wiring:
+            raise ValueError(f"runner.outputs.{kind}: needs the node that writes it ({{node: \"12\"}})")
+        outputs[kind] = wiring
+    if kinds and textures is not None:
+        raise ValueError(f"writes.{next(iter(kinds))}: a texture set writes only its maps")
+    return outputs or None, textures, preview, kinds
 
 
 def _process_block(p: dict, runner: dict) -> dict:
@@ -158,7 +174,11 @@ def _process_block(p: dict, runner: dict) -> dict:
             raise ValueError(f"params.{name}: {', '.join(wired)} is ComfyUI wiring; a process gets its params in "
                              f"job.json")
     w = _section(p.get("writes"), "writes")
-    _keys(w, "writes", ("frames", "preview"))
+    generic = A.generic_kinds()
+    _keys(w, "writes", ("frames", "preview", *generic))
+    kinds = {kind: A.by_kind(kind).head(w[kind]) for kind in generic if kind in w}
+    if kinds:
+        m["writes"] = kinds             # the generic route (decision 0036)
     if "frames" in w:
         wf = _section(w["frames"], "writes.frames")
         _keys(wf, "writes.frames", ("ext",))
@@ -234,7 +254,9 @@ def from_process(p: dict) -> tuple[dict, dict]:
     for k in ("template", "node_packs", "sequence"):
         if k in runner:
             m[k] = runner[k]
-    outputs, textures, preview = _writes_to_manifest(p.get("writes"), runner)
+    outputs, textures, preview, kinds = _writes_to_manifest(p.get("writes"), runner)
+    if kinds:
+        m["writes"] = kinds             # the generic route (decision 0036)
     if outputs is not None:
         m["outputs"] = outputs
     if textures is not None:
@@ -255,6 +277,8 @@ def read_definition(directory: Path) -> tuple[dict, dict, str]:
     m = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
     if "process" in m:
         raise ValueError("process: a definition for the process runner is a process.yaml (runner: {type: process})")
+    if "writes" in m:
+        raise ValueError("writes: is a process.yaml's (a manifest.yaml says outputs: and textures:)")
     return m, {}, manifest.name
 
 
@@ -505,6 +529,8 @@ class Definition:
         self.manifest_work_resolution = m.get("work_resolution") or None    # for every input without its own
         self.work_resolution = self.manifest_work_resolution or (self.port.work_resolution if self.port else None)
         self.outputs: dict = m.get("outputs") or {}
+        # Kinds of output on the generic route (writes.<kind>, decision 0036), as their handlers read them.
+        self.writes: dict = dict(m.get("writes") or {})
         # Texture workflows: several map save nodes, written as EXRs named by the TEX
         # convention (see textures.py) instead of one renamed frame sequence.
         self.textures: T.TextureSpec | None = T.TextureSpec.from_manifest(m["textures"]) if m.get("textures") else None
@@ -710,13 +736,15 @@ class Definition:
 
     def request(self, values: dict, seq=None, out_dir: str | None = None,
                 frames_prefix: str | None = None, preview_prefix: str | None = None,
-                textures: dict | None = None, inputs: dict | None = None) -> dict:
+                textures: dict | None = None, inputs: dict | None = None, writes: dict | None = None) -> dict:
         """What build() takes, as plain data: the manager stores this in place of the graph,
-        and the machine that runs the job builds the graph from it (build_from)."""
+        and the machine that runs the job builds the graph from it (build_from). `writes`:
+        where each kind on the generic route goes and what its files start with (0036)."""
         return {"definition": self.digest, "values": values, "seq": seq.as_dict() if seq is not None else None,
                 "out_dir": out_dir, "frames_prefix": frames_prefix, "preview_prefix": preview_prefix,
                 "textures": textures,
-                "inputs": {k: v.as_dict() if v is not None else None for k, v in (inputs or {}).items()}}
+                "inputs": {k: v.as_dict() if v is not None else None for k, v in (inputs or {}).items()},
+                **({"writes": writes} if writes else {})}
 
     def schema(self) -> dict:
         params = []

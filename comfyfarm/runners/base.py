@@ -78,7 +78,10 @@ class Runner(Protocol):
     async def result(self, run) -> Any: ...             # a finished run's result
     def warnings(self, run, result) -> list: ...        # what the run said about its job, for its warnings
     def preview(self, run, result) -> list: ...         # the preview video the run made itself, if any
-    async def fetch(self, entry, dest) -> None: ...     # copy one of them to dest
+    # What the run wrote of a kind on the generic route (decision 0036), in order; `spec` is the
+    # job's writes.<kind>: the folder it was told and what its files start with.
+    def files(self, run, result, kind: str, spec: dict) -> list: ...
+    async def fetch(self, entry, dest) -> None: ...     # one of them (or the preview video) to dest
     async def forget(self, pid: str | None) -> None: ...  # drop the backend's record of the run
 
 
