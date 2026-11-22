@@ -44,3 +44,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0036](0036-the-generic-route-for-a-new-kind.md) | The generic route for a new kind of output; files first | accepted |
 | [0037](0037-movie-and-model.md) | Movie and model, each one file: phase 5's gate | accepted |
 | [0038](0038-provenance-file.md) | A provenance file beside each job's outputs | accepted |
+| [0039](0039-exr-stamp.md) | Each EXR map carries its job and its provenance file in its header | accepted |

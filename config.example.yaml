@@ -118,7 +118,8 @@ preview:
   crf: 18                  # H.264 quality: lower is better and bigger
 
 # A provenance file beside each job's outputs (README, Provenance; decision 0038): what ran,
-# where, on what and for whom, and which files are the farm's. Frozen per job at submit.
+# where, on what and for whom, and which files are the farm's. Each texture map's EXR then
+# carries the job and the file's name in its header (0039). Frozen per job at submit.
 provenance:
   enabled: false
 

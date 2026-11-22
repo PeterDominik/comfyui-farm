@@ -6,6 +6,7 @@ test_process_runner (a process); each runner's part (about) in test_runner_contr
     python -m unittest tests.test_provenance -v
 """
 
+import asyncio
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from comfyfarm import artifacts as A
@@ -140,6 +142,30 @@ class TheFile(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 PR.write(path, {})
         self.assertEqual(os.listdir(self.dir), [])
+
+
+class Stamp(unittest.TestCase):
+    """Each texture map's EXR carries its job and its provenance file's name (decision 0039)."""
+
+    def test_for_a_job_that_writes_a_provenance_file(self):
+        textures = A.by_kind("textures")
+        job = {"job": "0123abcd", "info": {"output_dir": D, "textures": TEXTURES, "provenance": True}}
+        self.assertEqual(textures.stamp(job), {"comfyfarm:job": "0123abcd", "comfyfarm:provenance": "provenance.json"})
+        job["info"]["batch"] = {"set": "s1", "index": 2, "of": 3}
+        self.assertEqual(textures.stamp(job)["comfyfarm:provenance"], "provenance.002.json")
+        job["info"]["provenance"] = False
+        self.assertIsNone(textures.stamp(job))
+        self.assertIsNone(textures.stamp({"job": "0123abcd", "info": {"output_dir": D, "textures": TEXTURES}}))
+
+    def test_the_maps_are_written_with_it(self):
+        job = {"job": "0123abcd", "info": {"output_dir": D, "textures": TEXTURES, "provenance": True}}
+        cfg = SimpleNamespace(textures="tc", convert="cc", paths=SimpleNamespace(mappings=[]))
+        ctx = A.RunContext(job=job, cfg=cfg, report=None, spawn=None)
+        with mock.patch("comfyfarm.fileio.outputs.write_maps", mock.AsyncMock(return_value={"maps": {}})) as write:
+            self.assertEqual(asyncio.run(A.by_kind("textures").collect(ctx)), ({"maps": {}}, []))
+        self.assertEqual(write.call_args.args[:5], (TEXTURES, D, "tc", "cc", []))
+        self.assertEqual(write.call_args.args[6], {"comfyfarm:job": "0123abcd",
+                                                   "comfyfarm:provenance": "provenance.json"})
 
 
 class GPU(unittest.TestCase):

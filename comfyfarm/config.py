@@ -212,7 +212,8 @@ class PreviewConfig(BaseModel):
 class ProvenanceConfig(BaseModel):
     """A provenance file beside each job's outputs (decision 0038): what ran, where, on what
     and for whom, and which files are the farm's. Written by the agent that ran it; frozen
-    into each job at submit."""
+    into each job at submit. Each texture map's EXR then carries the job and the file's
+    name in its header (0039)."""
     enabled: bool = False
 
 
