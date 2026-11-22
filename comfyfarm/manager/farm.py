@@ -610,6 +610,8 @@ class Farm:
             "notes": plan["notes"], "input_kind": seq.kind if seq else None,
             "convert_summary": I.summary(seq, pc),
             "what": what if what is not None else plan.get("what"),
+            # The agent writes its provenance file beside the outputs (decision 0038).
+            "provenance": self.cfg.provenance.enabled,
             **artifact,
         }
 

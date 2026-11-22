@@ -688,6 +688,26 @@ class ThroughTheFarm(Farmed):
         self.assertEqual(json.loads(Path(report).read_text()), {"frames": 3})
         self.assertFalse([n for n in os.listdir(row["output_dir"]) if n.startswith("_comfyfarm")])
 
+    def test_a_provenance_file_lists_what_the_process_wrote_and_what_it_ran_in(self):
+        """Decision 0038: beside the frames and the report, named like them, listing both; the
+        runner says the environment and the build it ran in."""
+        self.farm.cfg.provenance.enabled = True
+        row = self.done(self.farm.submit("report", {"input": f"{self.SEQ} 1001-1003"}, "ann"))
+        out = row["outputs"]
+        frames = sorted(n for n in os.listdir(row["output_dir"]) if n.endswith(".png"))
+        stem = frames[0].rsplit(".", 2)[0]
+        self.assertEqual(os.path.basename(out["provenance"]), stem + ".provenance.json")
+        doc = json.loads(Path(out["provenance"]).read_text(encoding="utf-8"))
+        self.assertEqual(doc["files"], frames + [stem + ".json"])
+        self.assertEqual(sorted(os.listdir(row["output_dir"])), sorted(doc["files"] + [stem + ".provenance.json"]))
+        self.assertEqual([a["kind"] for a in doc["artifacts"]], ["frames", "file"])
+        runner = doc["ran"]["runner"]
+        self.assertEqual((runner["backend"], runner["environment"]), ("process", "py"))
+        self.assertEqual(runner["build"], EB.builds(self.builds, "py").current)
+        self.assertEqual(runner["origin"], {"checkout": str(self.envs / "py")})     # built from the repo, not a release
+        digest = self.farm.registry.workflows["report"].digest
+        self.assertEqual(doc["definition"], {"name": "report", "fingerprint": digest})
+
     def test_a_process_job_runs_and_its_frames_are_collected(self):
         self.assertEqual(self.desk.agents["gpu1"].problems, {})        # it said it can run them
         job = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003"}, "ann")

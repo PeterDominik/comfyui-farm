@@ -12,8 +12,10 @@ A handler is one kind of artifact: what a definition says it writes under the he
   the agent's     collects(job) says whether a job writes this kind, from the job alone;
                   prepare() runs before the run (folders the runner writes into), and
                   collect() after it: what the runner wrote turned into the farm's files,
-                  as the outputs the manager keeps and the warnings for the artist; and
-                  record() is its entry in the job's list of artifacts, from those outputs
+                  as the outputs the manager keeps and the warnings for the artist;
+                  record() is its entry in the job's list of artifacts, from those outputs;
+                  written() lists every file of it the job wrote, and provenance() names
+                  the job's provenance file, which lists them, beside them (0038)
 
 Handlers import neither the manager nor the agent: what they need comes in a context. The
 manager's errors are PlanError (with the HTTP status the manager answers with), the
@@ -84,6 +86,8 @@ class Handler(Protocol):
     async def prepare(self, ctx: RunContext) -> None: ...        # before the run; PrepareError
     async def collect(self, ctx: RunContext) -> tuple[dict, list[str]]: ...   # after: outputs, warnings
     def record(self, outputs: dict) -> dict | None: ...  # its entry in the job's artifacts, from collect's outputs
+    def written(self, info: dict, outputs: dict) -> list[str]: ...  # every file of it the job wrote, by path
+    def provenance(self, info: dict) -> str | None: ...  # the job's provenance file's name, in its output folder
 
 
 EXT = re.compile(r"^[A-Za-z0-9]{1,12}$")
@@ -217,6 +221,13 @@ class Generic:
 
     def record(self, outputs: dict) -> dict | None:
         return {"kind": self.kind, **outputs[self.kind]} if outputs.get(self.kind) else None
+
+    def written(self, info: dict, outputs: dict) -> list[str]:
+        return list((outputs.get(self.kind) or {}).get("files") or [])
+
+    def provenance(self, info: dict) -> str | None:
+        """Named like its files: plate.gputest_v001.provenance.json beside plate.gputest_v001.json."""
+        return f"{info['writes'][self.kind]['base']}.provenance.json"
 
 
 def _clear(folder: str, prefix: str) -> None:

@@ -968,6 +968,35 @@ The settings (`preview:` in the manager's `config.yaml`: `enabled`, `fps`, `max_
 are frozen into each job at submit, so every agent makes the same movie and a change only
 affects jobs submitted afterwards.
 
+### Provenance
+
+With `provenance: {enabled: true}` in the manager's `config.yaml`, the agent that ran a job
+writes a JSON file beside its outputs, before it reports the job done (decision 0038). A file
+found on disk later says where it came from, and the retention sweeper (to come) will delete
+only the files one lists.
+
+- **Its name** follows the outputs': `305046_0010.plate.alpha_v002.provenance.json` beside
+  `305046_0010.plate.alpha_v002.1001.png`. Files of other kinds (a report, a movie, a model)
+  are named the same way. A texture folder gets `provenance.json`, and a set of batches
+  one per batch (`provenance.002.json`).
+- **What it says:**
+  - the job, the attempt, the user and the name;
+  - the definition's name and fingerprint;
+  - the machine, its GPU and driver, and the farm's build;
+  - what ran it: ComfyUI's version, commit, Python and torch, and how the machine differed
+    from the farm's environment file; or a process's environment, its build and the release
+    it came from;
+  - when it was dispatched, started and finished, and the run's seconds;
+  - the inputs with their frame range, and the ShotGrid Versions;
+  - the parameters;
+  - the output folder, every file the job wrote there, and the warnings.
+- **Paths** are studio paths (`/rdo/shows/...`), whichever machine ran the job.
+- **When it can't be written:** a warning on the job; the outputs stand and the job is done.
+- **Where to see it:** the dashboard's job details give its path (Provenance), and
+  `GET /api/v1/jobs/{id}` gives it as `outputs.provenance_posix`.
+
+The setting is frozen into each job at submit: a change only affects jobs submitted afterwards.
+
 ### REST API
 
 | Method | Path | |

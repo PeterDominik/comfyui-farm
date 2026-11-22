@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 from ..config import PathsConfig
@@ -18,7 +19,7 @@ from ..fileio import naming as N
 from ..fileio import outputs as O
 from ..fileio import paths as P
 from ..fileio import preview as PV
-from .base import PlanContext, PlanError, RunContext
+from .base import PlanContext, PlanError, RunContext, base_name
 
 log = logging.getLogger("comfyfarm")
 
@@ -164,6 +165,21 @@ class Frames:
                 "last": outputs.get("last"), "pattern": outputs.get("frame_pattern"),
                 "pattern_posix": outputs.get("frame_pattern_posix"), "preview": outputs.get("preview"),
                 "preview_posix": outputs.get("preview_posix")}
+
+    def written(self, info: dict, outputs: dict) -> list[str]:
+        """Each frame (renamed: numbered on from the first, with no gap) and the preview movie."""
+        pattern, first, last = outputs.get("frame_pattern"), outputs.get("first"), outputs.get("last")
+        files = []
+        if pattern and first is not None and last is not None:
+            number = re.compile(r"%0?(\d*)d")
+            files = [number.sub(lambda m, n=n: f"{n:0{m.group(1) or 1}d}", pattern, count=1)
+                     for n in range(first, last + 1)]
+        return files + ([outputs["preview"]] if outputs.get("preview") else [])
+
+    def provenance(self, info: dict) -> str | None:
+        """Named like the frames: plate.wan_v001.provenance.json beside plate.wan_v001.1001.png."""
+        tokens, frame_name = info.get("name_tokens"), info.get("frame_name")
+        return f"{base_name(frame_name, tokens)}.provenance.json" if tokens and frame_name else None
 
 
 HANDLER = Frames()

@@ -318,6 +318,17 @@ class ComfyUIRunner:
         node_out = ((hist or {}).get("outputs") or {}).get(str(pv["node"])) or {}
         return node_out.get("gifs") or node_out.get("videos") or node_out.get("images") or []
 
+    def about(self, h) -> dict:
+        """What ran it, for its provenance: ComfyUI's version and commit, its Python and torch,
+        and how this machine differed from the farm's environment file when last checked."""
+        system = (self.stats or {}).get("system") or {}
+        env = self.environment or {}
+        core = env.get("comfyui") or {}
+        return {"backend": "ComfyUI", "version": system.get("comfyui_version") or core.get("version"),
+                "commit": core.get("commit"), "python": (system.get("python_version") or "").split(" ")[0] or None,
+                "torch": system.get("pytorch_version"),
+                "differs": list(env.get("differs") or []) if env.get("file") else None}
+
     def files(self, h, hist: dict | None, kind: str, spec: dict) -> list:
         """What the run wrote of a kind on the generic route (decision 0036): the files ComfyUI
         lists for the node this checkout's definition names (runner.outputs.<kind>.node)."""

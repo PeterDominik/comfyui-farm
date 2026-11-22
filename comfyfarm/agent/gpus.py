@@ -8,6 +8,7 @@ needs a Python package or a runner."""
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 
 FIELDS = ("index", "uuid", "name", "memory.total", "memory.used", "memory.free", "utilization.gpu",
@@ -37,6 +38,13 @@ def parse(text: str) -> list[dict]:
                      "vram_free": mem[2] * MIB if mem[2] is not None else None,
                      "utilization": _number(cols[6]), "driver": cols[7]})
     return gpus
+
+
+def device_name(name: str | None) -> str | None:
+    """A runner's name for its device without the device number and allocator:
+    'cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync' -> 'NVIDIA GeForce RTX 5090'."""
+    name = re.sub(r"\s+:\s+\S+\s*$", "", re.sub(r"^\s*cuda:\d+\s+", "", name or "")).strip()
+    return name or None
 
 
 def probe(command: list[str] | None = None, timeout: float = 10.0) -> tuple[list[dict], str | None]:

@@ -209,6 +209,13 @@ class PreviewConfig(BaseModel):
     crf: int = 18              # H.264 quality: lower is better and bigger (18 looks like the frames)
 
 
+class ProvenanceConfig(BaseModel):
+    """A provenance file beside each job's outputs (decision 0038): what ran, where, on what
+    and for whom, and which files are the farm's. Written by the agent that ran it; frozen
+    into each job at submit."""
+    enabled: bool = False
+
+
 class PublishConfig(BaseModel):
     """Publishing jobs through Daiquiri's update_and_render_nuke (comfyfarm.publish). Off
     until enabled; with dry_run, every publish is a dispatchGraph --dry-run (Daiquiri
@@ -328,6 +335,7 @@ class Config(BaseModel):
     farm: FarmConfig = Field(default_factory=FarmConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
+    provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
     shotgrid: ShotGridConfig = Field(default_factory=ShotGridConfig)
 

@@ -367,6 +367,16 @@ class ProcessRunner:
     def preview(self, h, result) -> list:
         return []                       # a process doesn't make its own preview video (writes.preview: own)
 
+    def about(self, h) -> dict:
+        """What ran it, for its provenance: the environment, the build it ran in (its
+        fingerprint) and where that came from (a release in the bank, or a checkout)."""
+        wf = self._definitions().get(h.job.get("workflow"))
+        if wf is None:
+            return {"backend": "process"}
+        have = EB.builds(self.envs_dir, wf.environment)
+        return {"backend": "process", "environment": wf.environment, "build": have.current,
+                "origin": (have.info.get(have.current) or {}).get("origin")}
+
     def files(self, h, result, kind: str, spec: dict) -> list:
         """What the run wrote of a kind: the files in the folder job.json gave it, starting with
         its prefix (and with its extension, when the definition says one), in name order."""
