@@ -123,6 +123,14 @@ preview:
 provenance:
   enabled: false
 
+# The farm's policy (README, Policy; decisions 0007, 0043): show rules in policy.yaml (start
+# from policy.example.yaml), read from the bank folder and checked when a job is planned. A
+# file that doesn't validate isn't taken: the last valid one stays in force. Check one first
+# with `python -m comfyfarm policy check <file>`.
+policy:
+  enabled: false
+  file: policy.yaml        # a name in share.dir, or a path of its own
+
 # The retention sweeper (README, Retention; decisions 0006, 0041). For now a dry run: once a
 # day it writes the expired jobs and the exact files it would delete (only those their
 # provenance files list) to data/sweeps/<date>.json, and deletes nothing.

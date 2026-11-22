@@ -1,0 +1,39 @@
+# The farm's policy (README: Policy; decisions 0007, 0043). Copy it into the bank folder as
+# policy.yaml (share.dir), edit it there, and switch it on with `policy: {enabled: true}` in
+# the manager's config.yaml. Check a file before it goes in the bank:
+#
+#   python -m comfyfarm policy check /path/to/policy.yaml
+#
+# The manager reads it again when it changes. A file that doesn't validate isn't taken: the
+# last valid one stays in force, and GET /api/v1/policy says what's wrong with it.
+
+version: 1
+
+# Who to ask: named in every refusal.
+contact: the CG supervisors (#comfyfarm)
+
+# Shows no rule names: allow (the farm is open to every show unless a rule says otherwise)
+# or deny (only shows a rule names, and only with what that rule allows).
+other_shows: allow
+
+# A job whose show can't be worked out from its input or given: allow or deny.
+unknown_show: allow
+
+# Rules, by show. Every rule that names a job's show is checked; the first that refuses the
+# job is named to the artist with its reason. A rule either denies (all, or some definitions)
+# or allows only some definitions. Shows can be patterns: ret* is every show starting "ret".
+shows:
+  - name: example-no-ai
+    shows: [exmpl2601]
+    deny: all
+    reason: The client's contract rules out generative AI on this show
+
+  - name: example-alpha-only
+    shows: [exmpl2602, exmpl26*]
+    allow: [ltx25_alpha_gen, sam3_ltx_alpha]
+    reason: Only alpha generation is cleared with the client on this show
+
+  - name: example-no-video-generation
+    shows: [exmpl2603]
+    deny: [wan22_i2i, ltx25_layout_render]
+    reason: The client hasn't cleared generated imagery in the frame

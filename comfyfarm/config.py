@@ -217,6 +217,13 @@ class ProvenanceConfig(BaseModel):
     enabled: bool = False
 
 
+class PolicyConfig(BaseModel):
+    """The farm's policy (decisions 0007, 0043): show rules in policy.yaml, read from the bank
+    folder and checked when a job is planned. Off: everything is allowed, nothing is read."""
+    enabled: bool = False
+    file: str = "policy.yaml"           # a name in share.dir, or a path of its own
+
+
 class RetentionConfig(BaseModel):
     """The retention sweeper (decisions 0006, 0041). For now a dry run once a day: it lists
     the expired jobs and the files it would delete (only those their provenance files list)
@@ -355,6 +362,7 @@ class Config(BaseModel):
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
+    policy: PolicyConfig = Field(default_factory=PolicyConfig)
     publish: PublishConfig = Field(default_factory=PublishConfig)
     shotgrid: ShotGridConfig = Field(default_factory=ShotGridConfig)
 

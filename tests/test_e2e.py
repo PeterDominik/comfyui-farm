@@ -708,6 +708,11 @@ convert:
         with self.assertRaisesRegex(farm.FarmError, "No such sweep report"):
             farm._request("GET", "/api/v1/sweeps/1999-01-01")
 
+    def test_04997_policy_off(self):
+        """The farm's policy is off here (decision 0043): the endpoint says so, and jobs for any show plan."""
+        self.assertEqual(farm._request("GET", "/api/v1/policy"),
+                         {"enabled": False, "file": None, "error": None, "in_force": None})
+
     def test_0500_environment(self):
         """Each worker's ComfyUI environment reaches the dashboard. In standalone the agent
         doesn't know ComfyUI's folder: it says so instead of comparing."""

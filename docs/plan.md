@@ -169,4 +169,20 @@ A4 launchers (xStudio, Daiquiri Automate).
   farm wrote. Peter's first report (217 expired jobs, all from before provenance) listed no
   files. It showed jobs written into artists' comp folders, so the sweeper now leaves any
   folder the artist picked and sweeps only the farm's renders folders (0042). The first
-  jobs with provenance files expire on 2026-11-25.
+  jobs with provenance files expire on 2026-11-25. Step 5 waits for that week.
+- Phase 7: started. Steps:
+  1. The policy file and show rules: `policy.yaml` in the bank folder, validated, re-read
+     when it changes, the last valid one kept in force (across a restart too); show rules
+     checked at plan, a refusal naming its rule; `GET /api/v1/policy`;
+     `comfyfarm policy check`.
+  2. Licences: each definition's models carry their licence (`models:` in `process.yaml`);
+     the policy says which licences each show may use, checked at plan.
+  3. Quotas: limits per show (and per user, trusted until API keys) on what is queued at
+     once, checked at plan, the limit named.
+  4. Checked again at dispatch: a queued job a newer rule refuses fails with the rule
+     named instead of running.
+  5. The dashboard shows the policy in force and the file's error.
+
+  Step 1 is in, off by default (`policy.enabled`). Both halves of the gate are in it: a
+  barred show is refused with its rule named, and a broken file leaves the last valid one
+  in force (0043).

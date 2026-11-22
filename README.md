@@ -1034,6 +1034,40 @@ the farm ran, for whom and on what, after the jobs are gone.
   - `run_seconds`: on the GPU, outputs collected;
   - `total_seconds`: submitted until finished.
 
+### Policy
+
+Which shows may use the farm, and with which definitions, is the farm's policy (decisions
+0007, 0043): `policy.yaml` in the bank folder (`share.dir`), edited by the farm's admins. A
+job the policy refuses is never planned: the artist reads which rule refused it, why, and
+who to ask.
+
+```yaml
+policy:
+  enabled: true            # in the manager's config.yaml; off by default
+  file: policy.yaml        # a name in share.dir, or a path of its own
+```
+
+- **Start from `policy.example.yaml`.** Each rule names its shows (patterns work: `ret*`), a
+  reason the artist reads, and either `deny: all`, `deny: [definitions]`, or
+  `allow: [definitions]` (only those).
+  - Every rule naming a job's show is checked, and the first that refuses it is named.
+  - `other_shows` (allow or deny) is for shows no rule names.
+  - `unknown_show` is for a job whose show can't be worked out.
+  - `contact` is named in every refusal.
+- **Check a file before it goes in the bank:**
+  `python -m comfyfarm policy check /path/to/policy.yaml`. It validates the file and every
+  definition it names against this checkout's `workflows/`, and lists the rules.
+- **The manager reads it again when it changes** (within seconds).
+- **A file that doesn't validate isn't taken.** The last valid one stays in force, and the
+  manager keeps a copy in `data/policy.json` so a restart keeps it too.
+  `GET /api/v1/policy` shows the rules in force and what's wrong with the file. With policy
+  on and no valid file ever read, nothing is planned, so a client's restriction can't
+  lapse because of a typo.
+- **Checked when a job is planned:** the dashboard's and Nuke's preview, every submit,
+  Run again, Batch Submit's rows, and a set's Retry failed. Jobs already queued run as
+  planned.
+- Identity is trusted until API keys come, so rules are by show and definition, not by person.
+
 ### Retention
 
 The sweeper is how the farm's outputs will stop filling show storage (decisions 0006, 0041).
@@ -1115,6 +1149,7 @@ retention:
 | POST | `/api/v1/shotgrid/menu/sync` | Make ShotGrid's menu match now (`shotgrid.menu_sync` on; with API keys, admins) |
 | POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
+| GET | `/api/v1/policy` | The farm's policy: the file, the rules in force and what's wrong with the file, if anything (Policy) |
 | GET | `/api/v1/sweeps` | The retention sweeper's reports, newest first, with their totals (Retention) |
 | GET | `/api/v1/sweeps/{name}?format=` | One report (`latest`, or its name such as `2026-11-23`): each expired job and the files it would delete; `format=text` to read it |
 | POST | `/api/v1/sweeps` | A sweep now, as the daily one (a dry run). From the manager's host only |
