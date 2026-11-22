@@ -37,6 +37,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
+| `comfyfarm/artifacts/` | each kind of output, one handler file named by its `writes:` key: where it goes (manager), prepare and collect (agent) |
 | `comfyfarm/comfyenv/` | the farm's ComfyUI environment: spec, compare, sync |
 | `comfyfarm/envs/`, `environments/` | runner environments: uv projects in the repo, locked; published to the bank as releases; built and checked on each machine (`comfyfarm env`) |
 | `comfyfarm/publish/`, `comfyfarm/shotgrid/` | publishing through Daiquiri and Tractor; ShotGrid |
@@ -57,6 +58,8 @@ decision record first.
 - The manager imports no runner and nothing ComfyUI-specific: it reads definitions through
   `definitions.py`. A workflow's ComfyUI half (wiring, building the graph) is
   `runners/comfyui_workflow.py`, used by agents and `comfyfarm check`.
+- Artifact handlers import neither the manager, the agent, a runner nor the web stack: both
+  sides call them with a context.
 - `comfyfarm --help` works without the web stack.
 
 ## How a change is made

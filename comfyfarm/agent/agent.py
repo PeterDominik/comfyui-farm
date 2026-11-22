@@ -27,17 +27,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..config import AgentConfig, PathsConfig
+from .. import artifacts as A
+from ..config import AgentConfig
 from ..envs import build as EB
 from ..fileio import convert as C
 from ..fileio import outputs as O
 from ..fileio import paths as P
-from ..fileio import preview as PV
 from ..fileio import scratch as S
 from ..fileio import wire as W
 from ..fileio.errors import ConvertError, SequenceError
@@ -49,7 +48,6 @@ from . import gpus as G
 from .envman import EnvManager
 
 log = logging.getLogger("comfyfarm")
-_DEFAULT_PATHS = PathsConfig()
 
 
 @dataclass
@@ -490,14 +488,13 @@ class Agent:
                 except OSError as e:
                     await self.run_failed(h, f"Can't create the output folder {out_dir}: {e.strerror or e}")
                     return
-            tex = info.get("textures")
-            if tex:
-                # Empty, so a second attempt can't mix its map images with the first one's.
+            # What the run writes, readied by the handler of its kind (decision 0034).
+            handler = A.for_job(h.job)
+            if handler is not None:
                 try:
-                    await asyncio.to_thread(shutil.rmtree, tex["raw_dir"], True)
-                    await asyncio.to_thread(os.makedirs, tex["raw_dir"], exist_ok=True)
-                except OSError as e:
-                    await self.run_failed(h, f"Can't create the scratch folder {tex['raw_dir']}: {e.strerror or e}")
+                    await handler.prepare(self._artifact_context(h))
+                except A.PrepareError as e:
+                    await self.run_failed(h, str(e))
                     return
             # The primary input first: converting it empties <scratch>/<job id>/, where the
             # other inputs convert into their own subfolders.
@@ -855,68 +852,21 @@ class Agent:
             self._release(h)
             await h.runner.forget(h.pid)
 
+    def _artifact_context(self, h: Held, hist=None) -> A.RunContext:
+        async def report(stage: str) -> None:
+            await self._report(h, "progress", lossy=True, status="postprocessing", stage=stage)
+        return A.RunContext(job=h.job, cfg=self.cfg, run=h, runner=h.runner, result=hist, report=report,
+                            spawn=self.spawn)
+
     async def _collect_outputs(self, h: Held, hist: dict) -> tuple[dict, list[str]]:
+        """What the run wrote turned into the farm's outputs by the handler of its kind (decision 0034)."""
         info = h.job["info"] or {}
-        collect = h.job.get("collect") or {}
-        mappings = self.cfg.paths.mappings
-        out_dir = info.get("output_dir")
-        outputs: dict = {"output_dir": out_dir, "output_dir_posix": info.get("output_dir_posix")}
-        warnings: list[str] = []
-        tokens = dict(info.get("name_tokens") or {})
-
-        tex = info.get("textures")
-        if tex and out_dir:
-            last = [0.0]
-
-            def progress(done: int, total: int) -> None:
-                if now() - last[0] < 0.5 and done < total:
-                    return
-                last[0] = now()
-                self.spawn(self._report(h, "progress", lossy=True, status="postprocessing",
-                                         stage=f"writing EXR maps {done}/{total}"))
-
-            outputs.update(await O.write_maps(tex, out_dir, self.cfg.textures, self.cfg.convert, mappings, progress))
-
-        fr = collect.get("frames")
-        if fr and out_dir:
-            res = await asyncio.to_thread(O.rename_frames, info, fr.get("ext", "png"), _DEFAULT_PATHS.frame_name,
-                                          mappings)
-            outputs.update(res)
-            exp = info.get("expected_frames")
-            if exp and res["frames"] != exp:
-                warnings.append(f"Got {res['frames']} output frames from {exp} input frames; "
-                                f"numbering starts at {res['first']} and may not line up with the plate.")
-
-        if collect.get("preview"):         # True; a job queued before agents found their nodes has the section
-            entries = h.runner.preview(h, hist)
-            if entries and out_dir:
-                e = entries[-1]
-                dest = Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens)
-                try:
-                    await h.runner.fetch(e, dest)
-                    O.readable(str(dest))
-                    outputs["preview"] = P.normalize(str(dest))
-                    outputs["preview_posix"] = P.to_posix(outputs["preview"], mappings)
-                except Exception as ex:  # noqa: BLE001
-                    warnings.append(f"Couldn't copy the preview video: {ex}")
-            elif not entries:
-                warnings.append(f"{h.runner.label} returned no preview video.")
-
-        # The preview movie of the frames (fileio.preview). Not for one frame, and never a
-        # reason to fail the job.
-        movie = collect.get("movie")
-        if movie and out_dir and "preview" not in outputs and (outputs.get("frames") or 0) >= 2:
-            await self._report(h, "progress", lossy=True, status="postprocessing", stage="making the preview movie")
-            dest = str(Path(out_dir) / (info.get("preview_name") or _DEFAULT_PATHS.preview_name).format(**tokens))
-            try:
-                await PV.make_movie(outputs, movie, dest, self.cfg.convert)
-                O.readable(dest)
-                outputs["preview"] = P.normalize(dest)
-                outputs["preview_posix"] = P.to_posix(outputs["preview"], mappings)
-            except Exception as ex:  # noqa: BLE001
-                log.warning("preview movie for %s: %s", h.id[:8], ex)
-                warnings.append(f"Couldn't make the preview movie: {ex}")
+        outputs: dict = {"output_dir": info.get("output_dir"), "output_dir_posix": info.get("output_dir_posix")}
+        handler = A.for_job(h.job)
+        if handler is None:
+            return outputs, []
+        more, warnings = await handler.collect(self._artifact_context(h, hist))
+        outputs.update(more)
         return outputs, warnings
-
 
 __all__ = ["Agent", "Held"]
