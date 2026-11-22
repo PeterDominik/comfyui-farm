@@ -27,7 +27,8 @@ class Sweeps(unittest.TestCase):
         self.root = self.tmp.replace("\\", "/")
         self.cfg = Config.model_validate({
             "database": f"{self.root}/data/farm.db", "workers": [],
-            "paths": {"mappings": [{"posix": "/rdo/shows", "windows": f"{self.root}/shows"}]},
+            "paths": {"mappings": [{"posix": "/rdo/shows", "windows": f"{self.root}/shows"}],
+                      "output_root": "/rdo/shows/{show}/renders"},
             "retention": {"keep_days": 3}})
         self.store = JobStore(Path(self.cfg.database))
         self.t = now()
@@ -76,8 +77,8 @@ class Sweeps(unittest.TestCase):
                          (True, 1, 0, 3, 20, 1))
         e = self.entry(r, "j1")
         self.assertEqual(e["delete"], ["plate.wan_v001.1001.png", "plate.wan_v001.1002.png"])
-        self.assertEqual((e["provenance"], e["left"], e["empties_folder"], e["problems"]),
-                         (["j1.provenance.json"], 1, False, []))
+        self.assertEqual((e["provenance"], e["left"], e["empties_folder"], e["files_stay"], e["problems"]),
+                         (["j1.provenance.json"], 1, False, None, []))
         self.assertEqual(e["folder"], "/rdo/shows/xyz/renders/abc_0010")               # studio paths
         self.assertEqual(sorted(os.listdir(d)), before)                                # a dry run
         self.assertIsNotNone(self.store.get("j1"))
@@ -116,9 +117,27 @@ class Sweeps(unittest.TestCase):
         r = self.sweep()
         for jid in ("j1", "j2"):
             e = self.entry(r, jid)
-            self.assertEqual((e["delete"], e["records"]), ([], 1))
-            self.assertIn("No provenance file", e["problems"][0])
-        self.assertEqual(r["files"], 0)
+            self.assertEqual((e["delete"], e["records"], e["problems"]), ([], 1, []))
+            self.assertIn("No provenance file", e["files_stay"])                  # the rule, not a problem
+        self.assertEqual((r["files"], r["files_stay"], r["problems"]), (0, 2, 0))
+
+    def test_never_in_a_folder_the_artist_picked(self):
+        """Decision 0042: a comp may read from it. Only the farm's renders folders are swept."""
+        self.job("picked", info={"show": "xyz", "output_dir_picked": True})
+        comp = f"{self.root}/shows/xyz/shot/0040/comp/nuke/comp/ann/comfyfarm_outputs"
+        os.makedirs(comp)
+        self.job("outside", folder=comp)                                   # from before jobs said they were picked
+        self.job("other_show", info={"show": "abc"})                        # its renders root is /rdo/shows/abc/renders
+        self.job("no_show", info={})
+        r = self.sweep()
+        for jid, says in (("picked", "The artist picked its output folder"),
+                          ("outside", "isn't in the farm's renders root (/rdo/shows/xyz/renders)"),
+                          ("other_show", "isn't in the farm's renders root (/rdo/shows/abc/renders)"),
+                          ("no_show", "Its show isn't known")):
+            e = self.entry(r, jid)
+            self.assertEqual((e["delete"], e["provenance"], e["problems"], e["records"]), ([], [], [], 1), jid)
+            self.assertIn(says, e["files_stay"], jid)
+        self.assertEqual((r["files"], r["files_stay"]), (0, 4))
 
     def test_only_its_own_provenance_file_in_its_own_folder_is_believed(self):
         self.job("other", doc={"comfyfarm_provenance": 1, "job": "someone", "files": ["plate.wan_v001.1001.png"]})
@@ -188,8 +207,10 @@ class Sweeps(unittest.TestCase):
         out = SW.text(self.sweep())
         self.assertIn("a dry run, nothing was deleted", out)
         self.assertIn("2 expired job(s): 3 file(s), 20 bytes, and 2 record(s) would go", out)
+        self.assertIn("1 job(s) keep their files (no provenance file, or a folder the farm didn't make). "
+                      "0 problem(s).", out)
         self.assertIn("    plate.wan_v001.1002.png", out)
-        self.assertIn("  ! No provenance file", out)
+        self.assertIn("  - No provenance file", out)
 
 
 class Daily(unittest.TestCase):
