@@ -49,6 +49,15 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(ComfyUIRunner.label, "ComfyUI")
         self.assertIsInstance(inspect.getattr_static(ComfyUIRunner, "ready"), property)
 
+    def test_the_comfyui_runner_can_be_synced(self):
+        """Its environment brought to the farm's file when the manager says (decision 0033)."""
+        for name in sorted(members(base.Syncable)):
+            want, have = getattr(base.Syncable, name), getattr(ComfyUIRunner, name, None)
+            self.assertIsNotNone(have, name)
+            self.assertEqual(inspect.iscoroutinefunction(have), inspect.iscoroutinefunction(want), name)
+            self.assertEqual(list(inspect.signature(have).parameters), list(inspect.signature(want).parameters), name)
+        self.assertFalse(hasattr(ProcessRunner, "sync"))     # its environments are the environment manager's
+
     def test_the_process_runner_has_all_the_agent_may_call(self):
         for name in sorted(members(base.Runner)):
             self.assertTrue(hasattr(ProcessRunner, name) or name in ("label", "ready"), name)

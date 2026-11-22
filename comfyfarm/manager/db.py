@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS rollouts (         -- a release going to the machines
     step_started REAL,
     updated_at REAL
 );
+CREATE TABLE IF NOT EXISTS syncs (            -- a runner's environment synced on the machines in turn (0033)
+    id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,                      -- running, failed, done, cancelled
+    started_at REAL,
+    updated_at REAL,
+    data TEXT NOT NULL                        -- JSON: the rest (manager/syncs.py)
+);
 CREATE TABLE IF NOT EXISTS env_wanted (       -- the runner environments each machine should have (0030)
     worker TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -459,6 +466,19 @@ class JobStore:
                 "started_at, step_started, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (r["id"], r["name"], r["release"], json.dumps(r["machines"]), json.dumps(r["before"]), r["step"],
                  r["state"], r.get("error"), r.get("by"), r.get("started_at"), r.get("step_started"), now()))
+
+    # ---------------------------------------------------------------- syncs
+    def syncs(self, limit: int = 50) -> list[dict]:
+        """Newest first."""
+        rows = self._q("SELECT * FROM syncs ORDER BY started_at DESC LIMIT ?", (limit,))
+        return [{**json.loads(r["data"]), "id": r["id"], "state": r["state"], "started_at": r["started_at"],
+                 "updated_at": r["updated_at"]} for r in rows]
+
+    def save_sync(self, r: dict) -> None:
+        rest = {k: v for k, v in r.items() if k not in ("id", "state", "started_at", "updated_at")}
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO syncs (id, state, started_at, updated_at, data) VALUES (?,?,?,?,?)",
+                             (r["id"], r["state"], r.get("started_at"), now(), json.dumps(rest)))
 
     # ---------------------------------------------------------------- publishes
     @staticmethod

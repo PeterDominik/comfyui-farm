@@ -1,19 +1,20 @@
 // Runner environments on the Machines tab (README, Runner environments; decision 0032).
 //
 // Read-only: what each machine has built of each environment, what the manager has it
-// have, what its environment manager is doing about it, and the rollouts. Environments
-// change on the manager's host only (`comfyfarm env want`, `env rollout`), until the farm
-// has API keys (decisions 0030, 0031), so nothing here sends anything.
+// have, what its environment manager is doing about it, the rollouts, and the ComfyUI
+// syncs the manager runs. Environments change on the manager's host only (`comfyfarm env
+// want`, `env rollout`, `comfyui sync --all`), until the farm has API keys (decisions
+// 0030, 0031, 0033), so nothing here sends anything.
 //
 // Each machine's part comes live with its status (the dashboard's worker events: its
-// `environments`, `env_wanted` and `env_work`). The bank's releases and the rollouts come
-// from GET /api/v1/environments: read when the tab opens, then every 15 s while it is
-// open, every 5 s while a rollout is running.
+// `environments`, `env_wanted` and `env_work`). The bank's releases, the rollouts and the
+// syncs come from GET /api/v1/environments: read when the tab opens, then every 15 s while
+// it is open, every 5 s while a rollout or a sync is running.
 //
 // Loaded after the dashboard's own script, whose helpers it uses ($, esc, ago, api, state).
 // Its entry points: renderEnvironments() when machines change, envsShown() when the tab
-// opens. envCell() and rolloutSteps() say what to show and touch no page, so a test runs
-// them alone (tests/test_dashboard_envs.py).
+// opens. envCell(), rolloutSteps() and syncSteps() say what to show and touch no page, so
+// a test runs them alone (tests/test_dashboard_envs.py).
 "use strict";
 
 const ENVS_SLOW = 15;      // seconds between reads of the releases and rollouts while the tab is open
@@ -100,6 +101,25 @@ function rolloutSteps(r) {
   });
 }
 
+// A ComfyUI sync's machines in its order, each marked: [{machine, mark, cls, tip}] (manager/syncs.py).
+const SYNC_PHASE = { draining: "drained: waiting for its jobs to end", told: "told to sync",
+                     syncing: "syncing its ComfyUI", checking: "its ComfyUI is back: being checked" };
+function syncSteps(s) {
+  return (s.machines || []).map((m, i) => {
+    const res = (s.results || {})[m] || {};
+    const step = (mark, cls, tip) => ({ machine: m, mark, cls, tip });
+    const said = [res.note, ...(res.differs || []).map(d => `still different: ${d}`)].filter(Boolean).join("\n");
+    if (s.state === "done" || i < s.step) return step("✓", "ok", said || "synced and checked: it takes jobs again");
+    if (i > s.step) return step(s.state === "running" ? "○" : "–", "muted",
+                                s.state === "running" ? "not its turn yet" : "never touched");
+    if (s.state === "running") {
+      return step("…", "warn", [SYNC_PHASE[s.phase] || s.phase, res.step].filter(Boolean).join(": "));
+    }
+    if (s.state === "failed") return step("✗", "err", "stopped here: see the error");
+    return step("■", "muted", "cancelled here");
+  });
+}
+
 // --------------------------------------------------------------- the page
 const ENV_STATE = { running: "warn", paused: "warn", failed: "err", done: "ok", rolled_back: "muted",
                     cancelled: "muted" };
@@ -148,12 +168,30 @@ function rolloutRow(r) {
     <td class="muted">${ago(r.started_at)}</td><td class="muted">${ago(r.updated_at)}</td></tr>${error}`;
 }
 
+// A sync: a row like a rollout's, then what each machine it reached still differs in.
+function syncRow(s) {
+  const steps = syncSteps(s).map(x =>
+    `<span class="${x.cls}" style="white-space:nowrap" title="${esc(x.tip)}">${x.mark} ${esc(x.machine)}</span>`);
+  const notes = (s.machines || []).flatMap(m => {
+    const res = (s.results || {})[m];
+    return res && (res.differs || []).length ? [`${m}: still different, by hand: ${res.differs.join("; ")}`] : [];
+  });
+  const below = [s.error, ...notes].filter(Boolean);
+  return `<tr><td style="white-space:nowrap"><b>ComfyUI sync</b></td>
+    <td class="mono" title="the farm's environment file: ${esc(s.file)}">${esc(envShort(s.file))}</td>
+    <td class="${ENV_STATE[s.state] || ""}">${esc(s.state)}</td>
+    <td>${steps.join('<span class="muted"> → </span>')}</td><td class="muted">${esc(s.by || "?")}</td>
+    <td class="muted">${ago(s.started_at)}</td><td class="muted">${ago(s.updated_at)}</td></tr>` +
+    (below.length ? `<tr><td></td><td colspan="6" class="enverr ${s.state === "failed" ? "err" : "muted"}">` +
+                    `${esc(below.join("\n"))}</td></tr>` : "");
+}
+
 function renderEnvironments() {
   const panel = $("#envsPanel"), rolling = $("#rolloutsPanel");
   if (!panel) return;
-  const names = envNames(), rollouts = state.envs?.rollouts || [];
+  const names = envNames(), rollouts = state.envs?.rollouts || [], syncs = state.envs?.syncs || [];
   panel.hidden = !names.length && !state.envsError;
-  rolling.hidden = panel.hidden && !rollouts.length;
+  rolling.hidden = panel.hidden && !rollouts.length && !syncs.length;
   if (panel.hidden && rolling.hidden) return;
   const rels = state.envs?.releases || [];
   const latest = n => rels.find(r => r.name === n)?.fingerprint || null;
@@ -169,9 +207,11 @@ function renderEnvironments() {
     : `<tr><td colspan="${names.length + 2}" class="empty">No machines have checked in.</td></tr>`;
   $("#envsErrors").innerHTML = errors.map(([m, n, e, cls]) =>
     `<div class="enverr ${cls === "err" ? "err" : "warn"}"><b>${esc(m)} · ${esc(n)}</b>: ${esc(e)}</div>`).join("");
-  const open = rollouts.filter(r => ROLLING.includes(r.state));
-  $("#rollouts").innerHTML = rollouts.length
-    ? [...open, ...rollouts.filter(r => !open.includes(r))].map(rolloutRow).join("")
+  // Rollouts and syncs together: open ones first, then newest first.
+  const rows = [...rollouts.map(r => ({ r, open: ROLLING.includes(r.state), html: rolloutRow })),
+                ...syncs.map(r => ({ r, open: r.state === "running", html: syncRow }))]
+    .sort((a, b) => (b.open - a.open) || (b.r.started_at || 0) - (a.r.started_at || 0));
+  $("#rollouts").innerHTML = rows.length ? rows.map(x => x.html(x.r)).join("")
     : '<tr><td colspan="7" class="empty">No rollouts yet.</td></tr>';
 }
 
@@ -191,6 +231,6 @@ function envsShown() { loadEnvironments(); }
 setInterval(() => {
   const tab = typeof document !== "undefined" && document.getElementById("tab-machines");
   if (!tab || tab.hidden || document.hidden) return;
-  const fast = (state.envs?.rollouts || []).some(r => r.state === "running");
+  const fast = [...(state.envs?.rollouts || []), ...(state.envs?.syncs || [])].some(r => r.state === "running");
   if (Date.now() / 1000 - envsAt >= (fast ? ENVS_FAST : ENVS_SLOW) - 0.5) loadEnvironments();
 }, 1000);

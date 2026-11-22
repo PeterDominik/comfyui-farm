@@ -52,7 +52,8 @@ comfyui_launch:
 # envs:
 #   dir: data/envs               # relative = next to this file
 #   uv: []                       # a uv to use, e.g. [/usr/local/bin/uv]; empty: installed with pip into <dir>
-#   managed: true                # install, update and remove them as the manager says (`env want` on its host)
+#   managed: true                # install, update and remove them as the manager says (`env want` on its host),
+#                                # and sync ComfyUI when it says (`comfyui sync --all` there)
 
 # Off by default: run process definitions (process.yaml with runner: {type: process}), each
 # command in its runner environment's current build here (envs above; `python -m comfyfarm

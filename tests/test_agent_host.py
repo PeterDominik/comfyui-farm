@@ -190,6 +190,23 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(la.starts, 0)
         self.assertFalse(self.launcher(command=[]).restart())
 
+    def test_stop_for_a_sync_leaves_it_down_while_held(self):
+        """The manager's sync (decision 0033): the hold first, then stop; started again after."""
+        la = self.launcher()
+        self.tick(la, False)
+        first = la.proc
+        write_hold(la.hold_file, "the manager is syncing ComfyUI")
+        self.assertEqual(la.stop(wait=10), first.pid)
+        self.assertIsNotNone(first.poll())                  # gone
+        self.assertIsNone(la.stop())                        # nothing left to stop
+        self.tick(la, False, after=500)
+        self.assertEqual(la.starts, 1)                      # held: not started again
+        release_hold(la.hold_file)
+        la.start()
+        self.procs.append(la.proc)
+        self.assertTrue(pid_alive(la.proc.pid))
+        self.assertIsNone(self.launcher(command=[]).stop())   # never one it didn't start
+
     def test_nothing_without_a_command(self):
         la = self.launcher(command=[])
         self.tick(la, False)

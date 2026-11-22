@@ -4,7 +4,8 @@ It submits a run's prompt with the attempt id as the prompt id, follows it over 
 websocket, and checks ComfyUI's queue and history for what the events missed (a
 reconnect, a ComfyUI restart). It also keeps this machine's ComfyUI itself: starts it when
 agent.yaml says how (agent.launch), reads its node definitions and its environment
-(comfyenv) for the manager, and restarts it for new farm nodes.
+(comfyenv) for the manager, restarts it for new farm nodes, and syncs it to the farm's
+environment file when the manager says (decision 0033).
 
 ComfyUI loads the farm's own nodes (comfyui_nodes/) only at startup. When it runs other
 ones than this checkout has (after a `git pull`), the agent takes no new jobs, and once
@@ -17,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,9 +26,11 @@ from pathlib import Path
 import httpx
 import websockets
 
+from ..agent import launch as L
 from ..agent.launch import Launcher
 from ..comfyenv import machine as EM
 from ..comfyenv import spec as ES
+from ..comfyenv import sync as Y
 from ..config import AgentConfig
 from ..fileio import farmnodes as FN
 from ..fileio import wire as W
@@ -38,6 +42,10 @@ from .base import Host, RunRejected
 from .comfy import ComfyClient, ComfyRejected, describe_rejection
 
 log = logging.getLogger("comfyfarm")
+
+
+class SyncRefused(Exception):
+    """Why this machine's ComfyUI isn't synced as the manager asked, said for a person."""
 
 
 @dataclass
@@ -689,5 +697,134 @@ class ComfyUIRunner:
             self._env_next = now() + self.cfg.environment_seconds
         return state
 
+    # ================================================================ environment: the sync
+    SYNC_POLL = 1.0                     # seconds between looks at ComfyUI coming back
 
-__all__ = ["ComfyUIRunner", "Runtime"]
+    async def sync(self, order: dict, say) -> dict:
+        """Bring this machine's ComfyUI to the farm's environment file when the manager says,
+        as `comfyfarm comfyui sync --apply` does by hand (decision 0033). `say` gets how it
+        goes after each change (the agent sends it with its status); returns how it ended.
+
+        This checkout's file must be the version the manager names (`file`). Nothing the
+        sync does itself: done, ComfyUI untouched. Else, with no farm job in ComfyUI and none
+        in its queue: the hold in place (no jobs; the launcher leaves ComfyUI down), ComfyUI
+        stopped, the steps done in order until one fails, the hold gone, ComfyUI started
+        again and waited for until its node definitions are read, then compared again."""
+        rec = {"id": str(order.get("id") or ""), "state": "checking", "since": now(), "step": None,
+               "steps": [], "differs": [], "manual": [], "note": None, "error": None}
+
+        async def tell(**changes) -> None:
+            rec.update(changes)
+            await say(json.loads(json.dumps(rec)))      # a copy: the steps go on growing
+
+        await tell()
+        try:
+            await self._sync(order, rec, tell)
+        except SyncRefused as e:
+            await tell(state="failed", step=None, error=str(e))
+        except Exception as e:  # noqa: BLE001
+            log.exception("syncing ComfyUI on %s failed", self.name)
+            await tell(state="failed", step=None, error=f"the sync failed: {e}")
+        return json.loads(json.dumps(rec))
+
+    async def _sync(self, order: dict, rec: dict, tell) -> None:
+        if not self.cfg.envs.managed:
+            raise SyncRefused("envs.managed is off in this machine's agent.yaml: the manager changes none of its "
+                              "environments. Turn it on, or sync it by hand (comfyfarm comfyui sync --apply)")
+        here = ES.fingerprint(self.env.path, self.env.model_paths_path)
+        if here is None:
+            raise SyncRefused(f"this checkout has no farm environment file ({self.env.path}): update it (git pull)")
+        if order.get("file") and here != order["file"]:
+            raise SyncRefused(f"this machine's checkout has another version of the farm's ComfyUI environment ({here}) "
+                              f"than the manager's host ({order['file']}): update its checkout (git pull), then start "
+                              f"the sync again")
+        if not self.launcher.enabled:
+            raise SyncRefused("this agent doesn't start ComfyUI (comfyui_launch in agent.yaml), so it can't stop it "
+                              "and start it again: sync it by hand (comfyfarm comfyui sync --apply)")
+        force = bool(order.get("force"))
+        plan = await self._sync_plan(force)
+        if not plan.differs:
+            await tell(state="done", note="it matches the farm's ComfyUI: nothing to do")
+            return
+        if not plan.steps:
+            await tell(state="done", differs=[d["message"] for d in plan.differs], manual=plan.manual,
+                       note="nothing the sync does itself: the rest is by hand")
+            return
+        if self._mine():
+            raise SyncRefused(f"it holds {len(self._mine())} ComfyUI job(s): drain it and wait for them first")
+        if self.online:
+            running, pending = await self.client.queue()
+            if running or pending:
+                raise SyncRefused(f"ComfyUI has {len(running | pending)} prompt(s) running or queued that aren't the "
+                                  f"farm's: wait for them, then start the sync again")
+            if self.launcher.running_pid() is None:
+                raise SyncRefused("ComfyUI runs here, but this agent didn't start it, so it won't stop it: stop it "
+                                  "yourself (the agent then starts it, comfyui_launch), then start the sync again")
+        failed = None
+        L.write_hold(self.launcher.hold_file, f"The manager is syncing ComfyUI to the farm's environment (sync "
+                                              f"{rec['id']}, since {time.strftime('%H:%M')}): no jobs until it's done.")
+        self._hold_tick()
+        try:
+            await tell(state="stopping", step="stopping ComfyUI")
+            pid = await asyncio.to_thread(self.launcher.stop)
+            rec["steps"].append(["stop ComfyUI", f"stopped (pid {pid})" if pid else "it wasn't running"])
+            self.object_info, self.checked = None, False        # read again once it is back
+            for i, step in enumerate(plan.steps, 1):
+                await tell(state="applying", step=f"{i}/{len(plan.steps)}: {step.title}")
+                try:
+                    out = await asyncio.to_thread(step.run) if step.run else "by hand"
+                except Exception as e:  # noqa: BLE001 - a SyncError, or a file that couldn't be moved
+                    rec["steps"].append([step.title, f"failed: {e}"])
+                    failed = f"{step.title} failed:\n{e}"
+                    break
+                rec["steps"].append([step.title, out or "done"])
+        finally:
+            L.release_hold(self.launcher.hold_file)
+            self._hold_tick()
+            if self.launcher.running_pid() is None:
+                self.launcher.start()                           # now, not restart_after later
+        wait = self.cfg.comfyui_launch.startup_seconds + 60
+        await tell(state="starting", step="starting ComfyUI again")
+        if not await self._back(wait):
+            raise SyncRefused((f"{failed}\n" if failed else "") + f"ComfyUI didn't come back within {wait:.0f} s "
+                              f"after the sync: see {self.launcher.log_file}")
+        after = await self._sync_plan(force)
+        self._env_stale = True                                  # the Machines tab's comparison, read again
+        left = {"differs": [d["message"] for d in after.differs], "manual": after.manual}
+        if failed:
+            await tell(state="failed", step=None, error=f"{failed}\nThe steps after it weren't done; ComfyUI was "
+                                                        f"started again.", **left)
+        else:
+            await tell(state="done", step=None, note="synced" if not after.differs else
+                       "synced; what is left is by hand", **left)
+
+    async def _sync_plan(self, force: bool):
+        """What the sync would do now, from this machine read as `comfyfarm comfyui sync` reads it."""
+        spec, farm_paths = self.env.get()
+        if spec is None:
+            raise SyncRefused(f"this checkout has no farm environment file ({self.env.path}): update it (git pull)")
+        folder = EM.comfyui_folder(self.cfg)
+        if folder and not os.path.isabs(folder):
+            folder = str(self.cfg.resolve(folder))
+        python = EM.comfyui_python(self.cfg)
+        state = await asyncio.to_thread(EM.collect, folder, python, self.stats if self.online else None,
+                                        list(self.cfg.comfyui_launch.command[1:]), **ES.wanted(spec))
+        if state.get("error"):
+            raise SyncRefused(f"can't read this machine's ComfyUI: {state['error']}")
+        self._workflows()
+        devices = (self.stats or {}).get("devices") or [{}]
+        skip = ES.excluded(self._registry, devices[0].get("vram_total") or state.get("gpu_memory"), self.host.tags)
+        return Y.plan(spec, state, farm_paths, skip, comfyui_dir=folder, python=python, force=force,
+                      index_url=Y.PYPI, farm_file=self.env.model_paths_path)
+
+    async def _back(self, wait: float) -> bool:
+        """ComfyUI answering again, its events followed and its node definitions read, within `wait` s."""
+        end = now() + wait
+        while now() < end:
+            if self.online and self.ws_connected and self.checked and self.object_info is not None:
+                return True
+            await asyncio.sleep(self.SYNC_POLL)
+        return False
+
+
+__all__ = ["ComfyUIRunner", "Runtime", "SyncRefused"]

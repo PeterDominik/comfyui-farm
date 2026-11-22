@@ -80,3 +80,14 @@ class Runner(Protocol):
     def preview(self, run, result) -> list: ...         # the preview video the run made itself, if any
     async def fetch(self, entry, dest) -> None: ...     # copy one of them to dest
     async def forget(self, pid: str | None) -> None: ...  # drop the backend's record of the run
+
+
+class Syncable(Protocol):
+    """A machine's resident runner that brings its own environment to the farm's file when
+    the manager says (decision 0033). Optional: the agent tells the manager that a runner
+    without it can't be synced. `order` is {id, runner, file, force}: `file` names the
+    version of the environment file its checkout must have. `say` is called with how it
+    goes after each change ({id, state, step, steps, differs, manual, note, error}); the
+    return is how it ended (state done or failed)."""
+
+    async def sync(self, order: dict, say) -> dict: ...

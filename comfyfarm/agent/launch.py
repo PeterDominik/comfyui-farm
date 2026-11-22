@@ -11,8 +11,9 @@ restart() stops that ComfyUI and starts it again: the agent does it when ComfyUI
 older farm nodes than the checkout (ComfyUI loads nodes only at startup).
 
 While logs/comfyui-<name>.hold exists, ComfyUI is down on purpose (`comfyfarm comfyui
-sync` is updating it) and isn't started. The file names the sync's process: a hold
-left behind by one that died is removed.
+sync` is updating it, or the agent is, when the manager started the sync) and isn't
+started. The file names the sync's process: a hold left behind by one that died is
+removed. stop() stops the ComfyUI it started, for such a sync.
 
 On Linux the ComfyUI it starts may keep as many files open as the hard limit allows, not
 the usual 1024: SAM3 (comfy-env) hands each result tensor over in shared memory, and
@@ -251,6 +252,29 @@ class Launcher:
         self.proc = None
         self.start()
         return True
+
+    def stop(self, wait: float = 30.0) -> int | None:
+        """Stop the ComfyUI this launcher (or the agent before it) started and wait until it
+        is gone, for a sync (decision 0033): its pid, or None when there was none. It never
+        stops one it didn't start. Put the hold in place first, or tick() starts it again."""
+        if not self.enabled:
+            return None
+        pid = self.running_pid()
+        if pid is None:
+            return None
+        log.info("stopping ComfyUI on %s (pid %s)", self.name, pid)
+        stop_process(pid)
+        end = time.time() + wait
+        while self._alive(pid) and time.time() < end:
+            time.sleep(0.2)
+        if self._alive(pid):
+            log.warning("ComfyUI on %s (pid %s) didn't stop in %.0f s: killing it", self.name, pid, wait)
+            stop_process(pid, force=True)
+            end = time.time() + 10
+            while self._alive(pid) and time.time() < end:
+                time.sleep(0.2)
+        self.proc = None
+        return pid
 
     def start(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)

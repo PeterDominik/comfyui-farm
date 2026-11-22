@@ -157,11 +157,15 @@ class AgentsConfig(BaseModel):
 
 
 class RolloutsConfig(BaseModel):
-    """Rollouts of runner environments (manager/rollouts.py, decision 0031)."""
+    """Rollouts of runner environments (manager/rollouts.py, decision 0031), and the ComfyUI
+    syncs the manager starts (manager/syncs.py, decision 0033)."""
     # The machines in this order first: the canary first. The pilot's: the A6000, the 5090,
     # then the manager's host last. Machines not listed follow, by name.
     order: list[str] = []
     step_minutes: float = Field(30.0, gt=0)     # a machine that hasn't the release by then stops the rollout
+    # A machine told to sync that hasn't finished by then (ComfyUI stopped, updated, started
+    # again and checked) stops the sync. Waiting for its jobs to end, before, doesn't count.
+    sync_minutes: float = Field(60.0, gt=0)
 
 
 class FarmConfig(BaseModel):
@@ -363,8 +367,9 @@ class EnvsConfig(BaseModel):
     """Runner environments built on this machine (comfyfarm/envs, decision 0024)."""
     dir: str = "data/envs"                      # builds, uv's cache and its Pythons; relative = next to agent.yaml
     uv: list[str] = []                          # a uv to use; empty: one installed with pip into <dir>/.uv-tool
-    # Install, update and remove them as the manager says (agent/envman.py, decision 0030).
-    # Off: the agent only reports that it is off when the manager asks for something.
+    # Install, update and remove them as the manager says (agent/envman.py, decision 0030),
+    # and sync ComfyUI to the farm's environment file when it says (decision 0033). Off: the
+    # agent only reports that it is off when the manager asks for something.
     managed: bool = False
 
 

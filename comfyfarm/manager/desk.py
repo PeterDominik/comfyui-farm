@@ -37,6 +37,7 @@ from ..protocol import HELD, ON_WORKER, build, duration, now
 from . import eta as E
 from .farm import Farm
 from .rollouts import Rollouts
+from .syncs import Syncs
 
 log = logging.getLogger("comfyfarm")
 
@@ -87,6 +88,8 @@ class AgentState:
     env_wanted: dict = field(default_factory=dict)   # the releases it should have (decision 0030)
     want_envs: bool = False             # send it env_wanted in its next check-in reply
     env_work: dict | None = None        # what its environment manager is doing about them, as it says
+    want_sync: dict | None = None       # tell it to sync its runner's environment in its next reply (0033)
+    synced: dict | None = None          # how its last sync goes, as its agent says
 
 
 def wanted_hash(wanted: dict) -> str | None:
@@ -131,6 +134,7 @@ class Desk:
         self._tasks: list[asyncio.Task] = []
         self.view = W.View(mappings=self.cfg.paths.mappings, scratch=farm.scratch_root, repo=P.normalize(str(REPO)))
         self.rollouts = Rollouts(self)      # environment releases going to the machines (decision 0031)
+        self.syncs = Syncs(self)            # a runner's environment synced on them in turn (decision 0033)
 
     @property
     def lease_seconds(self) -> float:
@@ -145,6 +149,7 @@ class Desk:
             log.info("%d job(s) on agents: waiting for them to check in", n)
         self._tasks.append(asyncio.create_task(self._lease_loop(), name="leases"))
         self._tasks.append(asyncio.create_task(self.rollouts.loop(), name="rollouts"))
+        self._tasks.append(asyncio.create_task(self.syncs.loop(), name="syncs"))
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -301,6 +306,7 @@ class Desk:
             "released": a.released if alive else None,
             "environments": a.envs if alive else None,
             "env_wanted": a.env_wanted, "env_work": a.env_work if alive else None,
+            "sync": a.synced,           # its last sync, as its agent said (decision 0033)
             "comfyui_version": ((a.stats or {}).get("system") or {}).get("comfyui_version"),
             "problems": a.problems, "agent_version": a.version,
             "checked": a.checked,       # its node definitions read since ComfyUI (re)connected
@@ -388,6 +394,7 @@ class Desk:
         a.checked = False               # its node definitions follow
         a.env_wanted = self.store.env_wanted(name).get(name, {})
         a.want_envs = bool(a.env_wanted)    # an agent that restarted knows none of it
+        a.synced = None                     # nor of a sync it was doing: told again (manager/syncs.py)
         if a.version and a.version != build():
             log.warning("agent %s runs %s, the manager %s: update it (git pull) to run the same code",
                         name, a.version, build())
@@ -427,6 +434,8 @@ class Desk:
             if msg.get("env_wanted") != wanted_hash(a.env_wanted):
                 a.want_envs = True      # it holds another version: a reply was lost, or it restarted
                 self.wake()
+        if "sync" in msg:               # how the sync the manager asked for goes (decision 0033)
+            a.synced = msg["sync"] if isinstance(msg["sync"], dict) else None
         if "gpus" in msg:               # an agent with gpu_probe on; shown, not placed by yet (decision 0022)
             a.gpus = [g for g in msg.get("gpus") or [] if isinstance(g, dict)]
             a.gpu_error = msg.get("gpu_error") or None
@@ -564,6 +573,8 @@ class Desk:
             out["environments"] = {"wanted": dict(a.env_wanted), "hash": wanted_hash(a.env_wanted),
                                    "bank": self.farm.cfg.share.dir or None}
             a.want_envs = False
+        if a.want_sync:
+            out["sync"], a.want_sync = a.want_sync, None
         return out
 
     def want_environment(self, name: str, release: str | None, machines: list[str] | None, by: str | None,

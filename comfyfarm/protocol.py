@@ -20,6 +20,10 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              `env_wanted`: which version of the manager's wanted environments it holds
              (sent again when it isn't the manager's); `env_work`: what its environment
              manager is doing about them (installing, waiting, failed and why, off).
+             `sync`: how the last sync of its runner's environment the manager asked
+             for goes (decision 0033): its id, state (checking, stopping, applying,
+             starting, done, failed), the step it is at, each step done and how, what
+             still differs after it, what is left by hand, and why it failed.
   nodes      what it can run, when its ComfyUI connects (`processes`): each workflow of
              the agent's checkout with its fingerprint, what its ComfyUI lacks for it,
              what is wrong with how the definition wires the graph (`broken`, which
@@ -34,6 +38,10 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              `wait` seconds. When what the machine should have of its runner
              environments changed, the reply carries `environments`: {wanted: {name:
              release fingerprint, or None to remove it}, hash, bank} (decision 0030).
+             When the manager's sync reaches the machine (it is drained and holds no
+             jobs), the reply carries `sync`: {id, runner, file, force}: bring the
+             runner's environment to the farm's file, which must be version `file`
+             in the agent's own checkout (decision 0033).
   report     one step of one job's run: preparing progress, dispatched, running,
              progress, postprocessing, done, failed, cancelled, lost. `dispatched` may
              carry `submitted`: what the runner handed its backend, which the manager

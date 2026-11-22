@@ -415,6 +415,43 @@ and ComfyUI's queue must be empty. It keeps the agent from starting ComfyUI mean
 Machines tab shows *updating ComfyUI (sync)*), stops the ComfyUI the agent started, does the
 plan, lets the agent start ComfyUI again and verifies. Then *Resume* the machine.
 
+#### The manager syncs the machines
+
+On the manager's host, the manager can sync the machines instead, one at a time, the canary
+first (`rollouts.order`; decision 0033). Commit the new environment file and update every
+machine's checkout first: each machine must have the same version of it as the manager's
+host, or it refuses.
+
+```bash
+python -m comfyfarm comfyui sync --all                        # every machine, one at a time
+python -m comfyfarm comfyui sync --machine tor-flame02-a6000  # this one only (again for more)
+python -m comfyfarm comfyui syncs                             # how it goes: each machine's steps, what is left
+python -m comfyfarm comfyui sync --cancel                     # no next machine
+```
+
+Each machine in turn:
+
+1. The manager drains it, unless it was drained already.
+2. Once it holds no jobs, however long they take, the manager tells its agent to sync.
+3. The agent does what `sync --apply` does by hand. It puts the hold in place, stops the
+   ComfyUI it started, does the steps and starts ComfyUI again. Then it waits until
+   ComfyUI's node definitions are read and compares again.
+4. Once the manager has checked its ComfyUI again, it resumes the machine, unless it was
+   drained before. Then the next machine's turn comes.
+
+The sync stops at a machine, and the machines after it are never touched, when:
+
+- a step fails;
+- a workflow the machine could run before can't run after the sync;
+- the machine hasn't finished within `rollouts.sync_minutes` (60) of being told.
+
+That machine stays drained for you to look at. A machine whose agent refused before
+touching anything takes jobs again. That happens with another version of the file in its
+checkout, a ComfyUI the agent didn't start, or `envs.managed` off in its `agent.yaml`. The
+agent syncs only with `envs.managed` on, as for runner environments. What the sync never
+does (torch, the driver, launch flags, models) is listed for each machine, and the sync
+goes on. The dashboard's Rollouts panel shows the sync with the rollouts.
+
 Each agent also checks its machine when ComfyUI starts and every `environment_seconds`
 (15 min), compares it with its own checkout's copy of the file and tells the manager what
 differs. So after the file changes, a machine compares with the new one once its code is

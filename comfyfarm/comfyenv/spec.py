@@ -21,6 +21,7 @@ machine: the dashboard shows it, and `comfyfarm comfyui verify` prints it."""
 from __future__ import annotations
 
 import datetime
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -62,6 +63,24 @@ def save(spec: dict, path: str | os.PathLike = SPEC) -> None:
     Path(path).write_text(HEADER + "\n" + yaml.safe_dump(spec, sort_keys=False, allow_unicode=True, width=120,
                                                          default_flow_style=None),
                           encoding="utf-8", newline="\n")
+
+
+def fingerprint(path: str | os.PathLike = SPEC, model_paths: str | os.PathLike = FARM_MODEL_PATHS) -> str | None:
+    """Which version of the farm's ComfyUI environment this checkout has: the environment file
+    and the farm's extra_model_paths.yaml, with line endings as committed (a Windows checkout
+    may have CRLF), the first 16 hex digits of their sha256. None without an environment file.
+    A sync the manager starts names its host's, and a machine whose checkout has another
+    version refuses it (decision 0033)."""
+    h = hashlib.sha256()
+    for i, p in enumerate((Path(path), Path(model_paths))):
+        try:
+            data = p.read_bytes()
+        except FileNotFoundError:
+            if i == 0:
+                return None
+            data = b""
+        h.update(p.name.encode() + b"\0" + data.replace(b"\r\n", b"\n") + b"\0")
+    return h.hexdigest()[:16]
 
 
 class Cached:
