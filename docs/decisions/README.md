@@ -46,3 +46,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0038](0038-provenance-file.md) | A provenance file beside each job's outputs | accepted |
 | [0039](0039-exr-stamp.md) | Each EXR map carries its job and its provenance file in its header | accepted |
 | [0040](0040-job-metrics.md) | One metrics row per finished job, written where every change to a job passes | accepted |
+| [0041](0041-sweeper-dry-run.md) | The sweeper lists only what provenance files name, and starts as a dry run | accepted |

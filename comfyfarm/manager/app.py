@@ -28,6 +28,7 @@ from .desk import Desk
 from .events import EventBus
 from . import metrics as MX
 from . import share
+from . import sweeper as SW
 from .farm import Farm, FarmError
 
 HERE = Path(__file__).resolve().parent
@@ -523,10 +524,10 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
                 "work": {a.name: a.env_work for a in alive if a.env_work},
                 "rollouts": desk.rollouts.recent(10), "syncs": desk.syncs.recent(10)}
 
-    def _here(request: Request) -> None:
+    def _here(request: Request, why: str = "Environments are changed from the manager's host only, until the farm "
+                                            "has API keys: run `python -m comfyfarm env ...` there.") -> None:
         if not from_this_host(request.client.host if request.client else None):
-            raise HTTPException(403, "Environments are changed from the manager's host only, until the farm has "
-                                     "API keys: run `python -m comfyfarm env ...` there.")
+            raise HTTPException(403, why)
 
     @app.get("/api/v1/rollouts")
     def rollouts(ident: Identity = Depends(identity)):
@@ -613,6 +614,34 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             return Response(MX.to_csv(table), media_type="text/csv; charset=utf-8",
                             headers={"Content-Disposition": 'attachment; filename="comfyfarm-job-metrics.csv"'})
         return {"jobs": table}
+
+    @app.get("/api/v1/sweeps")
+    def sweeps(ident: Identity = Depends(identity)):
+        """The retention sweeper's saved reports, newest first, with their totals (decision 0041)."""
+        return {"enabled": cfg.retention.enabled, "keep_days": cfg.retention.keep_days, "at": cfg.retention.at,
+                "sweeps": farm.sweeper.reports()}
+
+    @app.get("/api/v1/sweeps/{name}")
+    def sweep_report(name: str, format: str = "json", ident: Identity = Depends(identity)):
+        """One report (its name, e.g. 2026-11-23, or `latest`): every expired job and the exact
+        files the sweeper would delete. `format=text` to read it."""
+        try:
+            report = farm.sweeper.report(name)
+        except (OSError, ValueError) as e:
+            raise HTTPException(500, f"Can't read that report: {e}") from None
+        if report is None:
+            raise HTTPException(404, "No such sweep report." if name != "latest" else "No sweep has run yet.")
+        if format == "text":
+            return Response(SW.text(report), media_type="text/plain; charset=utf-8")
+        return report
+
+    @app.post("/api/v1/sweeps", status_code=201)
+    async def run_sweep(request: Request, ident: Identity = Depends(identity)):
+        """A sweep now, as the daily one: a dry run that deletes nothing, its report saved.
+        From the manager's host only, like everything that will one day delete files."""
+        _here(request, "A sweep is started from the manager's host only, until the farm has API keys: "
+                       "curl -X POST http://localhost:<port>/api/v1/sweeps there.")
+        return await asyncio.to_thread(farm.sweeper.run)
 
     @app.get("/api/v1/run-times")
     def run_times(ident: Identity = Depends(identity)):

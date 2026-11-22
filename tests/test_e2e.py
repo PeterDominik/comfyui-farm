@@ -693,6 +693,21 @@ convert:
         with self.assertRaisesRegex(farm.FarmError, "isn't a time"):
             farm._request("GET", "/api/v1/job-metrics?since=last-week")
 
+    def test_04996_sweeps(self):
+        """The retention sweeper's dry run (decision 0041): off here, so no daily run; one asked
+        for from the manager's host saves a report, and deletes nothing."""
+        s = farm._request("GET", "/api/v1/sweeps")
+        self.assertEqual((s["enabled"], s["keep_days"], s["at"]), (False, 3.0, "03:00"))
+        r = farm._request("POST", "/api/v1/sweeps")
+        self.assertEqual((r["comfyfarm_sweep"], r["dry_run"], r["expired"]), (1, True, 0))   # nothing 3 days old here
+        self.assertGreater(r["kept"], 0)
+        self.assertEqual(len(farm._request("GET", "/api/v1/sweeps")["sweeps"]), len(s["sweeps"]) + 1)
+        self.assertEqual(farm._request("GET", "/api/v1/sweeps/latest")["at"], r["at"])
+        self.assertIn("a dry run, nothing was deleted", farm._request("GET", "/api/v1/sweeps/latest?format=text",
+                                                                      raw=True))
+        with self.assertRaisesRegex(farm.FarmError, "No such sweep report"):
+            farm._request("GET", "/api/v1/sweeps/1999-01-01")
+
     def test_0500_environment(self):
         """Each worker's ComfyUI environment reaches the dashboard. In standalone the agent
         doesn't know ComfyUI's folder: it says so instead of comparing."""

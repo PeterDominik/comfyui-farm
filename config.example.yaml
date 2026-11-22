@@ -123,6 +123,15 @@ preview:
 provenance:
   enabled: false
 
+# The retention sweeper (README, Retention; decisions 0006, 0041). For now a dry run: once a
+# day it writes the expired jobs and the exact files it would delete (only those their
+# provenance files list) to data/sweeps/<date>.json, and deletes nothing.
+retention:
+  enabled: false
+  keep_days: 3             # after a job finished, or was last sent to Tractor to be published
+  at: "03:00"              # when it runs each day, the manager's local time
+  reports: 60              # reports kept
+
 convert:
   # EXR sequences and movies are converted to PNG frames by the worker that runs the job,
   # into its scratch folder, before the workflow runs; deleted when the job finishes.

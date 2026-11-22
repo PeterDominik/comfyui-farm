@@ -33,6 +33,7 @@ from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
 from .db import JobStore
 from .events import EventBus
+from .sweeper import Sweeper
 
 if TYPE_CHECKING:
     from .desk import Desk
@@ -71,6 +72,8 @@ class Farm:
         # Read-only lookups for the publish fields: only shows that can be published to.
         self.shotgrid = ShotGrid(cfg.shotgrid, keep=lambda code: publish_target_ok(cfg.publish, code))
         self.publisher = Publisher(self)
+        # Expired outputs, listed once a day (retention; a dry run for now).
+        self.sweeper = Sweeper(cfg, store)
 
     # ================================================================ lifecycle
     async def start(self) -> None:
@@ -87,9 +90,11 @@ class Farm:
         if self.desk:
             await self.desk.start()
         await self.publisher.start()
+        await self.sweeper.start()
         log.info("manager started")
 
     async def stop(self) -> None:
+        await self.sweeper.stop()
         await self.publisher.stop()
         if self.desk:
             await self.desk.stop()
