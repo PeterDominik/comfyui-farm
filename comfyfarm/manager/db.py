@@ -8,6 +8,7 @@ batches) and its "batch" jobs (parent_id = the set), each an ordinary run."""
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -16,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
-from .eta import fold
+from .eta import fold, units
+
+log = logging.getLogger("comfyfarm")
 
 __all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "now"]
 
@@ -135,7 +138,33 @@ CREATE TABLE IF NOT EXISTS workflow_stats (
     avg_seconds REAL,
     node_count INTEGER
 );
+CREATE TABLE IF NOT EXISTS job_metrics (      -- one small row per finished job, kept when the job is deleted (0040)
+    job_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,                       -- job, set (what was submitted) or batch (one run of a set)
+    parent_id TEXT,                           -- a batch's set
+    workflow TEXT NOT NULL,                   -- the definition
+    fingerprint TEXT,                         -- its fingerprint, pinned at submit
+    user TEXT NOT NULL,
+    show TEXT,
+    worker TEXT,                              -- the machine that ran it last
+    gpu TEXT,                                 -- that machine's GPU type
+    outcome TEXT NOT NULL,                    -- done, failed or cancelled
+    attempts INTEGER NOT NULL DEFAULT 0,
+    units INTEGER,                            -- its frames or tiles
+    created_at REAL NOT NULL,                 -- submitted
+    assigned_at REAL,                         -- given to the machine (its last attempt)
+    dispatched_at REAL,                       -- handed to the runner, its inputs ready
+    started_at REAL,                          -- running on the GPU
+    finished_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS job_metrics_finished ON job_metrics(finished_at);
 """
+
+# What a metrics row keeps of a job: who, what, where and how long, and never its params,
+# prompts, paths or errors (decisions 0006, 0040).
+METRICS_COLUMNS = ("job_id", "kind", "parent_id", "workflow", "fingerprint", "user", "show", "worker", "gpu",
+                   "outcome", "attempts", "units", "created_at", "assigned_at", "dispatched_at", "started_at",
+                   "finished_at")
 
 
 class JobStore:
@@ -159,8 +188,16 @@ class JobStore:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN request TEXT")
             if "lease_until" not in have:   # an agent holds the job until then (protocol.py)
                 self._db.execute("ALTER TABLE jobs ADD COLUMN lease_until REAL")
+            if "gpu" not in have:           # the GPU type of the machine it was given to, for its metrics
+                self._db.execute("ALTER TABLE jobs ADD COLUMN gpu TEXT")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id)")
+            # Jobs that finished before there were metrics rows get theirs, before anything
+            # deletes them.
+            marks = ",".join("?" * len(FINISHED))
+            for (jid,) in self._db.execute(f"SELECT id FROM jobs WHERE status IN ({marks}) AND id NOT IN "
+                                           f"(SELECT job_id FROM job_metrics)", FINISHED).fetchall():
+                self._record_metrics(jid)
 
     def close(self) -> None:
         with self._lock:
@@ -291,12 +328,52 @@ class JobStore:
             if status in STAGE_EVENTS or fields.get("stage") not in (None, status, "queued", "requeued"):
                 detail["stage"] = stage_label(fields.get("stage"))
             self._event(before["id"], event, status, worker, attempt, **detail)
+            if status in FINISHED:
+                self._record_metrics(before["id"])
         elif fields.get("cancel_requested") and not before["cancel_requested"]:
             self._event(before["id"], "cancel_requested", status, worker, attempt)
         elif status in STAGE_EVENTS and fields.get("stage") is not None:
             label = stage_label(fields["stage"])
             if label != stage_label(before["stage"]):
                 self._event(before["id"], "stage", status, worker, attempt, stage=label)
+
+    # ---------------------------------------------------------------- metrics
+    # Also written here, for the same reason: every way a job finishes passes through
+    # _changed. A job finishing again (retried) replaces its row.
+    def _record_metrics(self, job_id: str) -> None:
+        """The finished job's metrics row (decision 0040). Never a reason for the change to the
+        job to fail: a row that can't be written is logged."""
+        try:
+            row = self._db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None or row["status"] not in FINISHED:
+                return
+            info = json.loads(row["info"] or "null") or {}
+            request = json.loads(row["request"] or "null") or {}
+            assigned = self._db.execute("SELECT at FROM job_events WHERE job_id=? AND event='preparing' "
+                                        "ORDER BY id DESC LIMIT 1", (job_id,)).fetchone()
+            rec = {"job_id": row["id"], "kind": row["kind"] or "job", "parent_id": row["parent_id"],
+                   "workflow": row["workflow"], "fingerprint": request.get("definition"), "user": row["user"],
+                   "show": info.get("show"), "worker": row["worker"], "gpu": row["gpu"], "outcome": row["status"],
+                   "attempts": row["attempts"] or 0, "units": units({"info": info}),
+                   "created_at": row["created_at"], "assigned_at": assigned["at"] if assigned else None,
+                   "dispatched_at": row["dispatched_at"], "started_at": row["started_at"],
+                   "finished_at": row["finished_at"] or now()}
+            self._db.execute(f"INSERT OR REPLACE INTO job_metrics ({','.join(METRICS_COLUMNS)}) "
+                             f"VALUES ({','.join('?' * len(METRICS_COLUMNS))})", tuple(rec[c] for c in METRICS_COLUMNS))
+        except Exception as e:  # noqa: BLE001
+            log.warning("metrics row for job %s: %s", job_id[:8], e)
+
+    def job_metrics(self, since: float | None = None, until: float | None = None, limit: int = 10000) -> list[dict]:
+        """Metrics rows of the jobs that finished between since and until, oldest first."""
+        where, args = [], []
+        if since is not None:
+            where.append("finished_at >= ?")
+            args.append(since)
+        if until is not None:
+            where.append("finished_at < ?")
+            args.append(until)
+        sql = "SELECT * FROM job_metrics" + (f" WHERE {' AND '.join(where)}" if where else "")
+        return [dict(r) for r in self._q(sql + " ORDER BY finished_at, job_id LIMIT ?", (*args, limit))]
 
     def events(self, job_id: str) -> list[dict]:
         """A job's timeline, oldest first."""

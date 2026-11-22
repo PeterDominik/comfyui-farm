@@ -45,3 +45,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0037](0037-movie-and-model.md) | Movie and model, each one file: phase 5's gate | accepted |
 | [0038](0038-provenance-file.md) | A provenance file beside each job's outputs | accepted |
 | [0039](0039-exr-stamp.md) | Each EXR map carries its job and its provenance file in its header | accepted |
+| [0040](0040-job-metrics.md) | One metrics row per finished job, written where every change to a job passes | accepted |

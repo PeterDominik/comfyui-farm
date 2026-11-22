@@ -678,6 +678,21 @@ convert:
             self.assertEqual(q["next_worker"], "mock")
         self.assertEqual(self.wait_for(job["id"], ("done", "failed"))["status"], "done")
 
+    def test_04995_job_metrics(self):
+        """One row per finished job, kept after it: JSON, and CSV for a spreadsheet (decision 0040)."""
+        rows = farm._request("GET", "/api/v1/job-metrics")["jobs"]
+        done = [r for r in rows if r["workflow"] == "ltx25_alpha_gen" and r["outcome"] == "done"]
+        self.assertTrue(done, rows)
+        self.assertEqual((done[0]["kind"], done[0]["worker"], done[0]["show"]), ("job", "mock", "xyz"))
+        self.assertGreaterEqual(done[0]["run_seconds"], 0)
+        self.assertGreaterEqual(done[0]["units"], 1)
+        self.assertEqual(farm._request("GET", "/api/v1/job-metrics?since=2999-01-01")["jobs"], [])
+        text = farm._request("GET", "/api/v1/job-metrics?format=csv", raw=True)
+        self.assertTrue(text.startswith("job,kind,set,workflow,fingerprint,user,show,worker,gpu,outcome,"), text[:200])
+        self.assertEqual(len(text.splitlines()), len(rows) + 1)
+        with self.assertRaisesRegex(farm.FarmError, "isn't a time"):
+            farm._request("GET", "/api/v1/job-metrics?since=last-week")
+
     def test_0500_environment(self):
         """Each worker's ComfyUI environment reaches the dashboard. In standalone the agent
         doesn't know ComfyUI's folder: it says so instead of comparing."""

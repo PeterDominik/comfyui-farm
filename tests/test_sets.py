@@ -268,6 +268,15 @@ class FarmSetTests(unittest.TestCase):
             self.farm.retry_failed(s["id"])
         self.assertEqual(self.farm.annotate([s])[0]["eta_seconds"], None)
 
+        # Metrics (decision 0040): a row for the set and one per batch, each with its tiles;
+        # the batch that failed and was finished again has its last outcome.
+        rows = {r["job_id"]: r for r in self.store.job_metrics()}
+        self.assertEqual(set(rows), {s["id"], *(b["id"] for b in batches)})
+        self.assertEqual((rows[s["id"]]["kind"], rows[s["id"]]["outcome"], rows[s["id"]]["units"]), ("set", "done", 10))
+        self.assertEqual([(rows[b["id"]]["kind"], rows[b["id"]]["parent_id"], rows[b["id"]]["outcome"],
+                           rows[b["id"]]["units"]) for b in batches],
+                         [("batch", s["id"], "done", 4), ("batch", s["id"], "done", 4), ("batch", s["id"], "done", 2)])
+
     def test_cancel_a_set(self):
         src = self.tiles("src", "rockA_diffuse", range(1001, 1011), png_bytes(2, (2048, 2048)))
         s = self.farm.submit("chord_pbr", {"input": src}, "ann")

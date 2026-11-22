@@ -446,6 +446,19 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(doc["folder"], out["output_dir_posix"])                         # studio paths
         self.assertEqual(doc["artifacts"][0]["pattern"], out["frame_pattern_posix"])
 
+    def test_a_finished_job_leaves_a_metrics_row_with_its_machine_and_gpu(self):
+        """Decision 0040: the GPU type is noted when the job is given to a machine."""
+        a = self.ready(self.agent())
+        job = self.submit()
+        done = self.finish(a, job["id"], self.dispatched(a, job))
+        self.assertEqual(done["gpu"], "fake")                       # ComfyUI's device, as the ETAs name it
+        [row] = self.farm.store.job_metrics()
+        self.assertEqual((row["job_id"], row["worker"], row["gpu"], row["outcome"], row["units"], row["user"]),
+                         (job["id"], "gpu1", "fake", "done", 3, "ann"))
+        self.assertEqual(row["fingerprint"], self.farm.registry.workflows["ltx25_alpha_gen"].digest)
+        times = [row[k] for k in ("created_at", "assigned_at", "dispatched_at", "started_at", "finished_at")]
+        self.assertEqual(times, sorted(times))
+
     def test_a_provenance_file_only_for_jobs_submitted_with_it_on(self):
         a = self.ready(self.agent())
         off = self.submit()
