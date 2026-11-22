@@ -156,4 +156,8 @@ A4 launchers (xStudio, Daiquiri Automate).
 
   The EXR stamp is in, with the same setting: each texture map's EXR carries
   `comfyfarm:job` and `comfyfarm:provenance` in its header, and `comfyfarm check` writes
-  its test map with them (0039).
+  its test map with them (0039). Peter read it in Nuke on a CHORD job's maps.
+
+  `job_metrics` is in: one row per finished job, kept when the job is deleted, with no
+  params, prompts, paths or errors; read as JSON or CSV (`/api/v1/job-metrics`). Jobs that
+  finished before it get their rows when the manager starts (0040).

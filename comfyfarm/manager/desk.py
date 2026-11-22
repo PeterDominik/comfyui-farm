@@ -691,7 +691,7 @@ class Desk:
             attempt = str(uuid.uuid4())
             j = self.store.transition(job["id"], ("queued",), status="preparing", worker=a.name, prompt_id=attempt,
                                       stage=f"on {a.name}", progress=0, dispatched_at=None, started_at=None,
-                                      lease_until=now() + self.lease_seconds)
+                                      gpu=self.gpu_type(a), lease_until=now() + self.lease_seconds)
             self._passed.pop(job["id"], None)
             if j is None:
                 continue                # cancelled meanwhile

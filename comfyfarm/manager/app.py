@@ -26,6 +26,7 @@ from ..definitions import DefinitionRegistry, ParamError
 from .db import ACTIVE, JobStore
 from .desk import Desk
 from .events import EventBus
+from . import metrics as MX
 from . import share
 from .farm import Farm, FarmError
 
@@ -594,6 +595,24 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         return {"name": name, "release": release, "forget": req.forget, "machines": machines}
+
+    @app.get("/api/v1/job-metrics")
+    def job_metrics(since: str | None = None, until: str | None = None, format: str = "json",
+                    limit: int = Query(10000, ge=1, le=200000), ident: Identity = Depends(identity)):
+        """One row per finished job, kept after the job (decision 0040): who ran what, for which
+        show, on which machine and GPU, how it ended and how long each part took. `since` and
+        `until`: when it finished, a date, a date and time (the manager's local time) or seconds
+        since 1970. `format=csv` for a spreadsheet."""
+        if format not in ("json", "csv"):
+            raise HTTPException(400, "format is json or csv.")
+        try:
+            table = MX.rows(store.job_metrics(MX.parse_time(since), MX.parse_time(until), limit))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        if format == "csv":
+            return Response(MX.to_csv(table), media_type="text/csv; charset=utf-8",
+                            headers={"Content-Disposition": 'attachment; filename="comfyfarm-job-metrics.csv"'})
+        return {"jobs": table}
 
     @app.get("/api/v1/run-times")
     def run_times(ident: Identity = Depends(identity)):

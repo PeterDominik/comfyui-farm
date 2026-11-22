@@ -1004,6 +1004,36 @@ only the files one lists.
 
 The setting is frozen into each job at submit: a change only affects jobs submitted afterwards.
 
+### Job metrics
+
+Each job leaves one small row in the manager's database when it finishes (done, failed or
+cancelled), and the row stays when the job itself is deleted (decision 0040). It is how much
+the farm ran, for whom and on what, after the jobs are gone.
+
+- **What a row holds:**
+  - the job, its kind (a job, a texture set, or one batch of a set, with its set);
+  - the workflow and its fingerprint;
+  - the user and the show;
+  - the machine and its GPU type;
+  - how it ended, its attempts, and its frames or tiles;
+  - when it was submitted, given to a machine, handed to the runner, started on the GPU and
+    finished.
+- **Never in a row:** its parameters, prompts, paths or error messages.
+- **A job that finishes again** (retried, or a set's failed batches run again) keeps one row,
+  with its last outcome.
+- **Jobs that had already finished** when the manager first ran this get their rows when it
+  starts. Their GPU type is empty: it is noted when a job is given to a machine, and the job
+  record now says it (`gpu`).
+- **To read them:** `GET /api/v1/job-metrics` (JSON), or with `?format=csv` for a spreadsheet,
+  for example
+  `http://wrk1125l.rodeofx.com:9090/api/v1/job-metrics?format=csv&since=2026-11-01`. Each row
+  gives local times and how long each part took:
+  - `wait_seconds`: submitted until given to a machine;
+  - `prepare_seconds`: inputs prepared;
+  - `gpu_wait_seconds`: waiting for the GPU;
+  - `run_seconds`: on the GPU, outputs collected;
+  - `total_seconds`: submitted until finished.
+
 ### REST API
 
 | Method | Path | |
@@ -1041,6 +1071,7 @@ The setting is frozen into each job at submit: a change only affects jobs submit
 | POST | `/api/v1/shotgrid/menu/sync` | Make ShotGrid's menu match now (`shotgrid.menu_sync` on; with API keys, admins) |
 | POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
+| GET | `/api/v1/job-metrics?since=&until=&format=&limit=` | One row per finished job, kept after it (Job metrics): `since` and `until` when it finished (a date, a date and time, or seconds since 1970); `format=csv` for a spreadsheet |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`
