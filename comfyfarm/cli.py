@@ -100,8 +100,10 @@ def check_ocio(cfg: Config) -> int:
         png, exr = f"{d}/check.png", f"{d}/check.exr"
         steps = [
             ("make a test image", [*cmd, "--create", "4x4", "3", "-d", "uint8", "-o", png]),
+            # With the stamp a job's maps carry (decision 0039), so this oiiotool is known to take it.
             (f"texture colour map {OC.IMAGE} -> {OC.LINEAR}",
-             O.map_command(cmd, ocio, {"color": True, "bits": "half"}, png, exr)),
+             O.map_command(cmd, ocio, {"color": True, "bits": "half"}, png, exr,
+                           stamp={"comfyfarm:job": "check", "comfyfarm:provenance": "provenance.json"})),
             (f"texture data map tagged {OC.DATA}",
              O.map_command(cmd, ocio, {"color": False, "bits": "float"}, png, f"{d}/data.exr")),
             (f"EXR input {OC.LINEAR} -> {OC.IMAGE}", C.exr_command(cmd, conv, exr, f"{d}/back.png")),

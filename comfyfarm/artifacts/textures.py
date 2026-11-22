@@ -131,7 +131,14 @@ class Textures:
             ctx.spawn(ctx.report(f"writing EXR maps {done}/{total}"))
 
         return await O.write_maps(tex, out_dir, ctx.cfg.textures, ctx.cfg.convert, ctx.cfg.paths.mappings,
-                                  progress), []
+                                  progress, self.stamp(ctx.job)), []
+
+    def stamp(self, job: dict) -> dict[str, str] | None:
+        """What each EXR carries in its header (decision 0039): the job and the provenance file
+        beside it, for a job that writes one (info.provenance, 0038). None: no stamp."""
+        info = job.get("info") or {}
+        name = self.provenance(info) if info.get("provenance") else None
+        return {"comfyfarm:job": job["job"], "comfyfarm:provenance": name} if name and job.get("job") else None
 
     def record(self, outputs: dict) -> dict | None:
         if not outputs.get("maps"):

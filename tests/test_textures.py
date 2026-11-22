@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,7 +27,8 @@ from comfyfarm.fileio.convert import exr_command
 from comfyfarm.fileio.errors import SequenceError
 from comfyfarm.fileio.inputs import (Sequence, loaded_names, resolve_input, resolve_sequence, summary, texture_input,
                                      texture_numbers)
-from comfyfarm.fileio.ocio import ocio_roles
+from comfyfarm.fileio.ocio import ocio_roles, ocio_setup
+from comfyfarm.fileio.tools import find_tool
 from comfyfarm.definitions import ParamError
 from comfyfarm.runners.comfyui_workflow import Workflow
 
@@ -503,6 +505,25 @@ class WriteMapsTests(unittest.TestCase):
             self.assertNotIn("--colorconvert", bump)
             self.assertEqual((bump[bump.index("-d") + 1], bump[bump.index("--iscolorspace") + 1]), ("float", "data"))
             self.assertTrue(bump[bump.index("-o") + 1].endswith(".part.exr"))   # renamed once complete
+            self.assertFalse([a for a in calls if "--attrib:type=string" in a])     # no stamp unless asked (0039)
+
+    def test_every_map_carries_the_stamp_in_its_header(self):
+        """Decision 0039: the job and its provenance file, as string attributes of each EXR."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = self.chord_maps(tmp)
+            log = f"{tmp}/oiio.log"
+            os.environ["FAKE_OIIOTOOL_LOG"] = log
+            self.addCleanup(os.environ.pop, "FAKE_OIIOTOOL_LOG", None)
+            stamp = {"comfyfarm:job": "0123abcd", "comfyfarm:provenance": "provenance.json"}
+            asyncio.run(Out.write_maps(t, tmp, TexturesConfig(), ConvertConfig(tools={"oiiotool": FAKE_OIIOTOOL}),
+                                     [], lambda d, n: None, stamp))
+            calls = [json.loads(line)["args"] for line in Path(log).read_text().splitlines()]
+            self.assertEqual(len(calls), len(CHORD_MAPS))
+            for args in calls:
+                at = args.index("-d")
+                self.assertEqual(args[at - 6:at], ["--attrib:type=string", "comfyfarm:job", "0123abcd",
+                                                   "--attrib:type=string", "comfyfarm:provenance", "provenance.json"])
+
 
     def chord_maps(self, tmp):
         """CHORD's saves as they really are: RGB base colour and normal, greyscale height,
@@ -552,6 +573,27 @@ class WriteMapsTests(unittest.TestCase):
                                          [], lambda d, n: None))
 
 
+@unittest.skipUnless(find_tool("oiiotool"), "needs oiiotool (OpenImageIO, in requirements.txt)")
+class StampedExrTests(unittest.TestCase):
+    """The stamp as the real oiiotool writes it, with the repo's OCIO config, as on the farm."""
+
+    def test_the_exr_header_carries_the_job_and_its_provenance_file(self):
+        cmd = find_tool("oiiotool")
+        ocio = ocio_setup(OcioConfig(), PathsConfig(validate_inputs=False))
+        stamp = {"comfyfarm:job": "0123abcd", "comfyfarm:provenance": "provenance.002.json"}
+        with tempfile.TemporaryDirectory() as d:
+            png = f"{d}/map.png"
+            subprocess.run([*cmd, "--create", "4x4", "3", "-d", "uint8", "-o", png], check=True, capture_output=True)
+            for m in MAPS:                                  # a colour map and a data map
+                exr = f"{d}/{m['channel']}.exr"
+                made = subprocess.run(Out.map_command(cmd, ocio, m, png, exr, stamp=stamp), capture_output=True,
+                                      text=True)
+                self.assertEqual(made.returncode, 0, made.stderr)
+                info = subprocess.run([*cmd, "--info", "-v", exr], capture_output=True, text=True, check=True).stdout
+                self.assertRegex(info, r'comfyfarm:job: "?0123abcd"?', info)
+                self.assertRegex(info, r'comfyfarm:provenance: "?provenance\.002\.json"?', info)
+
+
 class PreflightTests(unittest.TestCase):
     def check(self, oc=None, oiiotool=None):
         from comfyfarm.cli import check_ocio
@@ -580,6 +622,7 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(len(calls), 4)
         self.assertEqual(calls[1][calls[1].index("--colorconvert") + 1:][:2], ["color_picking", "scene_linear"])
         self.assertIn("--iscolorspace", calls[2])
+        self.assertIn("comfyfarm:provenance", calls[1])     # this oiiotool takes the stamp maps carry (0039)
         self.assertEqual(calls[3][calls[3].index("--colorconvert") + 1:][:2], ["scene_linear", "color_picking"])
 
     def test_failures(self):

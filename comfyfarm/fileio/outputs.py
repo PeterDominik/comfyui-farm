@@ -51,14 +51,19 @@ def makedirs_readable(path: str) -> None:
         readable(d)
 
 
-def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str, ch: str = "R,G,B") -> list[str]:
+def map_command(oiiotool: list[str], ocio: dict, m: dict, src: str, dst: str, ch: str = "R,G,B",
+                stamp: dict[str, str] | None = None) -> list[str]:
     """oiiotool for one map image -> its final EXR (also run by `comfyfarm check`).
     `ocio` is the job's frozen convert.ocio_setup(): colour maps go image -> linear (a Nuke
     Read set to "default (color_picking)"); data maps are only tagged. `ch` comes from
     convert.channel_args(): greyscale maps (height, roughness, metalness) are copied into
-    R, G and B (R=Y,G=Y,B=Y) rather than asked for R, G, B they don't have."""
+    R, G and B (R=Y,G=Y,B=Y) rather than asked for R, G, B they don't have. `stamp`: string
+    attributes the EXR carries in its header (decision 0039: comfyfarm:job and
+    comfyfarm:provenance, which Nuke shows as exr/comfyfarm:job)."""
     cmd = [*oiiotool, "--colorconfig", ocio["config"], src, "--ch", ch]
     cmd += ["--colorconvert", ocio["image"], ocio["linear"]] if m["color"] else ["--iscolorspace", ocio["data"]]
+    for name, value in (stamp or {}).items():
+        cmd += ["--attrib:type=string", name, str(value)]
     return cmd + ["-d", m["bits"], "--compression", "zip", "-o", dst]
 
 
@@ -69,8 +74,9 @@ def _raw_files(names: list[str], prefix: str, ext: str) -> list[str]:
 
 
 async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfig,
-                     mappings: list[PathMapping], progress) -> dict:
-    """Convert every map image ComfyUI wrote into its named EXR in out_dir.
+                     mappings: list[PathMapping], progress, stamp: dict[str, str] | None = None) -> dict:
+    """Convert every map image ComfyUI wrote into its named EXR in out_dir, each carrying
+    `stamp` in its header (map_command).
 
     t is the job's info['textures'] (frozen at submit). Each save node wrote one image
     per input texture, in input order, so the n-th image is the n-th UDIM/frame."""
@@ -100,7 +106,7 @@ async def write_maps(t: dict, out_dir: str, tc: TexturesConfig, cc: ConvertConfi
         tmp = f"{dst[:-4]}.{uuid.uuid4().hex[:8]}.part.exr"
         ch = M.channel_args(src)
         async with sem:
-            code, out = await C._run(map_command(oiiotool, t["ocio"], m, src, tmp, ch), env)
+            code, out = await C._run(map_command(oiiotool, t["ocio"], m, src, tmp, ch, stamp), env)
         if code == 0 and M.UNKNOWN_CHANNEL in out:
             code, out = 1, f"{os.path.basename(src)} is missing channels, so the map would be black: {out}"
         if code != 0 or not os.path.isfile(tmp):

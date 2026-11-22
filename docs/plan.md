@@ -152,4 +152,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   The provenance file is in, off by default (`provenance.enabled`). The agent that ran a
   job writes it beside the outputs, named like them, before it reports the job done. It
   says what ran, where, on what, for whom and from what, in studio paths, and lists every
-  file the job wrote, as each kind says (0038).
+  file the job wrote, as each kind says (0038). Peter updated the pilot machines and tested it.
+
+  The EXR stamp is in, with the same setting: each texture map's EXR carries
+  `comfyfarm:job` and `comfyfarm:provenance` in its header, and `comfyfarm check` writes
+  its test map with them (0039).
