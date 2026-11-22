@@ -259,5 +259,5 @@ def policy_path(cfg) -> tuple[str | None, str | None]:
     elif cfg.share.dir:
         local = P.to_farm(cfg.share.dir, cfg.paths.mappings).rstrip("/") + "/" + f
     else:
-        local = str(cfg.resolve(f))
+        local = P.normalize(str(cfg.resolve(f)))
     return local, P.to_posix(local, cfg.paths.mappings) or local

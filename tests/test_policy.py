@@ -197,6 +197,10 @@ class Paths(unittest.TestCase):
         self.assertEqual(PO.policy_path(cfg)[1], "/rdo/bank/comfy_farm/policy.yaml")
         cfg.policy.file = "/rdo/bank/elsewhere/rules.yaml"
         self.assertEqual(PO.policy_path(cfg)[1], "/rdo/bank/elsewhere/rules.yaml")
+        cfg.share.dir = ""                                          # no bank folder: beside config.yaml
+        cfg.policy.file = "policy.yaml"
+        local, shown = PO.policy_path(cfg)
+        self.assertTrue(local.endswith("/policy.yaml") and "\\" not in local, local)       # forward slashes, Windows too
         cfg.policy.file = ""
         self.assertEqual(PO.policy_path(cfg), (None, None))
 
