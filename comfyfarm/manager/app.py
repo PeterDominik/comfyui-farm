@@ -615,6 +615,12 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
                             headers={"Content-Disposition": 'attachment; filename="comfyfarm-job-metrics.csv"'})
         return {"jobs": table}
 
+    @app.get("/api/v1/policy")
+    def policy(ident: Identity = Depends(identity)):
+        """The farm's policy (decision 0043): the file, the rules in force, and why the file as
+        it is now isn't in force, if it isn't."""
+        return farm.policy.status()
+
     @app.get("/api/v1/sweeps")
     def sweeps(ident: Identity = Depends(identity)):
         """The retention sweeper's saved reports, newest first, with their totals (decision 0041)."""

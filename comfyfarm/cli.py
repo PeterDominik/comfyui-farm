@@ -357,6 +357,9 @@ def main(argv: list[str] | None = None) -> int:
     agent.add_argument("--check", action="store_true",
                        help="check this worker (manager, token, ComfyUI, nodes, storage, scratch, tools) and exit")
     sub.add_parser("check", help="preflight: workflows, workers, node packs, models, storage")
+    pol = sub.add_parser("policy", help="the farm's policy.yaml (README: Policy)")
+    pol.add_argument("action", choices=["check"], help="check: validate a policy file before it goes in the bank")
+    pol.add_argument("file", nargs="?", help="the file to check (default: the one config.yaml's policy.file names)")
     from .comfyenv import cli as envcli
     envcli.add_parser(sub)
     from .envs import cli as runnerenvs
@@ -385,6 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     if args.cmd == "check":
         return asyncio.run(run_check(cfg))
+    if args.cmd == "policy":
+        return run_policy_check(cfg, args.file)
 
     setup_logging(cfg, args.verbose)
     for note in cfg.obsolete_keys:
@@ -394,6 +399,32 @@ def main(argv: list[str] | None = None) -> int:
     from .manager.app import create_app
     uvicorn.run(create_app(cfg, local_agents=args.cmd != "manager"), host=cfg.server.host,
                 port=cfg.server.port, log_config=None, ws_ping_interval=20)
+    return 0
+
+
+def run_policy_check(cfg: Config, file: str | None) -> int:
+    """`comfyfarm policy check [file]`: is this policy file one the manager would take? Its
+    definitions are checked against this checkout's workflows/."""
+    from .definitions import DefinitionRegistry
+    from .manager.policy import parse, policy_path
+    path = file or policy_path(cfg)[0]
+    if not path:
+        print("No policy file: give one, or set policy.file in config.yaml.")
+        return 1
+    known = set(DefinitionRegistry(cfg.resolve(cfg.workflows_dir)).workflows)
+    try:
+        pf = parse(Path(path).read_text(encoding="utf-8"), known)
+    except (OSError, ValueError) as e:
+        print(f"  [FAIL] {path}: {getattr(e, 'strerror', None) or e}")
+        return 1
+    print(f"  [ ok ] {path}: {len(pf.shows)} show rule(s); shows no rule names: {pf.other_shows}; "
+          f"a job whose show isn't known: {pf.unknown_show}")
+    for r in pf.shows:
+        what = ("denies everything" if r.deny == "all" else f"denies {', '.join(r.deny)}" if r.deny
+                else f"allows only {', '.join(r.allow or [])}")
+        print(f"         {r.name}: {', '.join(r.shows)} {what}: {r.reason}")
+    if not cfg.policy.enabled:
+        print("         (policy.enabled is off in config.yaml: the manager doesn't read it yet)")
     return 0
 
 

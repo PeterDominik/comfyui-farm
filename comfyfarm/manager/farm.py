@@ -13,6 +13,7 @@ import json
 import logging
 import threading
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import artifacts as A
@@ -33,6 +34,8 @@ from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
 from .db import JobStore
 from .events import EventBus
+from .policy import Policy, policy_path
+from .policy import Refused as PolicyRefused
 from .sweeper import Sweeper
 
 if TYPE_CHECKING:
@@ -74,6 +77,10 @@ class Farm:
         self.publisher = Publisher(self)
         # Expired outputs, listed once a day (retention; a dry run for now).
         self.sweeper = Sweeper(cfg, store)
+        # Which shows may use the farm, and with what (policy.yaml in the bank folder).
+        local, shown = policy_path(cfg)
+        self.policy = Policy(cfg.policy.enabled, local, Path(cfg.resolve(cfg.database)).parent / "policy.json",
+                             known=lambda: set(self.registry.workflows), shown_path=shown)
 
     # ================================================================ lifecycle
     async def start(self) -> None:
@@ -304,6 +311,11 @@ class Farm:
         others = self._plan_other_inputs(wf, use, seq, show, shot, job_id) if seq is not None else {}
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
+        # The farm's policy, once the show is known (decision 0043): a refused job is never planned.
+        try:
+            self.policy.check(wf.name, show_)
+        except PolicyRefused as e:
+            raise FarmError(str(e), 403) from None
         seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
         source = seq.source if seq else wf.tag
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
@@ -663,6 +675,10 @@ class Farm:
         job = self.store.get(job_id)
         if not job:
             raise FarmError("Job not found.", 404)
+        try:                                # a set's show may have been barred since it was planned
+            self.policy.check(job["workflow"], (job.get("info") or {}).get("show"))
+        except PolicyRefused as e:
+            raise FarmError(str(e), 403) from None
         if job["kind"] == "set":
             targets = self.store.list(parent=job["id"], statuses=("failed", "cancelled"), limit=100000)
             set_id = job["id"]
