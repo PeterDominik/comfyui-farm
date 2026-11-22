@@ -50,6 +50,11 @@ class Identity:
     admin: bool
 
 
+class RolloutStart(BaseModel):
+    release: str                        # a fingerprint, or "latest"
+    machines: list[str] | None = None   # default: every machine the manager knows
+
+
 class EnvironmentWant(BaseModel):
     release: str | None = None          # a fingerprint, "latest", or none: remove it
     machines: list[str] | None = None   # default: every machine the manager knows
@@ -502,16 +507,45 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         alive = [a for a in list(desk.agents.values()) if desk.alive(a.name)]
         return {"bank": cfg.share.dir or None, "releases": releases, "machines": desk.environments(),
                 "wanted": {a.name: a.env_wanted for a in desk.agents.values() if a.env_wanted},
-                "work": {a.name: a.env_work for a in alive if a.env_work}}
+                "work": {a.name: a.env_work for a in alive if a.env_work},
+                "rollouts": desk.rollouts.recent(10)}
+
+    def _here(request: Request) -> None:
+        if not from_this_host(request.client.host if request.client else None):
+            raise HTTPException(403, "Environments are changed from the manager's host only, until the farm has "
+                                     "API keys: run `python -m comfyfarm env ...` there.")
+
+    @app.get("/api/v1/rollouts")
+    def rollouts(ident: Identity = Depends(identity)):
+        """Environment rollouts, newest first (decision 0031)."""
+        return {"rollouts": desk.rollouts.recent(50)}
+
+    @app.post("/api/v1/environments/{name}/rollout")
+    async def start_rollout(name: str, req: RolloutStart, request: Request, ident: Identity = Depends(identity)):
+        """A release of the environment to the machines one at a time, the canary first (rollouts.order),
+        each gated by its install's check. From the manager's host only (`env rollout` there)."""
+        _here(request)
+        try:
+            release = await asyncio.to_thread(share.release_fingerprint, cfg, name, req.release)
+            return desk.rollouts.start(name, release, req.machines, ident.user)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/v1/environments/{name}/rollout/{action}")
+    def change_rollout(name: str, action: str, request: Request, ident: Identity = Depends(identity)):
+        """pause, resume, rollback or cancel the environment's open rollout (rollback: its last)."""
+        _here(request)
+        try:
+            return desk.rollouts.act(name, action, ident.user)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
 
     @app.post("/api/v1/environments/{name}/want")
     async def want_environment(name: str, req: EnvironmentWant, request: Request,
                                ident: Identity = Depends(identity)):
         """What the machines should have of an environment: a release, none (removed), or
         forget (no longer managed). From the manager's host only (`env want` there)."""
-        if not from_this_host(request.client.host if request.client else None):
-            raise HTTPException(403, "Environments are changed from the manager's host only, until the farm has "
-                                     "API keys: run `python -m comfyfarm env want ...` there.")
+        _here(request)
         release = None
         if not req.forget and req.release and req.release.lower() != "none":
             try:

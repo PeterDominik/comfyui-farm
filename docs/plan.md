@@ -104,4 +104,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   releases (0029). The manager keeps what each machine should have of each environment
   (`env want` on its host), says it in the check-in reply, and the agent's environment
   manager installs, updates (switching back is a rollback) and removes, off by default
-  (`envs.managed`, 0030).
+  (`envs.managed`, 0030). Rollouts take a release to the machines one at a time, the canary
+  first (`rollouts.order`), each once the one before has it checked; a machine that fails
+  or takes too long stops it there, with pause, resume, rollback and cancel (`env rollout`
+  on the manager's host, 0031). `environments/canary-test` is broken on purpose to try it.

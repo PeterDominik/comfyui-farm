@@ -30,6 +30,14 @@ share:
   dir: ''              # e.g. /rdo/bank/comfy_farm; empty = none
   url: ''              # the address written there; empty = http://<this machine's name>:<server.port>
 
+# Rollouts of runner environments (`env rollout` on this host; decision 0031): a release
+# goes to one machine at a time, these first and in this order, the canary first; the
+# others follow by name. A machine that hasn't the release, checked, by step_minutes
+# stops the rollout there.
+rollouts:
+  order: []            # the pilot's: [tor-flame02-a6000, wrk59467w-5090, wrk1125l-3090]
+  step_minutes: 30
+
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.
 agents:

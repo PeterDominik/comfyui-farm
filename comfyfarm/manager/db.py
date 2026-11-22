@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS drained (
     by TEXT,
     since REAL
 );
+CREATE TABLE IF NOT EXISTS rollouts (         -- a release going to the machines one at a time (0031)
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,                       -- the environment
+    release TEXT NOT NULL,
+    machines TEXT NOT NULL,                   -- JSON: in order, the canary first
+    before TEXT NOT NULL,                     -- JSON: machine -> what it had (fingerprint or null)
+    step INTEGER NOT NULL DEFAULT 0,          -- the machine it is at
+    state TEXT NOT NULL,                      -- running, paused, failed, done, rolled_back, cancelled
+    error TEXT,
+    by TEXT,
+    started_at REAL,
+    step_started REAL,
+    updated_at REAL
+);
 CREATE TABLE IF NOT EXISTS env_wanted (       -- the runner environments each machine should have (0030)
     worker TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -424,6 +438,27 @@ class JobStore:
     def forget_env_wanted(self, worker: str, name: str) -> None:
         with self._lock:
             self._db.execute("DELETE FROM env_wanted WHERE worker=? AND name=?", (worker, name))
+
+    # ---------------------------------------------------------------- rollouts
+    @staticmethod
+    def _rollout_row(row) -> dict:
+        d = dict(row)
+        d["machines"], d["before"] = json.loads(d["machines"]), json.loads(d["before"])
+        return d
+
+    def rollouts(self, name: str | None = None, limit: int = 50) -> list[dict]:
+        """Newest first."""
+        rows = self._q("SELECT * FROM rollouts" + (" WHERE name=?" if name else "") +
+                       " ORDER BY started_at DESC LIMIT ?", ((name, limit) if name else (limit,)))
+        return [self._rollout_row(r) for r in rows]
+
+    def save_rollout(self, r: dict) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO rollouts (id, name, release, machines, before, step, state, error, by, "
+                "started_at, step_started, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (r["id"], r["name"], r["release"], json.dumps(r["machines"]), json.dumps(r["before"]), r["step"],
+                 r["state"], r.get("error"), r.get("by"), r.get("started_at"), r.get("step_started"), now()))
 
     # ---------------------------------------------------------------- publishes
     @staticmethod

@@ -36,3 +36,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0028](0028-environment-releases.md) | Environment releases: the repo's environment, published to the bank, checked by hash | accepted |
 | [0029](0029-agents-report-environments.md) | Agents report the environments they have built, with their status | accepted |
 | [0030](0030-wanted-environments.md) | What each machine should have: kept by the manager, done by the agent's environment manager | accepted |
+| [0031](0031-rollouts.md) | Rollouts: one machine at a time, the canary first, gated by the check | accepted |

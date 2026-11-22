@@ -13,6 +13,11 @@
     env want <name> <fingerprint|latest|none> [--machine NAME ...] [--forget]
                                 on the manager's host: what the machines should have of it; their
                                 environment managers install or remove it (decision 0030)
+    env rollout <name> <fingerprint|latest> [--machine NAME ...]
+                                on the manager's host: the release to the machines one at a time,
+                                the canary first, each gated by its check (decision 0031)
+    env rollout <name> --pause | --resume | --rollback | --cancel
+    env rollouts                the rollouts, newest first
 
 Builds go into agent.yaml's envs.dir (default data/envs in this checkout); --dir and --uv
 override it, so these run on a machine without an agent too. The bank is --bank, else the
@@ -157,26 +162,21 @@ def cmd_releases(args) -> int:
     return 0
 
 
-def cmd_want(args) -> int:
-    """Tell the manager, on this host, what the machines should have (its API takes this
-    from its own host only, until the farm has API keys)."""
+def _manager(args, method: str, path: str, body: dict | None = None) -> dict:
+    """The manager on this host. Its API takes what changes the machines' environments from its
+    own host only, until the farm has API keys; the standard library, so --help needs no web stack."""
     import getpass
     import urllib.error
     import urllib.request
     from ..config import default_config_path, load_config
-    if not args.forget and not args.release:
-        raise S.SpecError("say which release (a fingerprint from `env releases`, or latest), none to remove it, "
-                          "or --forget")
-    path = getattr(args, "manager_config", None) or default_config_path()
-    port = load_config(path).server.port if Path(path).exists() else 8000
-    body = json.dumps({"release": None if args.forget else args.release, "machines": args.machine or None,
-                       "forget": bool(args.forget)}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/v1/environments/{args.name}/want", data=body,
-                                 method="POST", headers={"Content-Type": "application/json",
-                                                         "X-User": getpass.getuser()})
+    cfg_path = getattr(args, "manager_config", None) or default_config_path()
+    port = load_config(cfg_path).server.port if Path(cfg_path).exists() else 8000
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "X-User": getpass.getuser()})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            said = json.loads(r.read())
+            return json.loads(r.read())
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read()).get("detail")
@@ -186,10 +186,59 @@ def cmd_want(args) -> int:
     except urllib.error.URLError as e:
         raise S.SpecError(f"no manager on 127.0.0.1:{port} ({e.reason}): run this on the manager's host, with its "
                           f"config.yaml") from None
+
+
+def cmd_want(args) -> int:
+    """Tell the manager, on this host, what the machines should have."""
+    if not args.forget and not args.release:
+        raise S.SpecError("say which release (a fingerprint from `env releases`, or latest), none to remove it, "
+                          "or --forget")
+    said = _manager(args, "POST", f"/api/v1/environments/{args.name}/want",
+                    {"release": None if args.forget else args.release, "machines": args.machine or None,
+                     "forget": bool(args.forget)})
     what = "not managed any more (left as it is)" if said["forget"] else said["release"] or "removed"
     for machine in sorted(said["machines"]):
         print(f"{machine}: {said['name']} {what}")
     print("Each machine does it once its agent checks in; `env releases` and the Machines tab show how it went.")
+    return 0
+
+
+def _rollout_line(r: dict) -> str:
+    at = r["machines"][r["step"]] if r["machines"] else "?"
+    where = {"running": f"at {at}", "paused": f"paused before {at}", "failed": f"stopped at {at}"}.get(r["state"], "")
+    order = " > ".join(r["machines"])
+    state = f"{r['state']} {where}".strip()
+    line = f"{r['name']} {r['release']}  {state}  [{order}]  ({r['id']}, by {r['by']})"
+    return line + (f"\n    {r['error']}" if r.get("error") else "")
+
+
+def cmd_rollout(args) -> int:
+    """A release to the machines one at a time, the canary first; or pause, resume, roll back,
+    cancel the environment's open rollout."""
+    action = next((a for a in ("pause", "resume", "rollback", "cancel") if getattr(args, a)), None)
+    if action:
+        r = _manager(args, "POST", f"/api/v1/environments/{args.name}/rollout/{action}")
+    else:
+        if not args.release:
+            raise S.SpecError("say which release (a fingerprint from `env releases`, or latest), or --pause, "
+                              "--resume, --rollback or --cancel")
+        r = _manager(args, "POST", f"/api/v1/environments/{args.name}/rollout",
+                     {"release": args.release, "machines": args.machine or None})
+    print(_rollout_line(r))
+    if not action:
+        print(f"{r['machines'][0]} first; each next machine once the one before has it, checked. "
+              f"`env rollouts` shows how it goes.")
+    elif action == "rollback":
+        print("The machines it reached go back to what they had, at their next check-in.")
+    return 0
+
+
+def cmd_rollouts(args) -> int:
+    rows = _manager(args, "GET", "/api/v1/rollouts")["rollouts"]
+    if not rows:
+        print("No rollouts yet.")
+    for r in rows:
+        print(_rollout_line(r))
     return 0
 
 
@@ -210,10 +259,26 @@ def add_parser(sub) -> None:
                            ("publish", "on the manager's host: publish an environment as committed, as a release in "
                                        "the bank"),
                            ("releases", "the releases in the bank"),
-                           ("want", "on the manager's host: what the machines should have of an environment")):
+                           ("want", "on the manager's host: what the machines should have of an environment"),
+                           ("rollout", "on the manager's host: a release to the machines one at a time, the canary "
+                                       "first; or pause, resume, roll back, cancel"),
+                           ("rollouts", "on the manager's host: the rollouts, newest first")):
         c = cmds.add_parser(name, help=helptext)
         if name == "releases":
             c.add_argument("name", nargs="?", help="one environment's (default: all)")
+        elif name == "rollout":
+            c.add_argument("name", help="the environment")
+            c.add_argument("release", nargs="?", help="a fingerprint from `env releases`, or latest")
+            c.add_argument("--machine", action="append", help="these machines only (again for more; default: all)")
+            for a, h in (("pause", "stop before the next machine"), ("resume", "go on with a paused one"),
+                         ("rollback", "the machines it reached go back to what they had"),
+                         ("cancel", "stop it; the machines keep what they have")):
+                c.add_argument(f"--{a}", action="store_true", help=h)
+            c.add_argument("--manager-config", dest="manager_config",
+                           help="the manager's config.yaml, for its port (default: repo root, or $COMFYFARM_CONFIG)")
+        elif name == "rollouts":
+            c.add_argument("--manager-config", dest="manager_config",
+                           help="the manager's config.yaml, for its port (default: repo root, or $COMFYFARM_CONFIG)")
         elif name == "want":
             c.add_argument("name", help="the environment")
             c.add_argument("release", nargs="?", help="a fingerprint from `env releases`, latest, or none (remove it)")
@@ -242,7 +307,8 @@ def add_parser(sub) -> None:
 def run(args) -> int:
     try:
         return {"list": cmd_list, "lock": cmd_lock, "install": cmd_install, "remove": cmd_remove,
-                "publish": cmd_publish, "releases": cmd_releases, "want": cmd_want}[args.env_cmd](args)
+                "publish": cmd_publish, "releases": cmd_releases, "want": cmd_want, "rollout": cmd_rollout,
+                "rollouts": cmd_rollouts}[args.env_cmd](args)
     except (S.SpecError, B.BuildError, R.ReleaseError) as e:
         print(f"STOPPED: {e}")
         return 1
