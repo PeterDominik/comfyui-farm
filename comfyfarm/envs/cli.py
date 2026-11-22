@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import textwrap
 from pathlib import Path
 
 from . import build as B
@@ -209,7 +210,7 @@ def _rollout_line(r: dict) -> str:
     order = " > ".join(r["machines"])
     state = f"{r['state']} {where}".strip()
     line = f"{r['name']} {r['release']}  {state}  [{order}]  ({r['id']}, by {r['by']})"
-    return line + (f"\n    {r['error']}" if r.get("error") else "")
+    return line + ("\n" + textwrap.indent(r["error"], "    ") if r.get("error") else "")   # each line of it
 
 
 def cmd_rollout(args) -> int:

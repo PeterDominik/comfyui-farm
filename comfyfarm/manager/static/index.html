@@ -84,6 +84,15 @@
   .wfcell { white-space: nowrap; color: var(--muted); font-size: 12px; }
   .ok { color: var(--ok); }
   td.problems { color: var(--accent); font-size: 12px; }
+  /* Runner environments on the Machines tab (environments.js) */
+  th.envcol { text-transform: none; letter-spacing: 0; font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .envsub { font-size: 11px; color: var(--muted); font-weight: 400; font-family: system-ui, "Segoe UI", sans-serif; }
+  .enverr { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  div.enverr { padding: 6px 14px; border-bottom: 1px solid var(--line); }
+  .envhelp { padding: 8px 14px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+  .envhelp code { font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .sechead h3 { font-size: 12px; margin: 0; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .sechead code { font-family: var(--mono); font-size: 12px; }
   details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   /* Publishing (Daiquiri): the submit form's "Publish when done" fields, the Publish dialog */
   form label.check.flat { padding-top: 0; }
@@ -272,6 +281,23 @@
       <thead><tr><th title="The order machines get jobs of a workflow that hasn't run on their GPUs yet (agents.order, then VRAM): a job goes to the first free one that can run it. A workflow with run times goes to its fastest GPU first (Run times tab, #)">#</th><th>Machine</th><th>Status</th><th>GPU</th><th>VRAM free</th><th>Jobs</th><th>Running</th><th>ComfyUI</th><th>Agent</th><th>Last seen</th><th></th></tr></thead>
       <tbody id="machines"></tbody>
     </table>
+    <div id="envs" hidden>
+      <div class="sechead"><h2>Runner environments</h2>
+        <span class="muted" id="envsNote"></span></div>
+      <div class="envhelp">What each machine has built of each environment (✓ installed and checked), what the manager
+        wants it to have, and what the machine is doing about it. Read-only: environments change on the manager's host,
+        with <code>comfyfarm env want</code> and <code>comfyfarm env rollout</code>.</div>
+      <table><thead id="envsHead"></thead><tbody id="envsBody"></tbody></table>
+      <div id="envsErrors"></div>
+      <div class="sechead"><h3>Rollouts</h3></div>
+      <div class="envhelp">One machine at a time, the canary first: each once the one before has it checked. Pause,
+        resume, roll back or cancel with <code>comfyfarm env rollout &lt;name&gt;</code> on the manager's host.</div>
+      <table>
+        <thead><tr><th>Environment</th><th>Release</th><th>State</th><th>Machines, in order</th><th>By</th>
+          <th>Started</th><th>Updated</th></tr></thead>
+        <tbody id="rollouts"></tbody>
+      </table>
+    </div>
   </section>
 
   <section id="tab-runtimes" hidden>
@@ -377,6 +403,7 @@ function showTab(tab) {
   store.set("comfyfarm.tab", tab);
   if (tab === "templates") loadTemplates();
   if (tab === "batch") window.batchShown?.();   // batch.js
+  if (tab === "machines") window.envsShown?.();  // environments.js: the releases and rollouts
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
 }
 // In a narrow window the tabs scroll: keep the open one in view, also when a tab before it
@@ -528,6 +555,7 @@ function renderWorkers() {
     ${w.drained ? `<tr><td></td><td></td><td colspan="9" class="muted">Drained by ${esc(w.drained.by || "?")} ${ago(w.drained.since)}: it finishes what it holds and takes no new jobs until resumed.</td></tr>` : ""}
     ${!w.online && w.error && !w.farm_nodes ? `<tr><td></td><td></td><td colspan="9" class="err">${esc(w.error)}</td></tr>` : ""}`;
   }).join("") : '<tr><td colspan="11" class="empty">No machines have checked in.</td></tr>';
+  window.renderEnvironments?.();                 // environments.js: what each machine has built
 }
 
 // How long each workflow takes on each GPU type (Run times tab): what the ETAs come from.
@@ -1358,5 +1386,6 @@ boot();
 <div id="dropHint" hidden></div>
 <script src="/batch.js"></script>
 <script src="/shotgrid.js"></script>
+<script src="/environments.js"></script>
 </body>
 </html>

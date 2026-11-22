@@ -214,6 +214,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """The dashboard's From ShotGrid button, drop zone and bookmarklet (static/shotgrid.js)."""
         return FileResponse(HERE / "static" / "shotgrid.js", media_type="text/javascript", headers=FRESH)
 
+    @app.get("/environments.js", include_in_schema=False)
+    def environments_js():
+        """The Machines tab's runner environments and rollouts, read-only (static/environments.js)."""
+        return FileResponse(HERE / "static" / "environments.js", media_type="text/javascript", headers=FRESH)
+
     @app.get("/client.py", include_in_schema=False)
     def client_download():
         """Lets artists grab the Python client straight from the farm."""
