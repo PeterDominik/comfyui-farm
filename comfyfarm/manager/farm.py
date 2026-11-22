@@ -11,15 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import threading
 import uuid
 from typing import TYPE_CHECKING
 
+from .. import artifacts as A
 from ..config import Config
 from ..fileio import inputs as I
-from ..fileio import naming as N
-from ..fileio import ocio as OC
 from ..fileio import paths as P
 from ..fileio import preview as PV
 from ..fileio import scratch as S
@@ -312,43 +310,15 @@ class Farm:
         # No machine may take it now (requires, drained, offline): shown before submitting
         # and as a queued job's stage, but not kept as a warning (it passes).
         plan["waits"] = self.desk.requires_note(wf.name) if self.desk else None
-        if wf.textures:
-            return self._plan_textures(plan, job_id)
-        if not wf.frames_ext:
+        # Where what it writes goes and what it's called: the handler of its kind (decision 0034).
+        handler = A.for_definition(wf)
+        if handler is None:
             return plan
-
-        picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
-        root = N.resolve_output_folder(picked, pc) if picked else N.output_root(pc, show_, seq_name, shot_)
-        dir_template = pc.output_dir
-        if picked and not shot_ and "{shot" in dir_template:
-            dir_template = "{root}"
-            plan["notes"].append("No shot in the input path, so the frames go straight into the output folder.")
-        versioned = "{version" in pc.frame_name or "{version" in dir_template
-        exists = N.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
-        base = {"source": source, "show": show_, "seq": seq_name, "shot": shot_, "tag": wf.tag,
-                "ext": wf.frames_ext}
-        for v in range(1, 1000):
-            out_dir = N.output_dir(dir_template, root=root, version=v, **base)
-            tokens = dict(base, version=v, folder=out_dir.rpartition("/")[2])
-            pattern = P.render(P.frame_pattern(pc.frame_name), "file name", **tokens)
-            key = f"{out_dir}/{pattern}"
-            # Taken = files of this version already there, or promised to a queued job.
-            if not (self.store.output_reserved(key) or exists(out_dir, pattern)):
-                break
-            if not versioned:
-                raise FarmError(f"{P.to_posix(key, pc.mappings) or key} already exists. Add {{version}} "
-                                f"to paths.frame_name so new runs don't overwrite it.", 409)
-        else:
-            raise FarmError(f"No free version in {out_dir} (999 tried).")
-        P.check_writable(out_dir, pc)
-        plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=key)
-        plan["name_tokens"] = tokens
-        first = seq.first if seq and seq.first is not None else 1
-        count = seq.frame_count if seq else None
-        plan["first_frame"] = first
-        plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
-        plan["last_file"] = P.render(pc.frame_name, "file name", frame=first + count - 1, **tokens) if count else None
-        return plan
+        try:
+            return handler.plan(plan, A.PlanContext(cfg=self.cfg, job_id=job_id, scratch_root=self.scratch_root,
+                                                    reserved=self.store.output_reserved))
+        except A.PlanError as e:
+            raise FarmError(str(e), e.status) from None
 
     def publish_preview(self, plan: dict, publish: dict) -> dict:
         """What publishing a job of this plan when it's done would be, checked as submit
@@ -540,70 +510,6 @@ class Farm:
                 S.point_loader_at_scratch(seq, self.scratch_root, f"{job_id}/{port.name}")
             out[port.name] = seq
         return out
-
-    def _plan_textures(self, plan: dict, job_id: str) -> dict:
-        """Texture workflows: which UDIM/frame each input texture is, the TEX file names of
-        every map, and a versioned folder for this run (the names carry no version)."""
-        pc, wf, values, seq = self.cfg.paths, plan["wf"], plan["values"], plan["seq"]
-        spec = wf.textures
-        if seq is None:
-            raise FarmError("This workflow needs an input texture.")
-        numbering = values.get("numbering") or T.DEFAULTS["numbering"]
-        if pc.validate_inputs:
-            names = I.loaded_names(seq)
-        else:   # can't list the input: go by the frame numbers alone
-            nums = seq.frames or (range(seq.first, seq.last + 1) if seq.first is not None else [None])
-            names = [f"x.{n:04d}.png" if n is not None else "x.png" for n in nums]
-        items, has_udim = T.items_for(names, numbering)
-        tokens = T.name_tokens(values, T.resolve_tile(values.get("tile") or "auto", items, has_udim))
-
-        picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
-        root = N.resolve_output_folder(picked, pc) if picked else \
-            N.output_root(pc, plan["show"], plan["seq_name"], plan["shot"])
-        asset = P.context_from_path(seq.farm_path, pc.context_patterns, pc.shot_name).get("asset")
-        base = {"root": root, "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"],
-                "asset": asset, "source": plan["source"], "tag": wf.tag}
-
-        def taken(d: str) -> bool:   # files there already, or promised to a queued job
-            if self.store.output_reserved(d + "/"):
-                return True
-            try:
-                return pc.validate_inputs and bool(os.listdir(d))
-            except OSError:
-                return False
-
-        for v in range(1, 1000):
-            out_dir = T.output_dir(spec.dirs, version=v, **base)
-            if not taken(out_dir):
-                break
-        else:
-            raise FarmError(f"No free version for {out_dir} (999 tried).")
-        P.check_writable(out_dir, pc)
-        maps = [{"name": m.name, "channel": m.channel, "colorspace": m.colorspace,
-                 "color": m.color, "bits": m.bits, "prefix": f"_cf{job_id[:8]}_{m.channel}"} for m in spec.maps]
-        textures = {"raw_dir": f"{self.scratch_root}/{job_id}/maps", "name": spec.name, "ext": spec.ext,
-                    "tokens": tokens, "items": [list(i) for i in items], "maps": maps, "has_udim": has_udim,
-                    "numbering": numbering,
-                    # Frozen per job, like the input conversion: the repo's OCIO config.
-                    "ocio": OC.ocio_setup(self.cfg.ocio, pc)}
-        shown = next((m for m in maps if m["color"]), maps[0])
-        what = T.describe(len(maps), items, has_udim, numbering)
-        # More tiles than fit in one run (textures.batch), or tiles of different sizes (one
-        # run's images are one batch, all one size): a set of batches, filling one folder.
-        batches = None
-        if len(items) > 1 and (spec.batch or pc.validate_inputs):
-            sizes = I.work_sizes(seq, names, wf.work_resolution) \
-                if pc.validate_inputs and job_id != "preview" else [None] * len(items)
-            ranges = T.split_batches(sizes, spec.batch)
-            if len(ranges) > 1:
-                batches = ranges
-                what += f" in {len(ranges)} batches of up to {max(b - a for a, b in ranges)}"
-        plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=out_dir + "/", textures=textures,
-                    first_frame=seq.first,
-                    first_file=T.file_name(spec.name, shown, tokens, *items[0]),
-                    last_file=T.file_name(spec.name, shown, tokens, *items[-1]) if len(items) > 1 else None,
-                    what=what, asset=asset, batches=batches)
-        return plan
 
     def plan_summary(self, plan: dict) -> dict:
         """The JSON-safe part of a plan, as the dashboard shows it."""

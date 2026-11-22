@@ -94,7 +94,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   21 November on all three machines: an LTX job, then the test holding most of the card
   (28 of 31.8 GB on the 5090, 44 of 47.4 on the A6000, 20 of 23.6 on the 3090, with 93 to
   97% of it free at the start), then LTX again, with no out-of-memory.
-- Phase 4, in progress. Steps: releases in the bank; agents report their environments;
+- Phase 4: done. Steps: releases in the bank; agents report their environments;
   desired state in the check-in reply, and the environment manager in the agent installing,
   updating and removing; rollouts with a canary (the A6000), pause and rollback; the
   Machines tab; today's ComfyUI sync started by the manager. Releases are in: `env publish`
@@ -117,5 +117,15 @@ A4 launchers (xStudio, Daiquiri Automate).
   three (`env want gpu-test none`) and installed again by a rollout, the three in 26 s from
   uv's cache. Today's ComfyUI sync is started by the manager: `comfyui sync --all` on its
   host takes the machines one at a time, the canary first, each drained, synced by its
-  agent to the manager's version of the environment file, checked and resumed (0033).
-  Left: run it on the three machines.
+  agent to the manager's version of the environment file, checked and resumed (0033). On
+  21 November it synced the A6000 after its `extra_model_paths.yaml` was moved aside:
+  ComfyUI stopped, the farm's file written, ComfyUI started again, the machine checked and
+  resumed.
+- Phase 5, in progress. Steps: the handler interface, with frames and texture sets ported
+  (code moved, nothing new); the core blind to the kind of output (the handler gives the
+  job's info, the dashboard's summary and what the runner is told, and each job's outputs
+  are listed by kind); movie, model and file added, each one handler file (the gate). The
+  interface is in: each kind of output is a handler in `comfyfarm/artifacts/`, one file
+  named by its key under `writes:`, found by listing the package, with the manager's half
+  (where it goes) and the agent's (prepare, collect), and frames and texture sets are
+  ported unchanged (0034).

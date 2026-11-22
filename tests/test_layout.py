@@ -11,6 +11,8 @@ need made unimportable:
   only the ComfyUI runner knows ComfyUI's client, its websocket and its environment.
 - the manager doesn't need a runner: it reads a definition's head (definitions.py), and
   how a ComfyUI workflow wires its graph is runners/comfyui_workflow.py (phase 2's gate).
+- an artifact handler (comfyfarm/artifacts) serves both sides, so it needs neither the
+  manager, the agent, a runner nor the web stack: what it needs comes in a context.
 """
 
 import ast
@@ -119,6 +121,14 @@ class LayoutTests(unittest.TestCase):
         imported = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         self.assertEqual(sorted(m for m in imported if m.lstrip(".").split(".")[0] in
                                 ("runners", "loaders", "comfyenv", "workflows")), [])
+
+    def test_artifact_handlers_need_neither_side_of_the_farm(self):
+        """Decision 0034: the manager plans with them and the agent collects with them."""
+        from comfyfarm import artifacts
+        modules = ["comfyfarm.artifacts", *(f"comfyfarm.artifacts.{h.kind}" for h in artifacts.handlers())]
+        r = import_without(modules, ["comfyfarm.manager", "comfyfarm.agent", "comfyfarm.runners", "comfyfarm.comfyenv",
+                                     *WEB])
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_runners_need_neither_the_manager_nor_its_web_server(self):
         r = import_without(["comfyfarm.runners.comfyui", "comfyfarm.runners.process"],
