@@ -225,6 +225,7 @@
   <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
   <button data-tab="runtimes">Run times</button>
   <button data-tab="templates" id="templatesTab" hidden>Nuke Publish Templates</button>
+  <button data-tab="policy" id="policyTab" hidden>Policy</button>
 </nav>
 
 <main>
@@ -311,6 +312,39 @@
         <th>Started</th><th>Updated</th></tr></thead>
       <tbody id="rollouts"></tbody>
     </table>
+  </section>
+  </div>
+
+  <!-- The farm's policy, read-only (policy.js): shown when policy is on -->
+  <div id="tab-policy" class="panels" hidden>
+  <section>
+    <div class="sechead"><h2>Policy</h2><span class="muted" id="policyNote"></span></div>
+    <div class="envhelp" id="policyBanner" hidden></div>
+    <div class="envhelp">Which shows may use the farm, with which definitions and model licences, and how much
+      each may have queued: checked when a job is planned, and again when a machine would take a queued job.
+      Read-only: edit <code>policy.yaml</code> in the bank folder, after <code>comfyfarm policy check</code>
+      on it.</div>
+    <div class="envhelp" id="policyDefaults"></div>
+  </section>
+  <section>
+    <div class="sechead"><h2>Show rules</h2></div>
+    <table><thead><tr><th>Rule</th><th>Shows</th><th>Does</th><th>Why</th></tr></thead>
+      <tbody id="policyShows"></tbody></table>
+  </section>
+  <section>
+    <div class="sechead"><h2>Licence rules</h2></div>
+    <table><thead><tr><th>Rule</th><th>Shows</th><th>Does</th><th>Why</th></tr></thead>
+      <tbody id="policyLicences"></tbody></table>
+  </section>
+  <section>
+    <div class="sechead"><h2>Quotas</h2></div>
+    <table><thead><tr><th>Rule</th><th>Shows</th><th>Limit</th><th>Queued or running now</th><th>Why</th></tr></thead>
+      <tbody id="policyQuotas"></tbody></table>
+  </section>
+  <section>
+    <div class="sechead"><h2>Models and licences</h2>
+      <span class="muted">What each definition lists in its process.yaml: what licence rules check</span></div>
+    <table><thead><tr><th>Definition</th><th>Models</th></tr></thead><tbody id="policyModels"></tbody></table>
   </section>
   </div>
 
@@ -408,7 +442,7 @@ const about = s => s == null ? "" : s < 60 ? Math.max(5, Math.round(s / 5) * 5) 
   : s < 5940 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 
 // ------------------------------------------------------------- tabs
-const TABS = ["submit", "batch", "queue", "machines", "runtimes", "templates"];
+const TABS = ["submit", "batch", "queue", "machines", "runtimes", "templates", "policy"];
 function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
@@ -418,6 +452,7 @@ function showTab(tab) {
   if (tab === "templates") loadTemplates();
   if (tab === "batch") window.batchShown?.();   // batch.js
   if (tab === "machines") window.envsShown?.();  // environments.js: the releases and rollouts
+  if (tab === "policy") window.policyShown?.();  // policy.js: the rules in force
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
 }
 // In a narrow window the tabs scroll: keep the open one in view, also when a tab before it
@@ -1406,5 +1441,6 @@ boot();
 <script src="/batch.js"></script>
 <script src="/shotgrid.js"></script>
 <script src="/environments.js"></script>
+<script src="/policy.js"></script>
 </body>
 </html>

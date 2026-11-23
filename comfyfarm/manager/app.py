@@ -223,6 +223,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """The dashboard's From ShotGrid button, drop zone and bookmarklet (static/shotgrid.js)."""
         return FileResponse(HERE / "static" / "shotgrid.js", media_type="text/javascript", headers=FRESH)
 
+    @app.get("/policy.js", include_in_schema=False)
+    def policy_js():
+        """The dashboard's Policy tab, read-only (static/policy.js)."""
+        return FileResponse(HERE / "static" / "policy.js", media_type="text/javascript", headers=FRESH)
+
     @app.get("/environments.js", include_in_schema=False)
     def environments_js():
         """The Machines tab's runner environments and rollouts, read-only (static/environments.js)."""
@@ -618,9 +623,10 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
 
     @app.get("/api/v1/policy")
     def policy(ident: Identity = Depends(identity)):
-        """The farm's policy (decision 0043): the file, the rules in force, and why the file as
-        it is now isn't in force, if it isn't."""
-        return farm.policy.status()
+        """The farm's policy (decisions 0043 to 0047): the file, the rules in force, why the file as
+        it is now isn't in force (if it isn't), what is queued against each quota, and the models
+        each definition lists."""
+        return farm.policy_view()
 
     @app.get("/api/v1/sweeps")
     def sweeps(ident: Identity = Depends(identity)):

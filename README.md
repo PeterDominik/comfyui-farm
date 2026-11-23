@@ -1076,7 +1076,14 @@ policy:
 - **The manager reads it again when it changes** (within seconds).
 - **A file that doesn't validate isn't taken.** The last valid one stays in force, and the
   manager keeps a copy in `data/policy.json` so a restart keeps it too.
-  `GET /api/v1/policy` shows the rules in force and what's wrong with the file. With policy
+  `GET /api/v1/policy` shows the rules in force and what's wrong with the file.
+- **The dashboard's Policy tab**, shown when policy is on, is read-only (decision 0047):
+  - where the rules came from and when, and the file's error if it isn't taken;
+  - the show rules, licence rules and quotas;
+  - what is queued or running against each quota, a full one marked;
+  - the models and licences each definition lists.
+
+  It reads again every 15 seconds while it's open. With policy
   on and no valid file ever read, nothing is planned, so a client's restriction can't
   lapse because of a typo.
 - **Checked when a job is planned:** the dashboard's and Nuke's preview, every submit,
@@ -1172,7 +1179,7 @@ retention:
 | POST | `/api/v1/shotgrid/menu/sync` | Make ShotGrid's menu match now (`shotgrid.menu_sync` on; with API keys, admins) |
 | POST | `/api/v1/shotgrid/ami?action=&workflow=` | ShotGrid's right-click posts here: a redirect to the dashboard's deep link (Open); with the Submit folders on, Submit (+ Publish) on one Version submits it and redirects to the job (see *ShotGrid right-click*) |
 | GET | `/api/v1/run-times` | How long each workflow takes per GPU type: runs, usual size and time, overhead, seconds per frame |
-| GET | `/api/v1/policy` | The farm's policy: the file, the rules in force and what's wrong with the file, if anything (Policy) |
+| GET | `/api/v1/policy` | The farm's policy: the file, the rules in force, what's wrong with the file if anything, what is queued against each quota, and each definition's models (Policy) |
 | GET | `/api/v1/sweeps` | The retention sweeper's reports, newest first, with their totals (Retention) |
 | GET | `/api/v1/sweeps/{name}?format=` | One report (`latest`, or its name such as `2026-11-23`): each expired job and the files it would delete; `format=text` to read it |
 | POST | `/api/v1/sweeps` | A sweep now, as the daily one (a dry run). From the manager's host only |

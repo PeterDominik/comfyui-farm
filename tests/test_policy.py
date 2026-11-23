@@ -375,6 +375,19 @@ class Quotas(unittest.TestCase):
         with self.assertRaisesRegex(PO.Refused, r"would take shows cold, ret\* to 501 .*cold-and-ret-together"):
             self.p.quota("cold", "cid", 51, q)
 
+    def test_what_is_queued_against_each_quota(self):
+        """Decision 0047: the Policy tab's counts, as each quota counts them, the fullest first."""
+        queued = [{"show": "guem2609", "user": "ann", "frames": 10}, {"show": "guem2609", "user": "bob", "frames": 5},
+                  {"show": "guem2610", "user": "ann", "frames": 900}, {"show": "cold", "user": "bob", "frames": 300},
+                  {"show": "rnd2601", "user": "ann", "frames": 1}]
+        self.assertEqual(self.p.usage(queued), {
+            "guem-20-a-show": [{"for": "guem2609", "jobs": 2, "frames": 15},
+                               {"for": "guem2610", "jobs": 1, "frames": 900}],
+            "two-each": [{"for": "ann", "jobs": 2, "frames": 910}, {"for": "bob", "jobs": 2, "frames": 305}],
+            "cold-and-ret-together": [{"for": "together", "jobs": 1, "frames": 300}]})
+        self.assertEqual(PO.Policy(False, str(self.file), self.file.with_suffix(".json"), lambda: KNOWN).usage(queued),
+                         {})
+
     def test_whats_queued_is_only_asked_when_a_quota_is_for_the_show(self):
         self.file.write_text(QUOTAS.replace('["*"]', "[bri3]"), encoding="utf-8")
         p = PO.Policy(True, str(self.file), self.file.with_suffix(".json"), lambda: KNOWN)
@@ -491,6 +504,20 @@ class WhenPlanned(unittest.TestCase):
         with self.assertRaisesRegex(FarmError, "one-at-a-time"):
             self.farm.submit("chord_pbr", src, "bob")
         self.assertEqual(len(self.store.list()), 1)
+
+    def test_what_the_policy_tab_reads(self):
+        """Decision 0047: GET /api/v1/policy's view, with what is queued and each definition's models."""
+        Path(f"{self.root}/bank/policy.yaml").write_text(
+            "version: 1\nquotas:\n  - {name: three, shows: [xyz], max_jobs: 3, reason: Testing}\n")
+        self.farm.policy.refresh(force=True)
+        self.farm.submit("chord_pbr", {"input": "/rdo/shows/xyz/_asset/rockA/cg/textures/src"}, "ann")
+        v = self.farm.policy_view()
+        self.assertEqual((v["enabled"], v["error"], [q["name"] for q in v["in_force"]["quotas"]]),
+                         (True, None, ["three"]))
+        self.assertEqual(v["quotas_now"], {"three": [{"for": "xyz", "jobs": 1, "frames": 1}]})
+        models = {d["name"]: d["models"] for d in v["definitions"]}
+        self.assertEqual(models["chord_pbr"][0]["file"], "chord_v1.safetensors")
+        self.assertIsNone(models["wan22_i2i"])                              # doesn't list them
 
     def test_what_is_queued_one_entry_per_submission(self):
         info = {"show": "xyz"}

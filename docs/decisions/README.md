@@ -52,3 +52,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0044](0044-licence-rules.md) | Licence rules against the models each definition lists | accepted |
 | [0045](0045-quotas.md) | Quotas on what is queued or running at once, checked at plan | accepted |
 | [0046](0046-policy-at-hand-out.md) | Show and licence rules checked again when a machine would take a queued job | accepted |
+| [0047](0047-policy-tab.md) | A read-only Policy tab on the dashboard | accepted |
