@@ -1,6 +1,6 @@
 # 0051. A workflow as a node in the Nuke script
 
-Date: 2026-11-22. Status: proposed (Peter agreed the design on 2026-11-22; awaits review).
+Date: 2026-11-22. Status: accepted.
 
 ## Context
 
