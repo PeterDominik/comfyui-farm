@@ -1,0 +1,11 @@
+# A provider: what an artist picks first in every menu (Provider > Task > Workflow).
+# The catalogue (comfyfarm/catalog.py, decision 0054) reads every file here; the file's name
+# is the provider's. A definition with `runner.type: process` is this provider's unless it
+# names another (`provider:` in its process.yaml).
+
+label: Python Local             # in the menus
+description: Python processes in their own environments on the farm's own GPUs.
+runner: process                 # the runner type its definitions have
+target: pool                    # where its jobs go: the farm's GPU machines
+offsite: false                  # nothing leaves Rodeo's network
+order: 20                       # its place in the menus, smallest first

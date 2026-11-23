@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from . import artifacts as A
+from . import catalog as C
 from .fileio import textures as T
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,9 @@ RUNNER_SECTIONS = ("template", "node_packs", "sequence", "outputs", "textures")
 # them from later phases (classes and limits with the process runner, targets with Tractor,
 # models with the policy gates, eval with the evals).
 HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval")
+# Where it sits in the menus, Provider > Task > Workflow (catalog.py, decision 0054). Left out
+# of the fingerprint: they don't change what runs.
+CATALOGUE_KEYS = ("task", "provider", "family", "hidden")
 # A definition's eval (decision 0053): the reference job, and the checks on what it writes.
 EVAL_KEYS = ("inputs", "params", "checks")
 CHECKS = ("files", "size", "like")
@@ -464,6 +468,15 @@ class Definition:
         self.label: str = m.get("label") or self.name
         self.description: str = (m.get("description") or "").strip()
         self.tag: str = m.get("tag") or self.name
+        # Where it sits in the menus (catalog.py, decision 0054): its task, its provider (the
+        # one it names, else its runner type's), the same model on other providers, and
+        # whether artists' menus leave it out.
+        self.task = m.get("task")
+        self.provider_named = m.get("provider")
+        self.provider = self.provider_named if self.provider_named is not None \
+            else C.DEFAULT_PROVIDER.get(self.runner_type)
+        self.family = m.get("family")
+        self.hidden = m.get("hidden", False)
         # Which machines may run it: the least GPU memory (GB, as the card is sold: a 5090 is
         # 32) and labels its agent.yaml must have (tags; linux / windows always set).
         req = m.get("requires") or {}
@@ -491,10 +504,11 @@ class Definition:
         # The definition's fingerprint: the manifest and the graph as parsed, so a checkout
         # with other line endings has the same one; for a process, the files its command runs.
         # A job names the one it was planned with, and a machine whose copy differs doesn't
-        # run it (build_from, the process runner).
+        # run it (build_from, the process runner). Its place in the menus isn't in it.
         body = self.template if self.process is None else folder_digest(directory)
+        runs = {k: v for k, v in m.items() if k not in CATALOGUE_KEYS}
         self.digest: str = hashlib.sha256(      # a manifest's is what it always was: head-only fields count when set
-            json.dumps([m, body, *([head] if head else [])], sort_keys=True, default=str)
+            json.dumps([runs, body, *([head] if head else [])], sort_keys=True, default=str)
             .encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
         self._own_folder_elsewhere = sorted(n for n, p in (m.get("params") or {}).items()
@@ -621,7 +635,25 @@ class Definition:
             problems.append("models: needs to be a list of {file: <the weights file>, licence: <its licence>}")
         if self.eval is not None:
             problems += self._check_eval()
-        return problems
+        return problems + self._check_catalogue()
+
+    def _check_catalogue(self) -> list[str]:
+        """Its place in the menus: the fields' shapes, then its task and provider against the
+        checkout's catalogue (catalog.py, decision 0054)."""
+        problems = []
+        task, provider = self.task, self.provider
+        if task is not None and not (isinstance(task, str) and C.NAME.fullmatch(task)):
+            problems.append(f"task: needs to be the name of a task in {C.TASKS}, e.g. masking")
+            task = None
+        if self.provider_named is not None and not (isinstance(provider, str) and C.NAME.fullmatch(provider)):
+            problems.append(f"provider: needs to be the name of a provider in {C.PROVIDERS}/, e.g. comfyui-local")
+            provider = None
+        if self.family is not None and not (isinstance(self.family, str) and C.FAMILY.fullmatch(self.family)):
+            problems.append("family: needs to be one short name for the same model on every provider, "
+                            "e.g. nano-banana-2-edit")
+        if not isinstance(self.hidden, bool):
+            problems.append("hidden: needs to be true (kept out of artists' menus) or false")
+        return problems + C.current().problems(task, provider, self.runner_type, self.provider_named is not None)
 
     def _check_eval(self) -> list[str]:
         """eval: the definition's reference job (decision 0053): its inputs, files in this
@@ -888,6 +920,8 @@ class DefinitionRegistry:
         if not self.directory.is_dir():
             log.warning("workflows folder %s not found", self.directory)
             return
+        for e in C.current().errors:            # said once here, not on each definition (catalog.py)
+            log.error("menus: %s", e)
         for d in sorted(self.directory.iterdir()):
             if not (d / "manifest.yaml").exists() and not (d / "process.yaml").exists():
                 continue

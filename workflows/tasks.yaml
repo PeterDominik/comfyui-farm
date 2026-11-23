@@ -1,0 +1,20 @@
+# Tasks: what an artist wants done, the second level of every menu (Provider > Task >
+# Workflow), in menu order. Each definition names its own (`task: masking` in its
+# process.yaml); the catalogue (comfyfarm/catalog.py, decision 0054) refuses one not here.
+# A task is listed under a provider only when one of that provider's definitions has it.
+
+masking:
+  label: Masking
+  description: Mattes and alphas of a plate.
+video:
+  label: Video
+  description: Shots and moving images made or remade.
+image:
+  label: Image
+  description: Stills made or remade.
+textures:
+  label: Textures
+  description: Texture maps from images.
+tests:
+  label: Tests
+  description: The farm's own tests, hidden from artists.

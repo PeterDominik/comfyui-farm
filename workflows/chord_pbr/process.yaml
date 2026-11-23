@@ -13,6 +13,7 @@ description: >
   naming convention, e.g. acescg_map1_noTile_defState_color01.1001.0000.exr, into a new
   versioned folder for each run.
 tag: chord                      # in the output folder name: <source>.chord_v001
+task: textures                  # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
 # CHORD runs its model at 1024×1024 anyway, so larger textures are scaled down (longer
 # side, aspect kept) before the workflow: less to convert, load and resize, and the maps
 # come out at 1024. Textures of 1024 or less are used as they are. Leave out to keep

@@ -35,6 +35,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/agent/` | one per GPU machine: takes jobs, prepares inputs, collects outputs, reports to the manager; `envman.py` keeps its runner environments as the manager says |
 | `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half) and `process_run.py` (each run's supervisor) |
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
+| `comfyfarm/catalog.py`, `providers/` | the menus, Provider > Task > Workflow: one file per provider, the tasks in `workflows/tasks.yaml`; each definition's place is checked against them |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
 | `comfyfarm/fileio/` | path mapping, EXR and movie conversion, versioned outputs |
 | `comfyfarm/artifacts/` | each kind of output, one handler file named by its `writes:` key: where it goes (manager), prepare and collect (agent); `base.Generic` is the route a new kind takes |
@@ -42,7 +43,7 @@ python -m comfyfarm standalone                                   # manager and a
 | `comfyfarm/envs/`, `environments/` | runner environments: uv projects in the repo, locked; published to the bank as releases; built and checked on each machine (`comfyfarm env`) |
 | `comfyfarm/publish/`, `comfyfarm/shotgrid/` | publishing through Daiquiri and Tractor; ShotGrid |
 | `client/` | the shared client and the Nuke panel |
-| `workflows/` | one folder per definition: `process.yaml` (or the older `manifest.yaml`) and the ComfyUI graph, or a process's code |
+| `workflows/` | one folder per definition: `process.yaml` (or the older `manifest.yaml`) and the ComfyUI graph, or a process's code; `tasks.yaml`, the menus' tasks |
 | `deploy/` | per-machine install, start-up and update scripts |
 
 `tests/test_layout.py` enforces these rules. A change that needs to break one needs a
@@ -60,6 +61,8 @@ decision record first.
   `runners/comfyui_workflow.py`, used by agents and `comfyfarm check`.
 - Artifact handlers import neither the manager, the agent, a runner nor the web stack: both
   sides call them with a context.
+- `catalog.py` imports neither the manager, the agent, a runner nor the web stack:
+  `definitions.py` checks every definition's place in the menus against it.
 - `comfyfarm --help` works without the web stack.
 
 ## How a change is made

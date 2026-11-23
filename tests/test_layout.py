@@ -130,6 +130,13 @@ class LayoutTests(unittest.TestCase):
                                      *WEB])
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_the_catalogue_needs_neither_side_of_the_farm(self):
+        """Decision 0054: definitions.py checks each definition's place in the menus against
+        it, on the manager and on every machine."""
+        r = import_without(["comfyfarm.catalog"], ["comfyfarm.manager", "comfyfarm.agent", "comfyfarm.runners",
+                                                   "comfyfarm.comfyenv", "pydantic", *WEB])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_runners_need_neither_the_manager_nor_its_web_server(self):
         r = import_without(["comfyfarm.runners.comfyui", "comfyfarm.runners.process"],
                            ["comfyfarm.manager", "fastapi", "starlette", "uvicorn"])

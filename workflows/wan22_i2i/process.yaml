@@ -12,6 +12,7 @@ description: >
   one frame of a sequence or movie; the result is a PNG numbered like that frame, at the
   input's size.
 tag: i2i                        # in the output file names: <source>.i2i_vNNN.<frame>.png
+task: image                     # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
 # Images are used at their own size (no work_resolution): full plate frames take longer
 # and more GPU memory.
 

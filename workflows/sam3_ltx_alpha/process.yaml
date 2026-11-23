@@ -12,6 +12,7 @@ description: >
   everything else SAM3 finds is painted out so only the subject is matted. Outputs a
   16-bit PNG alpha sequence numbered like the input, at the input's size.
 tag: matte                      # in the output file names: <source>.matte_vNNN.<frame>.png
+task: masking                   # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
 # The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
 # 32 GB 5090 and up, so the 24 GB 3090 never gets it.
 requires: {vram_gb: 32}
