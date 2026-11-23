@@ -191,4 +191,8 @@ A4 launchers (xStudio, Daiquiri Automate).
   definition lists, `unlisted_models` for those that list none, and `except:` on every
   rule (0044). CHORD lists its weights (Ubisoft's research-only licence) and the GPU test
   lists none. The LTX, SAM 3 and Wan definitions don't list theirs yet: their licences
-  are Rodeo's call.
+  are Rodeo's call. Peter tested it on the pilot manager.
+
+  Step 3 is in: quotas (`quotas:` in policy.yaml), the most jobs and/or frames queued or
+  running at once per show, per user over a rule's shows, or for shows together, checked
+  at plan under the submit lock and on a set's Retry failed (0045).

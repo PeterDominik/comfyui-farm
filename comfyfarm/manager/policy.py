@@ -1,10 +1,11 @@
 """The farm's policy (decisions 0007, 0043): `policy.yaml` in the bank folder, edited by the
 farm's admins, read by the manager and checked when a job is planned.
 
-It holds show rules (which shows may use the farm, and with which definitions) and licence
+It holds show rules (which shows may use the farm, and with which definitions), licence
 rules (which licences the models a definition uses may carry, on which shows: each
-definition lists its models in its process.yaml, decision 0044). A job a rule refuses is
-never planned, and the artist is told which rule and why.
+definition lists its models in its process.yaml, decision 0044) and quotas (how much a show,
+or a user on it, may have queued or running at once, decision 0045). A job a rule refuses
+is never planned, and the artist is told which rule and why.
 
 The file is read again when it changes. A file that can't be read or doesn't validate is
 not taken: the last valid one stays in force (also across a restart: the manager keeps a
@@ -119,6 +120,27 @@ class LicenceRule(_Rule):
         return None
 
 
+class QuotaRule(_Rule):
+    """At most `max_jobs` submissions and/or `max_frames` frames (tiles, for textures) queued or
+    running at once, for its shows: each show its own (`per: show`), each user on those shows
+    their own (`per: user`), or the shows together (`per: all`). A texture set is one
+    submission; its frames are its unfinished batches' tiles."""
+    per: Literal["show", "user", "all"] = "show"
+    max_jobs: int | None = Field(None, ge=1)
+    max_frames: int | None = Field(None, ge=1)
+
+    def shows_text(self) -> str:
+        """Its shows as people read them: every show but rnd*, shows cold, ret*."""
+        names = "every show" if "*" in self.shows else f"shows {', '.join(self.shows)}"
+        return names + (f" but {', '.join(self.except_)}" if self.except_ else "")
+
+    @model_validator(mode="after")
+    def _some(self):
+        if self.max_jobs is None and self.max_frames is None:
+            raise ValueError(f"rule {self.name}: give max_jobs, max_frames or both")
+        return self
+
+
 class PolicyFile(BaseModel):
     """What policy.yaml holds (version 1)."""
     model_config = ConfigDict(extra="forbid")
@@ -130,11 +152,12 @@ class PolicyFile(BaseModel):
     licences: list[LicenceRule] = Field(default_factory=list)
     # A definition that doesn't list its models, where a licence rule is for its show.
     unlisted_models: Literal["allow", "deny"] = "allow"
+    quotas: list[QuotaRule] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _names(self):
         seen = set()
-        for r in [*self.shows, *self.licences]:
+        for r in [*self.shows, *self.licences, *self.quotas]:
             if r.name in seen:
                 raise ValueError(f"two rules are named {r.name}: each needs its own name")
             seen.add(r.name)
@@ -289,6 +312,37 @@ class Policy:
             if bad:
                 raise Refused(f"{definition} can't run {where}: it uses {bad.get('file')}, licensed "
                               f"{bad.get('licence')}. {r.reason.rstrip('.')}. (Policy rule {r.name}.){ask}", r.name)
+
+    def quota(self, show: str | None, user: str | None, frames: int, queued: Callable[[], list[dict]]) -> None:
+        """Raise Refused if one more submission of `frames` frames would take a quota over.
+        `queued()`: what is queued or running now, one {show, user, frames} per submission;
+        only asked for when a quota is for this show. Checked at plan, after check()."""
+        if not self.enabled or self.rules is None:
+            return
+        rules = self.rules
+        ask = f" Ask {rules.contact} if this is wrong." if rules.contact else ""
+        now_queued = None
+        for r in rules.quotas:
+            if not r.matches(show or "") or (r.per == "user" and not user):
+                continue
+            if now_queued is None:
+                now_queued = queued()
+            s = (show or "").lower()
+            mine = [q for q in now_queued if r.matches(q.get("show") or "")
+                    and (r.per != "show" or (q.get("show") or "").lower() == s)
+                    and (r.per != "user" or q.get("user") == user)]
+            who = {"show": f"show {show}" if show else "jobs without a known show",
+                   "user": f"{user} on {r.shows_text()}", "all": r.shows_text()}[r.per]
+            jobs, queued_frames = len(mine), sum(int(q.get("frames") or 0) for q in mine)
+            if r.max_jobs is not None and jobs + 1 > r.max_jobs:
+                raise Refused(f"There are already {jobs} job(s) queued or running for {who}, and the most is "
+                              f"{r.max_jobs}: {r.reason.rstrip('.')}. (Policy rule {r.name}.) Submit again when "
+                              f"some have finished.{ask}", r.name)
+            if r.max_frames is not None and queued_frames + frames > r.max_frames:
+                raise Refused(f"This job's {frames} frame(s) would take {who} to {queued_frames + frames} queued or "
+                              f"running, and the most is {r.max_frames}: {r.reason.rstrip('.')}. (Policy rule "
+                              f"{r.name}.) Submit again when some have finished, or with fewer frames.{ask}",
+                              r.name)
 
     def status(self) -> dict:
         """What GET /api/v1/policy shows: the file, the rules in force and any error."""

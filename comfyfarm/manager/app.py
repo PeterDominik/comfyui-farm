@@ -273,7 +273,8 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """Dry run: where a job with these params would write, without queuing it; with
         `publish`, also whether publishing it when done would be accepted (`publish`:
         {request} or {why})."""
-        plan = farm.plan(req.workflow, req.params, show=req.show, shot=req.shot)
+        user = ident.user if cfg.auth.api_keys else ((req.user or ident.user).strip()[:64] or "anonymous")
+        plan = farm.plan(req.workflow, req.params, show=req.show, shot=req.shot, user=user)   # as submit names them
         out = farm.plan_summary(plan)
         if req.publish is not None:
             out["publish"] = farm.publish_preview(plan, req.publish)

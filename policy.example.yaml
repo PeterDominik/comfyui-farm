@@ -52,3 +52,22 @@ licences:
 
 # A definition that doesn't list its models, on a show a licence rule is for: allow or deny.
 unlisted_models: allow
+
+# Quotas: at most max_jobs submissions and/or max_frames frames (tiles, for textures) queued
+# or running at once, for the shows a rule names: each show its own count (per: show, the
+# default), each user their own, over all those shows (per: user), or the shows together
+# (per: all).
+# A texture set is one submission, its frames its unfinished batches' tiles. Checked when a
+# job is planned, with what is queued then; the preview shows a refusal before submitting.
+quotas:
+  - name: example-share-of-the-pilot
+    shows: [exmpl26*]
+    max_jobs: 20
+    max_frames: 5000
+    reason: The show's share of the pilot's GPUs
+
+  - name: example-two-each
+    shows: [exmpl26*]
+    per: user
+    max_jobs: 2
+    reason: Leave room for everyone
