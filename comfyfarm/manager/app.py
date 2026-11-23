@@ -671,6 +671,14 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """How long each workflow takes on each GPU type (what the ETAs come from)."""
         return {"run_times": farm.run_times()}
 
+    @app.get("/api/v1/workers/{name}/gpu-history")
+    def gpu_history(name: str, hours: float = Query(24, gt=0, le=24 * 31), ident: Identity = Depends(identity)):
+        """A machine's GPU use and memory over the last `hours` (decision 0049): one sample per
+        GPU per step, use averaged, memory and jobs at their highest."""
+        if name not in desk.agents and not store.gpu_samples(name, 0, 1e12):
+            raise HTTPException(404, f"No machine called {name} has checked in.")
+        return desk.gpu_history(name, hours)
+
     @app.post("/api/v1/workers/{name}/drain")
     def drain_worker(name: str, req: DrainRequest, ident: Identity = Depends(identity)):
         """Drain a machine (it finishes what it holds and takes nothing new), or resume it
