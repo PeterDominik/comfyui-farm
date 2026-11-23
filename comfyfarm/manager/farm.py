@@ -354,6 +354,16 @@ class Farm:
             return e
         return None
 
+    def policy_view(self) -> dict:
+        """GET /api/v1/policy: the policy's status, what is queued against each of its quotas,
+        and the models each definition lists (the dashboard's Policy tab)."""
+        out = self.policy.status()
+        rules = (out.get("in_force") or {})
+        out["quotas_now"] = self.policy.usage(self.queued_now()) if rules.get("quotas") else {}
+        out["definitions"] = [{"name": n, "label": wf.label, "models": wf.models if wf.models_listed else None}
+                              for n, wf in sorted(self.registry.workflows.items())]
+        return out
+
     def queued_now(self) -> list[dict]:
         """What is queued or running, one {show, user, frames} per submission: a job, or a
         texture set with its unfinished batches' tiles (for the policy's quotas)."""

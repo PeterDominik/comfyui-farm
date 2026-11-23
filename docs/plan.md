@@ -200,4 +200,11 @@ A4 launchers (xStudio, Daiquiri Automate).
 
   Step 4 is in: the show and licence rules are checked again when a machine would take a
   queued job, and a job a newer rule refuses fails with the rule named. Quotas aren't
-  asked again. While the policy can't be read, queued jobs wait (0046).
+  asked again. While the policy can't be read, queued jobs wait (0046). Peter tested it on
+  the pilot manager.
+
+  Step 5 is in: a read-only Policy tab, shown when policy is on, with where the rules came
+  from, the file's error, every rule, what is queued against each quota, and each
+  definition's models and licences (0047). With it, phase 7's steps are all in; its gate
+  (a barred show refused with the rule named, a broken file leaving the last valid one in
+  force) was met in step 1.

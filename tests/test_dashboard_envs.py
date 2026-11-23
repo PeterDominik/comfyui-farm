@@ -161,10 +161,11 @@ class Dashboard(unittest.TestCase):
 
 
 class Panels(HTMLParser):
-    """The panels (sections) directly inside the Machines tab, each with its id and heading."""
+    """The panels (sections) directly inside a tab (the Machines tab), each with its id and heading."""
 
-    def __init__(self):
+    def __init__(self, tab_id: str = "tab-machines"):
         super().__init__()
+        self.tab_id = tab_id
         self.depth, self.tab, self.panels, self.in_h2 = 0, None, [], False
 
     def handle_starttag(self, tag, attrs):
@@ -172,7 +173,7 @@ class Panels(HTMLParser):
         if tag in ("meta", "link", "input", "br", "img", "hr"):
             return
         self.depth += 1
-        if a.get("id") == "tab-machines":
+        if a.get("id") == self.tab_id:
             self.tab = self.depth
         elif tag == "section" and self.tab is not None and self.depth == self.tab + 1:
             self.panels.append({"id": a.get("id"), "hidden": "hidden" in a, "h2": "", "tables": 0})

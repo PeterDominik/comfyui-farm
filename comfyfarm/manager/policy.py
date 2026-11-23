@@ -344,6 +344,26 @@ class Policy:
                               f"{r.name}.) Submit again when some have finished, or with fewer frames.{ask}",
                               r.name)
 
+    def usage(self, queued: list[dict]) -> dict[str, list[dict]]:
+        """What is queued or running now against each quota, as it counts it: one entry per
+        show, per user or for the shows together, the fullest first (the dashboard's Policy
+        tab). `queued`: as for quota()."""
+        out: dict[str, list[dict]] = {}
+        if not self.enabled or self.rules is None:
+            return out
+        for r in self.rules.quotas:
+            groups: dict[str, dict] = {}
+            for q in queued:
+                if not r.matches(q.get("show") or ""):
+                    continue
+                key = {"show": (q.get("show") or "").lower() or "(no show)", "user": q.get("user") or "?",
+                       "all": "together"}[r.per]
+                g = groups.setdefault(key, {"for": key, "jobs": 0, "frames": 0})
+                g["jobs"] += 1
+                g["frames"] += int(q.get("frames") or 0)
+            out[r.name] = sorted(groups.values(), key=lambda g: (-g["jobs"], -g["frames"], g["for"]))
+        return out
+
     def status(self) -> dict:
         """What GET /api/v1/policy shows: the file, the rules in force and any error."""
         self.refresh()

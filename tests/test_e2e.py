@@ -711,7 +711,9 @@ convert:
     def test_04997_policy_off(self):
         """The farm's policy is off here (decision 0043): the endpoint says so, and jobs for any show plan."""
         p = farm._request("GET", "/api/v1/policy")
-        self.assertEqual((p["enabled"], p["error"], p["in_force"]), (False, None, None))
+        self.assertEqual((p["enabled"], p["error"], p["in_force"], p["quotas_now"]), (False, None, None, {}))
+        self.assertIn("ltx25_alpha_gen", [d["name"] for d in p["definitions"]])            # the Policy tab's list
+        self.assertIn("function policyBanner", farm._request("GET", "/policy.js", raw=True))
         self.assertTrue(p["file"].endswith("/policy.yaml"), p["file"])                # where it would be read
 
     def test_0500_environment(self):
