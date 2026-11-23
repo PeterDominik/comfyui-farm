@@ -8,7 +8,8 @@
   check        preflight: workflows, tools, OCIO, storage, the shared folder, and config.yaml's
                workers
   comfyui      comfyui snapshot: write the farm's ComfyUI environment file from this machine;
-               comfyui verify: list how this machine's ComfyUI differs from it (comfyenv)"""
+               comfyui verify: list how this machine's ComfyUI differs from it (comfyenv)
+  alerts       alerts test: post a test message to config.yaml's alerts.google_chat"""
 
 from __future__ import annotations
 
@@ -360,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
     pol = sub.add_parser("policy", help="the farm's policy.yaml (README: Policy)")
     pol.add_argument("action", choices=["check"], help="check: validate a policy file before it goes in the bank")
     pol.add_argument("file", nargs="?", help="the file to check (default: the one config.yaml's policy.file names)")
+    al = sub.add_parser("alerts", help="the manager's alerts (README: Alerts)")
+    al.add_argument("action", choices=["test"], help="test: post a test message to alerts.google_chat")
     from .comfyenv import cli as envcli
     envcli.add_parser(sub)
     from .envs import cli as runnerenvs
@@ -390,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(run_check(cfg))
     if args.cmd == "policy":
         return run_policy_check(cfg, args.file)
+    if args.cmd == "alerts":
+        return run_alerts_test(cfg)
 
     setup_logging(cfg, args.verbose)
     for note in cfg.obsolete_keys:
@@ -428,6 +433,29 @@ def model_notes(definitions: dict, env: dict | None, pf=None) -> list[str]:
                 if lic.strip().lower() not in carried:
                     notes.append(f"rule {r.name} names licence {lic}, which no definition's models carry")
     return notes
+
+
+def run_alerts_test(cfg: Config) -> int:
+    """`comfyfarm alerts test`: post a test message to the Google Chat space config.yaml's
+    alerts.google_chat names, to see the webhook works before an alert needs it."""
+    import socket
+
+    from .manager.alerts import post_google_chat
+    from .manager.share import manager_url
+    if not cfg.alerts.google_chat:
+        print("alerts.google_chat isn't set in config.yaml: alerts go to the log and the dashboard only.")
+        return 1
+    error = post_google_chat(cfg.alerts.google_chat, f"*ComfyFarm* ({manager_url(cfg).split('://')[-1]})\n"
+                             f"A test message: `comfyfarm alerts test` on {socket.gethostname()}. Alerts will "
+                             f"come here.\n<{manager_url(cfg)}/#alerts|Alerts tab>")
+    if error:
+        print(f"  [FAIL] {error}. Check the webhook in the space (Apps & integrations > Webhooks), and that "
+              f"this machine reaches chat.googleapis.com (HTTPS_PROXY, if the studio needs one).")
+        return 1
+    print("  [ ok ] posted: look for it in the space.")
+    if not cfg.alerts.enabled:
+        print("         (alerts.enabled is off in config.yaml: the manager raises no alerts yet)")
+    return 0
 
 
 def run_policy_check(cfg: Config, file: str | None) -> int:

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ServerConfig(BaseModel):
@@ -174,6 +174,34 @@ class GpuHistoryConfig(BaseModel):
     none kept."""
     sample_seconds: float = Field(60.0, ge=10)
     days: float = Field(7.0, ge=0)
+
+
+class AlertsConfig(BaseModel):
+    """Alerts (manager/alerts.py, decision 0052): checked every check_seconds, each raised once
+    when it starts and cleared when it ends, in the log and on the dashboard's Alerts tab,
+    and posted to a Google Chat space when google_chat names its webhook. Off until enabled.
+    Each rule is off at 0 (or false)."""
+    enabled: bool = False
+    check_seconds: float = Field(60.0, ge=10)
+    machine_silent_minutes: float = Field(10.0, ge=0)   # a machine not drained that hasn't checked in this long
+    job_waiting_minutes: float = Field(60.0, ge=0)      # a job queued this long without a machine
+    failures_in_a_row: int = Field(3, ge=0)             # a machine's last this many jobs all failed
+    sweep_problems: bool = True                         # the retention sweeper's latest report lists problems
+    rollout_problems: bool = True                       # a rollout or a sync stopped, waiting for a person
+    # A Google Chat space's incoming webhook (Apps & integrations > Webhooks in the space):
+    # https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=... It lets anyone
+    # post to the space, so it stays in this file, which is never committed.
+    google_chat: str = ""
+    keep_days: float = Field(30.0, gt=0)                # cleared alerts kept, for the Alerts tab
+
+    @field_validator("google_chat")
+    @classmethod
+    def _chat(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and not v.startswith("https://chat.googleapis.com/"):
+            raise ValueError("alerts.google_chat is a Google Chat webhook, "
+                             "https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...")
+        return v
 
 
 class FarmConfig(BaseModel):
@@ -356,6 +384,7 @@ class Config(BaseModel):
     share: ShareConfig = Field(default_factory=ShareConfig)
     rollouts: RolloutsConfig = Field(default_factory=RolloutsConfig)
     gpu_history: GpuHistoryConfig = Field(default_factory=GpuHistoryConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line

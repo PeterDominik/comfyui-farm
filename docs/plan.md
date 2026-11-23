@@ -235,4 +235,11 @@ Nuke farm node (0051): a workflow as a node in the script, from the panel or the
   Step 3 is in: a GPU history panel on the Machines tab (a graph per GPU, use and memory
   on one scale, farm jobs shaded, gaps where a machine was silent), and a Usage tab with
   jobs, GPU hours and failures per day, show, definition or machine from `job_metrics`
-  (`GET /api/v1/usage`). Both read-only, drawn without a chart library (0050).
+  (`GET /api/v1/usage`). Both read-only, drawn without a chart library (0050). Peter
+  tested it on the pilot manager.
+
+  Step 4 is in, off until `alerts.enabled`: five rules with thresholds (a machine silent, jobs
+  waiting, failures in a row on a machine, sweep problems, a rollout or sync stopped),
+  each raised once and cleared by itself. They go to the log, a header chip and an Alerts
+  tab on the dashboard, and with `alerts.google_chat`, a Google Chat space;
+  `comfyfarm alerts test` checks the webhook (0052).

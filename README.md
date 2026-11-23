@@ -746,6 +746,8 @@ To try a cancel or the time limit, give it *Seconds per frame*.
   the order free GPUs get its jobs in (#: fastest first).
 - **Usage:** jobs, GPU hours and failures over the last 7, 30 or 90 days, per day, show,
   definition or machine (see *Usage*).
+- **Alerts** (while alerts are on): what needs a person, and the latest cleared. While any
+  alert holds, a red chip in the header says how many, on every tab (see *Alerts*).
 - **Nuke Publish Templates** (while publishing is on): the publish templates, their history, publishing and restoring one (see *Publishing*).
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
@@ -1209,6 +1211,57 @@ The dashboard's **Usage** tab gives the farm's jobs, GPU hours and failures over
   `show`, `workflow` or `machine`; `show=` and `workflow=` narrow it to one (`show=` with
   nothing: jobs with no show).
 
+### Alerts
+
+The manager checks every minute for what needs a person (decision 0052). It is off until
+switched on, in the manager's `config.yaml`:
+
+```yaml
+alerts:
+  enabled: true
+  machine_silent_minutes: 10   # 0 turns a rule off
+  job_waiting_minutes: 60
+  failures_in_a_row: 3
+  sweep_problems: true
+  rollout_problems: true
+  google_chat: 'https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...'
+```
+
+- **The rules:**
+  - **A machine silent:** it hasn't checked in for `machine_silent_minutes`. A drained machine
+    is left out: drain a machine before working on it. A machine that hasn't checked in since
+    the manager restarted is known from its GPU history (see *GPU history*).
+  - **Jobs waiting:** jobs queued for `job_waiting_minutes` without a machine. One alert for
+    them all, naming the oldest and, when the farm knows, why it waits (no machine that can
+    run it is taking jobs, or no valid policy).
+  - **Failures in a row:** a machine's last `failures_in_a_row` jobs, done or failed, all
+    failed. Cancelled jobs don't count. It names the latest and its error.
+  - **Sweep problems:** the retention sweeper's latest report lists problems.
+  - **A rollout or sync stopped:** a rollout stopped at a machine, or a ComfyUI sync stopped at
+    a machine it left drained. Each waits for a person: roll back or cancel, or look and
+    resume.
+- **Raised once, cleared by itself.** An alert is raised when its condition starts and
+  cleared when it ends: the machine checks in, the jobs leave the queue, a job on the
+  machine finishes done, the rollout is rolled back. While it holds, its message follows
+  what it is about (how many jobs wait).
+- **Where they go:**
+  - The manager's log: a warning when raised, a line when cleared.
+  - The dashboard: a red chip in the header on every tab, and the *Alerts* tab with the rules,
+    what holds (what is wrong and what to do) and the latest cleared.
+  - With `google_chat`, one message to that Google Chat space for each check that raised or
+    cleared any, with a link to the Alerts tab.
+- **Google Chat:**
+  - In the space: *Apps & integrations* > *Webhooks* > *Add webhook*. Copy its address into
+    `google_chat`.
+  - The address lets anyone post to the space, so it stays in `config.yaml`. That file is
+    never committed, and no endpoint gives the address.
+  - `comfyfarm alerts test` on the manager's host posts a test message, to check the address,
+    and that the host reaches `chat.googleapis.com` (`HTTPS_PROXY`, if the studio needs one):
+    `env -u PYTHONPATH -u PYTHONHOME "$(cat run/python)" -m comfyfarm alerts test`.
+  - A post that fails is logged and shown on the Alerts tab. The alert still holds there.
+- **`GET /api/v1/alerts`** gives the rules, what holds and the latest cleared, as JSON.
+- **Cleared alerts are kept** `keep_days` (30) in the manager's database.
+
 ### Retention
 
 The sweeper is how the farm's outputs will stop filling show storage (decisions 0006, 0041).
@@ -1298,6 +1351,7 @@ retention:
 | GET | `/metrics` | The farm's numbers in Prometheus' text format (Prometheus metrics) |
 | GET | `/api/v1/job-metrics?since=&until=&format=&limit=` | One row per finished job, kept after it (Job metrics): `since` and `until` when it finished (a date, a date and time, or seconds since 1970); `format=csv` for a spreadsheet |
 | GET | `/api/v1/usage?days=&by=&show=&workflow=` | Jobs, GPU hours and failures over the last days, per day, show, workflow or machine (Usage) |
+| GET | `/api/v1/alerts` | The alert rules, the alerts that hold, the latest cleared, and whether Google Chat is set (Alerts) |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`

@@ -48,6 +48,19 @@ gpu_history:
   sample_seconds: 60
   days: 7
 
+# Alerts (README, Alerts; decision 0052): checked every minute, raised once when a rule's
+# condition starts and cleared when it ends, in the log and on the dashboard's Alerts tab.
+# Each rule is off at 0 (or false). With google_chat, each check's new and cleared alerts
+# are posted to that Google Chat space: `comfyfarm alerts test` posts a test message.
+alerts:
+  enabled: false
+  machine_silent_minutes: 10   # a machine (not drained) that hasn't checked in this long
+  job_waiting_minutes: 60      # jobs queued this long without a machine
+  failures_in_a_row: 3         # a machine whose last 3 jobs all failed
+  sweep_problems: true         # the retention sweeper's latest report lists problems
+  rollout_problems: true       # a rollout or a ComfyUI sync stopped, waiting for a person
+  google_chat: ''              # the space's webhook (Apps & integrations > Webhooks): secret, keep it here
+
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.
 agents:

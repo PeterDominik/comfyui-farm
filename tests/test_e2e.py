@@ -724,6 +724,13 @@ convert:
             farm._request("GET", "/api/v1/usage?by=user")
         self.assertIn("function usageLabel", farm._request("GET", "/usage.js", raw=True))
 
+    def test_04995e_alerts_off(self):
+        """Alerts are off here (decision 0052): the endpoint says so, with the rules they'd use."""
+        a = farm._request("GET", "/api/v1/alerts")
+        self.assertEqual((a["enabled"], a["active"], a["cleared"], a["google_chat"]), (False, [], [], False))
+        self.assertEqual(a["rules"]["machine_silent_minutes"], 10)
+        self.assertIn("function alertsChip", farm._request("GET", "/alerts.js", raw=True))
+
     def test_04996_sweeps(self):
         """The retention sweeper's dry run (decision 0041): off here, so no daily run; one asked
         for from the manager's host saves a report, and deletes nothing."""
