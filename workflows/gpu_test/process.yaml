@@ -14,6 +14,8 @@ description: >
   (<source>.gputest_vNNN.json): the card, how much of it was free when it started, and the
   most it used. A test of the farm, not for shots.
 tag: gputest                    # in the output file names: <source>.gputest_vNNN.<frame>.png
+task: tests                     # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
+hidden: true                    # a test of the farm: not in artists' menus (the dashboard and CLI run it)
 class: interactive
 limits: {max_minutes: 10}       # it stops after this, whatever "Seconds per frame" says
 models: []                      # it loads no model weights: torch filters only (decision 0044)

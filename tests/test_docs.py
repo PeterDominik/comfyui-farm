@@ -46,9 +46,11 @@ class ClaudeNotesTests(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_the_plan_lists_phases_0_to_14(self):
+        """Each once, in the table; phase 11 comes before 9 and 10 (23 November)."""
         plan = (REPO / "docs" / "plan.md").read_text(encoding="utf-8")
         phases = [int(n) for n in re.findall(r"^\| (\d+) ", plan, flags=re.M)]
-        self.assertEqual(phases, list(range(15)))
+        self.assertEqual(sorted(phases), list(range(15)))
+        self.assertLess(phases.index(11), phases.index(9))
 
 
 if __name__ == "__main__":

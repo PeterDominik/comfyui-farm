@@ -59,3 +59,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0051](0051-nuke-farm-node.md) | A workflow as a node in the Nuke script | accepted |
 | [0052](0052-alerts.md) | Alerts checked by the manager, raised once and cleared by themselves, optionally posted to Google Chat | accepted |
 | [0053](0053-evals.md) | Evals are farm jobs pinned to a machine, checked by its agent, gating rollouts and syncs | accepted |
+| [0054](0054-provider-registry-and-catalogue.md) | Menus by provider, then task: a provider registry and a task list in the repo, outside the fingerprint | accepted |

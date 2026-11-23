@@ -11,6 +11,7 @@ description: >
   model in two stages (544 on the shorter side, then upscaled 2×), guided by the prompt
   and a reference frame for the look. Outputs a PNG sequence numbered like the layout.
 tag: render                     # in the output file names: <source>.render_vNNN.<frame>.png
+task: video                     # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
 # The least GPU memory a machine needs (GB, as the card is sold): LTX 2.5 22B runs on the
 # 32 GB 5090 and up, so the 24 GB 3090 never gets it.
 requires: {vram_gb: 32}

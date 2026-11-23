@@ -70,6 +70,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `comfyfarm/fileio/` | Files in, files out: paths, inputs (sequences, UDIM tiles, movies), EXR/movie conversion, OCIO, output names, writing the outputs. Standard library only |
 | `comfyfarm/artifacts/` | Each kind of output the farm writes, one file each, named by its key under `writes:`: where its files go (the manager), and what the agent does before and after the run. `frames.py`: a frame sequence and its preview movie; `textures.py`: a texture set's EXR maps; on the generic route (`base.py`), `file.py` (other files, such as a report), `movie.py` (a video) and `model.py` (trained weights) |
 | `comfyfarm/definitions.py` | A definition's head, as the manager uses it: reading `process.yaml` and `manifest.yaml`, parameters and validation, inputs and what it writes, the fingerprint |
+| `comfyfarm/catalog.py`, `providers/` | The menus, Provider > Task > Workflow: one file per provider in `providers/`, the tasks in `workflows/tasks.yaml`, and each definition's place checked against them (see *Menus: providers and tasks*) |
 | `comfyfarm/protocol.py` | Job states, and the messages between agents and the manager |
 | `comfyfarm/shotgrid/` | The manager's read-only ShotGrid lookups: active shows, their sequences and shots, cached, for the publish fields; the publish check; Versions and Playlists as inputs and Batch Submit rows; Batch Submit's ShotGrid query; where ShotGrid's right-click goes |
 | `comfyfarm/publish/` | Publishing finished jobs through the pipeline: Nuke templates and their placeholder Reads, staging them, and dispatching Daiquiri's `update_and_render_nuke` to Tractor (see *Publishing*) |
@@ -78,7 +79,7 @@ agent on each GPU machine, Linux or Windows (*Deploying* below).
 | `environments/<name>/` | A runner environment as a uv project: `pyproject.toml`, `.python-version`, `env.yaml` (its check) and `uv.lock`. `gpu-test`: torch, numpy and pillow, for the test process |
 | `comfyfarm/cli.py` | `python -m comfyfarm standalone` (or `serve`), `manager`, `agent`, `check`, `comfyui snapshot\|verify\|sync` and `env list\|lock\|install\|remove` |
 | `config.example.yaml`, `agent.example.yaml` | The manager's settings; one GPU machine's agent |
-| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `process.yaml` (what's exposed and written, and which nodes do it): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha`. `gpu_test`: a process (`process.yaml` + `run.py`), the farm's test of its process runner (see *The GPU test*) |
+| `workflows/<name>/` | `workflow_api.json` (ComfyUI API export) + `process.yaml` (what's exposed and written, and which nodes do it): `ltx25_alpha_gen`, `chord_pbr`, `wan22_i2i`, `ltx25_layout_render`, `sam3_ltx_alpha`. `gpu_test`: a process (`process.yaml` + `run.py`), the farm's test of its process runner (see *The GPU test*). `workflows/tasks.yaml`: the menus' tasks |
 | `client/comfyfarm_client.py` | Stdlib-only client and CLI (Nuke, Houdini, terminal) |
 | `client/nuke/` | Nuke panel: the dashboard's form and job list inside Nuke |
 | `deploy/linux/`, `deploy/windows/` | Setup, running and keeping it running on each kind of machine (see *Deploying*) |
@@ -2018,8 +2019,8 @@ studio's rez moves (another OS, another path), change `menu_sync.command` to wha
 1. In ComfyUI: **Workflow → Export (API)**. Save it as `workflows/<name>/workflow_api.json`.
    Blank out show-specific paths. The gateway fills those per job, and this keeps show
    codes out of git.
-2. Write `workflows/<name>/process.yaml` (copy one of the farm's, e.g. `ltx25_alpha_gen`; see below).
-   A `manifest.yaml` still loads.
+2. Write `workflows/<name>/process.yaml` (copy one of the farm's, e.g. `ltx25_alpha_gen`; see below),
+   with its `task:` (see *Menus: providers and tasks*). A `manifest.yaml` still loads.
 3. `python -m comfyfarm check`, then restart the gateway. The check reads both halves of the
    definition. The manager itself checks only the head; each agent checks the wiring of its
    copy and tells the manager, which disables a workflow any agent finds broken.
@@ -2042,6 +2043,7 @@ have the why.
 ```yaml
 id: wan22_i2i
 label: WAN 2.2 image to image
+task: image                   # in the menus: Provider > Task > Workflow
 requires: {vram_gb: 24}
 class: interactive            # or batch
 targets: [pool]               # and/or tractor
@@ -2089,6 +2091,36 @@ is what the farm's policy checks licences against (see *Policy*; `models: []` fo
 (`--write` saves it; comments are not carried over, and you remove the manifest yourself). A
 converted workflow keeps its fingerprint until a head field is added, so machines on the old
 and the new file still agree.
+
+#### Menus: providers and tasks
+
+Every menu reads Provider > Task > Workflow, for example ComfyUI Local > Masking > SAM3
+(decision 0054). Four optional fields place a definition there:
+
+```yaml
+task: masking                 # a task in workflows/tasks.yaml
+provider: comfyui-local       # only when it isn't its runner type's usual one
+family: sam3-matte            # the same model on several providers (their prices are compared)
+hidden: true                  # kept out of artists' menus (gpu_test); the dashboard and CLI still run it
+```
+
+- **Providers** are files in `providers/`, one each, named like the provider:
+  - `label` (its name in the menus), `runner` (the runner type its definitions have) and
+    `target` (where its jobs go);
+  - `offsite` (its jobs send material outside Rodeo) and `order` (smallest first);
+  - an optional `description`.
+
+  Today there are `comfyui-local` (every `runner.type: comfyui` definition's) and
+  `python-local` (every `runner.type: process` one's).
+- **Tasks** are `workflows/tasks.yaml`, in menu order: Masking, Video, Image, Textures and
+  Tests.
+- **Checks.** An unknown task or provider, or a provider whose runner type isn't the
+  definition's, turns the definition off with the reason. A definition with no task still
+  loads.
+- **Not in the fingerprint.** These fields don't change what runs, so moving a workflow to
+  another task never makes a machine refuse a job.
+- **`python -m comfyfarm check`** checks the providers' and tasks' files and says where
+  each workflow shows ("in the menus under ComfyUI Local > Masking").
 
 Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,

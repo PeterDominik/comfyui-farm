@@ -1,7 +1,8 @@
 # Plan
 
-The agreed design and build order, as of 15 November 2026. The reasons are in
-`docs/decisions/`. Update this file in the pull request that finishes or changes a phase.
+The agreed design and build order, as of 15 November 2026, with phase 11 revised on
+23 November. The reasons are in `docs/decisions/`. Update this file in the pull request that
+finishes or changes a phase.
 
 ## Where we are going
 
@@ -20,6 +21,9 @@ The agreed design and build order, as of 15 November 2026. The reasons are in
   database. A small metrics row per job is kept.
 - **Runner environments managed remotely.** The manager publishes reviewed releases and
   each agent installs, updates and removes them; one machine goes first.
+- **Menus by provider, then task.** Every client reads Provider > Task > Workflow (ComfyUI
+  Local > Masking > SAM3). Outside providers (fal.ai first) run through a gateway agent on
+  the manager's machine, charged to a show and capped per show.
 - **Out of scope:** LLM serving. It belongs to a separate service.
 
 ## Pilot
@@ -47,10 +51,10 @@ Every phase keeps Nuke to ComfyUI to publish working and ends at a gate.
 | 7 Policy gates | `policy.yaml` read from the bank folder; show, licence and quota checks at `plan` | A barred show is refused with the rule named; a broken file leaves the last valid one in force |
 | 8 Observability and evals | `/metrics`; GPU history; dashboard pages; alerts; a reference job per process | A changed node pack fails its eval and stops its rollout |
 | **Pilot review by the pipeline team** | | |
-| **Stage 4: scale out** | | |
+| **Stage 4: new runners first, then scale out** | | |
+| 11 New runners and providers | Eleven steps (below): the catalogue and menus; the gateway and lanes; off-site rules; the ledger and caps; the fal.ai pilot on rnd; the batch class with preemption and resume; LoRA training; Griptape; more fal.ai models; Higgsfield; ComfyUI Cloud | A fal.ai job runs from Nuke on rnd within its cap; training is preempted and resumes; Griptape needs no core change |
 | 9 Agent self-update | Agent code as a release; launcher with current and previous build | A bad agent build is replaced with no visit to the machine |
 | 10 Workstation windows | Timed availability; window-fit placement; grace, then requeue; busy guard | A workstation serves overnight and holds no VRAM by 06:00 plus grace |
-| 11 New runners | Batch class with preemption and resume; LoRA training; Griptape | Training is preempted and resumes; Griptape needs no core change |
 | **Stage 5: join the studio** | | |
 | 12 Tractor target | Router; one-shot agent; Daiquiri graph with the pipeline team | Same artifacts and job record on pool and Tractor |
 | 13 Identity and alerts | API keys or Rodeo login; alerts to Google Chat or Gmail | A user cannot cancel another user's job |
@@ -59,6 +63,61 @@ Every phase keeps Nuke to ComfyUI to publish working and ends at a gate.
 Clients, in parallel: A1 shared client core with Nuke as one host; A2 Maya; A3 Mari;
 A4 launchers (xStudio, Daiquiri Automate).
 Nuke farm node (0051): a workflow as a node in the script, from the panel or the Tab menu.
+
+## Phase 11: new runners and providers
+
+Agreed with Peter on 23 November. Phase 11 comes next, before 9 and 10, while the pipeline
+team reviews the pilot: nothing in it needs self-update or workstation windows, which pay off
+when more machines or workstations join. It holds the providers plan ("AI Farm: Providers,
+Catalogue and Spending Plan", P1 to P8) and the original batch class, LoRA training and
+Griptape. It runs on the three pilot machines and the `rnd` project.
+
+1. **Catalogue and menus (P1).** `providers/`, `workflows/tasks.yaml`, a definition's
+   `task`, `provider`, `family` and `hidden`; `GET /api/v1/catalog?show=`; the dashboard's
+   and Nuke's menus read Provider > Task > Workflow, on at once with no switch (Peter).
+   Gate: the six workflows show by provider and task; nothing else changes.
+2. **Gateway agent and lanes (P2).** A `gateway` target; lanes in the desk; the API runner;
+   a mock fal.ai. Gate: a mock fal.ai job runs from Nuke end to end, in CI and on the
+   manager's machine.
+3. **Off-site policy (P3).** A `providers:` section in policy.yaml, off-site denied until a
+   rule allows it; off-site jobs need a known show. Gate: a mock off-site job is refused on
+   every show but the allowed one, with the rule named.
+4. **Ledger and caps (P4).** Estimate at plan, reserve at submit, settle at the end; a cap
+   per show for the life of the show. Gate: a job over its cap is refused before submit,
+   and racing submits never overspend.
+5. **fal.ai pilot (P5).** Nano Banana 2 edit on `rnd` with a $50 cap, on Peter's personal
+   fal.ai account; no real request before step 4. Gate: it runs from Nuke on `rnd`, and the
+   ledger matches fal.ai's billing for a week. That week overlaps steps 6 to 8.
+6. **Batch class, preemption and resume.** `class: batch` sorts after interactive jobs. An
+   artist's job that can't find a free GPU preempts one: its agent writes a `preempt`
+   file, and the runner saves a checkpoint within 2 minutes and exits. The job is
+   requeued, not counted as a failed attempt, and resumes from a resume folder beside its
+   outputs. Draining a machine preempts its batch jobs too. Process jobs only; off by
+   default. Gate: an artist's job preempts a batch test job, which resumes on another
+   machine and finishes.
+7. **LoRA training.** Python Local > Training, with [ai-toolkit](https://github.com/ostris/ai-toolkit)
+   (Peter), first for Wan 2.2 A14B text-to-video. Datasets are on show storage
+   (`/rdo/shows/<show>/...`), a caption `.txt` beside each image. The LoRA is a `model`
+   output, copied into `/rdo/bank/comfy_farm/comfyui/models/loras` when training finishes
+   so it outlives retention. Gate: an artist's job preempts training, which resumes and
+   finishes.
+8. **Griptape.** A spike first: one workflow run headless on a pool machine, to learn
+   whether it needs Griptape Cloud or the internet. Offline, it is a process under Python
+   Local; otherwise it is off-site and runs on the gateway under step 3's rules. Gate:
+   Griptape is added with no change to core code.
+9. **More fal.ai models (P6).** `comfyfarm fal draft <endpoint>` drafts a process.yaml from
+   fal.ai's schema, and each one is reviewed. Gate: a new model is one reviewed process.yaml
+   in one pull request.
+10. **Higgsfield and price comparison (P7).** Gate: one node switches between fal.ai and
+    Higgsfield, with both estimates shown.
+11. **ComfyUI Cloud (P8).** Gate: an existing graph runs on ComfyUI Cloud unchanged, charged
+    to its show.
+
+After phase 13 (Rodeo login): paid jobs for other shows, and Rodeo's fal.ai account in
+place of Peter's (a key swap on the gateway). Until then a cap rests on a show name the
+client types. Decision records follow the steps from 0054.
+
+Still open: which Griptape workflow step 8 tries, and whether it calls outside services.
 
 ## Progress
 
@@ -269,3 +328,14 @@ Nuke farm node (0051): a workflow as a node in the script, from the panel or the
 
   Left before it: phase 0's baseline timings, phase 6's week of dry runs and deletion, and
   phase 8's gate.
+- Phase 11: started on 23 November, during the pilot review. Step 1 is four pull requests:
+  the registry and the definitions' new fields; `GET /api/v1/catalog`; the dashboard's
+  Submit tab; Nuke's Tab menu, panel and node.
+
+  The registry is in: `providers/` (ComfyUI Local, Python Local), `workflows/tasks.yaml`
+  (Masking, Video, Image, Textures, Tests), and a definition's `task`, `provider`,
+  `family` and `hidden`, checked when it loads against the checkout's catalogue
+  (`comfyfarm/catalog.py`). An unknown task or provider turns a definition off with the
+  reason. Each of the six has its task and `gpu_test` is hidden. These fields are left out
+  of the fingerprint, so the six keep the ones they had. `comfyfarm check` says where each
+  workflow shows in the menus (0054).

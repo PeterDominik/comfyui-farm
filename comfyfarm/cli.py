@@ -130,6 +130,8 @@ def _line(status: str, text: str) -> None:
 
 
 def check_workflows(reg, what: str = "workflow") -> int:
+    from . import catalog as C
+    cat = C.current()
     bad = 0
     for name, err in reg.load_errors.items():
         _line("FAIL", f"{what} {name}: {err}")
@@ -141,8 +143,20 @@ def check_workflows(reg, what: str = "workflow") -> int:
             for p in wf.problems:
                 print(f"         - {p}")
         else:
-            _line(" ok ", f"{what} {wf.name} ({len(wf.params)} params)")
+            _line(" ok ", f"{what} {wf.name} ({len(wf.params)} params), in the menus under "
+                          f"{cat.place(wf.task, wf.provider, wf.hidden is True)}")
     return bad
+
+
+def check_catalog() -> int:
+    """The menus' providers and tasks (catalog.py, decision 0054)."""
+    from . import catalog as C
+    cat = C.current()
+    for e in cat.errors:
+        _line("FAIL", f"menus: {e}")
+    if not cat.errors:
+        _line(" ok ", f"menus: {cat.summary()}")
+    return len(cat.errors)
 
 
 def check_process_runner(cfg) -> int:
@@ -273,7 +287,8 @@ async def run_check(cfg: Config) -> int:
     for note in cfg.obsolete_keys:
         _line("WARN", f"config.yaml: {note}")
     reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
-    bad = check_workflows(reg)
+    bad = check_catalog()
+    bad += check_workflows(reg)
     from .runners.process import ProcessRegistry
     bad += check_workflows(ProcessRegistry(cfg.resolve(cfg.workflows_dir)), "process")
     bad += check_tools(cfg.convert)
