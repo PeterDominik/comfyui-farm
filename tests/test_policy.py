@@ -57,7 +57,7 @@ class TheFile(unittest.TestCase):
         known = set(DefinitionRegistry(REPO / "workflows").workflows)
         pf = PO.parse((REPO / "policy.example.yaml").read_text(encoding="utf-8"), known)
         self.assertEqual((pf.version, pf.other_shows, pf.unknown_show, len(pf.shows), len(pf.licences),
-                          pf.unlisted_models), (1, "allow", "allow", 3, 1, "allow"))
+                          pf.unlisted_models, len(pf.quotas)), (1, "allow", "allow", 3, 1, "allow", 2))
 
     def test_what_is_wrong_is_said(self):
         for text, says in (
@@ -300,6 +300,103 @@ class Licences(unittest.TestCase):
         self.assertEqual(len(model_notes(defs, env, PO.parse(LICENCES))), 2)   # Apache-2.0 is carried, any case
 
 
+QUOTAS = """
+version: 1
+contact: the CG supervisors (#comfyfarm)
+quotas:
+  - name: guem-20-a-show
+    shows: [guem*]
+    max_jobs: 3
+    max_frames: 1000
+    reason: The show's share of the pilot's GPUs
+  - name: two-each
+    shows: ["*"]
+    except: [rnd*]
+    per: user
+    max_jobs: 2
+    reason: Leave room for everyone
+  - name: cold-and-ret-together
+    shows: [cold, ret*]
+    per: all
+    max_frames: 500
+    reason: Their client's budget
+"""
+
+
+class Quotas(unittest.TestCase):
+    """Decision 0045: how much a show, a user on it, or some shows together may have queued or
+    running at once, checked at plan with what is queued now."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self.file = tmp / "policy.yaml"
+        self.file.write_text(QUOTAS, encoding="utf-8")
+        self.p = PO.Policy(True, str(self.file), tmp / "policy.json", lambda: KNOWN)
+
+    @staticmethod
+    def queued(*rows) -> mock.Mock:
+        return mock.Mock(return_value=[{"show": s, "user": u, "frames": f} for s, u, f in rows])
+
+    def test_jobs_a_show_has_queued(self):
+        q = self.queued(("guem2609", "ann", 10), ("guem2609", "bob", 10), ("bri3", "ann", 10))
+        self.p.quota("guem2609", "cid", 10, q)                                  # 2 of 3
+        q = self.queued(*[("guem2609", u, 10) for u in ("ann", "bob", "cid")], ("bri3", "ann", 10))
+        with self.assertRaises(PO.Refused) as e:
+            self.p.quota("guem2609", "dee", 10, q)
+        self.assertEqual(str(e.exception), "There are already 3 job(s) queued or running for show guem2609, and the "
+                                           "most is 3: The show's share of the pilot's GPUs. (Policy rule "
+                                           "guem-20-a-show.) Submit again when some have finished. Ask the CG "
+                                           "supervisors (#comfyfarm) if this is wrong.")
+        self.assertEqual(e.exception.rule, "guem-20-a-show")
+        self.p.quota("guem2610", "dee", 10, q)                                  # each show its own count
+
+    def test_frames_a_show_has_queued(self):
+        q = self.queued(("guem2609", "ann", 900))
+        self.p.quota("guem2609", "bob", 100, q)                                 # 1000 of 1000
+        with self.assertRaisesRegex(PO.Refused, r"This job's 101 frame\(s\) would take show guem2609 to 1001 "
+                                                r"queued or running, and the most is 1000: .*or with fewer frames"):
+            self.p.quota("guem2609", "bob", 101, q)
+        with self.assertRaisesRegex(PO.Refused, "to 1200 queued or running"):
+            self.p.quota("guem2610", "bob", 1200, self.queued())               # one job bigger than the quota
+
+    def test_per_user_and_except(self):
+        q = self.queued(("bri3", "ann", 1), ("unlp", "ann", 1), ("bri3", "bob", 1))
+        with self.assertRaisesRegex(PO.Refused, "2 job\\(s\\) queued or running for ann on every show but rnd\\*, "
+                                                "and the most is 2.*two-each"):
+            self.p.quota("bri3", "ann", 1, q)                                   # counted over every show it's for
+        self.p.quota("bri3", "bob", 1, q)
+        self.p.quota("rnd2601", "ann", 1, q)                                    # except: [rnd*]
+        self.p.quota("bri3", None, 1, q)                                        # no user: per user isn't asked
+
+    def test_shows_together(self):
+        q = self.queued(("cold", "ann", 300), ("retkmc2610", "bob", 150), ("bri3", "ann", 400))
+        self.p.quota("ret1", "cid", 50, q)
+        with self.assertRaisesRegex(PO.Refused, r"would take shows cold, ret\* to 501 .*cold-and-ret-together"):
+            self.p.quota("cold", "cid", 51, q)
+
+    def test_whats_queued_is_only_asked_when_a_quota_is_for_the_show(self):
+        self.file.write_text(QUOTAS.replace('["*"]', "[bri3]"), encoding="utf-8")
+        p = PO.Policy(True, str(self.file), self.file.with_suffix(".json"), lambda: KNOWN)
+        q = self.queued()
+        p.quota("unlp", "ann", 1, q)
+        q.assert_not_called()
+        PO.Policy(False, str(self.file), self.file.with_suffix(".json"), lambda: KNOWN).quota("guem1", "a", 9999, q)
+        q.assert_not_called()
+
+    def test_what_is_wrong_is_said(self):
+        for text, says in (
+                ("version: 1\nquotas:\n  - {name: a, shows: [x], reason: r}\n", "rule a: give max_jobs, max_frames"),
+                ("version: 1\nquotas:\n  - {name: a, shows: [x], max_jobs: 0, reason: r}\n",
+                 "quotas.0.max_jobs: Input should be greater than or equal to 1"),
+                ("version: 1\nquotas:\n  - {name: a, shows: [x], per: team, max_jobs: 1, reason: r}\n",
+                 "quotas.0.per: Input should be 'show', 'user' or 'all'"),
+                ("version: 1\nshows:\n  - {name: a, shows: [x], deny: all, reason: r}\n"
+                 "quotas:\n  - {name: a, shows: [x], max_jobs: 1, reason: r}\n", "two rules are named a")):
+            with self.assertRaisesRegex(ValueError, __import__("re").escape(says), msg=text):
+                PO.parse(text, KNOWN)
+
+
 class Paths(unittest.TestCase):
     def test_in_the_bank_folder_or_a_path_of_its_own(self):
         cfg = Config.model_validate({"workers": [], "share": {"dir": "/rdo/bank/comfy_farm"},
@@ -379,6 +476,35 @@ class WhenPlanned(unittest.TestCase):
         with self.assertRaisesRegex(FarmError, "guem-no-ai"):
             self.farm.submit("chord_pbr", {"input": "/rdo/shows/xyz/_asset/rockA/cg/textures/src"}, "ann")
         self.assertEqual(self.store.list(), [])                               # nothing queued
+
+    def test_a_quota_is_checked_at_plan_with_what_is_queued(self):
+        """Decision 0045: the second job over a show's quota is refused, in the preview too."""
+        Path(f"{self.root}/bank/policy.yaml").write_text(
+            "version: 1\nquotas:\n  - {name: one-at-a-time, shows: [xyz], max_jobs: 1, reason: Testing}\n")
+        self.farm.policy.refresh(force=True)
+        src = {"input": "/rdo/shows/xyz/_asset/rockA/cg/textures/src"}
+        self.farm.submit("chord_pbr", src, "ann")
+        with self.assertRaises(FarmError) as e:
+            self.farm.plan("chord_pbr", src, user="bob")
+        self.assertEqual(e.exception.status, 403)
+        self.assertIn("There are already 1 job(s) queued or running for show xyz, and the most is 1", str(e.exception))
+        with self.assertRaisesRegex(FarmError, "one-at-a-time"):
+            self.farm.submit("chord_pbr", src, "bob")
+        self.assertEqual(len(self.store.list()), 1)
+
+    def test_what_is_queued_one_entry_per_submission(self):
+        info = {"show": "xyz"}
+        self.store.insert({"id": "j1", "workflow": "wan22_i2i", "user": "ann", "status": "running",
+                           "created_at": 1, "info": {**info, "input": {"frame_count": 48}}})
+        self.store.insert({"id": "s1", "kind": "set", "workflow": "chord_pbr", "user": "bob", "status": "running",
+                           "created_at": 2, "info": info})
+        for bid, status, tiles in (("b1", "done", 4), ("b2", "running", 4), ("b3", "queued", 2)):
+            self.store.insert({"id": bid, "kind": "batch", "parent_id": "s1", "workflow": "chord_pbr", "user": "bob",
+                               "status": status, "created_at": 3, "info": {**info, "batch": {"tiles": tiles}}})
+        self.store.insert({"id": "j2", "workflow": "wan22_i2i", "user": "ann", "status": "done", "created_at": 4,
+                           "info": info})
+        self.assertEqual(sorted(self.farm.queued_now(), key=lambda q: q["user"]),
+                         [{"show": "xyz", "user": "ann", "frames": 48}, {"show": "xyz", "user": "bob", "frames": 6}])
 
 
 if __name__ == "__main__":

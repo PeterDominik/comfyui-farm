@@ -279,10 +279,11 @@ class Farm:
 
     # ================================================================ submit / cancel
     def plan(self, workflow: str, params: dict, show: str | None = None, shot: str | None = None,
-             job_id: str = "preview") -> dict:
+             job_id: str = "preview", user: str | None = None) -> dict:
         """Work out everything about a job without queuing it: validated params, what the
         loader reads, and exactly where the frames will land and what they're called.
-        Used by submit() and by the dashboard's live destination preview."""
+        Used by submit() and by the dashboard's live destination preview. `user`: who would
+        submit it, for the policy's quotas per user."""
         wf = self.registry.get(workflow)
         values = wf.validate(params or {})
         pc = self.cfg.paths
@@ -333,7 +334,24 @@ class Farm:
                 plan = handler.plan(plan, self._artifact_context(job_id))
         except A.PlanError as e:
             raise FarmError(str(e), e.status) from None
+        # The policy's quotas, now its size is known (decision 0045). submit() plans under the
+        # submit lock, so two submits can't both take the last place.
+        try:
+            self.policy.quota(show_, user, plan.get("units") or (seq.frame_count if seq else 1) or 1, self.queued_now)
+        except PolicyRefused as e:
+            raise FarmError(str(e), 403) from None
         return plan
+
+    def queued_now(self) -> list[dict]:
+        """What is queued or running, one {show, user, frames} per submission: a job, or a
+        texture set with its unfinished batches' tiles (for the policy's quotas)."""
+        out: dict[str, dict] = {}
+        for j in self.store.list(statuses=ACTIVE, limit=1_000_000, top_level=False):
+            key = j.get("parent_id") or j["id"]
+            q = out.setdefault(key, {"show": (j.get("info") or {}).get("show"), "user": j["user"], "frames": 0})
+            if j.get("kind") != "set":
+                q["frames"] += E.units(j)
+        return list(out.values())
 
     def _artifacts(self, plan: dict, part: str, job_id: str | None = None) -> dict:
         """What the handlers of its kinds give of a plan (info, request or summary), together."""
@@ -570,7 +588,7 @@ class Farm:
         publish it when it's done ({show, shot, step, template, description}, checked now)."""
         job_id = str(uuid.uuid4())
         with self._submit_lock:   # output folders are reserved by inserting the job
-            plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id)
+            plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id, user=user)
             wf, values, seq, out_dir = plan["wf"], plan["values"], plan["seq"], plan["out_dir"]
             pub = None
             if publish is not None:
@@ -691,6 +709,11 @@ class Farm:
                             "use Run again for a new run.", 409)
         if not targets:
             raise FarmError("No failed or cancelled batches to retry.", 409)
+        try:                                # the tiles it puts back in the queue count
+            self.policy.quota((job.get("info") or {}).get("show"), job["user"], sum(E.units(b) for b in targets),
+                              self.queued_now)
+        except PolicyRefused as e:
+            raise FarmError(str(e), 403) from None
         self.store.update(set_id, cancel_requested=0)
         self._set_seen.pop(set_id, None)
         for b in targets:

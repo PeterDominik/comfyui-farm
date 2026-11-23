@@ -447,7 +447,8 @@ def run_policy_check(cfg: Config, file: str | None) -> int:
     except (OSError, ValueError) as e:
         print(f"  [FAIL] {path}: {getattr(e, 'strerror', None) or e}")
         return 1
-    print(f"  [ ok ] {path}: {len(pf.shows)} show rule(s), {len(pf.licences)} licence rule(s); shows no rule "
+    print(f"  [ ok ] {path}: {len(pf.shows)} show rule(s), {len(pf.licences)} licence rule(s), "
+          f"{len(pf.quotas)} quota(s); shows no rule "
           f"names: {pf.other_shows}; a job whose show isn't known: {pf.unknown_show}; a definition that doesn't "
           f"list its models: {pf.unlisted_models}")
 
@@ -462,6 +463,11 @@ def run_policy_check(cfg: Config, file: str | None) -> int:
         what = f"denies licences {', '.join(r.deny)}" if r.deny is not None else \
             f"allows only licences {', '.join(r.allow or [])}"
         print(f"         {r.name}: {shows(r)} {what}: {r.reason}")
+    for r in pf.quotas:
+        most = " and ".join(x for x in (f"{r.max_jobs} job(s)" if r.max_jobs else "",
+                                        f"{r.max_frames} frame(s)" if r.max_frames else "") if x)
+        each = {"show": "each show", "user": "each user, over them all", "all": "all of them together"}[r.per]
+        print(f"         {r.name}: {shows(r)}, {each}: at most {most} queued or running: {r.reason}")
     for n, wf in sorted(definitions.items()):
         if wf.models_listed:
             print(f"         {n} uses " + (", ".join(f"{m['file']} ({m['licence']})" for m in wf.models)

@@ -1057,6 +1057,11 @@ policy:
     `process.yaml` (decision 0044). Licences are compared without case.
   - `unlisted_models` (allow or deny) is for a definition that doesn't list its models, on a
     show a licence rule is for. `models: []` says it uses no weights.
+  - A quota (under `quotas:`) sets `max_jobs` and/or `max_frames` (tiles, for textures):
+    the most that may be queued or running at once (decision 0045). The count is per show
+    (`per: show`, the default), per user over all the rule's shows (`per: user`), or for the
+    shows together (`per: all`). A texture set counts as one job; its frames are its
+    unfinished batches' tiles. The refusal says how many are queued and what the most is.
   - Every rule naming a job's show is checked, and the first that refuses it is named.
   - `other_shows` (allow or deny) is for shows no rule names.
   - `unknown_show` is for a job whose show can't be worked out.
@@ -1076,8 +1081,11 @@ policy:
   lapse because of a typo.
 - **Checked when a job is planned:** the dashboard's and Nuke's preview, every submit,
   Run again, Batch Submit's rows, and a set's Retry failed. Jobs already queued run as
-  planned.
-- Identity is trusted until API keys come, so rules are by show and definition, not by person.
+  planned. A submit plans under the submit lock, so two submits can't both take a quota's
+  last place.
+- **Identity is trusted until API keys come.** Show and licence rules are by show and
+  definition. Quotas per user count the name the client sends, so they keep honest users
+  within a share, not anyone determined to get round them.
 
 ### Retention
 
