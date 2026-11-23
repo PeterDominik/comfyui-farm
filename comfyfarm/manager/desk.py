@@ -35,6 +35,7 @@ from ..fileio import wire as W
 from ..fileio.ocio import REPO
 from ..protocol import HELD, ON_WORKER, build, duration, now
 from . import eta as E
+from .alerts import Alerts
 from .farm import Farm
 from .rollouts import Rollouts
 from .syncs import Syncs
@@ -135,6 +136,7 @@ class Desk:
         self.view = W.View(mappings=self.cfg.paths.mappings, scratch=farm.scratch_root, repo=P.normalize(str(REPO)))
         self.rollouts = Rollouts(self)      # environment releases going to the machines (decision 0031)
         self.syncs = Syncs(self)            # a runner's environment synced on them in turn (decision 0033)
+        self.alerts = Alerts(self)          # what needs a person (decision 0052)
 
     @property
     def lease_seconds(self) -> float:
@@ -152,6 +154,8 @@ class Desk:
         self._tasks.append(asyncio.create_task(self.syncs.loop(), name="syncs"))
         if self.cfg.gpu_history.days > 0:
             self._tasks.append(asyncio.create_task(self._gpu_loop(), name="gpu history"))
+        if self.cfg.alerts.enabled:
+            self._tasks.append(asyncio.create_task(self.alerts.loop(), name="alerts"))
 
     async def stop(self) -> None:
         for t in self._tasks:

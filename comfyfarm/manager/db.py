@@ -168,6 +168,16 @@ CREATE TABLE IF NOT EXISTS gpu_samples (       -- each machine's GPUs over time,
     jobs INTEGER                              -- jobs the machine held then
 );
 CREATE INDEX IF NOT EXISTS gpu_samples_machine ON gpu_samples(machine, at);
+CREATE TABLE IF NOT EXISTS alerts (            -- what the manager alerted about, raised and cleared (0052)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,                        -- what it is about (machine_silent:wrk59467w-5090): one open at a time
+    kind TEXT NOT NULL,                       -- its rule
+    subject TEXT,                             -- the machine, rollout or sync, if any
+    message TEXT NOT NULL,                    -- what is wrong and what to do, as it last read
+    raised_at REAL NOT NULL,
+    cleared_at REAL                           -- none while it holds
+);
+CREATE INDEX IF NOT EXISTS alerts_cleared ON alerts(cleared_at);
 """
 
 # What a metrics row keeps of a job: who, what, where and how long, and never its params,
@@ -404,6 +414,52 @@ class JobStore:
     def prune_gpu_samples(self, before: float) -> int:
         with self._lock:
             return self._db.execute("DELETE FROM gpu_samples WHERE at < ?", (before,)).rowcount
+
+    def machines_sampled(self) -> dict[str, float]:
+        """Each machine in the GPU history, with its latest sample: when it last checked in, for
+        the machines that haven't since the manager started (alerts, decision 0052)."""
+        rows = self._q("SELECT machine, MAX(at) AS at FROM gpu_samples GROUP BY machine")
+        return {r["machine"]: r["at"] for r in rows}
+
+    # ---------------------------------------------------------------- alerts (0052)
+    def open_alerts(self) -> list[dict]:
+        return [dict(r) for r in self._q("SELECT * FROM alerts WHERE cleared_at IS NULL ORDER BY raised_at, id")]
+
+    def cleared_alerts(self, limit: int = 50) -> list[dict]:
+        """The latest cleared, newest first."""
+        return [dict(r) for r in self._q("SELECT * FROM alerts WHERE cleared_at IS NOT NULL "
+                                         "ORDER BY cleared_at DESC, id DESC LIMIT ?", (limit,))]
+
+    def raise_alert(self, key: str, kind: str, subject: str | None, message: str, t: float) -> dict:
+        with self._lock:
+            cur = self._db.execute("INSERT INTO alerts (key, kind, subject, message, raised_at) VALUES (?, ?, ?, ?, ?)",
+                                   (key, kind, subject, message, t))
+        return {"id": cur.lastrowid, "key": key, "kind": kind, "subject": subject, "message": message,
+                "raised_at": t, "cleared_at": None}
+
+    def alert_message(self, alert_id: int, message: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE alerts SET message=? WHERE id=?", (message, alert_id))
+
+    def clear_alert(self, alert_id: int, t: float) -> None:
+        with self._lock:
+            self._db.execute("UPDATE alerts SET cleared_at=? WHERE id=? AND cleared_at IS NULL", (t, alert_id))
+
+    def prune_alerts(self, before: float) -> int:
+        with self._lock:
+            return self._db.execute("DELETE FROM alerts WHERE cleared_at < ?", (before,)).rowcount
+
+    def last_outcomes(self, n: int) -> dict[str, list[dict]]:
+        """Each machine's last `n` runs that finished done or failed (cancelled ones say nothing
+        of the machine), newest first, from job_metrics: failures in a row (alerts)."""
+        out: dict[str, list[dict]] = {}
+        for r in self._q("SELECT worker, job_id, workflow, outcome, finished_at FROM ("
+                         "SELECT *, ROW_NUMBER() OVER (PARTITION BY worker ORDER BY finished_at DESC, job_id DESC) "
+                         "AS n FROM job_metrics "
+                         "WHERE kind != 'set' AND worker IS NOT NULL AND outcome IN ('done', 'failed')) "
+                         "WHERE n <= ? ORDER BY worker, finished_at DESC, job_id DESC", (n,)):
+            out.setdefault(r["worker"], []).append(dict(r))
+        return out
 
     def metrics_totals(self) -> list[dict]:
         """job_metrics summed per definition, outcome and GPU type, runs only (a set's batches,

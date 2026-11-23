@@ -241,6 +241,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """The dashboard's Usage tab: jobs, GPU hours and failures (static/usage.js)."""
         return FileResponse(HERE / "static" / "usage.js", media_type="text/javascript", headers=FRESH)
 
+    @app.get("/alerts.js", include_in_schema=False)
+    def alerts_js():
+        """The dashboard's Alerts tab and the alerts chip in its header (static/alerts.js)."""
+        return FileResponse(HERE / "static" / "alerts.js", media_type="text/javascript", headers=FRESH)
+
     @app.get("/environments.js", include_in_schema=False)
     def environments_js():
         """The Machines tab's runner environments and rollouts, read-only (static/environments.js)."""
@@ -652,6 +657,12 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """The farm's numbers in Prometheus' text format (decision 0048): the queue, finished
         jobs (job_metrics), the machines and their GPUs, the policy and the sweeper."""
         return Response(PM.render(farm, desk, started_at), media_type=PM.CONTENT_TYPE)
+
+    @app.get("/api/v1/alerts")
+    def alerts(ident: Identity = Depends(identity)):
+        """What needs a person (decision 0052): the rules, the alerts that hold, the latest
+        cleared, and whether Google Chat is set (never its webhook) and its last post went."""
+        return desk.alerts.view()
 
     @app.get("/api/v1/policy")
     def policy(ident: Identity = Depends(identity)):

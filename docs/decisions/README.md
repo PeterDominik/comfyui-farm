@@ -57,3 +57,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0049](0049-gpu-history.md) | GPU history kept by the manager, sampled from what agents report | accepted |
 | [0050](0050-dashboard-usage-and-gpu-graphs.md) | GPU history graphs and a Usage tab on the dashboard, drawn by hand from the manager's own numbers | accepted |
 | [0051](0051-nuke-farm-node.md) | A workflow as a node in the Nuke script | accepted |
+| [0052](0052-alerts.md) | Alerts checked by the manager, raised once and cleared by themselves, optionally posted to Google Chat | accepted |

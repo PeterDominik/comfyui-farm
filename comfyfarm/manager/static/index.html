@@ -245,6 +245,14 @@
   .uwrap { overflow-x: auto; }
   #usageTable td:first-child { white-space: nowrap; }
   a.small { font-size: 12px; }
+  /* Alerts (alerts.js): the header's chip while any holds, on every tab; the Alerts tab */
+  a.alertchip { color: var(--bad); border-color: var(--bad); text-decoration: none; font-weight: 600;
+                white-space: nowrap; }
+  a.alertchip:hover { background: var(--panel2); }
+  a.alertchip[hidden] { display: none; }
+  td.nowrap { white-space: nowrap; }
+  #tab-alerts > section { min-width: 0; }            /* grid items: the tables scroll inside them, not the page */
+  #tab-alerts td:last-child { min-width: 280px; }   /* on a phone the table scrolls, the message stays readable */
 </style>
 </head>
 <body>
@@ -252,6 +260,7 @@
   <h1>ComfyUI <span>farm</span></h1>
   <div class="spacer"></div>
   <div class="ident">
+    <a id="alertChip" class="chip alertchip" href="#alerts" hidden></a>
     <span id="live" class="chip"><span class="dot"></span>connecting</span>
     <label id="userBox">user <input id="user" size="12" placeholder="your login"></label>
     <label id="keyBox" hidden>API key <input id="key" type="password" size="16"></label>
@@ -265,6 +274,7 @@
   <button data-tab="machines">Machines<span class="count" id="machineCount"></span></button>
   <button data-tab="runtimes">Run times</button>
   <button data-tab="usage">Usage</button>
+  <button data-tab="alerts" id="alertsTab" hidden>Alerts<span class="count" id="alertCount"></span></button>
   <button data-tab="templates" id="templatesTab" hidden>Nuke Publish Templates</button>
   <button data-tab="policy" id="policyTab" hidden>Policy</button>
 </nav>
@@ -437,6 +447,24 @@
     </table></div>
   </section>
 
+  <!-- What needs a person (alerts.js): shown while alerts are on -->
+  <div id="tab-alerts" class="panels" hidden>
+  <section>
+    <div class="sechead"><h2>Alerts</h2><span class="muted" id="alertsNote"></span></div>
+    <div class="envhelp" id="alertsBanner" hidden></div>
+    <div class="envhelp" id="alertsRules"></div>
+    <div class="envhelp">Each alert is raised once, when it starts, and clears by itself when what it is about is
+      fixed. Read-only: the rules are <code>alerts</code> in the manager's <code>config.yaml</code>.</div>
+    <div class="uwrap"><table><thead><tr><th>Since</th><th>Alert</th><th>What is wrong, and what to do</th></tr></thead>
+      <tbody id="alertsActive"></tbody></table></div>
+  </section>
+  <section>
+    <div class="sechead"><h2>Cleared</h2><span class="muted">The latest 50</span></div>
+    <div class="uwrap"><table><thead><tr><th>Raised</th><th>Cleared</th><th>Alert</th><th>What it was</th></tr></thead>
+      <tbody id="alertsCleared"></tbody></table></div>
+  </section>
+  </div>
+
   <section id="tab-templates" hidden>
     <div class="sechead"><h2>Nuke Publish Templates</h2>
       <span class="muted">The Nuke scripts publishing renders (README, Publishing). Anyone can publish one; every version is kept and can be restored.</span>
@@ -522,7 +550,7 @@ const about = s => s == null ? "" : s < 60 ? Math.max(5, Math.round(s / 5) * 5) 
   : s < 5940 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 
 // ------------------------------------------------------------- tabs
-const TABS = ["submit", "batch", "queue", "machines", "runtimes", "usage", "templates", "policy"];
+const TABS = ["submit", "batch", "queue", "machines", "runtimes", "usage", "alerts", "templates", "policy"];
 function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
@@ -533,6 +561,7 @@ function showTab(tab) {
   if (tab === "batch") window.batchShown?.();   // batch.js
   if (tab === "machines") { window.envsShown?.(); window.gpuShown?.(); }   // environments.js, gpu_history.js
   if (tab === "usage") window.usageShown?.();    // usage.js: jobs, GPU hours and failures
+  if (tab === "alerts") window.alertsShown?.();  // alerts.js: what needs a person
   if (tab === "policy") window.policyShown?.();  // policy.js: the rules in force
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
 }
@@ -1525,5 +1554,6 @@ boot();
 <script src="/policy.js"></script>
 <script src="/gpu_history.js"></script>
 <script src="/usage.js"></script>
+<script src="/alerts.js"></script>
 </body>
 </html>
