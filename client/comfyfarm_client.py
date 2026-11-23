@@ -290,6 +290,13 @@ def describe_publish(p: dict) -> str:
     return s
 
 
+def retention() -> dict:
+    """How long the farm keeps finished jobs' frames: {"enabled", "keep_days", "at"}
+    (enabled false: it deletes nothing)."""
+    r = _request("GET", "/api/v1/sweeps", timeout=10)
+    return {k: r.get(k) for k in ("enabled", "keep_days", "at")}
+
+
 def wait(job_id: str, poll: float = 3.0, timeout: float | None = None, on_update=None) -> dict:
     """Block until the job finishes. on_update(job) is called whenever it changes.
     In a DCC, call this from a thread, not the UI thread."""
