@@ -229,3 +229,9 @@ A4 launchers (xStudio, Daiquiri Automate).
   Step 2 is in: GPU history in the manager's database (`gpu_samples`), sampled every
   `gpu_history.sample_seconds` from what each agent last reported, kept
   `gpu_history.days`, and read per machine, averaged into steps over long spans (0049).
+  Peter tested it on the pilot manager.
+
+  Step 3 is in: a GPU history panel on the Machines tab (a graph per GPU, use and memory
+  on one scale, farm jobs shaded, gaps where a machine was silent), and a Usage tab with
+  jobs, GPU hours and failures per day, show, definition or machine from `job_metrics`
+  (`GET /api/v1/usage`). Both read-only, drawn without a chart library (0050).

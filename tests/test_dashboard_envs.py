@@ -196,17 +196,19 @@ class Panels(HTMLParser):
 
 class MachinesTab(unittest.TestCase):
     def test_machines_environments_and_rollouts_are_panels_of_their_own(self):
-        """Each its own table under its own heading, not one table whose columns change part way."""
+        """Each its own table (or graphs) under its own heading, not one table whose columns change part way."""
         parser = Panels()
         parser.feed((STATIC / "index.html").read_text(encoding="utf-8"))
         self.assertEqual([(p["h2"], p["id"], p["hidden"], p["tables"]) for p in parser.panels], [
             ("Machines", None, False, 1),
+            ("GPU history", "gpuPanel", True, 0),              # graphs, shown once a machine has checked in
             ("Runner environments", "envsPanel", True, 1),     # shown once there is an environment
             ("Rollouts", "rolloutsPanel", True, 1),            # or a rollout
         ])
         script = SCRIPT.read_text(encoding="utf-8")
         for panel in ("envsPanel", "rolloutsPanel"):
             self.assertIn(f'$("#{panel}")', script)
+        self.assertIn('$("#gpuPanel")', (STATIC / "gpu_history.js").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

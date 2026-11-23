@@ -709,6 +709,20 @@ convert:
         self.assertIsInstance(h["samples"], list)
         with self.assertRaisesRegex(farm.FarmError, "No machine called nobody has checked in"):
             farm._request("GET", "/api/v1/workers/nobody/gpu-history")
+        self.assertIn("function gpuPath", farm._request("GET", "/gpu_history.js", raw=True))   # its graphs
+
+    def test_04995d_usage(self):
+        """The Usage tab's numbers from job_metrics (decision 0050): per day, and per definition."""
+        u = farm._request("GET", "/api/v1/usage?days=7")
+        self.assertEqual((u["by"], u["days"], len(u["rows"])), ("day", 7, 7))
+        self.assertGreaterEqual(u["total"]["jobs"], 1)                          # the jobs run so far
+        self.assertEqual(sum(r["jobs"] for r in u["rows"]), u["total"]["jobs"])
+        self.assertGreaterEqual(u["total"]["gpu_seconds"], 0)
+        defs = farm._request("GET", "/api/v1/usage?days=7&by=workflow&workflow=ltx25_alpha_gen")["rows"]
+        self.assertEqual([d["key"] for d in defs], ["ltx25_alpha_gen"])
+        with self.assertRaisesRegex(farm.FarmError, "by is one of"):
+            farm._request("GET", "/api/v1/usage?by=user")
+        self.assertIn("function usageLabel", farm._request("GET", "/usage.js", raw=True))
 
     def test_04996_sweeps(self):
         """The retention sweeper's dry run (decision 0041): off here, so no daily run; one asked

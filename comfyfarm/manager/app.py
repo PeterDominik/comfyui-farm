@@ -31,6 +31,7 @@ from . import metrics as MX
 from . import prom as PM
 from . import share
 from . import sweeper as SW
+from . import usage as US
 from .farm import Farm, FarmError
 
 HERE = Path(__file__).resolve().parent
@@ -229,6 +230,16 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def policy_js():
         """The dashboard's Policy tab, read-only (static/policy.js)."""
         return FileResponse(HERE / "static" / "policy.js", media_type="text/javascript", headers=FRESH)
+
+    @app.get("/gpu_history.js", include_in_schema=False)
+    def gpu_history_js():
+        """The Machines tab's GPU history graphs (static/gpu_history.js)."""
+        return FileResponse(HERE / "static" / "gpu_history.js", media_type="text/javascript", headers=FRESH)
+
+    @app.get("/usage.js", include_in_schema=False)
+    def usage_js():
+        """The dashboard's Usage tab: jobs, GPU hours and failures (static/usage.js)."""
+        return FileResponse(HERE / "static" / "usage.js", media_type="text/javascript", headers=FRESH)
 
     @app.get("/environments.js", include_in_schema=False)
     def environments_js():
@@ -622,6 +633,17 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             return Response(MX.to_csv(table), media_type="text/csv; charset=utf-8",
                             headers={"Content-Disposition": 'attachment; filename="comfyfarm-job-metrics.csv"'})
         return {"jobs": table}
+
+    @app.get("/api/v1/usage")
+    def usage(days: int = Query(30, ge=1, le=366), by: str = "day", show: str | None = None,
+              workflow: str | None = None, ident: Identity = Depends(identity)):
+        """Jobs, GPU hours and failures over the last `days` (today included), from job_metrics
+        (decision 0050): per day, show, workflow or machine (`by`), for one show or definition
+        (`show`, `workflow`) or all."""
+        try:
+            return US.report(store, registry, days, by, show, workflow)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
 
     started_at = now()
 

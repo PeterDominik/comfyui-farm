@@ -420,6 +420,42 @@ class JobStore:
             f"FROM job_metrics WHERE kind != 'set' GROUP BY workflow, outcome, COALESCE(gpu, '') "
             f"ORDER BY workflow, outcome, gpu", ())]
 
+    # The Usage tab's groups (decision 0050): a day in the manager's local time, or a column.
+    USAGE_KEYS = {"day": "date(finished_at, 'unixepoch', 'localtime')", "show": "COALESCE(show, '')",
+                  "workflow": "workflow", "machine": "COALESCE(worker, '')", "all": "''"}
+
+    def usage(self, since: float, by: str, show: str | None = None, workflow: str | None = None) -> list[dict]:
+        """Runs (jobs and a set's batches, not the set) that finished since `since`, summed per
+        `by` (USAGE_KEYS): how many and how they ended, their seconds on a GPU (any outcome:
+        a failed run held the GPU too) and those of runs that didn't finish done, the frames
+        of those done, and their average wait to be given to a machine."""
+        on_gpu = "started_at IS NOT NULL AND finished_at > started_at"
+        where, args = ["kind != 'set'", "finished_at >= ?"], [since]
+        if show is not None:
+            where.append("COALESCE(show, '') = ?")
+            args.append(show)
+        if workflow is not None:
+            where.append("workflow = ?")
+            args.append(workflow)
+        return [dict(r) for r in self._q(
+            f"SELECT {self.USAGE_KEYS[by]} AS key, COUNT(*) AS jobs, "
+            f"SUM(outcome = 'done') AS done, SUM(outcome = 'failed') AS failed, "
+            f"SUM(outcome = 'cancelled') AS cancelled, "
+            f"SUM(CASE WHEN {on_gpu} THEN finished_at - started_at ELSE 0 END) AS gpu_seconds, "
+            f"SUM(CASE WHEN {on_gpu} AND outcome != 'done' THEN finished_at - started_at ELSE 0 END) "
+            f"AS lost_seconds, "
+            f"SUM(CASE WHEN outcome = 'done' THEN COALESCE(units, 0) ELSE 0 END) AS frames, "
+            f"AVG(CASE WHEN assigned_at >= created_at THEN assigned_at - created_at END) AS wait_seconds "
+            f"FROM job_metrics WHERE {' AND '.join(where)} GROUP BY key ORDER BY key", tuple(args))]
+
+    def usage_values(self, since: float) -> dict:
+        """The shows, definitions and machines of runs that finished since `since`: what the
+        Usage tab's filters offer."""
+        def distinct(col):
+            return [r["v"] for r in self._q(f"SELECT DISTINCT {col} AS v FROM job_metrics "
+                                             f"WHERE kind != 'set' AND finished_at >= ? ORDER BY v", (since,))]
+        return {"shows": distinct("COALESCE(show, '')"), "workflows": distinct("workflow")}
+
     def events(self, job_id: str) -> list[dict]:
         """A job's timeline, oldest first."""
         out = []
