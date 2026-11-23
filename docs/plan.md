@@ -58,6 +58,7 @@ Every phase keeps Nuke to ComfyUI to publish working and ends at a gate.
 
 Clients, in parallel: A1 shared client core with Nuke as one host; A2 Maya; A3 Mari;
 A4 launchers (xStudio, Daiquiri Automate).
+Nuke farm node (0051): a workflow as a node in the script, from the panel or the Tab menu.
 
 ## Progress
 

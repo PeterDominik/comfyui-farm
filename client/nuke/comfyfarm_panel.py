@@ -554,6 +554,10 @@ try:
     import comfyfarm_nuke as nk
 except ImportError:
     nuke = nk = None
+if nk is not None:
+    import comfyfarm_node as farm_node   # needs PanelModel (above): imported once it exists
+else:
+    farm_node = None
 
 
 if QtWidgets is not None:
@@ -885,7 +889,13 @@ if QtWidgets is not None:
             self.msg_label = QtWidgets.QLabel("")
             self.msg_label.setWordWrap(True)
             self.msg_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.node_btn = QtWidgets.QPushButton("Create node")
+            self.node_btn.setToolTip("A ComfyFarm node for this workflow in the script, with the form as filled "
+                                     "in: submit, version and publish from the node")
+            self.node_btn.setEnabled(farm_node is not None)
+            self.node_btn.clicked.connect(lambda *_: self._create_node())
             actions.addWidget(self.submit_btn)
+            actions.addWidget(self.node_btn)
             actions.addWidget(self.msg_label, 1)
             tl.addLayout(actions)
             self.autoread_check = QtWidgets.QCheckBox("Create a Read node when my jobs finish")
@@ -1250,6 +1260,29 @@ if QtWidgets is not None:
                 self._schedule_plan()   # that version is taken now
                 self._poll(force=True)
             self._async(lambda: self.model.submit(wf["name"], raw, name, source_node=node, publish=publish), done)
+
+        def _create_node(self):
+            """Create node: the workflow as a node in the script, with the form's values, wired
+            to the node its input came from (From selected) or that reads the typed path."""
+            wf = self._wf()
+            if not wf or farm_node is None:
+                return
+            pub_on = bool(self.pub_check is not None and self.pub_check.isChecked())
+            pub = self.pub_fields.values() if self.pub_fields is not None else None
+            connect = None
+            seq = PanelModel.sequence_param(wf)
+            raw = self._raw()
+            if self._selected_node and seq and raw.get(seq, "").strip() == self._selected_node[1]:
+                src = nuke.toNode(self._selected_node[0])
+                if src is not None:
+                    connect = {seq: src}
+            try:
+                node = farm_node.create_node(wf, raw=raw, job_name=self.name_edit.text().strip() if self.name_edit else "",
+                                             publish_on=pub_on, pub_values=pub, connect=connect)
+            except Exception as e:  # noqa: BLE001 - shown in the panel
+                self._message(f"Couldn't create the node: {e}", True)
+                return
+            self._message(f"Created {node.name()}: submit from its ComfyFarm tab.")
 
         # -------------------------------------------------------- jobs
         def _poll(self, force=False):

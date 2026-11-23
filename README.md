@@ -776,7 +776,8 @@ The ComfyFarm panel is the dashboard inside Nuke, with the same three tabs: *Sub
 and *Machines*, and publishing (*Publishing* below). The form is built from the farm's workflow list, so it has the same fields as
 the web page and picks up manifest changes without a client update. It shows the same live
 destination line. Nuke stays usable while jobs run, and a Read node for each finished job is
-created next to its source. Jobs are always submitted from the form.
+created next to its source. Jobs are submitted from the form, or from a ComfyFarm node
+(*ComfyFarm node* below).
 
 **Install:** each artist runs `python3 /rdo/bank/comfy_farm/client/nuke/install_for_me.py`
 once and restarts Nuke (*Deploying → Artists*). The manager keeps that copy of the client
@@ -822,6 +823,29 @@ with the command and Daiquiri's output.
 
 Movies: a Read of a `movhistory` `.mov` sends the whole movie. The farm numbers its frames
 from the timecode and drops the slate, as it does from the dashboard.
+
+### ComfyFarm node
+
+A workflow can also be a node in the script: a Group with the workflow's fields as knobs,
+its image inputs as input arrows, and its result as its output (decision 0051).
+
+- **Make one:** in the panel, fill in the form and click *Create node* (the node gets the
+  form's values and is wired to the Read the input came from), or press Tab in the node
+  graph and pick *ComfyFarm → Create Node → <workflow>* (the farm's defaults, wired to the
+  selected Read/Write nodes). *Reload workflows* in that menu asks the farm again.
+- **Inputs:** connect a Read or Write to each input arrow (Dots are fine). The farm reads
+  files, so a comp branch needs a Write rendered first. A one-image input takes the current
+  frame. A path typed into the input's *path* knob is used instead of the connection.
+- **Submit** queues a job from the knobs as they are. Every Submit is a new version;
+  *Version* picks the one the node shows. Until it's done the primary input passes through;
+  then the node outputs its frames (a texture job: one map at a time, *Map*).
+- **Refresh** asks the farm about the node's jobs. After reopening a script, press it to
+  follow running jobs again. It also says when the workflow changed on the farm: **Rebuild**
+  updates the knobs and inputs and keeps the values, connections and versions.
+- **Cancel** stops the picked version. **Publish when done** and **Publish version** use
+  the same fields as the panel.
+- With the retention sweeper on, the status says when a version's frames are deleted, and
+  *Expired* after. Publish what you keep.
 
 Outside Nuke, `python client/nuke/comfyfarm_panel.py` opens the same panel as a window,
 if PySide6 or PySide2 is installed.
