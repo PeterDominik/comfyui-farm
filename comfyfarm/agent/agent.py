@@ -44,6 +44,7 @@ from ..fileio.ocio import REPO
 from ..protocol import ON_WORKER, TERMINAL, LinkError, build, now
 from ..runners import make_runners
 from ..runners.base import Runner, RunRejected, RunState
+from . import evals as EV
 from . import gpus as G
 from . import provenance as PR
 from .envman import EnvManager
@@ -483,6 +484,18 @@ class Agent:
         try:
             info = h.job["info"] or {}
             out_dir = info.get("output_dir")
+            ev = info.get("eval")
+            if ev:                      # an eval (decision 0053): the manager's files, and an empty folder
+                why = await asyncio.to_thread(EV.verify, ev.get("files") or [])
+                if why:
+                    await self.run_failed(h, f"The eval can't run on {self.name}: {why}. Bring its checkout to the "
+                                             f"manager's (git pull), then run the eval again.")
+                    return
+                try:
+                    await asyncio.to_thread(EV.clear, ev.get("folder") or out_dir, self.scratch_root)
+                except (OSError, ValueError) as e:
+                    await self.run_failed(h, f"Can't empty the eval's folder on {self.name}: {e}")
+                    return
             if out_dir:
                 try:
                     await asyncio.to_thread(O.makedirs_readable, out_dir)
@@ -840,6 +853,15 @@ class Agent:
             t = now()
             started = h.started_at or h.dispatched_at or t
             warnings += await self._provenance(h, outputs, wrote, warnings, started, t)
+            ev = (h.job.get("info") or {}).get("eval")
+            if ev:                      # an eval (decision 0053): its checks, on what it wrote
+                result = await asyncio.to_thread(EV.check, ev.get("checks") or {}, wrote)
+                log.info("eval of %s (job %s): %s", h.job["workflow"], h.id[:8], "passed" if result["ok"] else "failed")
+                if not result["ok"]:
+                    S.cleanup(h.job, self.scratch_root)
+                    await self.run_failed(h, EV.failure(result))
+                    return
+                outputs["eval"] = result
             nodes = rt.nodes() if rt else None
             S.cleanup(h.job, self.scratch_root)
             self._release(h)

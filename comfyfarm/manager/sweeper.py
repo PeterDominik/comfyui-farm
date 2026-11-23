@@ -171,6 +171,8 @@ def sweep(store, cfg, t: float | None = None) -> dict:
     rc = cfg.retention
     jobs, kept, publishing = [], 0, 0
     for job in store.list(statuses=FINISHED, limit=10_000_000):
+        if (job.get("info") or {}).get("eval"):
+            continue                    # an eval's outputs are in its machine's scratch folder (decision 0053)
         expires, sent = expiry(job, store.publishes(job["id"]), rc.keep_days)
         if expires is None:
             publishing += 1

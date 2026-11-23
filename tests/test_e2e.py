@@ -724,6 +724,31 @@ convert:
             farm._request("GET", "/api/v1/usage?by=user")
         self.assertIn("function usageLabel", farm._request("GET", "/usage.js", raw=True))
 
+    def test_04995f_an_eval_on_a_drained_machine(self):
+        """An eval (decision 0053): CHORD's reference texture, from the repo, through the drained
+        mock machine, which takes it and nothing else; its five maps checked by the agent, in its
+        scratch folder; and an artist's job queued meanwhile waits for the machine to resume."""
+        farm._request("POST", "/api/v1/workers/mock/drain", {"drain": True})
+        try:
+            art = self.submit("1001-1002")
+            [ev] = farm._request("POST", "/api/v1/evals", {"definition": "chord_pbr", "machines": ["mock"]})["evals"]
+            self.assertEqual((ev["definition"], ev["machine"]), ("chord_pbr", "mock"))
+            done = self.wait_for(ev["job"], ("done", "failed"), timeout=60)
+            self.assertEqual(done["status"], "done", done.get("error"))
+            self.assertEqual(farm.get(art["id"])["status"], "queued")            # drained: the eval alone
+            [r] = farm._request("GET", f"/api/v1/evals?jobs={ev['job']}")["evals"]
+            self.assertEqual(r["checks"], [{"check": "files .exr", "ok": True, "said": "5 written, 5 wanted"}])
+            out = Path(done["info"]["output_dir"])
+            self.assertTrue(done["info"]["output_dir"].split("/scratch/")[-1].startswith("evals/chord_pbr/"),
+                            done["info"]["output_dir"])
+            self.assertEqual(len([n for n in os.listdir(out) if n.endswith(".exr")]), 5)
+            self.assertEqual((done["info"]["eval"]["machine"], done["info"]["show"]), ("mock", None))
+            with self.assertRaisesRegex(farm.FarmError, "has no eval"):
+                farm._request("POST", "/api/v1/evals", {"definition": "ltx25_alpha_gen", "machines": ["mock"]})
+        finally:
+            farm._request("POST", "/api/v1/workers/mock/drain", {"drain": False})
+        self.assertEqual(self.wait_for(art["id"], ("done", "failed"))["status"], "done")
+
     def test_04995e_alerts_off(self):
         """Alerts are off here (decision 0052): the endpoint says so, with the rules they'd use."""
         a = farm._request("GET", "/api/v1/alerts")

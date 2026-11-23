@@ -76,6 +76,18 @@ writes:
   preview: true                 # the farm makes its preview movie, as for a workflow's frames
   file: {ext: json}             # its report, named after the job by the farm (decision 0036)
 
+# Its reference job (README, Evals; decision 0053): run on a machine by `comfyfarm eval
+# gpu_test`, and by a rollout of gpu-test before it goes on (evals.gate). Invert is exact,
+# so the frame must match eval/expected.png almost to the bit.
+eval:
+  inputs: {input: eval/input.png}       # 64 x 48 pixels: a gradient and a square
+  params: {operation: invert}
+  checks:
+    files: {png: 1, json: 1}            # the frame and its report
+    size: [64, 48]
+    like:
+      - {output: '*.png', expected: eval/expected.png, max_error: 0.002}
+
 runner:
   type: process
   environment: gpu-test         # environments/gpu-test: torch 2.13 (CUDA 13.0), numpy, pillow

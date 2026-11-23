@@ -61,6 +61,12 @@ alerts:
   rollout_problems: true       # a rollout or a ComfyUI sync stopped, waiting for a person
   google_chat: ''              # the space's webhook (Apps & integrations > Webhooks): secret, keep it here
 
+# Evals (README, Evals; decision 0053): a definition's eval: run on a machine by `comfyfarm
+# eval`. With gate, rollouts and ComfyUI syncs run them on each machine before going on.
+evals:
+  gate: false
+  minutes: 30                  # a machine's evals not over by then stop the rollout or sync
+
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.
 agents:

@@ -294,6 +294,62 @@ def image_size(path: str) -> tuple[int, int] | None:
     return (spec.full_width or spec.width, spec.full_height or spec.height)
 
 
+def png_pixels(path: str) -> tuple[int, int, int, int, bytes | tuple] | None:
+    """A PNG's pixels, read with the standard library: (width, height, channels, full scale,
+    samples), the samples row by row (bytes, or a tuple of ints for 16-bit). None for what it
+    doesn't read: palette or interlaced images, depths under 8 bits. For an eval's checks
+    (decision 0053) on a machine without OpenImageIO's Python module."""
+    import struct
+    import zlib
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    pos, idat, ihdr = 8, [], None
+    while pos + 8 <= len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + n]
+        pos += 12 + n
+        if kind == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+        elif kind == b"IEND":
+            break
+    if ihdr is None:
+        return None
+    w, h, depth, colour, _, _, interlace = ihdr
+    ch = {0: 1, 2: 3, 4: 2, 6: 4}.get(colour)
+    if ch is None or depth not in (8, 16) or interlace:
+        return None
+    bpp = ch * depth // 8
+    stride = w * bpp
+    raw = zlib.decompress(b"".join(idat))
+    out, prev = bytearray(), bytearray(stride)
+    for y in range(h):
+        at = y * (stride + 1)
+        kind, line = raw[at], bytearray(raw[at + 1:at + 1 + stride])
+        if kind == 1:
+            for i in range(bpp, stride):
+                line[i] = (line[i] + line[i - bpp]) & 255
+        elif kind == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 255
+        elif kind == 3:
+            for i in range(stride):
+                line[i] = (line[i] + ((line[i - bpp] if i >= bpp else 0) + prev[i]) // 2) & 255
+        elif kind == 4:
+            for i in range(stride):
+                a, b, c = (line[i - bpp] if i >= bpp else 0), prev[i], (prev[i - bpp] if i >= bpp else 0)
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        out += line
+        prev = line
+    if depth == 16:
+        return w, h, ch, 65535, struct.unpack(f">{len(out) // 2}H", bytes(out))
+    return w, h, ch, 255, bytes(out)
+
+
 def fit_size(size: tuple[int, int], limit: int) -> tuple[int, int]:
     """size scaled so its longer side is `limit` (aspect kept), or as it is if it fits."""
     w, h = size

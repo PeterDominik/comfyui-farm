@@ -111,6 +111,15 @@ writes:
       - {name: roughness, channel: spcr01,  bits: half}
       - {name: metalness, channel: metal01, bits: half}
 
+# Its reference job (README, Evals; decision 0053): a brick texture through CHORD, run on a
+# machine by `comfyfarm eval chord_pbr`, and by a ComfyUI sync before it goes on
+# (evals.gate). It checks CHORD runs and writes its five maps. To catch a node pack that
+# changes the maps, add `like` checks against maps from a machine you trust (README, Evals).
+eval:
+  inputs: {input: eval/diffuse.1001.png}   # 256 x 256 pixels, UDIM 1001
+  checks:
+    files: {exr: 5}                      # basecolor, normal, height, roughness, metalness
+
 runner:
   type: comfyui
   template: workflow_api.json
