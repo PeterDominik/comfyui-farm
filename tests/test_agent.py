@@ -40,6 +40,7 @@ from comfyfarm.fileio.errors import SequenceError
 from comfyfarm.fileio.media import read_movie_info
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import STEAL_SECONDS, Desk
+from comfyfarm.manager import policy as PO
 from comfyfarm.manager.events import EventBus
 from comfyfarm.manager.farm import Farm, FarmError
 from comfyfarm.protocol import LinkError, build
@@ -458,6 +459,43 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(row["fingerprint"], self.farm.registry.workflows["ltx25_alpha_gen"].digest)
         times = [row[k] for k in ("created_at", "assigned_at", "dispatched_at", "started_at", "finished_at")]
         self.assertEqual(times, sorted(times))
+
+    def policy_file(self, text: str) -> None:
+        """The farm's policy on, from a file in the test's bank folder, re-read now."""
+        path = Path(self.root, "bank", "policy.yaml")
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        if not self.farm.policy.enabled:
+            self.farm.policy = PO.Policy(True, str(path), Path(self.root, "policy.json"),
+                                         lambda: set(self.farm.registry.workflows))
+        st = path.stat()                                    # seen as changed, even within the same second
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        self.farm.policy.refresh(force=True)
+
+    def test_a_rule_written_after_a_job_was_queued_fails_it_when_a_machine_would_take_it(self):
+        """Decision 0046: the policy as it is at hand-out, not only as it was at submit."""
+        self.policy_file("version: 1\n")
+        job = self.submit()                                                     # allowed when it was planned
+        self.policy_file("version: 1\nshows:\n  - {name: xyz-closed, shows: [xyz], deny: all, "
+                         "reason: Closed for the test}\n")
+        a = self.ready(self.agent())
+        self.beat(a)
+        self.until(lambda: self.job(job["id"])["status"] == "failed", what="failed")
+        j = self.job(job["id"])
+        self.assertEqual(j["error"], "Not run: the farm's policy changed after it was queued. ltx25_alpha_gen can't "
+                                     "run for show xyz: Closed for the test. (Policy rule xyz-closed.)")
+        self.assertEqual((j["worker"], j["prompt_id"], a.held), (None, None, {}))  # never given to a machine
+        self.assertIn("failed", [e["event"] for e in self.store.events(job["id"])])
+
+    def test_a_policy_that_cant_be_read_holds_the_queue(self):
+        job = self.submit()                                                     # queued before policy was on
+        self.policy_file("version: 1\nother_shows: maybe\n")                  # never a valid file
+        a = self.ready(self.agent())
+        self.beat(a)
+        self.beat(a)
+        self.assertEqual((self.job(job["id"])["status"], a.held), ("queued", {}))   # neither run nor failed
+        self.policy_file("version: 1\n")
+        self.dispatched(a, job)                                                 # fixed: on its way
 
     def test_a_provenance_file_only_for_jobs_submitted_with_it_on(self):
         a = self.ready(self.agent())

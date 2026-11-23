@@ -1080,9 +1080,13 @@ policy:
   on and no valid file ever read, nothing is planned, so a client's restriction can't
   lapse because of a typo.
 - **Checked when a job is planned:** the dashboard's and Nuke's preview, every submit,
-  Run again, Batch Submit's rows, and a set's Retry failed. Jobs already queued run as
-  planned. A submit plans under the submit lock, so two submits can't both take a quota's
-  last place.
+  Run again, Batch Submit's rows, and a set's Retry failed. A submit plans under the
+  submit lock, so two submits can't both take a quota's last place.
+- **Checked again when a machine would take a queued job** (decision 0046), against the
+  show and licence rules as they are then. A job a rule written since it was queued refuses
+  fails with "Not run: the farm's policy changed after it was queued" and the rule. Quotas
+  aren't asked again: they are for new submissions. A job already on a machine runs to the
+  end. While the policy can't be read (on, and no valid file ever read), queued jobs wait.
 - **Identity is trusted until API keys come.** Show and licence rules are by show and
   definition. Quotas per user count the name the client sends, so they keep honest users
   within a share, not anyone determined to get round them.
