@@ -339,3 +339,7 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   reason. Each of the six has its task and `gpu_test` is hidden. These fields are left out
   of the fingerprint, so the six keep the ones they had. `comfyfarm check` says where each
   workflow shows in the menus (0054).
+
+  `GET /api/v1/catalog?show=` is in: the tree every client will draw, with a workflow the
+  show's policy refuses kept and marked with the reason, and hidden ones only on request.
+  The shared client has `catalog()` and a `catalog` command (0054).

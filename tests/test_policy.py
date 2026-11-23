@@ -490,6 +490,24 @@ class WhenPlanned(unittest.TestCase):
             self.farm.submit("chord_pbr", {"input": "/rdo/shows/xyz/_asset/rockA/cg/textures/src"}, "ann")
         self.assertEqual(self.store.list(), [])                               # nothing queued
 
+    def test_the_menus_keep_what_a_show_may_not_use_and_say_why(self):
+        """Decision 0054: GET /api/v1/catalog marks a workflow the show's rules refuse, with
+        the reason and the rule, instead of leaving it out."""
+        Path(f"{self.root}/bank/policy.yaml").write_text(RULES)
+        self.farm.policy.refresh(force=True)
+        flat = {w["name"]: w for p in self.farm.catalogue("bri3")["providers"] for t in p["tasks"]
+                for w in t["workflows"]}
+        self.assertEqual(sorted(n for n, w in flat.items() if w["allowed"]), ["chord_pbr", "ltx25_alpha_gen"])
+        wan = flat["wan22_i2i"]
+        self.assertEqual((wan["allowed"], wan["rule"]), (False, "bri3-alpha-only"))
+        self.assertIn("wan22_i2i can't run for show bri3: Only alpha generation is cleared with the client. "
+                      "(Policy rule bri3-alpha-only.)", wan["reason"])
+        cat = self.farm.catalogue("guem2609")
+        self.assertEqual(cat["show"], "guem2609")
+        self.assertFalse(any(w["allowed"] for p in cat["providers"] for t in p["tasks"] for w in t["workflows"]))
+        self.assertTrue(all(w["allowed"] for p in self.farm.catalogue("unlp")["providers"] for t in p["tasks"]
+                            for w in t["workflows"] if w["name"] != "wan22_i2i"))
+
     def test_a_quota_is_checked_at_plan_with_what_is_queued(self):
         """Decision 0045: the second job over a show's quota is refused, in the preview too."""
         Path(f"{self.root}/bank/policy.yaml").write_text(

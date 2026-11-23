@@ -287,6 +287,13 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             out.append(s)
         return {"workflows": out, "load_errors": registry.load_errors}
 
+    @app.get("/api/v1/catalog")
+    def catalog(show: str | None = None, hidden: bool = False, ident: Identity = Depends(identity)):
+        """The menus every client draws, Provider > Task > Workflow, for a show: which of them
+        the show may use, and why not (decision 0054). `hidden`: the farm's hidden ones too.
+        A plain `def`: the policy may be read from the shared folder."""
+        return farm.catalogue((show or "").strip()[:64] or None, hidden)
+
     @app.post("/api/v1/jobs", status_code=201)
     def submit(req: JobRequest, ident: Identity = Depends(identity)):
         # A plain `def` endpoint runs in a thread: validation reads the show storage.

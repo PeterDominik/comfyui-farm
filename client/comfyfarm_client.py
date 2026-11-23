@@ -19,6 +19,7 @@ From Python:
 
 From a shell:
     python comfyfarm_client.py workflows
+    python comfyfarm_client.py catalog [show=bri3] [--hidden]   # the menus: Provider > Task > Workflow
     python comfyfarm_client.py submit ltx25_alpha_gen input="/rdo/shows/.../x.%04d.png 1001-1158" --wait
     python comfyfarm_client.py submit ltx25_alpha_gen input="https://<site>/detail/Version/4865327"
                                        # a ShotGrid Version's frames (its movie when it has none)
@@ -147,6 +148,41 @@ def workers() -> list:
 
 def workflows() -> list:
     return _request("GET", "/api/v1/workflows")["workflows"]
+
+
+def catalog(show: str | None = None, hidden: bool = False) -> dict:
+    """The menus, Provider > Task > Workflow, for a show:
+    {"show", "providers": [{name, label, offsite, tasks: [{name, label, workflows: [...]}]}],
+     "errors"}. Each workflow has its name, label, task, provider, family and siblings, and
+    "allowed": false with the policy's "reason" when the show may not use it.
+    hidden: the farm's hidden workflows too (its GPU test)."""
+    query = {}
+    if show:
+        query["show"] = show
+    if hidden:
+        query["hidden"] = "true"
+    return _request("GET", "/api/v1/catalog" + ("?" + urllib.parse.urlencode(query) if query else ""))
+
+
+def menu_lines(cat: dict) -> list:
+    """The catalogue as indented lines, the way the menus read."""
+    lines = []
+    for p in cat.get("providers") or []:
+        lines.append(p["label"] + (" (off-site)" if p.get("offsite") else ""))
+        for t in p.get("tasks") or []:
+            lines.append("  " + t["label"])
+            for w in t.get("workflows") or []:
+                notes = []
+                if w.get("hidden"):
+                    notes.append("hidden")
+                if not w.get("enabled", True):
+                    notes.append("disabled: " + "; ".join(w.get("problems") or []))
+                if not w.get("allowed", True):
+                    notes.append("not on this show: " + (w.get("reason") or ""))
+                lines.append(f"    {w['label']}  [{w['name']}]" + (f"  ({'; '.join(notes)})" if notes else ""))
+    for e in cat.get("errors") or []:
+        lines.append("menus: " + e)
+    return lines
 
 
 def plan(workflow: str, params: dict, show: str | None = None, shot: str | None = None,
@@ -368,6 +404,12 @@ def main(argv: list[str]) -> int:
                 for p in wf["params"]:
                     req = " (required)" if p["required"] else f" = {p['default']!r}"
                     print(f"    {p['name']:<18} {p['type']:<9}{req}")
+        elif cmd == "catalog":
+            fields = dict(a.split("=", 1) for a in args if "=" in a and not a.startswith("--"))
+            if set(fields) - {"show"}:
+                raise FarmError(f"catalog takes show=, not {', '.join(sorted(set(fields) - {'show'}))}")
+            for line in menu_lines(catalog(fields.get("show"), hidden="--hidden" in args)):
+                print(line)
         elif cmd == "submit":
             wf, flags = args[0], [a for a in args[1:] if a.startswith("--")]
             params = dict(a.split("=", 1) for a in args[1:] if "=" in a and not a.startswith("--"))

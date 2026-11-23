@@ -17,12 +17,14 @@ None of this changes what a job runs, so it isn't part of a definition's fingerp
 (definitions.py): moving a workflow to another task never makes a machine refuse a job.
 
 definitions.py checks each definition's task and provider against the catalogue
-(`Catalog.problems`). The catalogue is the checkout's, read again when its files change
-(`current`). It needs the standard library and yaml only."""
+(`Catalog.problems`), and the manager draws the menus from it for a show
+(`Catalog.tree`, GET /api/v1/catalog). The catalogue is the checkout's, read again when its
+files change (`current`). It needs the standard library and yaml only."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -105,6 +107,67 @@ class Catalog:
     def summary(self) -> str:
         return (f"{len(self.providers)} provider(s) ({', '.join(p.label for p in self.providers.values())}), "
                 f"{len(self.tasks)} task(s) ({', '.join(t.label for t in self.tasks.values())})")
+
+    def tree(self, definitions: Iterable, refusal: Callable | None = None, hidden: bool = False) -> list[dict]:
+        """The menus, as every client draws them (GET /api/v1/catalog): providers in their
+        order, each with its tasks in tasks.yaml's order, each with its workflows by label.
+
+        - `definitions`: the loaded definitions (a DefinitionRegistry's).
+        - `refusal(definition)`: why the show may not use it, as (reason, policy rule), or
+          None. A refused workflow stays listed, so a menu can say why (Nuke: "not on this
+          show").
+        - `hidden`: list the hidden ones too, marked (the dashboard). Artists' menus don't.
+
+        A provider or a task with nothing in it isn't listed. A definition with no task is
+        under "Other", after its provider's tasks. One whose provider or task the catalogue
+        doesn't have (it is turned off, or the catalogue's files are broken) is still listed,
+        under that name, after the known ones, so a broken file never empties a menu."""
+        shown = [wf for wf in definitions if hidden or wf.hidden is not True]
+        family: dict[str, list] = {}
+        for wf in shown:
+            if isinstance(wf.family, str):
+                family.setdefault(wf.family, []).append(wf)
+        groups: dict[str, dict] = {}
+        for wf in shown:
+            p = wf.provider if isinstance(wf.provider, str) else "?"
+            t = wf.task if isinstance(wf.task, str) else None
+            groups.setdefault(p, {}).setdefault(t, []).append(wf)
+
+        def label_of(provider) -> str:
+            p = self.providers.get(provider or "")
+            return p.label if p else str(provider)
+
+        def entry(wf) -> dict:
+            why = refusal(wf) if refusal is not None else None
+            p = self.providers.get(wf.provider if isinstance(wf.provider, str) else "")
+            return {
+                "name": wf.name, "label": wf.label or wf.name, "description": wf.description,
+                "task": wf.task, "provider": wf.provider, "family": wf.family,
+                "offsite": p.offsite if p else False, "hidden": wf.hidden is True,
+                "enabled": wf.enabled, "problems": list(wf.problems),
+                "allowed": why is None, "reason": why[0] if why else None, "rule": why[1] if why else None,
+                "siblings": [{"name": s.name, "label": s.label or s.name, "provider": s.provider,
+                              "provider_label": label_of(s.provider)}
+                             for s in family.get(wf.family, []) if s is not wf] if isinstance(wf.family, str) else [],
+            }
+
+        def known_first(names, known) -> list:
+            return [n for n in known if n in names] + sorted(n for n in names if n not in known and n is not None)
+
+        out = []
+        for pname in known_first(groups, self.providers):
+            p = self.providers.get(pname)
+            tasks = []
+            by_task = groups[pname]
+            for tname in [*known_first(by_task, self.tasks), *([None] if None in by_task else [])]:
+                t = self.tasks.get(tname or "")
+                head = t.as_dict() if t else {"name": tname, "label": tname or "Other", "description": ""}
+                workflows = sorted(by_task[tname], key=lambda w: ((w.label or w.name).lower(), w.name))
+                tasks.append({**head, "workflows": [entry(wf) for wf in workflows]})
+            head = p.as_dict() if p else {"name": pname, "label": pname, "runner": None, "target": None,
+                                          "offsite": False, "description": ""}
+            out.append({**head, "tasks": tasks})
+        return out
 
 
 def _provider(path: Path) -> Provider:

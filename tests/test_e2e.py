@@ -779,6 +779,22 @@ convert:
         self.assertIn("function policyBanner", farm._request("GET", "/policy.js", raw=True))
         self.assertTrue(p["file"].endswith("/policy.yaml"), p["file"])                # where it would be read
 
+    def test_04998_the_menus(self):
+        """Decision 0054: GET /api/v1/catalog, Provider > Task > Workflow, through the client."""
+        cat = farm.catalog(show="bri3")
+        self.assertEqual((cat["show"], cat["errors"], cat["load_errors"]), ("bri3", [], {}))
+        self.assertEqual([p["label"] for p in cat["providers"]], ["ComfyUI Local"])        # gpu_test is hidden
+        tasks = {t["label"]: [w["name"] for w in t["workflows"]] for t in cat["providers"][0]["tasks"]}
+        self.assertEqual(list(tasks), ["Masking", "Video", "Image", "Textures"])
+        self.assertEqual(sorted(tasks["Masking"]), ["ltx25_alpha_gen", "sam3_ltx_alpha"])
+        self.assertTrue(all(w["allowed"] for t in cat["providers"][0]["tasks"] for w in t["workflows"]))  # policy off
+        everything = farm.catalog(hidden=True)
+        self.assertEqual([p["label"] for p in everything["providers"]], ["ComfyUI Local", "Python Local"])
+        gpu = everything["providers"][1]["tasks"][0]
+        self.assertEqual((gpu["label"], [w["name"] for w in gpu["workflows"]], gpu["workflows"][0]["hidden"]),
+                         ("Tests", ["gpu_test"], True))
+        self.assertIn("    GPU test (process runner)  [gpu_test]  (hidden)", farm.menu_lines(everything))
+
     def test_0500_environment(self):
         """Each worker's ComfyUI environment reaches the dashboard. In standalone the agent
         doesn't know ComfyUI's folder: it says so instead of comparing."""

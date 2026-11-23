@@ -2,13 +2,16 @@
 Task > Workflow, and each definition's place in it. Its place never changes what a job
 runs, so it is left out of the definition's fingerprint."""
 
+import importlib
 import io
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import yaml
@@ -18,6 +21,9 @@ from comfyfarm import cli
 from comfyfarm.definitions import Definition, DefinitionRegistry
 
 REPO = Path(__file__).resolve().parent.parent
+if str(REPO / "client") not in sys.path:
+    sys.path.insert(0, str(REPO / "client"))
+client = importlib.import_module("comfyfarm_client")
 TASKS_OF = {"chord_pbr": "textures", "gpu_test": "tests", "ltx25_alpha_gen": "masking",
             "ltx25_layout_render": "video", "sam3_ltx_alpha": "masking", "wan22_i2i": "image"}
 
@@ -251,6 +257,123 @@ class CatalogueFileTests(Tmp):
         again = C.current(root)
         self.assertIsNot(again, first)
         self.assertEqual(list(again.tasks), ["masking", "video", "image"])
+
+
+def defn(name, label=None, task=None, provider="comfyui-local", family=None, hidden=False, enabled=True,
+         problems=()):
+    """What the tree reads of a definition."""
+    return SimpleNamespace(name=name, label=label or name, description=f"{name}'s description", task=task,
+                           provider=provider, family=family, hidden=hidden, enabled=enabled,
+                           problems=list(problems))
+
+
+def flat(tree) -> list[tuple]:
+    return [(p["label"], t["label"], w["name"]) for p in tree for t in p["tasks"] for w in t["workflows"]]
+
+
+class TreeTests(unittest.TestCase):
+    """The menus GET /api/v1/catalog returns: providers, then tasks, then workflows by label."""
+
+    def test_the_farms_menus(self):
+        cat = C.load()
+        reg = DefinitionRegistry(REPO / "workflows")
+        self.assertEqual(flat(cat.tree(reg.workflows.values())), [
+            ("ComfyUI Local", "Masking", "ltx25_alpha_gen"), ("ComfyUI Local", "Masking", "sam3_ltx_alpha"),
+            ("ComfyUI Local", "Video", "ltx25_layout_render"), ("ComfyUI Local", "Image", "wan22_i2i"),
+            ("ComfyUI Local", "Textures", "chord_pbr")])
+        tree = cat.tree(reg.workflows.values(), hidden=True)
+        self.assertEqual(flat(tree)[-1], ("Python Local", "Tests", "gpu_test"))
+        self.assertEqual({k: tree[0][k] for k in ("name", "label", "runner", "target", "offsite")},
+                         {"name": "comfyui-local", "label": "ComfyUI Local", "runner": "comfyui", "target": "pool",
+                          "offsite": False})
+        self.assertEqual({k: tree[0]["tasks"][0][k] for k in ("name", "label", "description")},
+                         {"name": "masking", "label": "Masking", "description": "Mattes and alphas of a plate."})
+        sam3 = tree[0]["tasks"][0]["workflows"][1]
+        self.assertEqual(sam3, {
+            "name": "sam3_ltx_alpha", "label": "SAM3 x LTX alpha (one subject)",
+            "description": reg.workflows["sam3_ltx_alpha"].description, "task": "masking",
+            "provider": "comfyui-local", "family": None, "offsite": False, "hidden": False, "enabled": True,
+            "problems": [], "allowed": True, "reason": None, "rule": None, "siblings": []})
+        self.assertTrue(tree[1]["tasks"][0]["workflows"][0]["hidden"])
+
+    def test_by_label_and_in_the_catalogues_order(self):
+        cat = C.load()
+        tree = cat.tree([defn("b", "Zed", "video"), defn("a", "alpha", "video"), defn("c", "Mid", "masking"),
+                         defn("p", "Proc", "tests", provider="python-local")])
+        self.assertEqual(flat(tree), [("ComfyUI Local", "Masking", "c"), ("ComfyUI Local", "Video", "a"),
+                                      ("ComfyUI Local", "Video", "b"), ("Python Local", "Tests", "p")])
+
+    def test_what_the_show_may_not_use_stays_and_says_why(self):
+        cat = C.load()
+        tree = cat.tree([defn("a", task="video"), defn("b", task="video")],
+                        refusal=lambda wf: ("b can't run for show x: no.", "x-rule") if wf.name == "b" else None)
+        a, b = tree[0]["tasks"][0]["workflows"]
+        self.assertEqual((a["allowed"], a["reason"], a["rule"]), (True, None, None))
+        self.assertEqual((b["allowed"], b["reason"], b["rule"]), (False, "b can't run for show x: no.", "x-rule"))
+
+    def test_siblings_are_the_same_family_elsewhere(self):
+        cat = C.load()
+        tree = cat.tree([defn("seed_local", "Seedance", "video", family="seedance-2"),
+                         defn("seed_py", "Seedance py", "video", provider="python-local", family="seedance-2"),
+                         defn("seed_hidden", "Seedance test", "video", family="seedance-2", hidden=True),
+                         defn("other", "Other", "video")])
+        rows = {w["name"]: w for p in tree for t in p["tasks"] for w in t["workflows"]}
+        self.assertEqual(rows["seed_local"]["siblings"], [{"name": "seed_py", "label": "Seedance py",
+                                                           "provider": "python-local",
+                                                           "provider_label": "Python Local"}])
+        self.assertEqual([s["name"] for s in rows["seed_py"]["siblings"]], ["seed_local"])
+        self.assertEqual(rows["other"]["siblings"], [])
+        self.assertNotIn("seed_hidden", rows)
+
+    def test_nothing_is_lost_from_a_menu(self):
+        """No task: under Other, last. A task or provider the catalogue lacks (a broken file):
+        under its own name, after the known ones. A turned-off definition: listed, with why."""
+        cat = C.load()
+        tree = cat.tree([defn("plain", task=None), defn("known", task="video"), defn("odd", task="relight"),
+                         defn("far", task="video", provider="elsewhere"),
+                         defn("off", task="video", enabled=False, problems=["task: relight isn't in ..."])])
+        self.assertEqual(flat(tree), [("ComfyUI Local", "Video", "known"), ("ComfyUI Local", "Video", "off"),
+                                      ("ComfyUI Local", "relight", "odd"), ("ComfyUI Local", "Other", "plain"),
+                                      ("elsewhere", "Video", "far")])
+        self.assertEqual(tree[0]["tasks"][2]["name"], None)
+        self.assertEqual(tree[1]["runner"], None)
+        off = tree[0]["tasks"][0]["workflows"][1]
+        self.assertEqual((off["enabled"], off["problems"]), (False, ["task: relight isn't in ..."]))
+
+    def test_an_empty_provider_or_task_isnt_listed(self):
+        self.assertEqual(C.load().tree([]), [])
+        tree = C.load().tree([defn("t", task="tests", provider="python-local", hidden=True)])
+        self.assertEqual(tree, [])
+
+
+class ClientTests(unittest.TestCase):
+    """The shared client: catalog() and `python comfyfarm_client.py catalog`."""
+
+    def test_it_asks_for_a_show(self):
+        with mock.patch.object(client, "_request", return_value={"providers": []}) as r:
+            client.catalog()
+            client.catalog("bri3", hidden=True)
+        self.assertEqual([c.args for c in r.call_args_list],
+                         [("GET", "/api/v1/catalog"), ("GET", "/api/v1/catalog?show=bri3&hidden=true")])
+
+    def test_it_prints_the_menus(self):
+        cat = C.load()
+        tree = cat.tree([defn("sam3", "SAM3", "masking"), defn("wan", "Wan", "image"),
+                         defn("t", "GPU test", "tests", provider="python-local", hidden=True)], hidden=True,
+                        refusal=lambda wf: ("wan can't run for show bri3: no.", "r") if wf.name == "wan" else None)
+        out = io.StringIO()
+        with mock.patch.object(client, "_request", return_value={"providers": tree, "errors": ["x: broken"]}) as r, \
+                redirect_stdout(out):
+            self.assertEqual(client.main(["catalog", "show=bri3", "--hidden"]), 0)
+        self.assertEqual(r.call_args.args, ("GET", "/api/v1/catalog?show=bri3&hidden=true"))
+        self.assertEqual(out.getvalue().splitlines(), [
+            "ComfyUI Local", "  Masking", "    SAM3  [sam3]", "  Image",
+            "    Wan  [wan]  (not on this show: wan can't run for show bri3: no.)",
+            "Python Local", "  Tests", "    GPU test  [t]  (hidden)", "menus: x: broken"])
+        err = io.StringIO()
+        with mock.patch("sys.stderr", err):
+            self.assertEqual(client.main(["catalog", "shot=0010"]), 1)
+        self.assertIn("catalog takes show=, not shot", err.getvalue())
 
 
 class CheckTests(unittest.TestCase):
