@@ -207,4 +207,20 @@ A4 launchers (xStudio, Daiquiri Automate).
   from, the file's error, every rule, what is queued against each quota, and each
   definition's models and licences (0047). With it, phase 7's steps are all in; its gate
   (a barred show refused with the rule named, a broken file leaving the last valid one in
-  force) was met in step 1.
+  force) was met in step 1. Peter tested it on the pilot manager.
+- Phase 8: started. Steps:
+  1. `/metrics` in Prometheus' text format: the queue, finished jobs (`job_metrics`), the
+     machines and their GPUs, the policy and the sweeper.
+  2. GPU history: the manager keeps each machine's GPU use and memory, sampled every
+     minute, for some days; `GET /api/v1/machines/<name>/gpu-history`.
+  3. Dashboard pages: GPU history on the Machines tab; a page of jobs, GPU hours and
+     failures per day, show and definition, from `job_metrics`.
+  4. Alerts: rules in config (a machine silent too long, a job waiting too long, failures
+     in a row on a machine, a sweep or rollout with problems), shown on the dashboard and
+     in the log, optionally posted to a Google Chat webhook.
+  5. Evals: `eval:` in a definition (a reference input, its params, and checks on what it
+     writes); `comfyfarm eval` runs one on a machine; rollouts and ComfyUI syncs run the
+     evals of the definitions they touch on each machine before going on, and a failed
+     eval stops them (the gate).
+
+  Step 1 is in: `GET /metrics`, every family a gauge, from what the manager holds (0048).

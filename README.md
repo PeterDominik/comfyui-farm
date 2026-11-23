@@ -1098,6 +1098,40 @@ policy:
   definition. Quotas per user count the name the client sends, so they keep honest users
   within a share, not anyone determined to get round them.
 
+### Prometheus metrics
+
+`GET /metrics` gives the farm's numbers in Prometheus' text format, for a Prometheus or a
+Grafana Agent to scrape (decision 0048). Every number comes from what the manager already
+holds, and nothing needs switching on:
+
+- **the manager:** `comfyfarm_manager_info{build}`, `comfyfarm_manager_start_time_seconds`;
+- **the queue:**
+  - `comfyfarm_jobs{status,workflow}`, the jobs in each active state (a texture set's
+    batches, not the set);
+  - `comfyfarm_queue_oldest_seconds`;
+- **finished jobs,** from `job_metrics`, so they outlive the jobs:
+  - `comfyfarm_jobs_finished{workflow,outcome,gpu}`;
+  - `comfyfarm_job_run_seconds_sum`/`_count{workflow,gpu}` and
+    `comfyfarm_job_frames_sum{workflow,gpu}`: seconds a frame is the one over the other;
+  - `comfyfarm_job_wait_seconds_sum`/`_count{workflow,outcome}`;
+- **machines:** `comfyfarm_machine_up`, `_runner_up`, `_drained`, `_jobs` and `_info{agent,gpu}`, each by
+  `machine`;
+- **GPUs:** `comfyfarm_gpu_utilization_ratio` and `comfyfarm_gpu_memory_used_bytes`/`_total_bytes`
+  `{machine,gpu,name}`. Use and memory come from `gpu_probe` (nvidia-smi); with the probe
+  off, memory comes from ComfyUI's report;
+- **the policy and the sweeper:** `comfyfarm_policy_enabled`, `_in_force`, `_file_error`; the
+  sweeper's latest report as `comfyfarm_sweep_expired`, `_files`, `_bytes`, `_problems` and
+  `_last_run_timestamp_seconds`.
+
+Every family is a gauge: a job finishing again replaces its `job_metrics` row, so its
+counts can go down. A scrape every 30 to 60 seconds is plenty:
+
+```yaml
+scrape_configs:
+  - job_name: comfyfarm
+    static_configs: [{targets: ["wrk1125l.rodeofx.com:9090"]}]
+```
+
 ### Retention
 
 The sweeper is how the farm's outputs will stop filling show storage (decisions 0006, 0041).
@@ -1183,6 +1217,7 @@ retention:
 | GET | `/api/v1/sweeps` | The retention sweeper's reports, newest first, with their totals (Retention) |
 | GET | `/api/v1/sweeps/{name}?format=` | One report (`latest`, or its name such as `2026-11-23`): each expired job and the files it would delete; `format=text` to read it |
 | POST | `/api/v1/sweeps` | A sweep now, as the daily one (a dry run). From the manager's host only |
+| GET | `/metrics` | The farm's numbers in Prometheus' text format (Prometheus metrics) |
 | GET | `/api/v1/job-metrics?since=&until=&format=&limit=` | One row per finished job, kept after it (Job metrics): `since` and `until` when it finished (a date, a date and time, or seconds since 1970); `format=csv` for a spreadsheet |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
