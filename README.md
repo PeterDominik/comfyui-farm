@@ -740,9 +740,12 @@ To try a cancel or the time limit, give it *Seconds per frame*.
   finished job *Publish…* (see *Publishing*).
 - **Machines:** each GPU machine, in the order they get jobs of a workflow without run times (#): whether it takes jobs, its GPU and
   free VRAM, its jobs, versions, and any workflow it can't run (a missing node pack or model)
-  and why. *Drain* / *Resume* per machine.
+  and why. *Drain* / *Resume* per machine. Below them, *GPU history*: each GPU's use and memory
+  over the last hour, 6 hours, day or week (see *GPU history*).
 - **Run times:** how long each workflow takes on each GPU type, what the ETAs come from, and
   the order free GPUs get its jobs in (#: fastest first).
+- **Usage:** jobs, GPU hours and failures over the last 7, 30 or 90 days, per day, show,
+  definition or machine (see *Usage*).
 - **Nuke Publish Templates** (while publishing is on): the publish templates, their history, publishing and restoring one (see *Publishing*).
 
 **Python / CLI** (`client/comfyfarm_client.py`, or download it from
@@ -1152,6 +1155,35 @@ gpu_history:
 - **`GET /api/v1/workers/{name}/gpu-history?hours=24`** gives a machine's samples over the
   last hours, oldest first. Over a long span they're averaged into steps, about 500 per GPU
   at most: use averaged, memory and jobs at their highest.
+- **On the dashboard,** the Machines tab's *GPU history* panel draws it (decision 0050): a
+  graph per GPU over the last hour, 6 hours, 24 hours or 7 days.
+  - Use and memory in use share one scale, 0 to 100% of the card. Shaded: the machine held
+    farm jobs.
+  - A break in a line is a time the machine wasn't checking in.
+  - Above each graph: its average use, its highest memory, and how long it held farm jobs.
+  - Point at a graph (or focus it and use the arrow keys) for that time's numbers.
+  - It reads again every minute while the tab is open.
+
+### Usage
+
+The dashboard's **Usage** tab gives the farm's jobs, GPU hours and failures over the last 7,
+30 or 90 days, from the job metrics (decision 0050), so the numbers outlive the jobs.
+
+- **Per day, per show, per definition or per machine,** for every show and definition, or one
+  of each (the two lists). Clicking a show or a definition shows it per day.
+- **For each:** jobs, done, failed (with their share), cancelled, GPU hours (with a bar),
+  frames done, and the average wait to be given to a machine.
+- **What counts:**
+  - Jobs that finished in those days, today included. Days are the manager's local days.
+  - A texture set counts each of its batches: each runs on its own.
+  - GPU hours run from a job's start on the GPU until it finished, outputs collected, whatever
+    its outcome: a failed job held the GPU too. The tooltip says how many went on jobs that
+    failed or were cancelled.
+  - A retried job counts its last attempt only: job metrics keep one row per job.
+- **CSV** downloads every job of those days, one row each (`/api/v1/job-metrics`).
+- **`GET /api/v1/usage?days=30&by=day`** gives the same numbers as JSON. `by` is `day`,
+  `show`, `workflow` or `machine`; `show=` and `workflow=` narrow it to one (`show=` with
+  nothing: jobs with no show).
 
 ### Retention
 
@@ -1241,6 +1273,7 @@ retention:
 | POST | `/api/v1/sweeps` | A sweep now, as the daily one (a dry run). From the manager's host only |
 | GET | `/metrics` | The farm's numbers in Prometheus' text format (Prometheus metrics) |
 | GET | `/api/v1/job-metrics?since=&until=&format=&limit=` | One row per finished job, kept after it (Job metrics): `since` and `until` when it finished (a date, a date and time, or seconds since 1970); `format=csv` for a spreadsheet |
+| GET | `/api/v1/usage?days=&by=&show=&workflow=` | Jobs, GPU hours and failures over the last days, per day, show, workflow or machine (Usage) |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`

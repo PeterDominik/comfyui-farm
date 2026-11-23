@@ -55,3 +55,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0047](0047-policy-tab.md) | A read-only Policy tab on the dashboard | accepted |
 | [0048](0048-prometheus-metrics.md) | Prometheus metrics from what the manager holds, every family a gauge | accepted |
 | [0049](0049-gpu-history.md) | GPU history kept by the manager, sampled from what agents report | accepted |
+| [0050](0050-dashboard-usage-and-gpu-graphs.md) | GPU history graphs and a Usage tab on the dashboard, drawn by hand from the manager's own numbers | accepted |
