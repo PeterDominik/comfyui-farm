@@ -2226,6 +2226,9 @@ outputs:                       # nodes the gateway points at each job's versione
 
 ## Operations notes
 
+When something goes wrong (an agent or the manager down, jobs failing or waiting, a machine
+that can't run a workflow), follow `docs/runbook.md`: it starts from what you see.
+
 - **Logs:** `logs/comfyfarm.log` (rotating), plus `logs/*-service.log` for the services. Each
   agent on another machine logs to `logs/agent-<name>.log` there, and ComfyUI, when its agent
   starts it, to `logs/comfyui-<name>.log`. `farmctl.sh` keeps console output in

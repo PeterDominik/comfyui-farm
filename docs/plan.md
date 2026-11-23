@@ -252,4 +252,20 @@ Nuke farm node (0051): a workflow as a node in the script, from the panel or the
   environment's definitions, and a ComfyUI sync those of the ComfyUI definitions; a failed
   eval stops it there, the machine drained (0053). gpu_test and chord_pbr have evals.
   Phase 8's gate (a changed node pack fails its eval and stops its rollout or sync) is
-  still to be tested on the pilot.
+  still to be tested on the pilot. It needs `like` references for CHORD's eval, from a
+  machine Peter trusts.
+- Pilot review: next, once what is left above is in. Its checks, as agreed on 15 November:
+  1. The five workflows run from Nuke as before: to check at the review.
+  2. The test process runs on Linux and Windows beside ComfyUI on the same card: phase 3's
+     gate, passed on 21 November.
+  3. An environment update reaches all three machines from the manager's host, and a broken
+     one stops at the canary: phase 4's gate, passed on 21 November.
+  4. A week of retention dry runs lists only folders the farm made: phase 6's gate, from
+     25 November.
+  5. A job's timeline and provenance show what ran, where, and why it waited: in (phases 0
+     and 6).
+  6. A pipeline team member follows the runbook through an agent failure with no Claude
+     session open: the runbook is `docs/runbook.md`.
+
+  Left before it: phase 0's baseline timings, phase 6's week of dry runs and deletion, and
+  phase 8's gate.
