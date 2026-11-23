@@ -54,3 +54,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0046](0046-policy-at-hand-out.md) | Show and licence rules checked again when a machine would take a queued job | accepted |
 | [0047](0047-policy-tab.md) | A read-only Policy tab on the dashboard | accepted |
 | [0048](0048-prometheus-metrics.md) | Prometheus metrics from what the manager holds, every family a gauge | accepted |
+| [0049](0049-gpu-history.md) | GPU history kept by the manager, sampled from what agents report | accepted |

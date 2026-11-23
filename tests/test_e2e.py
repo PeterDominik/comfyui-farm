@@ -702,6 +702,14 @@ convert:
                                r'[1-9]')
         self.assertIn("comfyfarm_policy_enabled 0\n", text)
 
+    def test_04995c_gpu_history(self):
+        """A machine's GPU history (decision 0049): there for the mock machine, refused for none."""
+        h = farm._request("GET", "/api/v1/workers/mock/gpu-history?hours=1")
+        self.assertEqual((h["machine"], h["hours"], h["sample_seconds"], h["days"]), ("mock", 1.0, 60.0, 7.0))
+        self.assertIsInstance(h["samples"], list)
+        with self.assertRaisesRegex(farm.FarmError, "No machine called nobody has checked in"):
+            farm._request("GET", "/api/v1/workers/nobody/gpu-history")
+
     def test_04996_sweeps(self):
         """The retention sweeper's dry run (decision 0041): off here, so no daily run; one asked
         for from the manager's host saves a report, and deletes nothing."""

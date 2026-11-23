@@ -212,7 +212,7 @@ A4 launchers (xStudio, Daiquiri Automate).
   1. `/metrics` in Prometheus' text format: the queue, finished jobs (`job_metrics`), the
      machines and their GPUs, the policy and the sweeper.
   2. GPU history: the manager keeps each machine's GPU use and memory, sampled every
-     minute, for some days; `GET /api/v1/machines/<name>/gpu-history`.
+     minute, for some days; `GET /api/v1/workers/<name>/gpu-history`.
   3. Dashboard pages: GPU history on the Machines tab; a page of jobs, GPU hours and
      failures per day, show and definition, from `job_metrics`.
   4. Alerts: rules in config (a machine silent too long, a job waiting too long, failures
@@ -224,3 +224,8 @@ A4 launchers (xStudio, Daiquiri Automate).
      eval stops them (the gate).
 
   Step 1 is in: `GET /metrics`, every family a gauge, from what the manager holds (0048).
+  Peter tested it on the pilot manager.
+
+  Step 2 is in: GPU history in the manager's database (`gpu_samples`), sampled every
+  `gpu_history.sample_seconds` from what each agent last reported, kept
+  `gpu_history.days`, and read per machine, averaged into steps over long spans (0049).

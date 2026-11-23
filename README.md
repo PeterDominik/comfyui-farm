@@ -1114,8 +1114,8 @@ holds, and nothing needs switching on:
   - `comfyfarm_job_run_seconds_sum`/`_count{workflow,gpu}` and
     `comfyfarm_job_frames_sum{workflow,gpu}`: seconds a frame is the one over the other;
   - `comfyfarm_job_wait_seconds_sum`/`_count{workflow,outcome}`;
-- **machines:** `comfyfarm_machine_up`, `_runner_up`, `_drained`, `_jobs` and `_info{agent,gpu}`, each by
-  `machine`;
+- **machines:** `comfyfarm_machine_up`, `_runner_up`, `_drained`, `_jobs` and
+  `_info{agent,gpu}`, each by `machine`;
 - **GPUs:** `comfyfarm_gpu_utilization_ratio` and `comfyfarm_gpu_memory_used_bytes`/`_total_bytes`
   `{machine,gpu,name}`. Use and memory come from `gpu_probe` (nvidia-smi); with the probe
   off, memory comes from ComfyUI's report;
@@ -1131,6 +1131,27 @@ scrape_configs:
   - job_name: comfyfarm
     static_configs: [{targets: ["wrk1125l.rodeofx.com:9090"]}]
 ```
+
+### GPU history
+
+The manager keeps each machine's GPU use and memory over time, for the dashboard (decision
+0049), in its own database. Nothing else needs running.
+
+```yaml
+gpu_history:
+  sample_seconds: 60       # in the manager's config.yaml
+  days: 7                  # 0 keeps none
+```
+
+- **Sampled from what each agent last reported,** every `sample_seconds`. Each GPU of each
+  machine checking in gets one sample: its use and memory, and the jobs the machine held.
+  - Use needs `gpu_probe` on in the machine's `agent.yaml` (nvidia-smi).
+  - Without it, only memory, from ComfyUI's report.
+  - A machine that isn't checking in isn't sampled, so its gap shows.
+- **Samples older than `days` go,** once an hour.
+- **`GET /api/v1/workers/{name}/gpu-history?hours=24`** gives a machine's samples over the
+  last hours, oldest first. Over a long span they're averaged into steps, about 500 per GPU
+  at most: use averaged, memory and jobs at their highest.
 
 ### Retention
 
@@ -1194,6 +1215,7 @@ retention:
 | GET | `/api/v1/jobs/{id}/events` | Its timeline, oldest first: `{at, event, status, worker, attempt, detail, seconds}` per line. `event` is `submitted`, a status, `requeued`, `retried`, `cancel_requested` or `stage` (a new step while preparing or collecting outputs); `seconds` is how long it lasted. The dashboard's *Timeline* button shows it |
 | GET | `/api/v1/jobs/{id}/preview` | The job's preview movie (MP4); `?key=` instead of the header, for players |
 | GET | `/api/v1/workers` | Online state, GPU, free VRAM, slots, preflight problems |
+| GET | `/api/v1/workers/{name}/gpu-history?hours=` | A machine's GPU use and memory over the last hours (GPU history) |
 | GET | `/api/v1/workflows/{name}/publish` | What it can be published with: `templates` (and `unusable` ones, with why), `steps`, the default `step` and `description`; `why` when it can't be |
 | POST | `/api/v1/jobs/{id}/publish` | Publish a finished job `{step?, show?, shot?, template?, description?, dry_run?, wait?}` → the publish (`state`: `queued`, `dispatching`, `dispatched` with `tractor_id`, `dry_run`, `failed` with `error`) |
 | GET | `/api/v1/jobs/{id}/publishes` | Its publishes, the latest first, with the command run and dispatchGraph's output |

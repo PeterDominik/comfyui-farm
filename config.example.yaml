@@ -41,6 +41,13 @@ rollouts:
   step_minutes: 30
   sync_minutes: 60
 
+# Each machine's GPU use and memory, kept for the dashboard (README, GPU history; decision
+# 0049): sampled from what its agent last reported. Use needs gpu_probe on in agent.yaml;
+# without it, only memory (from ComfyUI). days: 0 keeps none.
+gpu_history:
+  sample_seconds: 60
+  days: 7
+
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.
 agents:

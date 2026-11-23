@@ -158,6 +158,16 @@ CREATE TABLE IF NOT EXISTS job_metrics (      -- one small row per finished job,
     finished_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS job_metrics_finished ON job_metrics(finished_at);
+CREATE TABLE IF NOT EXISTS gpu_samples (       -- each machine's GPUs over time, for the dashboard (0049)
+    machine TEXT NOT NULL,
+    gpu INTEGER NOT NULL,                     -- its index on the machine
+    at REAL NOT NULL,
+    util REAL,                                -- 0 to 100, from gpu_probe (nvidia-smi); none from ComfyUI
+    used REAL,                                -- memory in use, bytes
+    total REAL,                               -- memory, bytes
+    jobs INTEGER                              -- jobs the machine held then
+);
+CREATE INDEX IF NOT EXISTS gpu_samples_machine ON gpu_samples(machine, at);
 """
 
 # What a metrics row keeps of a job: who, what, where and how long, and never its params,
@@ -374,6 +384,26 @@ class JobStore:
             args.append(until)
         sql = "SELECT * FROM job_metrics" + (f" WHERE {' AND '.join(where)}" if where else "")
         return [dict(r) for r in self._q(sql + " ORDER BY finished_at, job_id LIMIT ?", (*args, limit))]
+
+    # ---------------------------------------------------------------- GPU history (0049)
+    def add_gpu_samples(self, rows: list[tuple]) -> None:
+        """(machine, gpu, at, util, used, total, jobs) each."""
+        if rows:
+            with self._lock:
+                self._db.executemany("INSERT INTO gpu_samples (machine, gpu, at, util, used, total, jobs) "
+                                     "VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+
+    def gpu_samples(self, machine: str, since: float, step: float) -> list[dict]:
+        """A machine's samples since `since`, one per GPU every `step` seconds: use averaged,
+        memory and jobs at their highest, oldest first."""
+        return [dict(r) for r in self._q(
+            "SELECT gpu, MIN(at) AS at, AVG(util) AS util, MAX(used) AS used, MAX(total) AS total, "
+            "MAX(jobs) AS jobs FROM gpu_samples WHERE machine=? AND at>=? "
+            "GROUP BY gpu, CAST(at / ? AS INTEGER) ORDER BY at, gpu", (machine, since, step))]
+
+    def prune_gpu_samples(self, before: float) -> int:
+        with self._lock:
+            return self._db.execute("DELETE FROM gpu_samples WHERE at < ?", (before,)).rowcount
 
     def metrics_totals(self) -> list[dict]:
         """job_metrics summed per definition, outcome and GPU type, runs only (a set's batches,

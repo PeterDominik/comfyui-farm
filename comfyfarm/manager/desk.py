@@ -150,6 +150,8 @@ class Desk:
         self._tasks.append(asyncio.create_task(self._lease_loop(), name="leases"))
         self._tasks.append(asyncio.create_task(self.rollouts.loop(), name="rollouts"))
         self._tasks.append(asyncio.create_task(self.syncs.loop(), name="syncs"))
+        if self.cfg.gpu_history.days > 0:
+            self._tasks.append(asyncio.create_task(self._gpu_loop(), name="gpu history"))
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -881,6 +883,50 @@ class Desk:
         self.wake()
         now_ = self.store.get(jid)
         return {"ok": j is not None, "status": now_["status"] if now_ else None}
+
+    # ================================================================ GPU history
+    async def _gpu_loop(self) -> None:
+        """Every gpu_history.sample_seconds, each machine's GPUs as it last reported them
+        (decision 0049); once an hour, samples older than gpu_history.days go."""
+        pruned = 0.0
+        while True:
+            await asyncio.sleep(self.cfg.gpu_history.sample_seconds)
+            try:
+                self.sample_gpus()
+                if now() - pruned >= 3600:
+                    self.store.prune_gpu_samples(now() - self.cfg.gpu_history.days * 86400)
+                    pruned = now()
+            except Exception:  # noqa: BLE001
+                log.exception("GPU history failed")
+
+    def sample_gpus(self, t: float | None = None) -> int:
+        """One sample of each GPU of each machine checking in: use and memory from gpu_probe,
+        or memory from ComfyUI's report when the probe is off. Returns how many."""
+        t = now() if t is None else t
+        rows = []
+        for a in self.agents.values():
+            if not self.alive(a.name):
+                continue
+            jobs = len(self.store.held_by(a.name))
+            if a.gpus:
+                rows += [(a.name, int(g.get("index") or 0), t, g.get("utilization"), g.get("vram_used"),
+                          g.get("vram_total"), jobs) for g in a.gpus]
+                continue
+            for i, dev in enumerate((a.stats or {}).get("devices") or []):
+                total, free = dev.get("vram_total"), dev.get("vram_free")
+                used = max(0, total - free) if total is not None and free is not None else None
+                rows.append((a.name, int(dev.get("index", i) or 0), t, None, used, total, jobs))
+        self.store.add_gpu_samples(rows)
+        return len(rows)
+
+    def gpu_history(self, name: str, hours: float, t: float | None = None) -> dict:
+        """GET /api/v1/workers/{name}/gpu-history: its samples over the last `hours`, at most
+        about 500 a GPU (averaged into longer steps when there are more)."""
+        t = now() if t is None else t
+        every = self.cfg.gpu_history.sample_seconds
+        step = max(every, hours * 3600 / 500)
+        return {"machine": name, "hours": hours, "step_seconds": round(step), "sample_seconds": every,
+                "days": self.cfg.gpu_history.days, "samples": self.store.gpu_samples(name, t - hours * 3600, step)}
 
     # ================================================================ leases
     async def _lease_loop(self) -> None:

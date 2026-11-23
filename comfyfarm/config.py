@@ -168,6 +168,14 @@ class RolloutsConfig(BaseModel):
     sync_minutes: float = Field(60.0, gt=0)
 
 
+class GpuHistoryConfig(BaseModel):
+    """Each machine's GPU use and memory, kept by the manager for the dashboard (decision 0049):
+    sampled from what its agent last reported, every sample_seconds, kept `days`. 0 days:
+    none kept."""
+    sample_seconds: float = Field(60.0, ge=10)
+    days: float = Field(7.0, ge=0)
+
+
 class FarmConfig(BaseModel):
     max_attempts: int = 2            # resubmits when a worker loses a job (crash/restart)
     reconcile_seconds: float = 20.0  # cross-check job state against ComfyUI this often
@@ -347,6 +355,7 @@ class Config(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     share: ShareConfig = Field(default_factory=ShareConfig)
     rollouts: RolloutsConfig = Field(default_factory=RolloutsConfig)
+    gpu_history: GpuHistoryConfig = Field(default_factory=GpuHistoryConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line
