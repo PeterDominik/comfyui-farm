@@ -661,6 +661,15 @@ class Desk:
 
         for job in self.store.queued():
             wf = job["workflow"]
+            # The farm's policy again, as it is now (decision 0046): a rule written since the job
+            # was queued fails it rather than run it. A policy that can't be read holds the queue.
+            refused = self.farm.refused_by_policy(job)
+            if refused is not None:
+                if refused.rule is not None:
+                    self._passed.pop(job["id"], None)
+                    self.farm._fail(job["id"], f"Not run: the farm's policy changed after it was queued. {refused}",
+                                    ("queued",))
+                continue
             fit = [x for x in usable if allowed(x, wf)]
             if fit and not any(able(x, wf) for x in fit):     # every machine it may go to lacks something
                 probs = next(x.problems[wf] for x in fit if x.problems.get(wf))

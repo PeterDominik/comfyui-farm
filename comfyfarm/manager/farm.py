@@ -342,6 +342,18 @@ class Farm:
             raise FarmError(str(e), 403) from None
         return plan
 
+    def refused_by_policy(self, job: dict) -> PolicyRefused | None:
+        """Whether the policy in force now refuses a job already planned: its show and licence
+        rules, with its definition's models as the repo has them now (decisions 0043, 0044,
+        0046). Quotas aren't asked: they are for new submissions."""
+        wf = self.registry.workflows.get(job["workflow"])
+        try:
+            self.policy.check(job["workflow"], (job.get("info") or {}).get("show"),
+                              wf.models if wf is not None and wf.models_listed else None)
+        except PolicyRefused as e:
+            return e
+        return None
+
     def queued_now(self) -> list[dict]:
         """What is queued or running, one {show, user, frames} per submission: a job, or a
         texture set with its unfinished batches' tiles (for the policy's quotas)."""
@@ -693,12 +705,9 @@ class Farm:
         job = self.store.get(job_id)
         if not job:
             raise FarmError("Job not found.", 404)
-        wf = self.registry.workflows.get(job["workflow"])
-        try:                                # a set's show may have been barred since it was planned
-            self.policy.check(job["workflow"], (job.get("info") or {}).get("show"),
-                              wf.models if wf is not None and wf.models_listed else None)
-        except PolicyRefused as e:
-            raise FarmError(str(e), 403) from None
+        refused = self.refused_by_policy(job)     # a set's show may have been barred since it was planned
+        if refused is not None:
+            raise FarmError(str(refused), 403)
         if job["kind"] == "set":
             targets = self.store.list(parent=job["id"], statuses=("failed", "cancelled"), limit=100000)
             set_id = job["id"]

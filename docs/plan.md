@@ -195,4 +195,9 @@ A4 launchers (xStudio, Daiquiri Automate).
 
   Step 3 is in: quotas (`quotas:` in policy.yaml), the most jobs and/or frames queued or
   running at once per show, per user over a rule's shows, or for shows together, checked
-  at plan under the submit lock and on a set's Retry failed (0045).
+  at plan under the submit lock and on a set's Retry failed (0045). Peter tested it on the
+  pilot manager.
+
+  Step 4 is in: the show and licence rules are checked again when a machine would take a
+  queued job, and a job a newer rule refuses fails with the rule named. Quotas aren't
+  asked again. While the policy can't be read, queued jobs wait (0046).
