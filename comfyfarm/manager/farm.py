@@ -279,12 +279,18 @@ class Farm:
 
     # ================================================================ submit / cancel
     def plan(self, workflow: str, params: dict, show: str | None = None, shot: str | None = None,
-             job_id: str = "preview", user: str | None = None) -> dict:
+             job_id: str = "preview", user: str | None = None, evaluation: str | None = None) -> dict:
         """Work out everything about a job without queuing it: validated params, what the
         loader reads, and exactly where the frames will land and what they're called.
         Used by submit() and by the dashboard's live destination preview. `user`: who would
-        submit it, for the policy's quotas per user."""
+        submit it, for the policy's quotas per user.
+
+        `evaluation`: an eval's (decision 0053), planned by the farm itself from its definition's
+        files: its outputs may go into this folder, the farm's own (evals/ in its scratch
+        folder), and the policy doesn't apply: it is the farm testing a machine, for no show."""
         wf = self.registry.get(workflow)
+        cfg = self.cfg if evaluation is None else self.cfg.model_copy(update={
+            "paths": self.cfg.paths.model_copy(update={"allowed_output_roots": [evaluation]})})
         values = wf.validate(params or {})
         pc = self.cfg.paths
         # ShotGrid Version links among the inputs: read as the paths ShotGrid has for them
@@ -314,7 +320,8 @@ class Farm:
         shot_ = seq.shot if seq else shot
         # The farm's policy, once the show is known (decisions 0043, 0044): a refused job is never planned.
         try:
-            self.policy.check(wf.name, show_, wf.models if wf.models_listed else None)
+            if evaluation is None:
+                self.policy.check(wf.name, show_, wf.models if wf.models_listed else None)
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
         seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
@@ -322,22 +329,24 @@ class Farm:
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
                 "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
-                "source": source, "out_dir": None, "version": None, "picked": None, "artifacts": []}
+                "source": source, "out_dir": None, "version": None, "picked": None, "artifacts": [], "cfg": cfg}
         # No machine may take it now (requires, drained, offline): shown before submitting
         # and as a queued job's stage, but not kept as a warning (it passes).
-        plan["waits"] = self.desk.requires_note(wf.name) if self.desk else None
+        plan["waits"] = self.desk.requires_note(wf.name) if self.desk and evaluation is None else None
         # Where what it writes goes and what it's called: the handler of each kind (decisions 0034,
         # 0036). Frames or a texture set first: they choose the folder, other kinds write into it.
         plan["artifacts"] = A.for_definition(wf)
         try:
             for handler in plan["artifacts"]:
-                plan = handler.plan(plan, self._artifact_context(job_id))
+                plan = handler.plan(plan, self._artifact_context(job_id, cfg))
         except A.PlanError as e:
             raise FarmError(str(e), e.status) from None
         # The policy's quotas, now its size is known (decision 0045). submit() plans under the
         # submit lock, so two submits can't both take the last place.
         try:
-            self.policy.quota(show_, user, plan.get("units") or (seq.frame_count if seq else 1) or 1, self.queued_now)
+            if evaluation is None:
+                self.policy.quota(show_, user, plan.get("units") or (seq.frame_count if seq else 1) or 1,
+                                  self.queued_now)
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
         return plan
@@ -346,6 +355,8 @@ class Farm:
         """Whether the policy in force now refuses a job already planned: its show and licence
         rules, with its definition's models as the repo has them now (decisions 0043, 0044,
         0046). Quotas aren't asked: they are for new submissions."""
+        if (job.get("info") or {}).get("eval"):
+            return None                 # the farm's own reference job (decision 0053): no show's
         wf = self.registry.workflows.get(job["workflow"])
         try:
             self.policy.check(job["workflow"], (job.get("info") or {}).get("show"),
@@ -379,11 +390,12 @@ class Farm:
         """What the handlers of its kinds give of a plan (info, request or summary), together."""
         out: dict = {}
         for h in plan.get("artifacts") or []:
-            A.merge(out, h.info(plan, self._artifact_context(job_id)) if part == "info" else getattr(h, part)(plan))
+            A.merge(out, h.info(plan, self._artifact_context(job_id, plan.get("cfg"))) if part == "info"
+                    else getattr(h, part)(plan))
         return out
 
-    def _artifact_context(self, job_id: str) -> A.PlanContext:
-        return A.PlanContext(cfg=self.cfg, job_id=job_id, scratch_root=self.scratch_root,
+    def _artifact_context(self, job_id: str, cfg: Config | None = None) -> A.PlanContext:
+        return A.PlanContext(cfg=cfg or self.cfg, job_id=job_id, scratch_root=self.scratch_root,
                              reserved=self.store.output_reserved)
 
     def publish_preview(self, plan: dict, publish: dict) -> dict:
@@ -605,12 +617,18 @@ class Farm:
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
                priority: int = 0, show: str | None = None, shot: str | None = None,
-               publish: dict | None = None) -> dict:
+               publish: dict | None = None, evaluation: dict | None = None) -> dict:
         """Validate and queue a job. Runs in a thread (touches network storage). `publish`:
-        publish it when it's done ({show, shot, step, template, description}, checked now)."""
+        publish it when it's done ({show, shot, step, template, description}, checked now).
+        `evaluation`: an eval (manager/evals.py, decision 0053): its machine, its checks, and
+        `folder`, the farm's folder its outputs go into; kept in the job's info."""
         job_id = str(uuid.uuid4())
         with self._submit_lock:   # output folders are reserved by inserting the job
-            plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id, user=user)
+            plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id, user=user,
+                             evaluation=evaluation["root"] if evaluation else None)
+            if evaluation and plan.get("batches"):
+                raise FarmError("Its eval input makes a texture set of several batches: give the eval fewer tiles, "
+                                "so it is one job.")
             wf, values, seq, out_dir = plan["wf"], plan["values"], plan["seq"], plan["out_dir"]
             pub = None
             if publish is not None:
@@ -631,6 +649,8 @@ class Farm:
             info = self._info(plan, seq, self._artifacts(plan, "info", job_id))
             if pub:
                 info["publish_request"] = pub
+            if evaluation:
+                info["eval"] = {k: v for k, v in evaluation.items() if k != "root"}
             job = self.store.insert({
                 "id": job_id, "workflow": wf.name, "user": user,
                 "name": name or plan["shot"] or plan["source"],

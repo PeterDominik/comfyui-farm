@@ -13,6 +13,9 @@ Each machine in turn:
     syncing    its agent stops ComfyUI, updates it, starts it again (it says how it goes)
     checking   its agent says it's done: until the manager has checked its ComfyUI again.
                A workflow it could run before and can't now stops the sync there
+    evaluating with evals.gate (decision 0053): the evals of the runner's definitions it
+               could run before, pinned to it while it is still drained. One that fails, or
+               not all over within evals.minutes, stops the sync there
 then it is resumed, unless it was drained before, and the next machine's turn comes. Told
 and not done within rollouts.sync_minutes, it stops the sync there too.
 
@@ -33,6 +36,7 @@ import logging
 import uuid
 
 from ..protocol import now
+from .evals import EvalError
 
 log = logging.getLogger("comfyfarm")
 
@@ -77,7 +81,9 @@ class Syncs:
         r = {"id": uuid.uuid4().hex[:12], "runner": runner, "file": file, "force": bool(force),
              "machines": self.desk.rollouts.order(names), "step": 0, "phase": "draining", "state": "running",
              "error": None, "by": by, "started_at": now(), "step_started": None, "told_at": None, "asked_at": None,
-             "drained_before": {}, "could_not": {}, "results": {}}
+             "drained_before": {}, "could_not": {}, "results": {},
+             "evals": self.desk.evals.definitions(runner=runner) if self.desk.cfg.evals.gate else [],
+             "eval_jobs": {}, "eval_started": None}
         log.info("sync %s: %s to the farm's environment %s on %s, one at a time (by %s)", r["id"], runner, file,
                  ", ".join(r["machines"]), by or "?")
         self._turn(r)
@@ -94,6 +100,7 @@ class Syncs:
                 self.desk.set_drained(m, False, f"sync {r['id']} cancelled by {by or '?'}")
             r["error"] = f"cancelled by {by or '?'} before {m} was told"
         else:
+            self.desk.evals.cancel((r.get("eval_jobs") or {}).get(m) or [])
             r["error"] = (f"cancelled by {by or '?'}: {m} was told already. It finishes its sync and stays drained: "
                           f"resume it on the Machines tab once its ComfyUI is back")
         r["state"] = "cancelled"
@@ -155,12 +162,42 @@ class Syncs:
             if new:
                 return self._fail(r, f"{m}: after the sync it can't run {', '.join(new)}: "
                                      f"{'; '.join(a.problems[new[0]])}")
-            self._next(r, m)
-            return
+            if not r.get("evals"):
+                self._next(r, m)
+                return
+            r["phase"] = "evaluating"
+        if r["phase"] == "evaluating":
+            return self._evaluate(r, m)
         if now() - (r["told_at"] or now()) > limit:
             where = {"told": "its agent says nothing of it", "syncing": f"it says {(said or {}).get('state')}",
                      "checking": "its ComfyUI isn't back and checked"}[r["phase"]]
             self._fail(r, f"{m} didn't finish within {self.cfg.sync_minutes:g} minutes ({where})")
+
+    def _evaluate(self, r: dict, m: str) -> None:
+        """The evals of the runner's definitions the machine could run before the sync, pinned
+        to it while it is still drained (decision 0053): passed, the next machine; failed, the
+        sync stops there."""
+        ids = (r.get("eval_jobs") or {}).get(m)
+        if ids is None:
+            defs = [d for d in r["evals"] if d not in (r["could_not"].get(m) or [])]
+            if not defs:
+                return self._next(r, m)
+            try:
+                ids = self.desk.evals.begin(m, defs, f"sync {r['id']}", r.get("by"))
+            except EvalError as e:
+                return self._fail(r, f"{m}: {e}")
+            r.setdefault("eval_jobs", {})[m], r["eval_started"] = ids, now()
+            log.info("sync %s: %s is synced and checked: its evals are queued (%s)", r["id"], m, ", ".join(defs))
+            return
+        state, why = self.desk.evals.judge(ids)
+        minutes = self.desk.cfg.evals.minutes
+        if state == "running" and now() - (r.get("eval_started") or now()) > minutes * 60:
+            self.desk.evals.cancel(ids)
+            state, why = "failed", f"its evals didn't finish within {minutes:g} minutes (evals.minutes)"
+        if state == "failed":
+            return self._fail(r, f"{m}: {why}")
+        if state == "passed":
+            self._next(r, m)
 
     def _next(self, r: dict, m: str) -> None:
         if not r["drained_before"].get(m):

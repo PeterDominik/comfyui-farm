@@ -242,4 +242,14 @@ Nuke farm node (0051): a workflow as a node in the script, from the panel or the
   waiting, failures in a row on a machine, sweep problems, a rollout or sync stopped),
   each raised once and cleared by itself. They go to the log, a header chip and an Alerts
   tab on the dashboard, and with `alerts.google_chat`, a Google Chat space;
-  `comfyfarm alerts test` checks the webhook (0052).
+  `comfyfarm alerts test` checks the webhook (0052). Peter tested it on the pilot manager.
+
+  Step 5 is in, the gate off until `evals.gate`: `eval:` in a definition (inputs from its
+  own folder, params, and checks: files, size, like a reference image), run as a farm job
+  pinned to one machine, which takes it even while drained, its outputs in that machine's
+  scratch folder and checked by its agent. `comfyfarm eval` runs one from the manager's
+  host. With the gate, a rollout drains each machine for its turn and runs the evals of its
+  environment's definitions, and a ComfyUI sync those of the ComfyUI definitions; a failed
+  eval stops it there, the machine drained (0053). gpu_test and chord_pbr have evals.
+  Phase 8's gate (a changed node pack fails its eval and stops its rollout or sync) is
+  still to be tested on the pilot.

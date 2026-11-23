@@ -32,6 +32,7 @@ from . import prom as PM
 from . import share
 from . import sweeper as SW
 from . import usage as US
+from .evals import EvalError
 from .farm import Farm, FarmError
 
 HERE = Path(__file__).resolve().parent
@@ -65,6 +66,11 @@ class SyncStart(BaseModel):
     runner: str = "comfyui"             # whose environment: the machines' resident runner's
     machines: list[str] | None = None   # default: every machine the manager knows
     force: bool = False                 # discard local changes in its git checkouts
+
+
+class EvalStart(BaseModel):
+    definition: str                     # one with an eval: in its process.yaml
+    machines: list[str] | None = None   # default: every machine checking in that may run it
 
 
 class EnvironmentWant(BaseModel):
@@ -577,6 +583,28 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             return desk.rollouts.act(name, action, ident.user)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/v1/evals")
+    def start_evals(req: EvalStart, request: Request, ident: Identity = Depends(identity)):
+        """A definition's eval (decision 0053) on each machine named: a job pinned to it, which it
+        takes even while drained. From the manager's host only (`comfyfarm eval` there)."""
+        _here(request, "Evals are started from the manager's host only, until the farm has API keys: run "
+                       "`python -m comfyfarm eval <definition>` there.")
+        names = req.machines or sorted(a.name for a in desk.agents.values()
+                                       if desk.usable(a) and desk.unmet(a, req.definition) is None)
+        if not names:
+            raise HTTPException(400, f"no machine checking in may run {req.definition}: name one with --machine")
+        try:
+            ids = desk.evals.begin_each(req.definition, names, "comfyfarm eval", ident.user)
+        except EvalError as e:
+            raise HTTPException(400, str(e)) from None
+        return {"evals": desk.evals.results(ids)}
+
+    @app.get("/api/v1/evals")
+    def evals(jobs: str = Query(..., description="eval job ids, comma-separated"),
+              ident: Identity = Depends(identity)):
+        """How these evals went: each job's state, and what each check measured (decision 0053)."""
+        return {"evals": desk.evals.results([j for j in jobs.split(",") if j.strip()][:50])}
 
     @app.get("/api/v1/syncs")
     def syncs(ident: Identity = Depends(identity)):

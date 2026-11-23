@@ -10,6 +10,7 @@ against tools/mock_comfyui.py.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -373,6 +374,54 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((w["name"], w["online"], w["connected"], w["inflight"], w["gpu"]["name"]),
                          ("gpu1", True, True, 0, "cuda:0 fake"))
         self.assertEqual(self.farm.online_workers(), 1)
+
+    def an_eval(self, checks, files=None):
+        """An eval of LTX on gpu1 (decision 0053), queued as manager/evals.py queues one, but from
+        the suite's plate: its eval files are the plate's frames, unless `files` says otherwise."""
+        plate = Path(f"{self.root}/shows/xyz/.published/abc/abc_0010/render.comp/pre/v1/main/hi")
+        files = files if files is not None else [[str(f).replace("\\", "/"), hashlib.sha256(f.read_bytes()).hexdigest()]
+                                                 for f in sorted(plate.iterdir())]
+        root = f"{self.farm.scratch_root}/evals"
+        os.makedirs(root, exist_ok=True)
+        folder = f"{root}/ltx25_alpha_gen"
+        return self.farm.submit("ltx25_alpha_gen", {"input": f"{SEQ} 1001-1003", "output_path": folder}, "peter",
+                                priority=1000, evaluation={"root": root, "machine": "gpu1", "for": "a test",
+                                                           "definition": "ltx25_alpha_gen", "checks": checks,
+                                                           "folder": folder, "files": files})
+
+    def test_an_eval_checked_by_the_agent_in_its_own_scratch_folder(self):
+        a = self.ready(self.agent())
+        stale = Path(f"{self.root}/scratch-gpu1/evals/ltx25_alpha_gen/plate.alpha_v009.1001.png")
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"from the last eval")
+        job = self.an_eval({"files": {"png": 3}})
+        pid = self.dispatched(a, job)
+        self.assertFalse(stale.exists())                               # emptied before it ran
+        done = self.finish(a, job["id"], pid)
+        self.assertEqual(done["status"], "done", done["error"])
+        self.assertEqual(done["outputs"]["eval"], {"ok": True, "checks": [
+            {"check": "files .png", "ok": True, "said": "3 written, 3 wanted"}]})
+        theirs = sorted(Path(f"{self.root}/scratch-gpu1/evals/ltx25_alpha_gen").rglob("*.png"))
+        self.assertEqual(len(theirs), 3)                               # in the agent's own scratch folder
+        self.assertEqual(list(Path(f"{self.root}/scratch/evals").rglob("*.png")), [])   # not the manager's
+
+    def test_an_eval_that_fails_its_checks_fails(self):
+        a = self.ready(self.agent())
+        job = self.an_eval({"files": {"png": 5}})
+        done = self.finish(a, job["id"], self.dispatched(a, job))
+        self.assertEqual(done["status"], "failed")
+        self.assertEqual(done["error"], "The eval failed: files .png: 3 written, 5 wanted.")
+
+    def test_an_eval_whose_files_arent_the_managers_doesnt_run(self):
+        a = self.ready(self.agent())
+        job = self.an_eval({"files": {"png": 3}}, files=[[f"{self.root}/ocio/config.ocio", "0" * 64]])
+        self.beat(a)
+        self.until(lambda: self.job(job["id"])["status"] == "failed", what="failed")
+        j = self.job(job["id"])
+        self.assertTrue(j["error"].startswith("The eval can't run on gpu1: its checkout's "), j["error"])
+        self.assertTrue(j["error"].endswith("/ocio/config.ocio isn't the manager's. Bring its checkout to the "
+                                            "manager's (git pull), then run the eval again."), j["error"])
+        self.assertEqual(a.runner.client.prompts, {})                  # never reached its ComfyUI
 
     @unittest.skipUnless(FFMPEG, "no ffmpeg on this machine")
     def test_the_preview_movie_of_the_frames(self):

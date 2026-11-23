@@ -16,7 +16,15 @@ release. A broken release stops at the canary.
 
 One rollout of an environment is open (running, paused or failed) at a time. It is kept in
 the manager's database, so it outlives a restart. Nothing here builds or runs anything:
-the agents' environment managers do (agent/envman.py)."""
+the agents' environment managers do (agent/envman.py).
+
+With evals.gate (decision 0053), a rollout also runs the evals of the definitions run in the
+environment (`evals`, fixed when it starts) on each machine before it goes on. Then each
+machine is drained when its turn starts, so no artist's job runs with the release before it
+passed; its jobs finish first. Once it has the release, its evals are queued, pinned to it;
+when they pass it takes jobs again (unless it was drained before) and the rollout goes on.
+A failed eval stops the rollout there, the machine left drained: rolling back gives it its
+jobs again with the release it had."""
 
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ import logging
 import uuid
 
 from ..protocol import now
+from .evals import EvalError
 
 log = logging.getLogger("comfyfarm")
 
@@ -73,9 +82,11 @@ class Rollouts:
         if not names:
             raise RolloutError("no machine has checked in yet")
         order = self.order(names)
+        gate = self.desk.evals.definitions(environment=name) if self.desk.cfg.evals.gate else []
         r = {"id": uuid.uuid4().hex[:12], "name": name, "release": release, "machines": order,
              "before": {m: self._have(m, name) for m in order}, "step": 0, "state": "running", "error": None,
-             "by": by, "started_at": now(), "step_started": now()}
+             "by": by, "started_at": now(), "step_started": now(),
+             "evals": gate, "eval_jobs": {}, "eval_started": None, "drained_before": {}}
         log.info("rollout %s: %s %s to %s, %s first (by %s)", r["id"], name, release, ", ".join(order), order[0],
                  by or "?")
         self._tell(r)
@@ -97,6 +108,9 @@ class Rollouts:
             r["state"], r["step_started"] = "running", now()
             self._tell(r)
         elif action == "cancel":
+            self.desk.evals.cancel(self._eval_ids(r))
+            if r["state"] != "failed":          # a machine that failed its eval stays drained for a person
+                self._resume_all(r)
             r["state"] = "cancelled"
         elif action == "rollback":
             if r["state"] == "rolled_back":
@@ -105,6 +119,8 @@ class Rollouts:
             for m in reached:
                 if m in self.desk.agents:
                     self.desk.want_environment(name, r["before"].get(m), [m], f"rollback {r['id']} by {by or '?'}")
+            self.desk.evals.cancel(self._eval_ids(r))
+            self._resume_all(r)                 # back to the release they had: they take jobs again
             r["state"] = "rolled_back"
         else:
             raise RolloutError(f"{action} isn't something a rollout does (pause, resume, rollback, cancel)")
@@ -119,6 +135,49 @@ class Rollouts:
     def _tell(self, r: dict) -> None:
         m = r["machines"][r["step"]]
         self.desk.want_environment(r["name"], r["release"], [m], f"rollout {r['id']}")
+        if r.get("evals"):                      # no artist's job with the release before its evals pass
+            r.setdefault("drained_before", {}).setdefault(m, m in self.desk.drained)
+            if m not in self.desk.drained:
+                self.desk.set_drained(m, True, f"rollout {r['id']}")
+
+    # ---------------------------------------------------------------- evals (decision 0053)
+    def _eval_ids(self, r: dict) -> list[str]:
+        return [i for ids in (r.get("eval_jobs") or {}).values() for i in ids]
+
+    def _resume(self, r: dict, m: str) -> None:
+        """Takes jobs again, if this rollout drained it and nobody has since."""
+        if not (r.get("drained_before") or {}).get(m, True) \
+                and (self.desk.drained.get(m) or {}).get("by") == f"rollout {r['id']}":
+            self.desk.set_drained(m, False, f"rollout {r['id']}")
+
+    def _resume_all(self, r: dict) -> None:
+        for m in r.get("drained_before") or {}:
+            self._resume(r, m)
+
+    def _evaluate(self, r: dict, m: str) -> str:
+        """The machine's evals: queued once it has the release, then judged. running, passed or
+        failed (the rollout stopped)."""
+        ids = (r.get("eval_jobs") or {}).get(m)
+        if ids is None:
+            try:
+                ids = self.desk.evals.begin(m, r["evals"], f"rollout {r['id']}", r.get("by"))
+            except EvalError as e:
+                self._fail(r, f"{m}: {e}")
+                return "failed"
+            r.setdefault("eval_jobs", {})[m], r["eval_started"] = ids, now()
+            log.info("rollout %s: %s has %s %s: its evals are queued (%s)", r["id"], m, r["name"], r["release"],
+                     ", ".join(r["evals"]))
+            self.store.save_rollout(r)
+            return "running"
+        state, why = self.desk.evals.judge(ids)
+        minutes = self.desk.cfg.evals.minutes
+        if state == "running" and now() - (r.get("eval_started") or now()) > minutes * 60:
+            self.desk.evals.cancel(ids)
+            state, why = "failed", f"its evals didn't finish within {minutes:g} minutes (evals.minutes)"
+        if state == "failed":
+            self._fail(r, f"{m}: {why}. {m} stays drained: look at it, then roll back (it takes jobs again with "
+                          f"what it had) or cancel")
+        return state
 
     # ---------------------------------------------------------------- going on
     def tick(self) -> None:
@@ -129,6 +188,10 @@ class Rollouts:
         m = r["machines"][r["step"]]
         a = self.desk.agents.get(m)
         if self._have(m, r["name"]) == r["release"]:
+            if r.get("evals"):
+                if self._evaluate(r, m) != "passed":
+                    return
+                self._resume(r, m)
             log.info("rollout %s: %s has %s %s", r["id"], m, r["name"], r["release"])
             r["step"] += 1
             if r["step"] >= len(r["machines"]):

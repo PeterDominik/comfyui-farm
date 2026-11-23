@@ -444,7 +444,9 @@ The sync stops at a machine, and the machines after it are never touched, when:
 
 - a step fails;
 - a workflow the machine could run before can't run after the sync;
-- the machine hasn't finished within `rollouts.sync_minutes` (60) of being told.
+- the machine hasn't finished within `rollouts.sync_minutes` (60) of being told;
+- with `evals.gate` on, an eval fails on it, or its evals aren't over within `evals.minutes`
+  (see *Evals*).
 
 That machine stays drained for you to look at. A machine whose agent refused before
 touching anything takes jobs again. That happens with another version of the file in its
@@ -570,7 +572,9 @@ A machine whose install fails (a hash, the build, its check), or whose agent has
 `envs.managed` off, stops the rollout there: the machines after it never hear of the
 release. So does a machine that hasn't the release within `rollouts.step_minutes` (30).
 A stopped rollout is rolled back or cancelled; a new one of that environment can start
-once it is. A rollout outlives a manager restart. `environments/canary-test` is broken on
+once it is. A rollout outlives a manager restart. With `evals.gate` on, each machine is
+drained when its turn starts and runs the evals of the definitions in the environment once
+it has the release; a failed eval stops the rollout there (see *Evals*). `environments/canary-test` is broken on
 purpose: its check always fails, so a rollout of it shows one stopping at the canary.
 
 The dashboard's Machines tab shows all of it below the machines (decision 0032): a table of
@@ -1262,6 +1266,65 @@ alerts:
 - **`GET /api/v1/alerts`** gives the rules, what holds and the latest cleared, as JSON.
 - **Cleared alerts are kept** `keep_days` (30) in the manager's database.
 
+### Evals
+
+A definition's eval is its reference job: an input kept in its own folder, its params, and
+checks on what it writes (decision 0053). `comfyfarm eval` runs it on the machines. With
+`evals.gate` on, rollouts and ComfyUI syncs run the evals on each machine before they go on,
+and a failed eval stops them there.
+
+```yaml
+eval:                                   # in the definition's process.yaml
+  inputs: {input: eval/input.png}       # each input: a file (or eval/plate.%04d.png 1-3) in its folder
+  params: {operation: invert}           # its other params; the rest take their defaults
+  checks:
+    files: {png: 1, json: 1}            # how many files it writes, of each extension named
+    size: [64, 48]                      # every image it writes
+    like:                               # an output against a reference image in its folder
+      - {output: '*.png', expected: eval/expected.png, max_error: 0.002}
+```
+
+- **`gpu_test` and `chord_pbr` have one.**
+  - `gpu_test`'s inverts a 64 × 48 image and compares it with the exact inversion.
+  - `chord_pbr`'s runs a brick texture through CHORD and checks its five maps are written. It
+    has no `like` check yet: see the last point.
+- **An eval is a farm job,** on the Queue tab as "eval on <machine>":
+  - It is pinned to its machine, which takes it even while drained, before any artist's job.
+  - Its outputs go into that machine's scratch folder, `evals/<definition>`, emptied before
+    each eval of it, so the latest stays there to look at.
+  - The farm plans it for no show, so the policy doesn't apply.
+  - The machine's copy of each eval file must be the manager's (their SHA-256 come with the
+    job), or it doesn't run: update its checkout.
+- **The checks run on the machine,** once the farm has collected the outputs.
+  - One that doesn't pass fails the job, and its error says which and by how much.
+  - `like` measures the mean difference per channel: 0 to 1 for 8- and 16-bit images, EXRs in
+    their own values. It uses OpenImageIO, or the standard library for PNGs.
+- **`comfyfarm eval`,** on the manager's host:
+
+  ```bash
+  python -m comfyfarm eval gpu_test                                  # every machine that may run it
+  python -m comfyfarm eval chord_pbr --machine tor-flame02-a6000     # this one (again for more)
+  ```
+
+  It prints each machine's checks and what they measured. It exits 1 if any didn't pass.
+- **The gate** (`evals.gate: true` in the manager's `config.yaml`, off by default):
+  - **A rollout** runs the evals of the definitions run in its environment
+    (`runner.environment`). Each machine is drained when its turn starts, installs the
+    release, runs its evals, then takes jobs again.
+  - **A ComfyUI sync** runs the evals of the ComfyUI definitions each machine could run
+    before. It runs them once that machine's ComfyUI is back and checked, while it is still
+    drained.
+  - **What stops them:** a failed eval, or evals not over within `evals.minutes` (30). The
+    rollout or sync stops at that machine, which stays drained. Rolling a rollout back gives
+    it its jobs again, with what it had.
+- **Adding `like` to an eval:**
+  1. Run the eval on a machine you trust.
+  2. Take the outputs from its scratch folder (`evals/<definition>`).
+  3. Put the ones to compare against in the definition's `eval/` folder, and add a `like`
+     check for each, by pull request.
+  4. Run `comfyfarm eval` on every machine. Each prints the mean error it measured: set
+     `max_error` a little above the largest, since GPUs of different types differ slightly.
+
 ### Retention
 
 The sweeper is how the farm's outputs will stop filling show storage (decisions 0006, 0041).
@@ -1352,6 +1415,8 @@ retention:
 | GET | `/api/v1/job-metrics?since=&until=&format=&limit=` | One row per finished job, kept after it (Job metrics): `since` and `until` when it finished (a date, a date and time, or seconds since 1970); `format=csv` for a spreadsheet |
 | GET | `/api/v1/usage?days=&by=&show=&workflow=` | Jobs, GPU hours and failures over the last days, per day, show, workflow or machine (Usage) |
 | GET | `/api/v1/alerts` | The alert rules, the alerts that hold, the latest cleared, and whether Google Chat is set (Alerts) |
+| POST | `/api/v1/evals` | `{definition, machines}`: a definition's eval on each machine, pinned to it, from the manager's host only (Evals) |
+| GET | `/api/v1/evals?jobs=` | How those evals went: each one's state and what each check measured (Evals) |
 | WS | `/api/v1/events` | Live job and worker updates (snapshot first) |
 
 Interactive docs are at `/docs`. Identify yourself with an `X-User` header, or `X-API-Key`
@@ -2018,11 +2083,12 @@ key in the wrong half is refused with a message saying where it goes.
 
 `class`, `targets`, `limits`, `models`, `eval` and `version` are optional. They are checked
 when the workflow loads. `models` (every weights file the workflow loads, with its licence)
-is what the farm's policy checks licences against (see *Policy*; `models: []` for none); the
-others are not used yet. `python tools/manifest_to_process.py workflows/<name>`
-prints a manifest as a process.yaml (`--write` saves it; comments are not carried over, and
-you remove the manifest yourself). A converted workflow keeps its fingerprint until a head
-field is added, so machines on the old and the new file still agree.
+is what the farm's policy checks licences against (see *Policy*; `models: []` for none).
+`eval` is the definition's reference job (see *Evals*). The others are not used yet.
+`python tools/manifest_to_process.py workflows/<name>` prints a manifest as a process.yaml
+(`--write` saves it; comments are not carried over, and you remove the manifest yourself). A
+converted workflow keeps its fingerprint until a head field is added, so machines on the old
+and the new file still agree.
 
 Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,

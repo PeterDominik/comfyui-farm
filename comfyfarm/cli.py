@@ -9,7 +9,9 @@
                workers
   comfyui      comfyui snapshot: write the farm's ComfyUI environment file from this machine;
                comfyui verify: list how this machine's ComfyUI differs from it (comfyenv)
-  alerts       alerts test: post a test message to config.yaml's alerts.google_chat"""
+  alerts       alerts test: post a test message to config.yaml's alerts.google_chat
+  eval         a definition's eval on the machines (all that may run it, or --machine), through
+               the manager on this host, and how each check went (README: Evals)"""
 
 from __future__ import annotations
 
@@ -363,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
     pol.add_argument("file", nargs="?", help="the file to check (default: the one config.yaml's policy.file names)")
     al = sub.add_parser("alerts", help="the manager's alerts (README: Alerts)")
     al.add_argument("action", choices=["test"], help="test: post a test message to alerts.google_chat")
+    ev = sub.add_parser("eval", help="run a definition's eval on machines, through the manager on this host "
+                                     "(README: Evals)")
+    ev.add_argument("definition", help="a definition with eval: in its process.yaml, e.g. gpu_test")
+    ev.add_argument("--machine", action="append", help="a machine to run it on (repeat for more; default: every "
+                                                       "machine checking in that may run it)")
     from .comfyenv import cli as envcli
     envcli.add_parser(sub)
     from .envs import cli as runnerenvs
@@ -395,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_policy_check(cfg, args.file)
     if args.cmd == "alerts":
         return run_alerts_test(cfg)
+    if args.cmd == "eval":
+        return run_eval(cfg, args.definition, args.machine)
 
     setup_logging(cfg, args.verbose)
     for note in cfg.obsolete_keys:
@@ -433,6 +442,63 @@ def model_notes(definitions: dict, env: dict | None, pf=None) -> list[str]:
                 if lic.strip().lower() not in carried:
                     notes.append(f"rule {r.name} names licence {lic}, which no definition's models carry")
     return notes
+
+
+def run_eval(cfg: Config, definition: str, machines: list[str] | None, poll: float = 3.0) -> int:
+    """`comfyfarm eval`: a definition's eval on machines (decision 0053), through the manager on
+    this host (it starts them from its own host only), followed until each ends. 0 when all
+    passed."""
+    import getpass
+    import json
+    import textwrap
+    import time
+    import urllib.error
+    import urllib.request
+
+    def call(method: str, path: str, body: dict | None = None) -> dict:
+        req = urllib.request.Request(f"http://127.0.0.1:{cfg.server.port}{path}", method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json", "X-User": getpass.getuser()})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            try:
+                detail = json.loads(e.read()).get("detail")
+            except ValueError:
+                detail = None
+            raise SystemExit(f"The manager said no: {detail or e}") from None
+        except urllib.error.URLError as e:
+            raise SystemExit(f"No manager on 127.0.0.1:{cfg.server.port} ({e.reason}): run this on the manager's "
+                             f"host, with its config.yaml.") from None
+
+    rows = call("POST", "/api/v1/evals", {"definition": definition, "machines": machines or None})["evals"]
+    for r in rows:
+        print(f"{r['definition']} on {r['machine']}: queued (job {r['job'][:8]})", flush=True)
+    said = {r["job"]: r["stage"] for r in rows}
+    end = time.monotonic() + cfg.evals.minutes * 60
+    while any(r["status"] not in ("done", "failed", "cancelled", "gone") for r in rows):
+        if time.monotonic() > end:
+            print(f"Not over after {cfg.evals.minutes:g} minutes (evals.minutes): see the jobs on the Queue tab.")
+            return 1
+        time.sleep(poll)
+        rows = call("GET", "/api/v1/evals?jobs=" + ",".join(r["job"] for r in rows))["evals"]
+        for r in rows:
+            if r["stage"] != said.get(r["job"]) and r["status"] not in ("done", "failed", "cancelled"):
+                print(f"{r['definition']} on {r['machine']}: {r['stage']}", flush=True)
+                said[r["job"]] = r["stage"]
+    ok = True
+    for r in rows:
+        if r["status"] == "done":
+            print(f"\n{r['definition']} on {r['machine']}: passed")
+            for c in r.get("checks") or []:
+                print(f"  [{' ok ' if c['ok'] else 'FAIL'}] {c['check']}: {c['said']}")
+        else:
+            ok = False
+            print(f"\n{r['definition']} on {r['machine']}: {r['status'].upper()}")
+            print(textwrap.indent(r.get("error") or "no reason given", "  "))
+    print(f"\nThe outputs are in each machine's scratch folder, in evals/{definition}, until its next eval.")
+    return 0 if ok else 1
 
 
 def run_alerts_test(cfg: Config) -> int:

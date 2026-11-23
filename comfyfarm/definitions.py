@@ -39,6 +39,9 @@ RUNNER_SECTIONS = ("template", "node_packs", "sequence", "outputs", "textures")
 # them from later phases (classes and limits with the process runner, targets with Tractor,
 # models with the policy gates, eval with the evals).
 HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval")
+# A definition's eval (decision 0053): the reference job, and the checks on what it writes.
+EVAL_KEYS = ("inputs", "params", "checks")
+CHECKS = ("files", "size", "like")
 JOB_CLASSES = ("interactive", "batch")
 TARGETS = ("pool", "tractor")
 RUNNER_TYPES = ("comfyui", "process")
@@ -616,9 +619,105 @@ class Definition:
                 and isinstance(x.get("licence"), str) and x["licence"].strip() and set(x) <= {"file", "licence"}
                 for x in self.models)):
             problems.append("models: needs to be a list of {file: <the weights file>, licence: <its licence>}")
-        if self.eval is not None and not isinstance(self.eval, dict):
-            problems.append("eval: needs to be a section (the reference job: inputs, params, tolerance)")
+        if self.eval is not None:
+            problems += self._check_eval()
         return problems
+
+    def _check_eval(self) -> list[str]:
+        """eval: the definition's reference job (decision 0053): its inputs, files in this
+        folder; its other params; and checks on what it writes."""
+        e = self.eval
+        if not isinstance(e, dict) or not e:
+            return ["eval: needs to be a section like {inputs: {input: eval/plate.png}, checks: {files: {png: 1}}}"]
+        problems = [f"eval: {k} isn't something an eval has (inputs, params, checks)"
+                    for k in sorted(set(e) - set(EVAL_KEYS))]
+        inputs, params, checks = e.get("inputs") or {}, e.get("params") or {}, e.get("checks")
+        if not isinstance(inputs, dict) or not all(isinstance(v, str) and v.strip() for v in inputs.values()):
+            problems.append("eval.inputs: needs to be a section of inputs and their files, "
+                            "e.g. {input: eval/plate.png}")
+            inputs = {}
+        for name, raw in inputs.items():
+            if name not in self.ports:
+                problems.append(f"eval.inputs: {name} isn't one of its inputs ({', '.join(self.ports) or 'none'})")
+            else:
+                problems += [f"eval.inputs.{name}: {x}" for x in self._eval_file(raw.split(" ")[0])]
+        problems += [f"eval.inputs: the required input {n} isn't given" for n, port in self.ports.items()
+                     if port.required and n not in inputs]
+        if not isinstance(params, dict):
+            problems.append("eval.params: needs to be a section of params and their values, e.g. {strength: 2}")
+            params = {}
+        for name in params:
+            p = self.params.get(name)
+            if p is None:
+                problems.append(f"eval.params: {name} isn't one of its params")
+            elif p.type in INPUT_TYPES or p.type == "output_folder":
+                problems.append(f"eval.params: {name} is an input: give it in eval.inputs" if p.type in INPUT_TYPES
+                                else f"eval.params: {name} is the output folder: the farm picks it (the machine's "
+                                     f"scratch folder)")
+        if not self.output_folder_param:
+            problems.append("eval: needs an output_folder param, for the farm to put the eval's outputs in the "
+                            "machine's scratch folder")
+        if not isinstance(checks, dict) or not checks:
+            problems.append("eval.checks: needs at least one check (files, size, like)")
+            return problems
+        problems += [f"eval.checks: {k} isn't a check (files, size, like)" for k in sorted(set(checks) - set(CHECKS))]
+        files = checks.get("files")
+        if files is not None and not (isinstance(files, dict) and files and all(
+                isinstance(k, str) and re.fullmatch(r"[A-Za-z0-9]{1,12}", k) and isinstance(v, int)
+                and not isinstance(v, bool) and v >= 0 for k, v in files.items())):
+            problems.append("eval.checks.files: needs to be how many files of each extension, e.g. {exr: 5}")
+        size = checks.get("size")
+        if size is not None and not (isinstance(size, list) and len(size) == 2 and all(
+                isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in size)):
+            problems.append("eval.checks.size: needs to be [width, height] in pixels, e.g. [1024, 1024]")
+        like = checks.get("like")
+        if like is not None:
+            if not (isinstance(like, list) and like and all(isinstance(x, dict) for x in like)):
+                problems.append("eval.checks.like: needs to be a list like [{output: '*.png', expected: "
+                                "eval/expected.png, max_error: 0.01}]")
+                like = []
+            for i, x in enumerate(like):
+                where = f"eval.checks.like[{i}]"
+                if set(x) - {"output", "expected", "max_error"}:
+                    problems.append(f"{where}: has output, expected and max_error only")
+                if not (isinstance(x.get("output"), str) and x["output"].strip() and "/" not in x["output"]):
+                    problems.append(f"{where}.output: needs to be the file name it writes, or a pattern like *.png")
+                if not isinstance(x.get("expected"), str):
+                    problems.append(f"{where}.expected: needs to be a file in this folder, e.g. eval/expected.png")
+                else:
+                    problems += [f"{where}.expected: {m}" for m in self._eval_file(x["expected"], pattern=False)]
+                err = x.get("max_error")
+                if isinstance(err, bool) or not isinstance(err, (int, float)) or not 0 <= err <= 1:
+                    problems.append(f"{where}.max_error: needs to be how far it may be from it on average, 0 to 1 "
+                                    f"(0.01: 1% of full scale)")
+        return problems
+
+    def _eval_file(self, rel: str, pattern: bool = True) -> list[str]:
+        """What is wrong with an eval file's path: inside this folder, and there."""
+        if rel.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", rel) or ".." in re.split(r"[\\/]", rel):
+            return [f"{rel} needs to be a path inside the definition's folder, e.g. eval/plate.png"]
+        if pattern and re.search(r"%0?\d*d|#+", rel):
+            glob = re.sub(r"%0?\d*d|#+", "*", rel)
+            return [] if any(self.dir.glob(glob)) else [f"no file matches {rel} in {self.dir.name}/"]
+        return [] if (self.dir / rel).exists() else [f"{rel} isn't in {self.dir.name}/"]
+
+    def eval_files(self) -> list[str]:
+        """Every file the eval reads, relative to the definition's folder: what a machine's
+        copy must match (decision 0053)."""
+        e = self.eval if isinstance(self.eval, dict) else {}
+        out = []
+        for raw in (e.get("inputs") or {}).values():
+            rel = raw.split(" ")[0]
+            if re.search(r"%0?\d*d|#+", rel):
+                out += sorted(str(f.relative_to(self.dir)).replace("\\", "/")
+                              for f in self.dir.glob(re.sub(r"%0?\d*d|#+", "*", rel)) if f.is_file())
+            elif (self.dir / rel).is_dir():
+                out += sorted(str(f.relative_to(self.dir)).replace("\\", "/")
+                              for f in (self.dir / rel).iterdir() if f.is_file())
+            else:
+                out.append(rel)
+        out += [x["expected"] for x in ((e.get("checks") or {}).get("like") or []) if isinstance(x, dict)]
+        return list(dict.fromkeys(out))
 
     def check_head(self) -> list[str]:
         """What is wrong with the definition's head: what any runner shares, checked without

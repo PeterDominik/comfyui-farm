@@ -168,6 +168,15 @@ class RolloutsConfig(BaseModel):
     sync_minutes: float = Field(60.0, gt=0)
 
 
+class EvalsConfig(BaseModel):
+    """Evals (manager/evals.py, decision 0053): a definition's reference job (its eval:), run on
+    one machine. `comfyfarm eval` runs them whenever asked. With `gate`, a rollout runs the
+    evals of the definitions in its environment on each machine before going on, and a
+    ComfyUI sync those of every ComfyUI definition: a failed eval stops it there."""
+    gate: bool = False
+    minutes: float = Field(30.0, gt=0)          # a machine's evals not over by then stop the rollout or sync
+
+
 class GpuHistoryConfig(BaseModel):
     """Each machine's GPU use and memory, kept by the manager for the dashboard (decision 0049):
     sampled from what its agent last reported, every sample_seconds, kept `days`. 0 days:
@@ -385,6 +394,7 @@ class Config(BaseModel):
     rollouts: RolloutsConfig = Field(default_factory=RolloutsConfig)
     gpu_history: GpuHistoryConfig = Field(default_factory=GpuHistoryConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    evals: EvalsConfig = Field(default_factory=EvalsConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line

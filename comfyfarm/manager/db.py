@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS rollouts (         -- a release going to the machines
     by TEXT,
     started_at REAL,
     step_started REAL,
-    updated_at REAL
+    updated_at REAL,
+    gate TEXT                                 -- JSON: its evals, their jobs, what it drained (0053)
 );
 CREATE TABLE IF NOT EXISTS syncs (            -- a runner's environment synced on the machines in turn (0033)
     id TEXT PRIMARY KEY,
@@ -210,6 +211,8 @@ class JobStore:
                 self._db.execute("ALTER TABLE jobs ADD COLUMN lease_until REAL")
             if "gpu" not in have:           # the GPU type of the machine it was given to, for its metrics
                 self._db.execute("ALTER TABLE jobs ADD COLUMN gpu TEXT")
+            if "gate" not in {r[1] for r in self._db.execute("PRAGMA table_info(rollouts)")}:   # evals (0053)
+                self._db.execute("ALTER TABLE rollouts ADD COLUMN gate TEXT")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_output_key ON jobs(output_key)")
             self._db.execute("CREATE INDEX IF NOT EXISTS jobs_parent ON jobs(parent_id)")
             # Jobs that finished before there were metrics rows get theirs, before anything
@@ -665,6 +668,9 @@ class JobStore:
     def _rollout_row(row) -> dict:
         d = dict(row)
         d["machines"], d["before"] = json.loads(d["machines"]), json.loads(d["before"])
+        gate = json.loads(d.pop("gate", None) or "{}")
+        d.update({"evals": gate.get("evals") or [], "eval_jobs": gate.get("eval_jobs") or {},
+                  "eval_started": gate.get("eval_started"), "drained_before": gate.get("drained_before") or {}})
         return d
 
     def rollouts(self, name: str | None = None, limit: int = 50) -> list[dict]:
@@ -677,9 +683,10 @@ class JobStore:
         with self._lock:
             self._db.execute(
                 "INSERT OR REPLACE INTO rollouts (id, name, release, machines, before, step, state, error, by, "
-                "started_at, step_started, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "started_at, step_started, updated_at, gate) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (r["id"], r["name"], r["release"], json.dumps(r["machines"]), json.dumps(r["before"]), r["step"],
-                 r["state"], r.get("error"), r.get("by"), r.get("started_at"), r.get("step_started"), now()))
+                 r["state"], r.get("error"), r.get("by"), r.get("started_at"), r.get("step_started"), now(),
+                 json.dumps({k: r.get(k) for k in ("evals", "eval_jobs", "eval_started", "drained_before")})))
 
     # ---------------------------------------------------------------- syncs
     def syncs(self, limit: int = 50) -> list[dict]:

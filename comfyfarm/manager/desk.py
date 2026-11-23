@@ -36,6 +36,7 @@ from ..fileio.ocio import REPO
 from ..protocol import HELD, ON_WORKER, build, duration, now
 from . import eta as E
 from .alerts import Alerts
+from .evals import Evals
 from .farm import Farm
 from .rollouts import Rollouts
 from .syncs import Syncs
@@ -137,6 +138,7 @@ class Desk:
         self.rollouts = Rollouts(self)      # environment releases going to the machines (decision 0031)
         self.syncs = Syncs(self)            # a runner's environment synced on them in turn (decision 0033)
         self.alerts = Alerts(self)          # what needs a person (decision 0052)
+        self.evals = Evals(self)            # a definition's reference job on one machine (decision 0053)
 
     @property
     def lease_seconds(self) -> float:
@@ -569,7 +571,7 @@ class Desk:
                 drop.append({"job": jid, "attempt": h.get("attempt")})
             elif j["cancel_requested"] and j["status"] in ON_WORKER and not h.get("cancelling"):
                 cancel.append({"job": jid, "attempt": h.get("attempt")})
-        jobs = self._claim(a) if self.accepting(a) else []
+        jobs = self._claim(a) if self.usable(a) else []       # drained: only the evals pinned to it
         out: dict = {"drop": drop, "cancel": cancel, "jobs": jobs}
         if a.want_nodes:
             out["nodes"], a.want_nodes = True, False
@@ -623,12 +625,15 @@ class Desk:
 
         A job no machine may run (requires) waits: a bigger machine may check in later. One
         that every machine allowed to run it lacks the nodes or models for fails now,
-        saying why (strict_preflight)."""
+        saying why (strict_preflight).
+
+        An eval (decision 0053) goes to the machine it is pinned to, and only there, drained or
+        not: a rollout or sync evaluates a machine before it takes artists' jobs again. Other
+        jobs never go to a drained machine."""
         t = now()
         usable = [x for x in self.agents.values() if self.usable(x)]          # drained included
-        accepting = [x for x in usable if x.name not in self.drained]
         slots: list[tuple[int, AgentState]] = []                             # (0 free GPU | 1 ahead, machine)
-        for x in accepting:
+        for x in usable:
             held = self.store.held_by(x.name)
             busy = sum(1 for j in held if j["status"] in GPU_BUSY)
             room = min(PER_GPU - busy, x.capacity - len(held))
@@ -653,10 +658,14 @@ class Desk:
 
         stats: dict | None = None               # run times, read once there's a job to place
 
+        def pin(job: dict) -> str | None:
+            return ((job.get("info") or {}).get("eval") or {}).get("machine")
+
         def best(job: dict, among) -> int | None:
             nonlocal stats
-            wf = job["workflow"]
-            ks = [k for k in among if not used[k] and able(slots[k][1], wf)]
+            wf, to = job["workflow"], pin(job)
+            ks = [k for k in among if not used[k] and able(slots[k][1], wf)
+                  and (slots[k][1].name == to if to else slots[k][1].name not in self.drained)]
             if not ks:
                 return None
             if stats is None:
@@ -675,6 +684,22 @@ class Desk:
                     self._passed.pop(job["id"], None)
                     self.farm._fail(job["id"], f"Not run: the farm's policy changed after it was queued. {refused}",
                                     ("queued",))
+                continue
+            to = pin(job)
+            if to:                                            # an eval: its machine, once it checks in
+                x = self.agents.get(to)
+                if x is None or not self.usable(x):
+                    continue
+                if not allowed(x, wf) or x.problems.get(wf):
+                    probs = x.problems.get(wf) or [self.unmet(x, wf) or "it may not run it"]
+                    self.farm._fail(job["id"], f"{to} can't run {wf}: " + "; ".join(probs[:4])
+                                    + ". Run `python -m comfyfarm check` on it.", ("queued",))
+                    continue
+                i = best(job, range(len(slots)))
+                if i is not None:
+                    used[i] = True
+                    if slots[i][1] is a:
+                        mine.append(job)
                 continue
             fit = [x for x in usable if allowed(x, wf)]
             if fit and not any(able(x, wf) for x in fit):     # every machine it may go to lacks something
@@ -776,6 +801,10 @@ class Desk:
         strict = self.cfg.farm.strict_preflight
         for job in self.store.queued() + list(extra or []):
             wf = job["workflow"]
+            to = ((job.get("info") or {}).get("eval") or {}).get("machine")
+            if to:                              # an eval, on its machine (decision 0053): not in anyone's way
+                out[job["id"]] = {"done_in": None, "worker": to, "run": None}
+                continue
             fit = [x for x in machines if self.unmet(x, wf) is None and not (strict and x.problems.get(wf))]
             if not fit:
                 out[job["id"]] = {"done_in": None, "worker": None, "run": None}

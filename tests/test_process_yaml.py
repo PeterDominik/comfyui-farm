@@ -38,8 +38,9 @@ class ProcessYamlTests(unittest.TestCase):
         """One of the farm's workflows, as its process.yaml says it."""
         return yaml.safe_load((REPO / "workflows" / name / "process.yaml").read_text(encoding="utf-8"))
 
-    # The head-only fields the farm's ComfyUI workflows set: CHORD lists its models (decision 0044).
-    HEAD_SET = {"chord_pbr": {"models"}}
+    # The head-only fields the farm's ComfyUI workflows set: CHORD lists its models (decision 0044)
+    # and has an eval (0053).
+    HEAD_SET = {"chord_pbr": {"models", "eval"}}
 
     def manifest_of(self, name: str) -> dict:
         """The manifest.yaml that one of the farm's workflows is equal to, but for its head-only
@@ -92,9 +93,10 @@ class ProcessYamlTests(unittest.TestCase):
                 values = old.validate({k: "/rdo/shows/x/a.%04d.png 1-2" if p.type in D.INPUT_TYPES else "a subject"
                                        for k, p in old.params.items() if p.required})
                 self.assertEqual(new.build(values), old.build(values))
-                self.assertEqual((new.job_class, new.targets, new.limits, new.eval, new.version),
-                                 ("interactive", ["pool"], {}, None, None))
+                self.assertEqual((new.job_class, new.targets, new.limits, new.version),
+                                 ("interactive", ["pool"], {}, None))
                 self.assertEqual(new.models, self.process_of(name).get("models", []))
+                self.assertEqual(new.eval, self.process_of(name).get("eval"))
 
     def test_the_two_files_keep_the_wiring_in_different_places(self):
         m = self.manifest_of("wan22_i2i")
@@ -171,11 +173,14 @@ class ProcessYamlTests(unittest.TestCase):
         def head(p):
             p.update({"version": 2, "class": "batch", "targets": ["pool", "tractor"], "limits": {"max_minutes": 45},
                       "models": [{"file": "wan2.2_i2v_low_noise_14B_fp8.safetensors", "licence": "apache-2.0"}],
-                      "eval": {"inputs": "eval/a.png", "tolerance": 0.01}})
-        wf = Workflow(self.as_process("wan22_i2i", head))
+                      "eval": {"inputs": {"input": "eval/a.png"}, "checks": {"files": {"png": 81}}}})
+        folder = self.as_process("wan22_i2i", head)
+        (folder / "eval").mkdir()
+        (folder / "eval" / "a.png").write_bytes(b"")
+        wf = Workflow(folder)
         self.assertEqual(wf.problems, [])
         self.assertEqual((wf.version, wf.job_class, wf.targets, wf.limits["max_minutes"], wf.models[0]["licence"],
-                          wf.eval["tolerance"]), (2, "batch", ["pool", "tractor"], 45, "apache-2.0", 0.01))
+                          wf.eval["checks"]["files"]["png"]), (2, "batch", ["pool", "tractor"], 45, "apache-2.0", 81))
         self.assertNotEqual(wf.digest, self.registry.workflows["wan22_i2i"].digest)
 
     def test_bad_head_fields_disable_the_workflow_and_say_why(self):

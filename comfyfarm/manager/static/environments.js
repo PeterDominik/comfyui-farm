@@ -94,7 +94,10 @@ function rolloutSteps(r) {
     if (r.state === "rolled_back") return i <= r.step ? step("↩", "muted", back) : step("–", "muted", "never told");
     if (i < r.step) return step("✓", "ok", "has it, checked");
     if (i > r.step) return step(r.state === "cancelled" ? "–" : "○", "muted", "not told yet");
-    if (r.state === "running") return step("…", "warn", "told: the rollout goes on once it has it checked");
+    if (r.state === "running") {
+      return step("…", "warn", (r.eval_jobs || {})[m] ? "has it: its evals run (Queue tab), then the rollout goes on"
+                                                      : "told: the rollout goes on once it has it checked");
+    }
     if (r.state === "paused") return step("‖", "warn", "paused here: resume goes on");
     if (r.state === "failed") return step("✗", "err", "stopped here: roll back, or cancel");
     return step("■", "muted", "cancelled here: it keeps what it has");
@@ -103,7 +106,8 @@ function rolloutSteps(r) {
 
 // A ComfyUI sync's machines in its order, each marked: [{machine, mark, cls, tip}] (manager/syncs.py).
 const SYNC_PHASE = { draining: "drained: waiting for its jobs to end", told: "told to sync",
-                     syncing: "syncing its ComfyUI", checking: "its ComfyUI is back: being checked" };
+                     syncing: "syncing its ComfyUI", checking: "its ComfyUI is back: being checked",
+                     evaluating: "checked: its evals run (Queue tab)" };
 function syncSteps(s) {
   return (s.machines || []).map((m, i) => {
     const res = (s.results || {})[m] || {};
