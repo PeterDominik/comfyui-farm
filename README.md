@@ -1179,7 +1179,7 @@ gpu_history:
 - **`GET /api/v1/workers/{name}/gpu-history?hours=24`** gives a machine's samples over the
   last hours, oldest first. Over a long span they're averaged into steps, about 500 per GPU
   at most: use averaged, memory and jobs at their highest.
-- **On the dashboard,** the Machines tab's *GPU history* panel draws it (decision 0051): a
+- **On the dashboard,** the Machines tab's *GPU history* panel draws it (decision 0050): a
   graph per GPU over the last hour, 6 hours, 24 hours or 7 days.
   - Use and memory in use share one scale, 0 to 100% of the card. Shaded: the machine held
     farm jobs.
@@ -1191,7 +1191,7 @@ gpu_history:
 ### Usage
 
 The dashboard's **Usage** tab gives the farm's jobs, GPU hours and failures over the last 7,
-30 or 90 days, from the job metrics (decision 0051), so the numbers outlive the jobs.
+30 or 90 days, from the job metrics (decision 0050), so the numbers outlive the jobs.
 
 - **Per day, per show, per definition or per machine,** for every show and definition, or one
   of each (the two lists). Clicking a show or a definition shows it per day.
