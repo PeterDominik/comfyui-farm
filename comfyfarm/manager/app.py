@@ -23,10 +23,12 @@ from ..shotgrid import menu as SM
 from ..shotgrid.menusync import MenuSync
 from ..shotgrid import versions as SV
 from ..definitions import DefinitionRegistry, ParamError
+from ..protocol import now
 from .db import ACTIVE, JobStore
 from .desk import Desk
 from .events import EventBus
 from . import metrics as MX
+from . import prom as PM
 from . import share
 from . import sweeper as SW
 from .farm import Farm, FarmError
@@ -620,6 +622,14 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
             return Response(MX.to_csv(table), media_type="text/csv; charset=utf-8",
                             headers={"Content-Disposition": 'attachment; filename="comfyfarm-job-metrics.csv"'})
         return {"jobs": table}
+
+    started_at = now()
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics(ident: Identity = Depends(identity)):
+        """The farm's numbers in Prometheus' text format (decision 0048): the queue, finished
+        jobs (job_metrics), the machines and their GPUs, the policy and the sweeper."""
+        return Response(PM.render(farm, desk, started_at), media_type=PM.CONTENT_TYPE)
 
     @app.get("/api/v1/policy")
     def policy(ident: Identity = Depends(identity)):

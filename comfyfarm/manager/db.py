@@ -375,6 +375,21 @@ class JobStore:
         sql = "SELECT * FROM job_metrics" + (f" WHERE {' AND '.join(where)}" if where else "")
         return [dict(r) for r in self._q(sql + " ORDER BY finished_at, job_id LIMIT ?", (*args, limit))]
 
+    def metrics_totals(self) -> list[dict]:
+        """job_metrics summed per definition, outcome and GPU type, runs only (a set's batches,
+        not the set): how many, and for those done that ran, their seconds and frames; for
+        those given to a machine, their wait (GET /metrics, decision 0048)."""
+        ran = "outcome='done' AND started_at IS NOT NULL"
+        return [dict(r) for r in self._q(
+            f"SELECT workflow, outcome, COALESCE(gpu, '') AS gpu, COUNT(*) AS n, "
+            f"SUM(CASE WHEN {ran} THEN finished_at - started_at END) AS run, "
+            f"SUM(CASE WHEN {ran} THEN 1 ELSE 0 END) AS runs, "
+            f"SUM(CASE WHEN {ran} THEN COALESCE(units, 0) END) AS frames, "
+            f"SUM(CASE WHEN assigned_at IS NOT NULL THEN assigned_at - created_at END) AS wait, "
+            f"SUM(CASE WHEN assigned_at IS NOT NULL THEN 1 ELSE 0 END) AS waits "
+            f"FROM job_metrics WHERE kind != 'set' GROUP BY workflow, outcome, COALESCE(gpu, '') "
+            f"ORDER BY workflow, outcome, gpu", ())]
+
     def events(self, job_id: str) -> list[dict]:
         """A job's timeline, oldest first."""
         out = []

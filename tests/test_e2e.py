@@ -693,6 +693,15 @@ convert:
         with self.assertRaisesRegex(farm.FarmError, "isn't a time"):
             farm._request("GET", "/api/v1/job-metrics?since=last-week")
 
+    def test_04995b_prometheus_metrics(self):
+        """The farm's numbers in Prometheus' text format, from the running manager (decision 0048)."""
+        text = farm._request("GET", "/metrics", raw=True)
+        self.assertIn("# TYPE comfyfarm_jobs gauge", text)
+        self.assertRegex(text, r'comfyfarm_machine_up\{machine="mock"\} [01]\n')
+        self.assertRegex(text, r'comfyfarm_jobs_finished\{workflow="ltx25_alpha_gen",outcome="done",gpu="[^"]*"\} '
+                               r'[1-9]')
+        self.assertIn("comfyfarm_policy_enabled 0\n", text)
+
     def test_04996_sweeps(self):
         """The retention sweeper's dry run (decision 0041): off here, so no daily run; one asked
         for from the manager's host saves a report, and deletes nothing."""
