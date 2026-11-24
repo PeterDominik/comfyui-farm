@@ -699,14 +699,21 @@ class Agent:
         self._release(h)
         if not self.cfg.convert.keep_failed:
             S.cleanup(h.job, self.scratch_root)
-        await self._report(h, "failed", error=message, traceback=traceback)
+        await self._report(h, "failed", error=message, traceback=traceback, **self._told(h))
 
     async def _cancelled(self, h: Held) -> None:
         if h.finished or h.dropped:
             return
         self._release(h)
         S.cleanup(h.job, self.scratch_root)
-        await self._report(h, "cancelled")
+        await self._report(h, "cancelled", **self._told(h))
+
+    def _told(self, h: Held) -> dict:
+        """A paid job's failure or cancel says what reached its provider, if anything: the
+        manager's ledger releases its money only when nothing did (decision 0060)."""
+        if h.runner is None or not (h.job.get("info") or {}).get("cost"):
+            return {}
+        return {"submitted": h.runner.submitted(h)}
 
     async def run_lost(self, h: Held, reason: str) -> None:
         if h.finished or h.dropped:
@@ -790,7 +797,7 @@ class Agent:
             h.dispatched_at = h.dispatched_at or now()
             log.info("agent %s picked job %s up again in %s", self.name, h.id[:8], h.runner.label)
             if was == "preparing":
-                await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid)
+                await self._report(h, "dispatched", at=h.dispatched_at, prompt_id=h.pid, **self._told(h))
             if h.status == "running" and was != "running":
                 h.started_at = h.started_at or now()
                 await self._report(h, "running", at=h.started_at)
@@ -798,7 +805,7 @@ class Agent:
             self._hold_slot(h)
             if was == "preparing":
                 h.status = "dispatched"
-                await self._report(h, "dispatched", at=h.dispatched_at or now(), prompt_id=h.pid)
+                await self._report(h, "dispatched", at=h.dispatched_at or now(), prompt_id=h.pid, **self._told(h))
             await h.runner.settle(h, result)
         elif was == "preparing":
             log.info("agent %s: job %s never reached %s: preparing it again", self.name, h.id[:8], h.runner.label)

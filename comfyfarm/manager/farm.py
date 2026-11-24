@@ -33,6 +33,7 @@ from ..shotgrid import query as SQ
 from ..shotgrid import versions as V
 from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
+from . import ledger as L
 from . import prices as PR
 from .db import JobStore
 from .events import EventBus
@@ -53,9 +54,10 @@ def publish_target_ok(cfg, show: str) -> bool:
 
 
 class FarmError(Exception):
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, extra: dict | None = None):
         super().__init__(message)
         self.status = status
+        self.extra = extra or {}        # beside `detail` in the answer, for clients to act on (`confirm`)
 
 
 class Farm:
@@ -121,6 +123,8 @@ class Farm:
     # ================================================================ events
     def _emit(self, job: dict | None) -> None:
         if job:
+            if L.paid(job):
+                job = {**job, "spend": self.store.spend_of(job["id"])}   # where its money is (decision 0060)
             self.events.publish({"type": "job", "job": job})
             if job.get("parent_id"):
                 self._refresh_set(job["parent_id"])
@@ -222,8 +226,11 @@ class Farm:
         fc = self.desk.forecast() if self.desk else {}
         position = {j["id"]: i + 1 for i, j in enumerate(self.store.queued(with_prompt=False))}
         published = self.store.latest_publishes([j["id"] for j in jobs if j["status"] == "done"])
+        spend = self.store.spend_for([j["id"] for j in jobs if L.paid(j)])
         for j in jobs:
             j["publish"] = publish_summary(published.get(j["id"]))     # the latest publish of it
+            if j["id"] in spend:
+                j["spend"] = spend[j["id"]]                             # where its money is (decision 0060)
             j["queue_position"] = position.get(j["id"])
             j["next_worker"] = None
             j["eta_seconds"] = None
@@ -335,7 +342,7 @@ class Farm:
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
         # What it costs at an outside provider (decision 0059), from the provider's price today.
-        cost = None
+        cost, label = None, None
         if wf.cost is not None:
             provider = self.provider_of(wf)
             label = provider.label if provider is not None else wf.provider
@@ -346,13 +353,23 @@ class Farm:
             moved = PR.drift_note(wf, cost, label)
             if moved:
                 notes = notes + [moved]
+        # Whether it fits in its show's cap (decision 0060): checked again as it is queued.
+        budget = None
+        if cost is not None:
+            try:
+                budget = self.policy.budget(show_ or "")
+                cost["budget"] = L.fits(budget, show_ or "", self.store.spent(show_ or ""), cost["amount"], label)
+            except PolicyRefused as e:
+                raise FarmError(str(e), 403) from None
+            cost["confirm"] = L.needs_yes(budget, cost["amount"])
+            cost["confirm_above"] = budget["confirm_above"]
         seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
         source = seq.source if seq else wf.tag
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
                 "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
                 "source": source, "out_dir": None, "version": None, "picked": None, "artifacts": [], "cfg": cfg,
-                "cost": cost}
+                "cost": cost, "budget": budget, "provider_label": label}
         # No machine may take it now (requires, drained, offline): shown before submitting
         # and as a queued job's stage, but not kept as a warning (it passes).
         plan["waits"] = self.desk.requires_note(wf.name) if self.desk and evaluation is None else None
@@ -429,8 +446,21 @@ class Farm:
         out = self.policy.status()
         rules = (out.get("in_force") or {})
         out["quotas_now"] = self.policy.usage(self.queued_now()) if rules.get("quotas") else {}
+        out["spend_now"] = self.spend_now()
         out["definitions"] = [{"name": n, "label": wf.label, "models": wf.models if wf.models_listed else None}
                               for n, wf in sorted(self.registry.workflows.items())]
+        return out
+
+    def spend_now(self) -> list[dict]:
+        """Each show's spending at outside providers against its cap (decision 0060): {show,
+        amount, held, charged, unsure, jobs, cap, rule, warn_at}, the most spent first."""
+        out = []
+        for r in self.store.spend_by_show():
+            try:
+                b = self.policy.budget(r["show"])
+            except PolicyRefused:
+                b = {"cap": None, "rule": None, "warn_at": None}
+            out.append({**r, "cap": b["cap"], "rule": b["rule"], "warn_at": b["warn_at"]})
         return out
 
     def queued_now(self) -> list[dict]:
@@ -676,11 +706,15 @@ class Farm:
 
     def submit(self, workflow: str, params: dict, user: str, name: str | None = None,
                priority: int = 0, show: str | None = None, shot: str | None = None,
-               publish: dict | None = None, evaluation: dict | None = None) -> dict:
+               publish: dict | None = None, evaluation: dict | None = None,
+               confirm_cost: float | None = None) -> dict:
         """Validate and queue a job. Runs in a thread (touches network storage). `publish`:
         publish it when it's done ({show, shot, step, template, description}, checked now).
         `evaluation`: an eval (manager/evals.py, decision 0053): its machine, its checks, and
-        `folder`, the farm's folder its outputs go into; kept in the job's info."""
+        `folder`, the farm's folder its outputs go into; kept in the job's info.
+        `confirm_cost`: what the artist said yes to, for a job that costs at least the
+        policy's budgets.confirm_above (decision 0060); without it, or below the estimate, such
+        a job is refused with `confirm` (its estimate) for the client to ask."""
         job_id = str(uuid.uuid4())
         with self._submit_lock:   # output folders are reserved by inserting the job
             plan = self.plan(workflow, params, show=show, shot=shot, job_id=job_id, user=user,
@@ -688,6 +722,10 @@ class Farm:
             if evaluation and plan.get("batches"):
                 raise FarmError("Its eval input makes a texture set of several batches: give the eval fewer tiles, "
                                 "so it is one job.")
+            cost = plan.get("cost")
+            if cost and cost["confirm"] and (confirm_cost is None or float(confirm_cost) + L.EPS < cost["amount"]):
+                raise FarmError(L.confirm_text(cost, plan["provider_label"], cost["confirm_above"]), 409,
+                                {"confirm": cost})
             wf, values, seq, out_dir = plan["wf"], plan["values"], plan["seq"], plan["out_dir"]
             pub = None
             if publish is not None:
@@ -710,15 +748,25 @@ class Farm:
                 info["publish_request"] = pub
             if evaluation:
                 info["eval"] = {k: v for k, v in evaluation.items() if k != "root"}
-            job = self.store.insert({
-                "id": job_id, "workflow": wf.name, "user": user,
-                "name": name or plan["shot"] or plan["source"],
-                "status": "queued",
-                "priority": priority, "params": values, "info": info,
-                "prompt": None, "request": request, "output_dir": out_dir, "output_key": plan.get("output_key"),
-                "created_at": now(), "stage": plan.get("waits") or "queued",
-                "warnings": list(plan["notes"]),
-            })
+            t = now()
+            # A paid job's estimate is held against its show's cap in the same transaction as the
+            # job is queued, once the cap is checked again there (decision 0060).
+            spend = L.row(job_id, wf, cost, plan["show"], user, t) if cost else None
+
+            def fits(spent: float) -> None:
+                L.fits(plan["budget"], plan["show"], spent, cost["amount"], plan["provider_label"])
+            try:
+                job = self.store.insert({
+                    "id": job_id, "workflow": wf.name, "user": user,
+                    "name": name or plan["shot"] or plan["source"],
+                    "status": "queued",
+                    "priority": priority, "params": values, "info": info,
+                    "prompt": None, "request": request, "output_dir": out_dir, "output_key": plan.get("output_key"),
+                    "created_at": t, "stage": plan.get("waits") or "queued",
+                    "warnings": list(plan["notes"]),
+                }, spend=spend, check=fits if cost else None)
+            except PolicyRefused as e:
+                raise FarmError(str(e), 403) from None
         log.info("job %s queued by %s: %s %s -> %s", job_id[:8], user, wf.name, plan["source"], out_dir)
         self._emit(job)
         self.wake()
@@ -824,7 +872,7 @@ class Farm:
         self.wake()
         return j or self.store.get(set_id)
 
-    def retry(self, job_id: str, user: str) -> dict:
+    def retry(self, job_id: str, user: str, confirm_cost: float | None = None) -> dict:
         old = self.store.get(job_id)
         if not old:
             raise FarmError("Job not found.", 404)
@@ -833,7 +881,7 @@ class Farm:
                             "on the set runs the whole set again.", 409)
         info = old["info"] or {}
         again = dict(workflow=old["workflow"], params=old["params"], user=user, name=old["name"],
-                     priority=old["priority"], show=info.get("show"), shot=info.get("shot"))
+                     priority=old["priority"], show=info.get("show"), shot=info.get("shot"), confirm_cost=confirm_cost)
         asked = {k: v for k, v in (info.get("publish_request") or {}).items() if k != "user"}
         if asked:                           # published when done, as the first run was
             try:
@@ -849,6 +897,15 @@ class Farm:
         jid = job["id"]
         if job["kind"] == "set":
             return await self._cancel_set(job)
+        if job["status"] == "preparing" and L.paid(job) and self.desk is not None and self.desk.alive(job["worker"]):
+            # A paid job being prepared may be on its way to its provider: its gateway cancels
+            # it and says whether it was sent, for the ledger (decision 0060).
+            j = self.store.transition(jid, ("preparing",), cancel_requested=1, stage="cancelling")
+            if j:
+                self._emit(j)
+                self.wake()
+                return j
+            job = self.store.get(jid)
         if job["status"] in ("queued", "preparing"):
             # Not in a ComfyUI yet, so it's cancelled now. An agent preparing it (converting
             # its input) is told to drop it, and anything it reports about it is ignored.
@@ -921,6 +978,15 @@ class Farm:
             return
         if job["cancel_requested"]:
             self._finish_cancel(job["id"], only_prompt=pid)
+        elif L.paid(job):
+            # It may have reached its provider, and a second run would be paid for again
+            # (decisions 0056, 0060): it isn't queued again.
+            wf = self.registry.workflows.get(job["workflow"])
+            p = self.provider_of(wf) if wf is not None else None
+            label = p.label if p is not None else "its provider"
+            self._fail(job["id"], f"{reason} It costs money at {label}, where it may have run, so it isn't queued "
+                                  f"again (it would be paid for twice): look for it in {label}'s request history, "
+                                  f"and submit it again if it isn't there.", HELD, only_prompt=pid)
         elif job["attempts"] < self.cfg.farm.max_attempts:
             j = self.store.transition(job["id"], HELD, only_prompt=pid, status="queued", worker=None,
                                       prompt_id=None, progress=0, stage="requeued", started_at=None,

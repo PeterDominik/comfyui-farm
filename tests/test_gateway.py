@@ -23,13 +23,20 @@ from comfyfarm.protocol import now
 
 REPO = Path(__file__).resolve().parent.parent
 PLATE = str(REPO / "workflows/gpu_test/eval/input.png")
-# fal.ai is outside Rodeo: no show may use it until the farm's policy allows it (decision 0058).
+# fal.ai is outside Rodeo: no show may use it until the farm's policy allows it (decision 0058),
+# and its jobs cost money, which no show may spend until a budgets rule gives it a cap (0060).
 POLICY = """version: 1
 providers:
   - name: pilot-fal-on-rnd
     shows: [rnd]
     allow: [fal]
     reason: The fal.ai pilot runs on rnd only
+budgets:
+  rules:
+    - name: pilot-rnd
+      shows: [rnd]
+      cap: 50
+      reason: The fal.ai pilot's budget
 """
 
 EDIT = {   # an API definition, as nano_banana2_edit_fal will be

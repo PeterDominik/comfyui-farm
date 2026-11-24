@@ -87,3 +87,18 @@ providers:
     shows: [exmpl2604]
     deny: [python-local]
     reason: Only the ComfyUI workflows are cleared on this show
+
+# Budgets (decision 0060): what each show may spend at outside providers, in US dollars, over
+# the life of the show. Without this section no show may spend anything. A job that doesn't
+# fit in its show's cap is refused before it is queued; once queued, its estimate is held
+# against the cap until fal.ai's bill says what it cost. Each show a rule names gets its own
+# cap, and the first rule naming a show gives it.
+budgets:
+  other_shows: 0         # the cap of a show no rule names
+  confirm_above: 5       # a job estimated at this or more is queued once the artist says yes
+  warn_at: 0.8           # an alert (alerts.budgets) once a show has spent this share of its cap
+  rules:
+    - name: pilot-rnd
+      shows: [rnd]
+      cap: 50
+      reason: Peter's fal.ai pilot, on his own fal.ai account

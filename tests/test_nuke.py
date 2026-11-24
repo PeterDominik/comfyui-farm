@@ -306,8 +306,8 @@ class FakeFarm:
     def __init__(self):
         self.listed, self.by_id, self.submitted = [], {}, []
 
-    def submit(self, workflow, params, name=None, publish=None):
-        self.submitted.append((workflow, params, name, publish))
+    def submit(self, workflow, params, name=None, publish=None, confirm_cost=None):
+        self.submitted.append((workflow, params, name, publish) + ((confirm_cost,) if confirm_cost else ()))
         if "bad" in params.get("input", ""):
             raise farm.FarmError("No frames")
         job = {"id": f"job{len(self.submitted)}", "status": "queued"}
@@ -543,6 +543,25 @@ class PanelLogic(unittest.TestCase):
             "entity_type": "Shot", "entity": "yht_1040"}}}, {"input": "Plate"})
         self.assertIn("Plate: ShotGrid Version <a href='https://sg/detail/Version/4865327'>yht_1040.lineup.v1</a> "
                       "(Shot yht_1040), its frames <code>/rdo/shows/bc1/.published/yht/yht_1040/x.#.exr</code> 1001-1084", html)
+
+    def test_what_a_paid_job_costs_and_the_yes_it_needs(self):
+        """At an outside provider (decisions 0059, 0060): the estimate and its show's cap in
+        the preview, and the question asked before a job of budgets.confirm_above or more."""
+        cost = {"amount": 6.0, "text": "About $6.00 at fal.ai: 75 images at 1K, $0.08 an image.", "confirm": True,
+                "budget": {"text": "Show rnd has $44.00 left of its $50.00 cap after it."}}
+        html = self.panel.PanelModel.destination_html({"frames": 1, "first_file": "a.png", "cost": cost})
+        self.assertIn("<br><b>Cost</b> About $6.00 at fal.ai: 75 images at 1K, $0.08 an image. Show rnd has $44.00 "
+                      "left of its $50.00 cap after it. <span style='color:#e0a24a'>You are asked to confirm it when "
+                      "you submit.</span>", html)
+        self.assertNotIn("Cost", self.panel.PanelModel.destination_html({"frames": 1, "first_file": "a.png"}))
+        self.assertEqual(self.panel.PanelModel.yes_question(cost),
+                         "About $6.00 at fal.ai: 75 images at 1K, $0.08 an image.\n\nShow rnd has $44.00 left of its "
+                         "$50.00 cap after it.\n\nSubmit it for about $6.00?")
+        self.assertEqual([self.panel.money(x) for x in (0.08, 0.0075, 1234.5)], ["$0.08", "$0.0075", "$1,234.50"])
+        m = self.panel.PanelModel(client=FakeFarm(), user="peter")
+        m.workflows = [WF]
+        m.submit("wf", {"input": "/a.png"}, confirm_cost=6.0)
+        self.assertEqual(m.client.submitted[-1][-1], 6.0)                # the yes goes with it
 
 
 # ---------------------------------------------------------------- the menus (decision 0054)

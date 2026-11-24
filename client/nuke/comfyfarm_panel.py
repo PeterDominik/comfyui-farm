@@ -89,6 +89,13 @@ def _about(s: float | None) -> str:
     return f"{round(s / 60)} min" if s < 5940 else f"{s / 3600:.1f} h"
 
 
+def money(x: float) -> str:
+    """US dollars as people read them: $0.08, $1.50, $0.0075 (as the manager says them)."""
+    if abs(x - round(x, 2)) < 1e-9:
+        return f"${x:,.2f}"
+    return "$" + f"{x:.4f}".rstrip("0")
+
+
 def eta_text(plan_eta: dict | None) -> str:
     """The plan's estimate: about how long the job takes, where, and when it'll be done
     behind the queue (from past runs of the workflow on those GPUs)."""
@@ -267,9 +274,12 @@ class PanelModel:
         return self.client.plan(wf_name, self.params_from_form(self.workflow(wf_name), raw))
 
     def submit(self, wf_name: str, raw: dict, name: str | None = None, source_node: str | None = None,
-               publish: dict | None = None) -> dict:
-        """Queue a job; `publish`: publish it when it's done (publish_request())."""
+               publish: dict | None = None, confirm_cost: float | None = None) -> dict:
+        """Queue a job; `publish`: publish it when it's done (publish_request()); `confirm_cost`:
+        the estimate the artist said yes to (yes_question())."""
         kw = {"publish": publish} if publish is not None else {}
+        if confirm_cost is not None:
+            kw["confirm_cost"] = confirm_cost
         job = self.client.submit(wf_name, self.params_from_form(self.workflow(wf_name), raw), name=name or None, **kw)
         self.session_jobs[job["id"]] = job["status"]
         if source_node:
@@ -466,6 +476,14 @@ class PanelModel:
 
     # ------------------------------------------------------------ text for the view
     @staticmethod
+    def yes_question(confirm: dict) -> str:
+        """What the artist is asked before a job that costs the policy's budgets.confirm_above or
+        more is queued (decision 0060): from the estimate the farm answered with (FarmError.confirm)."""
+        said = [confirm.get("text"), (confirm.get("budget") or {}).get("text"),
+                f"Submit it for about {money(float(confirm.get('amount') or 0))}?"]
+        return "\n\n".join(x for x in said if x)
+
+    @staticmethod
     def destination_html(plan: dict, labels: dict | None = None) -> str:
         """The 'Will write …' preview, as the web dashboard shows it (`labels`: input
         name -> its label, for the other inputs)."""
@@ -504,6 +522,13 @@ class PanelModel:
         if (plan.get("version") or 1) > 1:
             out += (f"<br><span style='color:#e0a24a'>Earlier versions already exist there (or are queued), "
                     f"so this run is v{plan['version']:03d}.</span>")
+        cost = plan.get("cost")
+        if cost:        # at an outside provider: the estimate and its show's cap (decisions 0059, 0060)
+            out += f"<br><b>Cost</b> {e(cost.get('text') or '')}"
+            if (cost.get("budget") or {}).get("text"):
+                out += " " + e(cost["budget"]["text"])
+            if cost.get("confirm"):
+                out += " <span style='color:#e0a24a'>You are asked to confirm it when you submit.</span>"
         if eta_text(plan.get("eta")):
             out += "<br>" + e(eta_text(plan.get("eta")))
         for note in plan.get("notes") or []:
@@ -1370,8 +1395,20 @@ if QtWidgets is not None:
             self.submit_btn.setEnabled(False)
             self.msg_label.setText("Submitting…")
 
-            def done(job, error):
+            def done(job, error, yes=None):
                 self.submit_btn.setEnabled(True)
+                confirm = getattr(error, "confirm", None)
+                if confirm and yes is None:
+                    # It costs the policy's budgets.confirm_above or more: asked, then sent again (0060).
+                    answer = QtWidgets.QMessageBox.question(self, "ComfyFarm", PanelModel.yes_question(confirm))
+                    if answer != QtWidgets.QMessageBox.Yes:
+                        self._message("Not submitted: it wasn't confirmed.", True)
+                        return
+                    self.submit_btn.setEnabled(False)
+                    self._async(lambda: self.model.submit(wf["name"], raw, name, source_node=node, publish=publish,
+                                                          confirm_cost=confirm["amount"]),
+                                lambda j, err: done(j, err, confirm["amount"]))
+                    return
                 if error:
                     self._message(str(error), True)
                     return

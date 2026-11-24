@@ -100,6 +100,9 @@ class JobRequest(BaseModel):
     # Publish it when it's done: {show, shot, step, template, description}, all optional
     # (the manifest's step, the first template, the show and shot read from the input path).
     publish: dict | None = None
+    # What the artist said yes to, in US dollars, for a job that costs at least the policy's
+    # budgets.confirm_above (decision 0060). Without it such a job is refused with `confirm`.
+    confirm_cost: float | None = Field(None, ge=0)
 
 
 class TemplateSave(BaseModel):
@@ -187,7 +190,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     @app.exception_handler(FarmError)
     @app.exception_handler(PublishError)
     async def farm_error(_req: Request, exc: Exception):
-        return JSONResponse({"detail": str(exc)}, status_code=exc.status)
+        return JSONResponse({"detail": str(exc), **getattr(exc, "extra", {})}, status_code=exc.status)
 
     # ------------------------------------------------------------ auth
     def _user_for_key(key: str | None) -> str | None:
@@ -246,6 +249,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     def gateway_js():
         """The Machines tab's gateway: its lanes (static/gateway.js)."""
         return FileResponse(HERE / "static" / "gateway.js", media_type="text/javascript", headers=FRESH)
+
+    @app.get("/spend.js", include_in_schema=False)
+    def spend_js():
+        """What jobs at outside providers cost, on the Queue and Policy tabs (static/spend.js)."""
+        return FileResponse(HERE / "static" / "spend.js", media_type="text/javascript", headers=FRESH)
 
     @app.get("/catalog.js", include_in_schema=False)
     def catalog_js():
@@ -311,7 +319,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         if req.priority > 0 and cfg.auth.api_keys and not ident.admin:
             raise HTTPException(403, "Only admins can submit with priority above 0.")
         job = farm.submit(req.workflow, req.params, user, name=req.name, priority=req.priority,
-                          show=req.show, shot=req.shot, publish=req.publish)
+                          show=req.show, shot=req.shot, publish=req.publish, confirm_cost=req.confirm_cost)
         return farm.annotate([job])[0]
 
     @app.post("/api/v1/plan")
@@ -352,10 +360,12 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         return await farm.cancel(job["id"])
 
     @app.post("/api/v1/jobs/{job_id}/retry", status_code=201)
-    def retry_job(job_id: str, ident: Identity = Depends(identity)):
+    def retry_job(job_id: str, confirm_cost: float | None = None, ident: Identity = Depends(identity)):
+        """Run it again as a new job; `confirm_cost`: as for a submit (decision 0060)."""
         job = _job_or_404(job_id)
         _may_touch(ident, job)
-        return farm.annotate([farm.retry(job["id"], ident.user if cfg.auth.api_keys else job["user"])])[0]
+        return farm.annotate([farm.retry(job["id"], ident.user if cfg.auth.api_keys else job["user"],
+                                         confirm_cost=confirm_cost)])[0]
 
     # ------------------------------------------------------------ publishing (comfyfarm.publish)
     @app.get("/api/v1/workflows/{name}/publish")
@@ -712,8 +722,9 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     @app.get("/api/v1/policy")
     def policy(ident: Identity = Depends(identity)):
         """The farm's policy (decisions 0043 to 0047): the file, the rules in force, why the file as
-        it is now isn't in force (if it isn't), what is queued against each quota, and the models
-        each definition lists."""
+        it is now isn't in force (if it isn't), what is queued against each quota, what each show
+        has spent against its cap (`spend_now`, decision 0060), and the models each definition
+        lists."""
         return farm.policy_view()
 
     @app.get("/api/v1/sweeps")

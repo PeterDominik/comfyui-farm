@@ -6,8 +6,9 @@ rules (which licences the models a definition uses may carry, on which shows: ea
 definition lists its models in its process.yaml, decision 0044), quotas (how much a show,
 or a user on it, may have queued or running at once, decision 0045) and provider rules
 (which shows may send work to which outside provider, decision 0058: none until a rule
-allows it). A job a rule refuses is never planned, and the artist is told which rule and
-why.
+allows it) and budgets (what each show may spend at outside providers over its life,
+decision 0060: nothing until a `budgets:` section gives it a cap). A job a rule refuses is
+never planned, and the artist is told which rule and why.
 
 The file is read again when it changes. A file that can't be read or doesn't validate is
 not taken: the last valid one stays in force (also across a restart: the manager keeps a
@@ -161,6 +162,25 @@ class QuotaRule(_Rule):
         return self
 
 
+class BudgetRule(_Rule):
+    """The cap of each of its shows at outside providers (decision 0060): what jobs that cost
+    money may spend, in US dollars, over the life of the show; each show its own. The first
+    rule naming a show gives its cap."""
+    cap: float = Field(ge=0)
+    warn_at: float | None = Field(None, gt=0, le=1)     # an alert once this much of it is spent; budgets.warn_at
+
+
+class Budgets(BaseModel):
+    """policy.yaml's `budgets:`: the caps of the shows whose jobs cost money (decision 0060).
+    With no `budgets:` section, no show may spend any."""
+    model_config = ConfigDict(extra="forbid")
+    currency: Literal["USD"] = "USD"                    # the ledger's, the only one
+    other_shows: float = Field(0, ge=0)                 # the cap of a show no rule names
+    confirm_above: float | None = Field(5, ge=0)        # a job estimated at this or more needs a yes first
+    warn_at: float = Field(0.8, gt=0, le=1)             # for the rules that don't say
+    rules: list[BudgetRule] = Field(default_factory=list)
+
+
 class PolicyFile(BaseModel):
     """What policy.yaml holds (version 1)."""
     model_config = ConfigDict(extra="forbid")
@@ -174,11 +194,13 @@ class PolicyFile(BaseModel):
     unlisted_models: Literal["allow", "deny"] = "allow"
     quotas: list[QuotaRule] = Field(default_factory=list)
     providers: list[ProviderRule] = Field(default_factory=list)
+    budgets: Budgets | None = None
 
     @model_validator(mode="after")
     def _names(self):
         seen = set()
-        for r in [*self.shows, *self.licences, *self.quotas, *self.providers]:
+        for r in [*self.shows, *self.licences, *self.quotas, *self.providers,
+                  *(self.budgets.rules if self.budgets else [])]:
             if r.name in seen:
                 raise ValueError(f"two rules are named {r.name}: each needs its own name")
             seen.add(r.name)
@@ -391,6 +413,28 @@ class Policy:
         if not any(name in (r.allow or []) for r in matched):
             raise Refused(f"Show {show} isn't cleared to send work to {label}, outside Rodeo: no policy rule allows "
                           f"it. (Policy: providers.){ask}", "providers")
+
+    def budget(self, show: str) -> dict:
+        """The cap `show` spends from at outside providers (decision 0060): {cap, rule,
+        warn_at, reason, confirm_above, contact}; rule None for a show no rule names. Raise
+        Refused when the policy gives no show any: off, not read, or no `budgets:` section."""
+        if not self.enabled:
+            raise Refused("No show may spend money at outside providers: the farm's policy, which gives each show "
+                          "its cap, is off (policy.enabled in the manager's config.yaml).", "budgets")
+        self.refresh()
+        rules = self.rules
+        if rules is None:
+            raise Refused(f"The farm's policy can't be read, so no job can be planned until it is fixed: "
+                          f"{self.error or 'no valid policy.yaml yet'}.", None)
+        b = rules.budgets
+        if b is None:
+            ask = f" Ask {rules.contact} for one." if rules.contact else ""
+            raise Refused(f"No show may spend money at outside providers yet: the farm's policy has no budgets: "
+                          f"section, which gives each show its cap. (Policy: budgets.){ask}", "budgets")
+        rule = next((r for r in b.rules if r.matches(show or "")), None)
+        return {"cap": rule.cap if rule else b.other_shows, "rule": rule.name if rule else None,
+                "warn_at": (rule.warn_at if rule and rule.warn_at else b.warn_at),
+                "reason": rule.reason if rule else None, "confirm_above": b.confirm_above, "contact": rules.contact}
 
     def quota(self, show: str | None, user: str | None, frames: int, queued: Callable[[], list[dict]]) -> None:
         """Raise Refused if one more submission of `frames` frames would take a quota over.

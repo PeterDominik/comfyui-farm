@@ -59,6 +59,7 @@ alerts:
   failures_in_a_row: 3         # a machine whose last 3 jobs all failed
   sweep_problems: true         # the retention sweeper's latest report lists problems
   rollout_problems: true       # a rollout or a ComfyUI sync stopped, waiting for a person
+  budgets: true                # a show past its budget's warn_at, or at its cap (policy.yaml, decision 0060)
   google_chat: ''              # the space's webhook (Apps & integrations > Webhooks): secret, keep it here
 
 # Evals (README, Evals; decision 0053): a definition's eval: run on a machine by `comfyfarm

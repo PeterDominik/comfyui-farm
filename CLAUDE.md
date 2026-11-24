@@ -32,7 +32,7 @@ python -m comfyfarm standalone                                   # manager and a
 
 | Package | Role |
 |---|---|
-| `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `rollouts.py` environment rollouts, `syncs.py` ComfyUI syncs one machine at a time, `db.py` SQLite |
+| `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `rollouts.py` environment rollouts, `syncs.py` ComfyUI syncs one machine at a time, `prices.py` and `ledger.py` what paid jobs cost and the caps, `db.py` SQLite |
 | `comfyfarm/agent/` | one per GPU machine, and the gateway's (`gateway.yaml`): takes jobs, prepares inputs, collects outputs, reports to the manager; `envman.py` keeps its runner environments as the manager says |
 | `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half), `process_run.py` (each run's supervisor) and `api/` (the gateway's API runner, `runner.py`, and an adapter per outside provider, `fal.py`) |
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
@@ -104,5 +104,9 @@ configs match the behaviour, and the pull request says how it was tested and wha
   in git, the bank folder, `job.json`, events or logs (`tests/test_api_runner.py` checks).
   Nothing goes to fal.ai itself until phase 11's step 5 (`REAL_SERVICE` in
   `runners/api/fal.py`): until then the gateway talks to `tools/mock_fal.py` only.
+- **Paid jobs.** A job at an outside provider is held against its show's cap as it is queued,
+  and settled as it ends (`comfyfarm/manager/ledger.py`, decision 0060). The ledger never
+  guesses down: money is released only when the job certainly never reached the provider. A
+  paid job is never queued again.
 - **Studio-only steps.** The Daiquiri graph, Tractor and ShotGrid cannot be reached from
   outside Rodeo's network. Those steps are done there and merged back by pull request.

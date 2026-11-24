@@ -1,8 +1,9 @@
 // The dashboard's Policy tab (README, Policy; decisions 0043 to 0047).
 //
-// Read-only: the policy.yaml in force (its show rules, licence rules, quotas and provider
-// rules), why the file as it is now isn't taken if it isn't, what is queued against each
-// quota, and the models each definition lists with their licences. The policy is edited in the bank
+// Read-only: the policy.yaml in force (its show rules, licence rules, quotas, provider rules
+// and budgets), why the file as it is now isn't taken if it isn't, what is queued against each
+// quota, what each show has spent against its cap (budgetNow, spend.js), and the models each
+// definition lists with their licences. The policy is edited in the bank
 // folder, checked first with `comfyfarm policy check`, so nothing here sends anything.
 //
 // Everything comes from GET /api/v1/policy: read when the page loads (the tab shows only
@@ -100,6 +101,7 @@ function renderPolicy() {
   table("#policyShows", f?.shows, "show", "No show rules: every show may use every definition.");
   table("#policyLicences", f?.licences, "licence", "No licence rules.");
   table("#policyProviders", f?.providers, "provider", "No provider rules: no show may send work outside Rodeo.");
+  renderBudgets(f?.budgets, p?.spend_now);
   const quotas = f?.quotas || [];
   $("#policyQuotas").innerHTML = quotas.length ? quotas.map(r => `<tr><td class="mono">${esc(r.name)}</td>
     <td>${esc(ruleShows(r))}</td><td>${esc(ruleDoes(r, "quota"))}</td>
@@ -112,6 +114,28 @@ function renderPolicy() {
     return `<tr><td>${esc(d.label)} <span class="muted mono">${esc(d.name)}</span></td>
       <td class="${m.cls}">${esc(m.text)}</td></tr>`;
   }).join("") || '<tr><td colspan="2" class="empty">No definitions.</td></tr>';
+}
+
+// The Budgets section (decision 0060): each rule's cap and what its shows spent or hold, then
+// the shows no rule names. Without a budgets: section no show may spend money.
+function renderBudgets(b, spendNow) {
+  if (!$("#policyBudgets")) return;
+  $("#policyBudgetDefaults").innerHTML = b ? [
+    ["Shows no rule names", money(b.other_shows)], ["A yes is asked for a job of", b.confirm_above == null ? "never"
+      : money(b.confirm_above) + " or more"], ["Alert at", Math.round(b.warn_at * 100) + "% of a cap"]]
+    .map(([k, v]) => `<span class="muted">${esc(k)}:</span> <b>${esc(v)}</b>`).join(" · ") : "";
+  const now = (rule) => budgetNow(rule, spendNow).map(n => `<div class="${n.cls}">${esc(n.text)}</div>`).join("");
+  const rows = (b?.rules || []).map(r => `<tr><td class="mono">${esc(r.name)}</td><td>${esc(ruleShows(r))}</td>
+    <td>${esc(money(r.cap))}${r.warn_at
+      ? ` <span class="muted">(alert at ${Math.round(r.warn_at * 100)}%)</span>` : ""}</td>
+    <td>${now(r.name)}</td><td class="muted">${esc(r.reason)}</td></tr>`);
+  if (b && (spendNow || []).some(s => !s.rule)) {
+    rows.push(`<tr><td class="muted">other_shows</td><td>shows no rule names</td><td>${esc(money(b.other_shows))}</td>
+      <td>${now(null)}</td><td></td></tr>`);
+  }
+  const none = b ? "No budgets rules: no show may spend more than other_shows."
+                 : "No budgets: section: no show may spend money at outside providers.";
+  $("#policyBudgets").innerHTML = rows.length ? rows.join("") : `<tr><td colspan="5" class="empty">${none}</td></tr>`;
 }
 
 async function loadPolicy() {

@@ -1116,6 +1116,8 @@ policy:
     unfinished batches' tiles. The refusal says how many are queued and what the most is.
   - A provider rule (under `providers:`) says `allow: [outside providers]` or
     `deny: [providers]` (decision 0058). See *Outside providers* below.
+  - A budgets rule (under `budgets:`) gives its shows a cap: what each may spend at outside
+    providers over its life (decision 0060). See *Budgets* below.
   - Every rule naming a job's show is checked, and the first that refuses it is named.
   - `other_shows` (allow or deny) is for shows no rule names.
   - `unknown_show` is for a job whose show can't be worked out.
@@ -1190,6 +1192,56 @@ where that is signed off (decision 0058):
 - **`comfyfarm policy check`** lists the provider rules and, for each outside provider, the
   shows that may use it.
 - **The Policy tab** shows them under *Provider rules*.
+
+#### Budgets
+
+A job at an outside provider costs money. The farm keeps a ledger of what each show's jobs
+spend, against a cap per show for the life of the show (decision 0060). Without a
+`budgets:` section, no show may spend anything.
+
+```yaml
+budgets:
+  other_shows: 0         # the cap of a show no rule names
+  confirm_above: 5       # a job estimated at this or more needs a yes first
+  warn_at: 0.8           # an alert once a show has spent this share of its cap
+  rules:
+    - name: pilot-rnd
+      shows: [rnd]       # each show its own cap; the first rule naming a show gives it
+      cap: 50            # US dollars, for the life of the show
+      reason: Peter's fal.ai pilot, on his own fal.ai account
+```
+
+- **Checked when a job is planned.** The preview says what the show has left after the job,
+  and a job that doesn't fit is refused with the rule named.
+- **Checked again as the job is queued**, in the same transaction as the job itself, so two
+  submits can't both take the last of a cap.
+- **Held from the moment it is queued.** The job's estimate counts against its show's cap.
+  When the job ends, its money is:
+  - *charged*: the provider had it (it is done, or its request's id is known);
+  - *released*: it never reached the provider (it never left the queue, or the gateway
+    says nothing was sent);
+  - *unsure*: it may have reached the provider, and the farm can't tell. It is held like a
+    charge.
+
+  The ledger never guesses down. What fal.ai billed replaces the estimate with step 4's
+  third pull request.
+- **A paid job is never queued again.** A paid job its gateway lost, or whose gateway
+  stopped checking in, fails instead, since a second run would be paid for twice. It says
+  to look in the provider's request history.
+- **A cancel while a paid job is prepared goes to its gateway,** which says whether it was
+  sent.
+- **A job of `confirm_above` or more waits for a yes.** The farm answers 409 with the
+  estimate. The dashboard, the Nuke panel and node ask, then send it again with
+  `confirm_cost`, the amount said yes to. The command-line client takes `--yes`. It is a
+  courtesy: the cap is what holds.
+- **Shown:**
+  - each paid job's money in its Queue row and its details;
+  - each rule's cap and what its shows have spent or hold on the Policy tab, under
+    *Budgets*;
+  - in `comfyfarm policy check`.
+- **An alert** (`alerts.budgets`, on with alerts) fires when a show reaches its `warn_at`
+  share of its cap, and again at the cap.
+- **The cap rests on the show name the client sends** until the Rodeo login (phase 13).
 
 ### Prometheus metrics
 
@@ -1288,6 +1340,7 @@ alerts:
   failures_in_a_row: 3
   sweep_problems: true
   rollout_problems: true
+  budgets: true
   google_chat: 'https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...'
 ```
 
@@ -1304,6 +1357,9 @@ alerts:
   - **A rollout or sync stopped:** a rollout stopped at a machine, or a ComfyUI sync stopped at
     a machine it left drained. Each waits for a person: roll back or cancel, or look and
     resume.
+  - **A budget:** a show has spent or holds its budget's `warn_at` share of its cap at
+    outside providers, or all of it (policy.yaml's `budgets:`, see *Budgets*). It clears
+    when the cap is raised.
 - **Raised once, cleared by itself.** An alert is raised when its condition starts and
   cleared when it ends: the machine checks in, the jobs leave the queue, a job on the
   machine finishes done, the rollout is rolled back. While it holds, its message follows
@@ -2257,6 +2313,8 @@ runner:
   - A price in another unit or another currency than US dollars is refused, never
     converted: the definition needs reviewing.
   - The price isn't in the definition's fingerprint, so a review needs no gateway update.
+  - The job is checked against its show's cap and held against it when it is queued
+    (*Budgets*, under *Policy*).
 - **Its model, listed.** An off-site definition lists the model it uses there and its
   licence under `models:`, so licence rules see it.
 
