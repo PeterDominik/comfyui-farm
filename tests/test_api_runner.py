@@ -392,12 +392,15 @@ class TheGateway(Tmp):
         shutil.copytree(NANO, self.tmp / "workflows" / NANO.name)
         (self.tmp / "shows" / "out").mkdir(parents=True)
         shutil.copy(PLATE, self.tmp / "shows" / "plate.png")
+        # fal.ai is outside Rodeo: the farm's policy must allow it for the show (decision 0058).
+        (self.tmp / "policy.yaml").write_text("version: 1\nproviders:\n  - {name: pilot-fal-on-rnd, shows: [rnd], "
+                                              "allow: [fal], reason: The pilot}\n", encoding="utf-8")
         self.cfg = Config.model_validate({
             "database": f"{root}/farm.db", "workers": [], "workflows_dir": f"{root}/workflows",
             "convert": {"scratch_dir": f"{root}/scratch"}, "preview": {"enabled": False},
             "provenance": {"enabled": True},
             "paths": {"mappings": [{"posix": f"{root}/shows", "windows": f"{root}/shows"}]},
-            "providers": {"enabled": ["fal"]}})
+            "providers": {"enabled": ["fal"]}, "policy": {"enabled": True, "file": f"{root}/policy.yaml"}})
         self.keys = self.key_file()
         self.mock = mock_fal.MockFal(KEY, BASE)
         self.transport = Flaky(self.mock.transport())
@@ -457,7 +460,7 @@ class TheGateway(Tmp):
     def submit(self, prompt="remove the crane", **params) -> str:
         values = {"input": f"{self.root}/shows/plate.png", "prompt": prompt,
                   "output_path": f"{self.root}/shows/out", **params}
-        return self.farm.submit("nano_banana2_edit_fal", values, "ann")["id"]
+        return self.farm.submit("nano_banana2_edit_fal", values, "ann", show="rnd")["id"]
 
     def job(self, jid) -> dict:
         return self.store.get(jid)
@@ -607,7 +610,8 @@ class TheGateway(Tmp):
         g = self.gateway()
         jid = self.submit()
         tif = self.farm.submit("nano_banana2_edit_fal", {"input": f"{self.root}/shows/plate.tif", "prompt": "x",
-                                                         "output_path": f"{self.root}/shows/out"}, "ann")["id"]
+                                                         "output_path": f"{self.root}/shows/out"}, "ann",
+                               show="rnd")["id"]
         self.beat(g)
         self.assertEqual(self.ended(tif, "failed")["error"],
                          "fal.ai takes PNG, JPEG, WebP or MP4 files, and plate.tif isn't one. Render it as PNG or "

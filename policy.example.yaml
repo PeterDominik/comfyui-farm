@@ -71,3 +71,19 @@ quotas:
     per: user
     max_jobs: 2
     reason: Leave room for everyone
+
+# Outside providers (decision 0058): a workflow that runs at one (fal.ai, providers/) sends the
+# show's images and prompts outside Rodeo. No show may use one until a rule here allows it,
+# and its jobs need a known show; with policy off, none may. A rule either allows some outside
+# providers or denies some providers, the farm's own too. Every rule that names a job's show
+# is checked, and a deny wins.
+providers:
+  - name: pilot-fal-on-rnd
+    shows: [rnd]
+    allow: [fal]
+    reason: The fal.ai pilot runs on rnd alone, so no client material reaches the pilot's account
+
+  - name: example-no-python
+    shows: [exmpl2604]
+    deny: [python-local]
+    reason: Only the ComfyUI workflows are cleared on this show

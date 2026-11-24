@@ -1114,6 +1114,8 @@ policy:
     (`per: show`, the default), per user over all the rule's shows (`per: user`), or for the
     shows together (`per: all`). A texture set counts as one job; its frames are its
     unfinished batches' tiles. The refusal says how many are queued and what the most is.
+  - A provider rule (under `providers:`) says `allow: [outside providers]` or
+    `deny: [providers]` (decision 0058). See *Outside providers* below.
   - Every rule naming a job's show is checked, and the first that refuses it is named.
   - `other_shows` (allow or deny) is for shows no rule names.
   - `unknown_show` is for a job whose show can't be worked out.
@@ -1149,6 +1151,45 @@ policy:
 - **Identity is trusted until API keys come.** Show and licence rules are by show and
   definition. Quotas per user count the name the client sends, so they keep honest users
   within a share, not anyone determined to get round them.
+
+#### Outside providers
+
+A workflow that runs at an outside provider (fal.ai; `offsite: true` in its
+`providers/<name>.yaml`) sends the show's images and prompts outside Rodeo. The policy is
+where that is signed off (decision 0058):
+
+- **No show may use one until a rule allows it.**
+- **Its jobs need a known show,** from the input path or given. A menu drawn without a
+  show (the dashboard's) lists it if a rule allows it on some show; the job's own show is
+  checked when it is planned.
+- **With policy off, no show may use one.** `providers.enabled` in config.yaml switches a
+  provider on for the farm; the policy says which shows may use it.
+- **A `deny` rule refuses a provider on its shows**, the farm's own too
+  (`deny: [python-local]`). A deny wins over an allow, so `shows: [rnd*]` with
+  `allow: [fal]` and a rule for `rnd2` with `deny: [fal]` leaves rnd2 out. An `allow` names
+  outside providers only: the farm's own need no allowing.
+- **The pilot's rule** allows fal.ai on `rnd` alone, so no client material reaches the
+  pilot's account (`policy.example.yaml`):
+
+  ```yaml
+  providers:
+    - name: pilot-fal-on-rnd
+      shows: [rnd]
+      allow: [fal]
+      reason: The fal.ai pilot runs on rnd alone, so no client material reaches the pilot's account
+  ```
+- **Where it is checked:**
+  - when a job is planned. A refusal names the rule, or says no rule allows the show
+    (`Policy: providers`);
+  - in the menus: Nuke's are for the session's show, so another show's fal.ai workflows
+    are marked with the reason;
+  - again when the gateway would take a queued job, so a rule taken away fails the jobs it
+    allowed;
+  - for the farm's own reference jobs (evals) too, which have no show: one at an outside
+    provider is refused.
+- **`comfyfarm policy check`** lists the provider rules and, for each outside provider, the
+  shows that may use it.
+- **The Policy tab** shows them under *Provider rules*.
 
 ### Prometheus metrics
 
@@ -2188,6 +2229,8 @@ runner:
 
   Until then the menus leave them out and a submit is refused, saying so. The farm's own
   GPUs (ComfyUI Local, Python Local) are always on.
+- **Then only for the shows the policy allows** (*Policy*, *Outside providers*): none
+  until a rule in `policy.yaml` allows it, and none with policy off.
 - **What is sent.** The fixed fields, each `send` param under its field, and each `upload`
   field: the URLs of its inputs, in the params' order. fal.ai names a field that takes
   several URLs `..._urls` (a list is sent) and one that takes one `..._url`. An empty param

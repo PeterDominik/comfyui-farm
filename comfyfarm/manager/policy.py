@@ -3,9 +3,11 @@ farm's admins, read by the manager and checked when a job is planned.
 
 It holds show rules (which shows may use the farm, and with which definitions), licence
 rules (which licences the models a definition uses may carry, on which shows: each
-definition lists its models in its process.yaml, decision 0044) and quotas (how much a show,
-or a user on it, may have queued or running at once, decision 0045). A job a rule refuses
-is never planned, and the artist is told which rule and why.
+definition lists its models in its process.yaml, decision 0044), quotas (how much a show,
+or a user on it, may have queued or running at once, decision 0045) and provider rules
+(which shows may send work to which outside provider, decision 0058: none until a rule
+allows it). A job a rule refuses is never planned, and the artist is told which rule and
+why.
 
 The file is read again when it changes. A file that can't be read or doesn't validate is
 not taken: the last valid one stays in force (also across a restart: the manager keeps a
@@ -120,6 +122,24 @@ class LicenceRule(_Rule):
         return None
 
 
+class ProviderRule(_Rule):
+    """A rule for where a show's jobs may run (decision 0058): `allow` some outside providers
+    (off-site, providers/<name>.yaml), which no show may use until a rule allows it; or `deny`
+    some providers, the farm's own too. A deny wins over an allow."""
+    allow: list[str] | None = None
+    deny: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _one(self):
+        if (self.deny is None) == (self.allow is None):
+            raise ValueError(f"rule {self.name}: give either allow (the outside providers its shows may send work "
+                             f"to) or deny (the providers they may not use)")
+        return self
+
+    def providers(self) -> list[str]:
+        return list(self.allow or []) + list(self.deny or [])
+
+
 class QuotaRule(_Rule):
     """At most `max_jobs` submissions and/or `max_frames` frames (tiles, for textures) queued or
     running at once, for its shows: each show its own (`per: show`), each user on those shows
@@ -153,21 +173,24 @@ class PolicyFile(BaseModel):
     # A definition that doesn't list its models, where a licence rule is for its show.
     unlisted_models: Literal["allow", "deny"] = "allow"
     quotas: list[QuotaRule] = Field(default_factory=list)
+    providers: list[ProviderRule] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _names(self):
         seen = set()
-        for r in [*self.shows, *self.licences, *self.quotas]:
+        for r in [*self.shows, *self.licences, *self.quotas, *self.providers]:
             if r.name in seen:
                 raise ValueError(f"two rules are named {r.name}: each needs its own name")
             seen.add(r.name)
         return self
 
 
-def parse(text: str, known: set[str] | None = None) -> PolicyFile:
+def parse(text: str, known: set[str] | None = None, providers: dict[str, bool] | None = None) -> PolicyFile:
     """policy.yaml's text, validated. ValueError says what is wrong, in words an admin can
     act on. `known`: the definitions this farm has; a rule naming another one is an error
-    (a typo in a deny list would otherwise deny nothing)."""
+    (a typo in a deny list would otherwise deny nothing). `providers`: the farm's providers
+    (providers/), each with whether it is off-site; a provider rule naming another one is an
+    error, as is one that allows a provider of the farm's own (only outside ones need it)."""
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
@@ -188,6 +211,16 @@ def parse(text: str, known: set[str] | None = None) -> PolicyFile:
             if unknown:
                 raise ValueError(f"rule {r.name} names {', '.join(unknown)}, which this farm doesn't have "
                                  f"(it has {', '.join(sorted(known))})")
+    if providers is not None:
+        for r in pf.providers:
+            unknown = sorted(set(r.providers()) - set(providers))
+            if unknown:
+                raise ValueError(f"rule {r.name} names provider {', '.join(unknown)}, which this farm doesn't have "
+                                 f"(it has {', '.join(sorted(providers))})")
+            own = sorted(p for p in r.allow or [] if not providers[p])
+            if own:
+                raise ValueError(f"rule {r.name} allows {', '.join(own)}, the farm's own: only outside providers need "
+                                 f"a rule that allows them (deny it to refuse it)")
     return pf
 
 
@@ -200,12 +233,13 @@ class Policy:
     threads. With `enabled` off it allows everything and reads nothing."""
 
     def __init__(self, enabled: bool, path: str | None, saved: Path, known: Callable[[], set[str]],
-                 shown_path: str | None = None):
+                 shown_path: str | None = None, providers: Callable[[], dict[str, bool]] | None = None):
         self.enabled = enabled
         self.path = path
         self.shown_path = shown_path or path
         self.saved = saved                          # the last valid file, kept across restarts
         self.known = known
+        self.providers = providers                  # the farm's providers, each off-site or not (providers/)
         self._lock = threading.Lock()
         self._seen: tuple | None = None             # (mtime, size) of the file last read
         self._looked = 0.0
@@ -255,7 +289,7 @@ class Policy:
             self._seen = (st.st_mtime, st.st_size)
             try:
                 text = Path(self.path).read_text(encoding="utf-8")
-                rules = parse(text, self.known())
+                rules = parse(text, self.known(), self.providers() if self.providers else None)
             except (OSError, ValueError) as e:
                 self.error = (f"{self.shown_path} isn't taken: {e}"
                               + (". The last valid version stays in force." if self.rules else "."))
@@ -266,7 +300,8 @@ class Policy:
             if fingerprint == self.fingerprint:
                 return
             self.rules, self.fingerprint, self.taken_at, self.source = rules, fingerprint, t, "file"
-            log.info("policy: %s taken (%s, %d show rule(s))", self.shown_path, fingerprint, len(rules.shows))
+            log.info("policy: %s taken (%s, %d show rule(s), %d provider rule(s))", self.shown_path, fingerprint,
+                     len(rules.shows), len(rules.providers))
             try:
                 self.saved.parent.mkdir(parents=True, exist_ok=True)
                 tmp = self.saved.with_suffix(".tmp")
@@ -277,11 +312,15 @@ class Policy:
                 log.warning("policy: couldn't keep a copy in %s: %s", self.saved, e)
 
     # ---------------------------------------------------------------- checking
-    def check(self, definition: str, show: str | None, models: list[dict] | None = None) -> None:
+    def check(self, definition: str, show: str | None, models: list[dict] | None = None, provider=None,
+              any_show: bool = False) -> None:
         """Raise Refused if the policy in force doesn't allow `definition` for `show`.
         `models`: the definition's models with their licences (process.yaml), None when it
-        doesn't list them."""
+        doesn't list them. `provider`: where it runs (catalog.Provider: name, label, offsite);
+        `any_show`: for menus drawn without a show, which allow an outside provider some rule
+        allows on some show (the job's own show is checked when it is planned)."""
         if not self.enabled:
+            self.offsite(definition, show, provider, any_show)
             return
         self.refresh()
         rules = self.rules
@@ -301,6 +340,7 @@ class Policy:
         if show and not matched and rules.other_shows == "deny":
             raise Refused(f"Show {show} isn't cleared to use the farm: no policy rule allows it. "
                           f"(Policy: other_shows is deny.){ask}", "other_shows")
+        self.offsite(definition, show, provider, any_show)
         for r in (r for r in rules.licences if r.matches(show or "")):
             if models is None:
                 if rules.unlisted_models == "deny":
@@ -312,6 +352,45 @@ class Policy:
             if bad:
                 raise Refused(f"{definition} can't run {where}: it uses {bad.get('file')}, licensed "
                               f"{bad.get('licence')}. {r.reason.rstrip('.')}. (Policy rule {r.name}.){ask}", r.name)
+
+    def offsite(self, definition: str, show: str | None, provider, any_show: bool = False) -> None:
+        """Raise Refused if the policy doesn't let `show` use `provider` (decision 0058). The
+        farm's own providers are allowed unless a rule denies them. An outside one sends the
+        show's images and prompts outside Rodeo, so it is refused unless the policy is on, the
+        show is known and a rule allows it; a deny wins. Asked by check(), and alone for the
+        farm's own reference jobs (evals), which have no show and skip the other rules."""
+        if provider is None:
+            return
+        name, label, outside = provider.name, getattr(provider, "label", provider.name), bool(provider.offsite)
+        if not self.enabled:
+            if outside:
+                raise Refused(f"{definition} runs on {label}, outside Rodeo, which the farm's policy must allow, and "
+                              f"the policy is off (policy.enabled in the manager's config.yaml).", "providers")
+            return
+        self.refresh()
+        rules = self.rules
+        if rules is None:
+            if not outside:
+                return                  # check() has said so; an eval of the farm's own is aside
+            raise Refused(f"The farm's policy can't be read, so no job can be planned until it is fixed: "
+                          f"{self.error or 'no valid policy.yaml yet'}.", None)
+        ask = f" Ask {rules.contact} if this is wrong." if rules.contact else ""
+        where = f"for show {show}" if show else "without a known show"
+        matched = [r for r in rules.providers if r.matches(show or "")]
+        for r in matched:
+            if name in (r.deny or []):
+                raise Refused(f"{definition} can't run {where} on {label}: {r.reason.rstrip('.')}. "
+                              f"(Policy rule {r.name}.){ask}", r.name)
+        if not outside:
+            return
+        if not show:
+            if any_show and any(name in (r.allow or []) for r in rules.providers):
+                return
+            raise Refused(f"{definition} runs on {label}, outside Rodeo, so the farm's policy needs to know the show "
+                          f"it is for: give a Show, or an input path inside a show.{ask}", "providers")
+        if not any(name in (r.allow or []) for r in matched):
+            raise Refused(f"Show {show} isn't cleared to send work to {label}, outside Rodeo: no policy rule allows "
+                          f"it. (Policy: providers.){ask}", "providers")
 
     def quota(self, show: str | None, user: str | None, frames: int, queued: Callable[[], list[dict]]) -> None:
         """Raise Refused if one more submission of `frames` frames would take a quota over.

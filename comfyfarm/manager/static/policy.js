@@ -1,8 +1,8 @@
 // The dashboard's Policy tab (README, Policy; decisions 0043 to 0047).
 //
-// Read-only: the policy.yaml in force (its show rules, licence rules and quotas), why the
-// file as it is now isn't taken if it isn't, what is queued against each quota, and the
-// models each definition lists with their licences. The policy is edited in the bank
+// Read-only: the policy.yaml in force (its show rules, licence rules, quotas and provider
+// rules), why the file as it is now isn't taken if it isn't, what is queued against each
+// quota, and the models each definition lists with their licences. The policy is edited in the bank
 // folder, checked first with `comfyfarm policy check`, so nothing here sends anything.
 //
 // Everything comes from GET /api/v1/policy: read when the page loads (the tab shows only
@@ -43,8 +43,11 @@ function ruleShows(r) {
   return names + ((r.except || []).length ? ` but ${r.except.join(", ")}` : "");
 }
 
-// What a rule does. kind: "show", "licence" or "quota".
+// What a rule does. kind: "show", "licence", "quota" or "provider".
 function ruleDoes(r, kind) {
+  if (kind === "provider") {
+    return r.allow ? `May send work to ${r.allow.join(", ")}` : `May not use ${(r.deny || []).join(", ")}`;
+  }
   if (kind === "quota") {
     const most = [r.max_jobs ? `${r.max_jobs} job${r.max_jobs === 1 ? "" : "s"}` : "",
                   r.max_frames ? `${r.max_frames} frames` : ""].filter(Boolean).join(" and ");
@@ -96,6 +99,7 @@ function renderPolicy() {
   };
   table("#policyShows", f?.shows, "show", "No show rules: every show may use every definition.");
   table("#policyLicences", f?.licences, "licence", "No licence rules.");
+  table("#policyProviders", f?.providers, "provider", "No provider rules: no show may send work outside Rodeo.");
   const quotas = f?.quotas || [];
   $("#policyQuotas").innerHTML = quotas.length ? quotas.map(r => `<tr><td class="mono">${esc(r.name)}</td>
     <td>${esc(ruleShows(r))}</td><td>${esc(ruleDoes(r, "quota"))}</td>

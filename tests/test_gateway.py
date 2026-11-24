@@ -2,10 +2,12 @@
 until config.yaml switches it on), and the desk sending API jobs only to a gateway agent's
 lanes, never to a GPU machine, and nothing else to the gateway."""
 
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -15,11 +17,20 @@ from comfyfarm.definitions import Definition, DefinitionRegistry
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import Desk
 from comfyfarm.manager.events import EventBus
+from comfyfarm.manager import policy as PO
 from comfyfarm.manager.farm import Farm, FarmError
 from comfyfarm.protocol import now
 
 REPO = Path(__file__).resolve().parent.parent
 PLATE = str(REPO / "workflows/gpu_test/eval/input.png")
+# fal.ai is outside Rodeo: no show may use it until the farm's policy allows it (decision 0058).
+POLICY = """version: 1
+providers:
+  - name: pilot-fal-on-rnd
+    shows: [rnd]
+    allow: [fal]
+    reason: The fal.ai pilot runs on rnd only
+"""
 
 EDIT = {   # an API definition, as nano_banana2_edit_fal will be
     "id": "fal_edit", "label": "Image edit (fal)", "task": "image", "provider": "fal",
@@ -194,12 +205,14 @@ class Manager(Tmp):
         self.definition(EDIT)
         self.definition(edit(id="fal_other", label="Other edit"), "fal_other")
         (self.tmp / "shows").mkdir()
+        (self.tmp / "policy.yaml").write_text(POLICY, encoding="utf-8")
         self.cfg = Config.model_validate({"database": f"{root}/farm.db", "workers": [],
                                           "workflows_dir": f"{root}/workflows",
                                           "convert": {"scratch_dir": f"{root}/scratch"},
                                           "paths": {"mappings": [{"posix": f"{root}/shows",
                                                                   "windows": f"{root}/shows"}]},
-                                          "providers": {"enabled": list(enabled)}})
+                                          "providers": {"enabled": list(enabled)},
+                                          "policy": {"enabled": True, "file": f"{root}/policy.yaml"}})
         self.store = JobStore(self.tmp / "farm.db")
         self.addCleanup(self.store.close)
         self.farm = Farm(self.cfg, self.store, DefinitionRegistry(self.tmp / "workflows"), EventBus())
@@ -212,11 +225,11 @@ class Manager(Tmp):
             n: {"digest": wf.digest, "problems": (problems or {}).get(n, [])}
             for n, wf in self.farm.registry.workflows.items()}})
 
-    def submit(self, workflow="fal_edit", **params) -> dict:
+    def submit(self, workflow="fal_edit", show="rnd", **params) -> dict:
         values = {"input": PLATE, "output_path": str(self.tmp / "shows")}
         if workflow != "gpu_test":
             values["prompt"] = "rain"
-        return self.farm.submit(workflow, {**values, **params}, "ann")
+        return self.farm.submit(workflow, {**values, **params}, "ann", show=show)
 
     def claimed(self, m) -> list[str]:
         return [p["job"] for p in self.desk._claim(self.desk.agents[m])]
@@ -312,6 +325,69 @@ class NotAGpuMachine(Manager):
         self.desk.syncs.cancel("peter")
         with self.assertRaisesRegex(SyncError, f"{GATEWAY} is the gateway: it has no ComfyUI to sync"):
             self.desk.syncs.start("comfyui", "deploy/comfyui/environment.yaml@abc", [A6000, GATEWAY], False, "peter")
+
+
+class OffSite(Manager):
+    """Step 3's gate (decision 0058): an outside provider's job is refused on every show but the
+    one a rule allows, with the rule named, when it is planned, in the menus and at dispatch."""
+
+    def setUp(self):
+        super().setUp()
+        stat = mock.patch.object(PO, "STAT_SECONDS", 0)
+        stat.start()
+        self.addCleanup(stat.stop)
+
+    def write_policy(self, text):
+        path = self.tmp / "policy.yaml"
+        path.write_text(text, encoding="utf-8")
+        st = path.stat()                                    # seen as changed, even within the same second
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    def test_every_show_but_the_allowed_one(self):
+        self.assertEqual(self.submit(show="rnd")["status"], "queued")
+        for show in ("bri3", "xyz"):
+            with self.subTest(show=show), self.assertRaises(FarmError) as e:
+                self.submit(show=show)
+            self.assertEqual((str(e.exception), e.exception.status),
+                             (f"Show {show} isn't cleared to send work to fal.ai, outside Rodeo: no policy rule allows "
+                              f"it. (Policy: providers.)", 403))
+        with self.assertRaisesRegex(FarmError, "fal.ai, outside Rodeo, so the farm's policy needs to know the show"):
+            self.submit(show=None)                          # the plate is in the repo: no show of its own
+        self.assertEqual(self.submit("gpu_test", show="xyz")["status"], "queued")     # the farm's own: unchanged
+
+    def test_the_menus_say_why(self):
+        def fal(show):
+            tree = self.farm.catalogue(show)
+            p = next(x for x in tree["providers"] if x["name"] == "fal")
+            return [(w["name"], w["allowed"], w["rule"]) for t in p["tasks"] for w in t["workflows"]]
+        self.assertEqual(fal("rnd"), [("fal_edit", True, None), ("fal_other", True, None)])
+        self.assertEqual(fal("bri3"), [("fal_edit", False, "providers"), ("fal_other", False, "providers")])
+        self.assertEqual(fal(None), [("fal_edit", True, None), ("fal_other", True, None)])   # a menu for any show
+
+    def test_a_rule_taken_away_fails_its_queued_jobs(self):
+        self.up(GATEWAY, lanes={"fal": 2})
+        job = self.submit(show="rnd")
+        self.write_policy("version: 1\n")
+        self.assertEqual(self.claimed(GATEWAY), [])
+        j = self.store.get(job["id"])
+        self.assertEqual((j["status"], j["error"]),
+                         ("failed", "Not run: the farm's policy changed after it was queued. Show rnd isn't cleared to "
+                                    "send work to fal.ai, outside Rodeo: no policy rule allows it. (Policy: "
+                                    "providers.)"))
+
+    def test_with_policy_off_nothing_goes_outside(self):
+        self.farm.policy.enabled = False
+        with self.assertRaisesRegex(FarmError, "runs on fal.ai, outside Rodeo, which the farm's policy must allow, "
+                                               "and the policy is off"):
+            self.submit(show="rnd")
+        self.assertEqual(self.submit("gpu_test", show="rnd")["status"], "queued")
+
+    def test_an_eval_of_an_outside_providers_definition(self):
+        """The farm's own reference jobs skip the show rules, but have no show: one at an
+        outside provider is refused until evals of paid models have their show (steps 4, 5)."""
+        with self.assertRaisesRegex(FarmError, "needs to know the show"):
+            self.farm.plan("fal_edit", {"input": PLATE, "prompt": "rain", "output_path": str(self.tmp / "shows")},
+                           evaluation="test")
 
 
 class Switch(Manager):
