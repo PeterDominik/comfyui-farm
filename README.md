@@ -761,6 +761,7 @@ To try a cancel or the time limit, give it *Seconds per frame*.
 ```bash
 export COMFYFARM_URL=http://comfyfarm01:8000
 python comfyfarm_client.py workflows
+python comfyfarm_client.py catalog show=bri3        # the menus, and what bri3 may not use
 python comfyfarm_client.py submit ltx25_alpha_gen \
     "input=/rdo/shows/<show>/.../<shot>.preprocess.%04d.png 1001-1158" --wait
 python comfyfarm_client.py list --mine
@@ -1376,6 +1377,7 @@ retention:
 |---|---|---|
 | GET | `/api/v1/health` | Liveness, auth on/off, queue size |
 | GET | `/api/v1/workflows` | Workflows and parameter schemas, plus any preflight problems |
+| GET | `/api/v1/catalog?show=&hidden=` | The menus, Provider > Task > Workflow, for a show: each workflow with its family's siblings, and `allowed: false` with the policy's `reason` when the show may not use it; `hidden=true` adds the farm's hidden ones (see *Menus: providers and tasks*) |
 | POST | `/api/v1/jobs` | Submit `{workflow, params, name?, priority?, show?, shot?, publish?}` → job (`publish`: publish it when done, the fields below) |
 | POST | `/api/v1/plan` | Same body as submit; returns the destination folder and first/last file names without queuing, and `eta` (`run`: its seconds, `done_in`: behind the queue, `workers`); with `publish`, also whether publishing it when done would be accepted (`publish`: `{request}` or `{why}`) |
 | GET | `/api/v1/jobs?user=&status=&active=true&limit=` | List jobs and texture sets, with `queue_position`, `eta_seconds` (until done) and, while queued, `next_worker` |
@@ -2121,6 +2123,14 @@ hidden: true                  # kept out of artists' menus (gpu_test); the dashb
   another task never makes a machine refuse a job.
 - **`python -m comfyfarm check`** checks the providers' and tasks' files and says where
   each workflow shows ("in the menus under ComfyUI Local > Masking").
+- **`GET /api/v1/catalog?show=bri3`** is the tree every client draws its menus from:
+  providers in their order, their tasks in tasks.yaml's order, workflows by label.
+  - A provider or task with nothing in it isn't listed. A workflow with no task is under
+    Other.
+  - A workflow the show's policy refuses stays listed, with `allowed: false`, the reason
+    and the rule, so a menu can say why.
+  - Hidden ones are left out unless `hidden=true` (the dashboard).
+  - `python comfyfarm_client.py catalog show=bri3` prints it the way the menus read.
 
 Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,

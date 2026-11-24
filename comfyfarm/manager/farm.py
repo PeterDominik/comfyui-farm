@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .. import artifacts as A
+from .. import catalog as C
 from ..config import Config
 from ..fileio import inputs as I
 from ..fileio import paths as P
@@ -364,6 +365,23 @@ class Farm:
         except PolicyRefused as e:
             return e
         return None
+
+    def catalogue(self, show: str | None, hidden: bool = False) -> dict:
+        """GET /api/v1/catalog: the menus, Provider > Task > Workflow, for a show (decision
+        0054, catalog.py). Each workflow says whether the policy in force lets the show use
+        it, and if not, why: a refused one stays in the menus, marked. `hidden`: the hidden
+        definitions too (the dashboard)."""
+        cat = C.current()
+
+        def refusal(wf) -> tuple[str, str | None] | None:
+            try:
+                self.policy.check(wf.name, show, wf.models if wf.models_listed else None)
+            except PolicyRefused as e:
+                return str(e), e.rule
+            return None
+
+        return {"show": show, "providers": cat.tree(self.registry.workflows.values(), refusal, hidden),
+                "errors": list(cat.errors), "load_errors": dict(self.registry.load_errors)}
 
     def policy_view(self) -> dict:
         """GET /api/v1/policy: the policy's status, what is queued against each of its quotas,

@@ -64,6 +64,25 @@ flag.
   elsewhere (fal.ai) are still off until switched on, and allowed per show by the policy.
 - **`comfyfarm check` says where each workflow shows,** for example "in the menus under
   ComfyUI Local > Masking", and checks the catalogue's files.
+- **`GET /api/v1/catalog?show=` is the one tree every client draws** (step 1's second pull
+  request, the same day). Clients hard-code no tree, so changing the menus never needs a
+  client update.
+  - **Order:** providers in their order, their tasks in tasks.yaml's order, workflows by
+    label.
+  - **Empty branches:** a provider or a task with nothing in it isn't listed.
+  - **A refused workflow stays listed.** When the show's policy refuses it, it has
+    `allowed: false`, the policy's reason and the rule. Nuke can then say "not on this
+    show" and why, instead of the workflow vanishing. `GET /api/v1/workflows` stays as it
+    is, since forms are built from its schemas.
+  - **Each workflow carries** its family's siblings on other providers (empty until a model
+    exists on two) and whether it is off-site. Estimates come with the ledger (step 4).
+  - **Hidden ones** are left out unless `hidden=true`, which the dashboard asks for.
+  - **Nothing goes missing.** A workflow with no task is under "Other", after its provider's
+    tasks. One whose task or provider the catalogue doesn't have stays listed under that
+    name, after the known ones. A turned-off one stays listed with its problems. So a
+    broken file never empties a menu.
+  - **The shared client** has `catalog(show, hidden)`, and
+    `python comfyfarm_client.py catalog show=bri3` prints the menus.
 
 ## Consequences
 
