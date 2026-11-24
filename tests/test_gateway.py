@@ -34,7 +34,8 @@ providers:
 
 EDIT = {   # an API definition, as nano_banana2_edit_fal will be
     "id": "fal_edit", "label": "Image edit (fal)", "task": "image", "provider": "fal",
-    "family": "test-edit", "models": [],
+    "family": "test-edit", "models": [{"file": "fal-ai/nano-banana-2/edit", "licence": "google-via-fal"}],
+    "cost": {"unit": "image", "price": 0.08, "by": {"param": "resolution", "factors": {"1K": 1, "2K": 1.5}}},
     "params": {
         "input": {"type": "input", "takes": "image", "label": "Image", "required": True, "primary": True},
         "reference": {"type": "input", "takes": "image", "label": "Reference"},

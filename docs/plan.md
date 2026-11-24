@@ -390,3 +390,15 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - `deny` rules for any provider;
   - checked at plan, in the menus and at dispatch;
   - `policy.example.yaml` has the pilot's rule, fal on `rnd`.
+  Peter updated and tested it on the pilot on 24 November.
+
+  Step 4 (ledger and caps) is three pull requests:
+  1. prices and estimates;
+  2. the ledger and caps, which carry the gate;
+  3. billing events, reconciliation and reports.
+
+  The first is in (0059):
+  - a reviewed `cost` block in each API definition;
+  - the gateway reads fal.ai's prices from its pricing API, daily;
+  - each job is estimated when it is planned, shown in the preview and kept with the job;
+  - a move of more than 10% is noted, and another unit or currency refused.

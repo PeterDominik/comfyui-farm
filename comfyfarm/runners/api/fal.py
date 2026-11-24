@@ -5,6 +5,7 @@
     result   GET  {queue}/{owner}/{app}/requests/{id}
     cancel   PUT  {queue}/{owner}/{app}/requests/{id}/cancel
     upload   POST {rest}/storage/auth/token?storage_type=fal-cdn-v3, then POST {cdn}/files/upload
+    prices   GET  {api}/v1/models/pricing?endpoint_id=a,b         each endpoint's unit price (0059)
 
 Every call but the upload itself carries the requests key (`Authorization: Key ...`). The
 status, result and cancel URLs are made here from the endpoint's owner and app and the
@@ -36,7 +37,7 @@ import httpx
 
 from . import ApiError
 
-QUEUE, REST, CDN = "https://queue.fal.run", "https://rest.fal.ai", "https://v3.fal.media"
+QUEUE, REST, CDN, API = "https://queue.fal.run", "https://rest.fal.ai", "https://v3.fal.media", "https://api.fal.ai"
 REAL_SERVICE = False                    # phase 11's step 5 turns this on
 NEEDS = ("requests",)                   # the billing key comes with the ledger (step 4)
 LIFECYCLE = "X-Fal-Object-Lifecycle-Preference"
@@ -137,7 +138,7 @@ class Adapter:
         self._key = str(keys.get("requests") or "")
         base = url.rstrip("/")
         self.stand_in = bool(base)
-        self.queue, self.rest, self.cdn = (base, base, base) if base else (QUEUE, REST, CDN)
+        self.queue, self.rest, self.cdn, self.api = (base, base, base, base) if base else (QUEUE, REST, CDN, API)
         self.media_seconds = int(media_seconds)
         self._client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(timeout, connect=10.0),
                                          follow_redirects=False)
@@ -160,7 +161,7 @@ class Adapter:
         if parts.scheme != "https":
             return False
         if to == "key":
-            return parts.netloc in (urlsplit(self.queue).netloc, urlsplit(self.rest).netloc)
+            return parts.netloc in (urlsplit(self.queue).netloc, urlsplit(self.rest).netloc, urlsplit(self.api).netloc)
         if to == "cdn":
             host = parts.hostname or ""
             return host == "fal.media" or host.endswith(".fal.media")
@@ -381,6 +382,26 @@ class Adapter:
                         f.write(chunk)
         except httpx.HTTPError as e:
             raise ApiError(f"downloading what fal.ai made failed ({type(e).__name__})", "transient") from None
+
+    async def prices(self, endpoints: list[str]) -> dict[str, dict]:
+        """Each endpoint's price as fal.ai's pricing API gives it: {endpoint: {unit_price, unit,
+        currency}}. An endpoint it doesn't price is left out."""
+        out = {}
+        for i in range(0, len(endpoints), 50):          # 50 endpoints a call, at most
+            batch = endpoints[i:i + 50]
+            r = await self._call("GET", f"{self.api}/v1/models/pricing", auth=self._keyed(), to="key",
+                                 params={"endpoint_id": ",".join(batch)})
+            if not r.is_success:
+                raise self._refusal(r, "reading its prices")
+            for p in self._json(r, "reading its prices").get("prices") or []:
+                if not isinstance(p, dict) or p.get("endpoint_id") not in batch:
+                    continue
+                price = p.get("unit_price")
+                if isinstance(price, bool) or not isinstance(price, (int, float)) or price < 0:
+                    continue
+                out[p["endpoint_id"]] = {"unit_price": float(price), "unit": str(p.get("unit") or ""),
+                                         "currency": str(p.get("currency") or "")}
+        return out
 
     async def close(self) -> None:
         await self._client.aclose()

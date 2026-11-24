@@ -492,6 +492,7 @@ class GatewayConfig(BaseModel):
     runs_dir: str = "data/api_runs"             # a folder per run; relative = next to gateway.yaml
     poll_seconds: float = Field(2.0, gt=0)      # each run's status is asked this often
     default_minutes: float = Field(30.0, gt=0)  # the time limit of a definition without limits.max_minutes
+    prices_hours: float = Field(24.0, gt=0)     # each provider's prices are read this often (decision 0059)
     providers: dict[str, GatewayProviderConfig] = Field(default_factory=dict)
 
 

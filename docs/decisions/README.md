@@ -64,3 +64,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0056](0056-gateway-agent-and-api-runner.md) | The gateway is an agent with the API runner alone; keys stay on it, and a job is never sent twice | accepted |
 | [0057](0057-running-the-gateway.md) | Running the gateway: farmctl roles, a stand-in started from gateway.yaml, key files as editors save them | accepted |
 | [0058](0058-outside-providers-in-the-policy.md) | Outside providers in the policy: none for a show until a rule allows it | accepted |
+| [0059](0059-prices-and-estimates.md) | Prices and estimates: a reviewed cost block per API definition, priced with the provider's price that day | accepted |

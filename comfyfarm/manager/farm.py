@@ -33,6 +33,7 @@ from ..shotgrid import query as SQ
 from ..shotgrid import versions as V
 from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
+from . import prices as PR
 from .db import JobStore
 from .events import EventBus
 from .policy import Policy, policy_path
@@ -333,12 +334,25 @@ class Farm:
                 self.policy.offsite(wf.name, None, self.provider_of(wf))
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
+        # What it costs at an outside provider (decision 0059), from the provider's price today.
+        cost = None
+        if wf.cost is not None:
+            provider = self.provider_of(wf)
+            label = provider.label if provider is not None else wf.provider
+            try:
+                cost = PR.estimate(wf, values, self.desk.price(wf) if self.desk else None, label)
+            except PR.PriceError as e:
+                raise FarmError(str(e), 409) from None
+            moved = PR.drift_note(wf, cost, label)
+            if moved:
+                notes = notes + [moved]
         seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
         source = seq.source if seq else wf.tag
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
                 "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
-                "source": source, "out_dir": None, "version": None, "picked": None, "artifacts": [], "cfg": cfg}
+                "source": source, "out_dir": None, "version": None, "picked": None, "artifacts": [], "cfg": cfg,
+                "cost": cost}
         # No machine may take it now (requires, drained, offline): shown before submitting
         # and as a queued job's stage, but not kept as a warning (it passes).
         plan["waits"] = self.desk.requires_note(wf.name) if self.desk and evaluation is None else None
@@ -646,6 +660,7 @@ class Farm:
             "picked": plan["picked"], "version": plan["version"],
             "notes": plan["notes"] + ([plan["waits"]] if plan.get("waits") else []),
             "eta": self.plan_eta(plan),
+            "cost": plan.get("cost"),                       # at an outside provider: the estimate (decision 0059)
             "input_kind": seq.kind if seq else None, "convert": I.summary(seq, pc),
             "first_file": plan.get("first_file"), "last_file": plan.get("last_file"),
             "what": plan.get("what"), "asset": plan.get("asset"),
@@ -733,6 +748,7 @@ class Farm:
             "what": what if what is not None else plan.get("what"),
             # The agent writes its provenance file beside the outputs (decision 0038).
             "provenance": self.cfg.provenance.enabled,
+            "cost": plan.get("cost"),           # what it was estimated at when it was planned (decision 0059)
             **artifact,
         }
 

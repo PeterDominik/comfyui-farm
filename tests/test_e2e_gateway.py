@@ -207,6 +207,7 @@ gateway:
         j = self.wait_for(jid)
         self.assertEqual(j["status"], "done", j.get("error"))
         self.assertEqual(j["worker"], GATEWAY)
+        self.assertAlmostEqual(j["info"]["cost"]["amount"], 0.08)          # 1 image at 1K (decision 0059)
         out = j["outputs"]
         self.assertEqual((out["frames"], out["first"]), (1, 1050))          # numbered like the input frame
         frame = out["frame_pattern"] % 1050
@@ -217,6 +218,7 @@ gateway:
                           "account": "e2e"})
         said = (self.tmp / "mock_fal.out").read_text(errors="replace")
         self.assertIn("POST /fal-ai/nano-banana-2/edit -> 200", said)
+        self.assertIn("GET /v1/models/pricing -> 200", said)               # its prices, read as it started
         self.assertIn(f"GET /fal-ai/nano-banana-2/requests/{ran['request_id']} -> 200", said)
 
     def test_2_a_job_fal_refuses(self):
