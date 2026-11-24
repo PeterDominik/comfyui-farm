@@ -32,8 +32,8 @@ python -m comfyfarm standalone                                   # manager and a
 | Package | Role |
 |---|---|
 | `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `rollouts.py` environment rollouts, `syncs.py` ComfyUI syncs one machine at a time, `db.py` SQLite |
-| `comfyfarm/agent/` | one per GPU machine: takes jobs, prepares inputs, collects outputs, reports to the manager; `envman.py` keeps its runner environments as the manager says |
-| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half) and `process_run.py` (each run's supervisor) |
+| `comfyfarm/agent/` | one per GPU machine, and the gateway's (`gateway.yaml`): takes jobs, prepares inputs, collects outputs, reports to the manager; `envman.py` keeps its runner environments as the manager says |
+| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half), `process_run.py` (each run's supervisor) and `api/` (the gateway's API runner, `runner.py`, and an adapter per outside provider, `fal.py`) |
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
 | `comfyfarm/catalog.py`, `providers/` | the menus, Provider > Task > Workflow: one file per provider, the tasks in `workflows/tasks.yaml`; each definition's place is checked against them |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
@@ -56,6 +56,7 @@ decision record first.
   `runners/comfyui.py`. Runners import neither the manager nor its web server, and the
   process runner nothing of ComfyUI.
 - `runners/process_run.py` imports the standard library only: it runs with `python -I`.
+- The API runner (`runners/api/`) imports nothing of ComfyUI: the gateway has no ComfyUI.
 - The manager imports no runner and nothing ComfyUI-specific: it reads definitions through
   `definitions.py`. A workflow's ComfyUI half (wiring, building the graph) is
   `runners/comfyui_workflow.py`, used by agents and `comfyfarm check`.
@@ -98,5 +99,9 @@ configs match the behaviour, and the pull request says how it was tested and wha
   bank folder (`share.dir`). Whoever can write there is trusted.
 - **Two operating systems.** Agents run on Linux and on Windows. Agent code must work on
   both, and paths go through `fileio/paths.py`.
+- **Provider keys.** Only on the gateway's machine, in the files `gateway.yaml` names; never
+  in git, the bank folder, `job.json`, events or logs (`tests/test_api_runner.py` checks).
+  Nothing goes to fal.ai itself until phase 11's step 5 (`REAL_SERVICE` in
+  `runners/api/fal.py`): until then the gateway talks to `tools/mock_fal.py` only.
 - **Studio-only steps.** The Daiquiri graph, Tractor and ShotGrid cannot be reached from
   outside Rodeo's network. Those steps are done there and merged back by pull request.

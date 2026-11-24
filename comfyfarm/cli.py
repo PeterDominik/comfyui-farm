@@ -183,6 +183,38 @@ def check_process_runner(cfg) -> int:
     return bad
 
 
+def check_gateway(cfg) -> int:
+    """`agent --check` on the gateway (decision 0056): its providers, their keys and the
+    address each is sent to, and the API definitions it can run. Never a key itself."""
+    from .runners.api.runner import ApiRunner
+    r = ApiRunner(cfg)
+    bad = 0
+    for why in r.problems:
+        bad += 1
+        _line("FAIL", f"gateway: {why}")
+    for name, lanes in r.lanes.items():
+        probs = r.provider_problems.get(name) or []
+        where = cfg.gateway.providers[name].url or "the provider itself"
+        if probs:
+            bad += 1
+            _line("FAIL", f"{name}: {lanes} lane(s), sent to {where}:")
+            for p in probs:
+                print(f"         - {p}")
+        else:
+            _line(" ok ", f"{name}: {lanes} lane(s), sent to {where}, its keys read (account "
+                          f"{cfg.gateway.account or 'not named'})")
+    for name, v in sorted(r.processes().items()):
+        probs = list(v["broken"]) + list(v["problems"])
+        if probs:
+            bad += 1
+            _line("FAIL", f"API definition {name}:")
+            for p in probs:
+                print(f"         - {p}")
+        else:
+            _line(" ok ", f"API definition {name}: the gateway can send it")
+    return bad
+
+
 def check_tools(convert) -> int:
     """oiiotool, ffmpeg and ffprobe, as conversions will run them (convert.tools)."""
     from .fileio.tools import find_tool
@@ -329,6 +361,12 @@ async def run_agent_check(cfg, path) -> int:
         _line("FAIL", f"manager {cfg.manager}: {e}")
     finally:
         await link.close()
+    if cfg.gateway.enabled:             # the gateway: no ComfyUI, no GPU (decision 0056)
+        bad += check_gateway(cfg)
+        bad += check_folder("scratch", str(cfg.resolve(cfg.convert.scratch_dir)), min_free_gb=5)
+        bad += check_tools(cfg.convert)
+        print("All good." if not bad else f"{bad} problem(s).")
+        return 1 if bad else 0
     reg = WorkflowRegistry(Path(__file__).resolve().parent.parent / "workflows")
     bad += await check_comfyui(cfg.name, cfg.comfyui, reg)
     bad += check_process_runner(cfg)
@@ -369,7 +407,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("standalone", help="run the manager and an agent per configured ComfyUI, in one process")
     sub.add_parser("serve", help="the same as standalone (its old name)")
     sub.add_parser("manager", help="run the manager only; agents on other machines check in")
-    agent = sub.add_parser("agent", help="run an agent for this machine's ComfyUI")
+    agent = sub.add_parser("agent", help="run an agent for this machine's ComfyUI, or the gateway "
+                                          "(--config gateway.yaml)")
     agent.add_argument("--config", dest="agent_config",
                        help="agent.yaml path (default: repo root, or $COMFYFARM_AGENT_CONFIG)")
     agent.add_argument("--check", action="store_true",

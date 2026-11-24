@@ -13,6 +13,8 @@ need made unimportable:
   how a ComfyUI workflow wires its graph is runners/comfyui_workflow.py (phase 2's gate).
 - an artifact handler (comfyfarm/artifacts) serves both sides, so it needs neither the
   manager, the agent, a runner nor the web stack: what it needs comes in a context.
+- the API runner (runners/api, the gateway's) needs nothing of ComfyUI: the gateway has no
+  ComfyUI and no GPU, and its adapters speak to outside providers with httpx alone.
 """
 
 import ast
@@ -147,6 +149,12 @@ class LayoutTests(unittest.TestCase):
                                                            "comfyfarm.loaders", "httpx", "websockets"])
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_the_api_runner_needs_no_comfyui(self):
+        r = import_without(["comfyfarm.runners.api.runner", "comfyfarm.runners.api.fal"],
+                           ["comfyfarm.runners.comfyui", "comfyfarm.runners.comfy", "comfyfarm.comfyenv",
+                            "comfyfarm.loaders", "comfyfarm.manager", "websockets", "fastapi", "starlette", "uvicorn"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_the_supervisor_needs_only_the_standard_library(self):
         """runners/process_run.py runs with `python -I`, outside the farm's environment (decision 0025)."""
         tree = ast.parse((REPO / "comfyfarm/runners/process_run.py").read_text(encoding="utf-8"))
@@ -165,6 +173,9 @@ class LayoutTests(unittest.TestCase):
         agent = load_agent_config(REPO / "agent.example.yaml")
         self.assertEqual((agent.comfyui, agent.max_inflight), ("http://127.0.0.1:8188", 2))
         self.assertEqual(agent.base_dir, REPO)
+        self.assertFalse(agent.gateway.enabled)
+        gateway = load_agent_config(REPO / "gateway.example.yaml")
+        self.assertEqual((gateway.gateway.enabled, list(gateway.gateway.providers)), (True, ["fal"]))
 
     def test_cli_help_needs_no_web_stack(self):
         r = subprocess.run([sys.executable, "-c", textwrap.dedent(f"""

@@ -292,6 +292,28 @@ class Placement(Manager):
         self.assertAlmostEqual(f[jobs[2]]["done_in"], 60, delta=1)       # then the third in the first lane free
 
 
+class NotAGpuMachine(Manager):
+    """Rollouts and ComfyUI syncs are for GPU machines: the gateway is left out, and refused
+    when named (decision 0056)."""
+
+    def test_rollouts_and_syncs_leave_the_gateway_out(self):
+        from comfyfarm.manager.rollouts import RolloutError
+        from comfyfarm.manager.syncs import SyncError
+        self.up(A6000)
+        self.up(GATEWAY, lanes={"fal": 2})
+        r = self.desk.rollouts.start("demo", "new", None, "peter")
+        self.assertEqual(r["machines"], [A6000])
+        self.desk.rollouts.act("demo", "cancel", "peter")
+        with self.assertRaisesRegex(RolloutError, f"{GATEWAY} is the gateway: it sends jobs to outside providers "
+                                                  f"and builds no runner environments"):
+            self.desk.rollouts.start("demo", "new", [GATEWAY], "peter")
+        s = self.desk.syncs.start("comfyui", "deploy/comfyui/environment.yaml@abc", None, False, "peter")
+        self.assertEqual(s["machines"], [A6000])
+        self.desk.syncs.cancel("peter")
+        with self.assertRaisesRegex(SyncError, f"{GATEWAY} is the gateway: it has no ComfyUI to sync"):
+            self.desk.syncs.start("comfyui", "deploy/comfyui/environment.yaml@abc", [A6000, GATEWAY], False, "peter")
+
+
 class Switch(Manager):
     def setUp(self):
         super().setUp(enabled=())

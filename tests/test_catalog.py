@@ -25,7 +25,9 @@ if str(REPO / "client") not in sys.path:
     sys.path.insert(0, str(REPO / "client"))
 client = importlib.import_module("comfyfarm_client")
 TASKS_OF = {"chord_pbr": "textures", "gpu_test": "tests", "ltx25_alpha_gen": "masking",
-            "ltx25_layout_render": "video", "sam3_ltx_alpha": "masking", "wan22_i2i": "image"}
+            "ltx25_layout_render": "video", "nano_banana2_edit_fal": "image", "sam3_ltx_alpha": "masking",
+            "wan22_i2i": "image"}
+BEFORE = ("chord_pbr", "gpu_test", "ltx25_alpha_gen", "ltx25_layout_render", "sam3_ltx_alpha", "wan22_i2i")
 
 
 def write_yaml(path: Path, data) -> None:
@@ -71,6 +73,9 @@ class TheCheckoutsCatalogueTests(unittest.TestCase):
         for name, wf in reg.workflows.items():
             with self.subTest(definition=name):
                 self.assertEqual(wf.problems, [])
+                if wf.runner_type == "api":         # an API definition names its provider (decision 0055)
+                    self.assertEqual((wf.provider, wf.provider_named), ("fal", "fal"))
+                    continue
                 self.assertEqual(wf.provider, "python-local" if wf.runner_type == "process" else "comfyui-local")
                 self.assertIsNone(wf.provider_named)
                 self.assertIsNone(wf.family)
@@ -115,9 +120,10 @@ class FingerprintTests(Tmp):
                 shutil.rmtree(self.tmp / name)
 
     def test_the_fingerprints_are_the_ones_before_the_catalogue(self):
-        """Those of main before decision 0054, as the pilot machines hold them."""
+        """Those of main before decision 0054, as the pilot machines hold them (the definitions
+        there were then)."""
         reg = DefinitionRegistry(REPO / "workflows")
-        self.assertEqual({n: wf.digest for n, wf in reg.workflows.items()}, {
+        self.assertEqual({n: wf.digest for n, wf in reg.workflows.items() if n in BEFORE}, {
             "chord_pbr": "04bef8eb6e508071", "gpu_test": "264652bea4ae1a75",
             "ltx25_alpha_gen": "3eabe6e35d9bd3b2", "ltx25_layout_render": "2bfa32bf1ad88243",
             "sam3_ltx_alpha": "a21ab909f5f39aba", "wan22_i2i": "4eb3f5da88634457"})
@@ -283,9 +289,10 @@ class TreeTests(unittest.TestCase):
         self.assertEqual(flat(cat.tree(reg.workflows.values())), [
             ("ComfyUI Local", "Masking", "ltx25_alpha_gen"), ("ComfyUI Local", "Masking", "sam3_ltx_alpha"),
             ("ComfyUI Local", "Video", "ltx25_layout_render"), ("ComfyUI Local", "Image", "wan22_i2i"),
-            ("ComfyUI Local", "Textures", "chord_pbr")])
+            ("ComfyUI Local", "Textures", "chord_pbr"), ("fal.ai", "Image", "nano_banana2_edit_fal")])
         tree = cat.tree(reg.workflows.values(), hidden=True)
-        self.assertEqual(flat(tree)[-1], ("Python Local", "Tests", "gpu_test"))
+        self.assertEqual(flat(tree)[-2:], [("Python Local", "Tests", "gpu_test"),
+                                           ("fal.ai", "Image", "nano_banana2_edit_fal")])
         self.assertEqual({k: tree[0][k] for k in ("name", "label", "runner", "target", "offsite")},
                          {"name": "comfyui-local", "label": "ComfyUI Local", "runner": "comfyui", "target": "pool",
                           "offsite": False})

@@ -1,5 +1,7 @@
 """An agent: runs the manager's jobs on this machine through its runners (protocol.py,
 runners/base.py): ComfyUI (runners/comfyui.py) and the process runner (runners/process.py).
+The farm's gateway is an agent too, with the API runner alone (runners/api/, decision 0056):
+it says its lanes when it checks in, and has no ComfyUI.
 Each job goes to the runner whose definition it is (decision 0025). The runs of one runner
 at a time hold the machine's card, and a runner that held it frees what it keeps there
 before another one's run starts (the GPU claim, decision 0026).
@@ -142,8 +144,12 @@ class Agent:
             self._tasks.append(asyncio.create_task(self._gpu_loop(), name=f"gpus-{self.name}"))
         self._tasks.append(asyncio.create_task(self._envs_loop(), name=f"envs-{self.name}"))
         self._tasks.append(asyncio.create_task(self.envman.loop(), name=f"envman-{self.name}"))
-        log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui,
-                 getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process"))
+        manager = getattr(self.link, "shown", None) or getattr(self.link, "url", "in this process")
+        if self.lanes:
+            log.info("gateway %s started: lanes %s, manager %s", self.name,
+                     ", ".join(f"{p} {n}" for p, n in self.lanes.items()), manager)
+        else:
+            log.info("agent %s started: ComfyUI %s, manager %s", self.name, self.cfg.comfyui, manager)
 
     async def stop(self) -> None:
         """Stop following the runner and the manager. Jobs in ComfyUI carry on; the next
@@ -179,6 +185,19 @@ class Agent:
 
     def holds(self, h: Held) -> bool:
         return self.held.get(h.id) is h
+
+    @property
+    def lanes(self) -> dict[str, int]:
+        """A gateway's lanes, per provider (decision 0055); {} for a GPU machine."""
+        return dict(getattr(self.runner, "lanes", None) or {}) if self.cfg.gateway.enabled else {}
+
+    def _knows_nodes(self) -> bool:
+        """Its resident runner can say what it can run: ComfyUI once it has read its node
+        definitions and runs this checkout's farm nodes; a runner with no backend to read (the
+        gateway's) at once."""
+        if not hasattr(self.runner, "object_info"):
+            return True
+        return self.runner.object_info is not None and not self.runner.farm_nodes
 
     def runner_for(self, workflow: str) -> Runner | None:
         """The runner whose definition this is (ComfyUI's workflows, the process runner's processes)."""
@@ -219,10 +238,13 @@ class Agent:
 
     async def _hello(self) -> None:
         self._seq += 1
-        reply = await self.link.hello({
-            "name": self.name, "version": build(), "comfyui": self.cfg.comfyui, "seq": self._seq,
-            "max_inflight": self.cfg.max_inflight, "capacity": self.cfg.max_inflight + 1, "held": self._held_list(),
-            "tags": self.tags})
+        msg = {"name": self.name, "version": build(), "comfyui": self.cfg.comfyui, "seq": self._seq,
+               "max_inflight": self.cfg.max_inflight, "capacity": self.cfg.max_inflight + 1, "held": self._held_list(),
+               "tags": self.tags}
+        if self.lanes:                  # the gateway: its jobs at once are its lanes, and it has no ComfyUI
+            n = sum(self.lanes.values())
+            msg.update(comfyui=None, lanes=self.lanes, max_inflight=n, capacity=n)
+        reply = await self.link.hello(msg)
         if reply.get("error"):
             raise LinkError(reply["error"])
         self.registered = True
@@ -232,9 +254,9 @@ class Agent:
         for p in reply.get("adopt") or []:
             self._adopt(p)
         await self.send_status()
-        if self.runner.object_info is not None and not self.runner.farm_nodes:
+        if self._knows_nodes():
             await self.send_nodes()
-        if self.runner.environment is not None:
+        if getattr(self.runner, "environment", None) is not None:
             await self.send_environment()
         if not self._cleaned:
             self._cleaned = True
@@ -258,7 +280,8 @@ class Agent:
         for p in reply.get("jobs") or []:
             await self._take(p)
         if reply.get("nodes"):
-            self.spawn(self.runner.refresh_object_info())
+            refresh = getattr(self.runner, "refresh_object_info", None)
+            self.spawn(refresh() if refresh else self.send_nodes())
         if reply.get("release_vram") and not self._releasing:
             self.spawn(self.release_vram())
         if isinstance(reply.get("environments"), dict):
@@ -819,7 +842,7 @@ class Agent:
     # ================================================================ environment
     async def send_environment(self) -> None:
         """Send the runner's last report of how its environment differs from the farm's."""
-        report = self.runner.environment
+        report = getattr(self.runner, "environment", None)
         if report is None:
             return
         differs = list(report.get("differs") or [])

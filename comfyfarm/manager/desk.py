@@ -460,7 +460,9 @@ class Desk:
         for jid, attempt in listed.items():
             if not self._holds(self.store.get(jid), name, attempt):
                 drop.append({"job": jid, "attempt": attempt})
-        log.info("agent %s checked in (%s, ComfyUI %s)%s", name, a.version or "?", a.url or "?",
+        backend = (f"gateway, lanes {', '.join(f'{p} {n}' for p, n in a.lanes.items())}" if a.lanes
+                   else f"ComfyUI {a.url or '?'}")
+        log.info("agent %s checked in (%s, %s)%s", name, a.version or "?", backend,
                  f": {len(adopt)} job(s) to pick up again" if adopt else "")
         self._publish(a)
         return {"manager": build(), "lease_seconds": self.lease_seconds, "adopt": adopt, "drop": drop,

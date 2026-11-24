@@ -72,10 +72,15 @@ class Syncs:
         if open_:
             raise SyncError(f"sync {open_['id']} is running (at {open_['machines'][open_['step']]}): one machine out "
                             f"of service at a time. Wait for it, or cancel it")
-        names = list(dict.fromkeys(machines)) if machines else sorted(self.desk.agents)
+        # Every GPU machine, unless named: the gateway has no ComfyUI (decision 0056).
+        names = list(dict.fromkeys(machines)) if machines else sorted(m for m, a in self.desk.agents.items()
+                                                                       if not a.lanes)
         unknown = [m for m in names if m not in self.desk.agents]
         if unknown:
             raise SyncError(f"no machine {', '.join(unknown)} (known: {', '.join(sorted(self.desk.agents)) or 'none'})")
+        gateway = next((m for m in names if self.desk.agents[m].lanes), None)
+        if gateway:
+            raise SyncError(f"{gateway} is the gateway: it has no ComfyUI to sync")
         if not names:
             raise SyncError("no machine has checked in yet")
         r = {"id": uuid.uuid4().hex[:12], "runner": runner, "file": file, "force": bool(force),
