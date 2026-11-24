@@ -293,7 +293,9 @@ class Keys(Tmp):
             gw.write_text(yaml.safe_dump({"name": "gw", "gateway": {"enabled": True, "providers": {
                 "fal": {"url": url, "keys": {"requests": "keys/fal_requests.key"}}}}}), encoding="utf-8")
         write("http://127.0.0.1:8199")
-        self.assertEqual(mock_fal.from_gateway(str(gw)), (8199, str(self.tmp / "keys" / "fal_requests.key")))
+        port, key = mock_fal.from_gateway(str(gw))
+        # Next to gateway.yaml, as resolved: on Windows its long name, where the temp folder may be RUNNER~1.
+        self.assertEqual((port, Path(key)), (8199, self.tmp.resolve() / "keys" / "fal_requests.key"))
         for url in ("", "https://queue.fal.run", "http://10.1.2.3:8199"):
             write(url)
             with self.assertRaisesRegex(SystemExit, "doesn't send fal.ai's jobs to a stand-in on this machine"):

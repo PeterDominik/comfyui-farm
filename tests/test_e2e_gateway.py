@@ -39,7 +39,7 @@ WEB = bool(importlib.util.find_spec("uvicorn") and importlib.util.find_spec("fas
 TOKEN = "e2e-agent-token"
 KEY = "e2e-made-up:5c1f0e9d8b7a6c4d"            # the stand-in's; the secret part must appear nowhere else
 GATEWAY = "e2e-gateway"
-SEQ = "/rdo/shows/xyz/work/abc_0010/abc_0010.plate.v1.%04d.png"
+SEQ = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010.plate.v1.%04d.png"     # a shot's plate
 
 
 def wait_port(port: int, timeout: float = 20) -> None:
@@ -63,7 +63,7 @@ class GatewayE2E(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp(prefix="comfyfarm-gateway-"))
         root = cls.tmp.as_posix()
-        work = cls.tmp / "shows/xyz/work/abc_0010"
+        work = cls.tmp / "shows/xyz/.published/abc/abc_0010/plate/v1"
         work.mkdir(parents=True)
         for f in (1049, 1050):
             shutil.copy(REPO / "workflows/gpu_test/eval/input.png", work / f"abc_0010.plate.v1.{f}.png")
@@ -186,7 +186,9 @@ gateway:
                     node["p_prompt"].setValue("remove the crane")
                     m.submit(node)
                     self.assertEqual(nk.messages, [])
-                    jid = m._records(node)[-1]["id"]
+                    records = m._records(node)
+                    self.assertTrue(records, node["cf_note"].value())    # what the node says went wrong
+                    jid = records[-1]["id"]
             finally:
                 for mod in ("comfyfarm_nuke", "comfyfarm_panel", "comfyfarm_node"):
                     sys.modules.pop(mod, None)
