@@ -70,13 +70,16 @@ class Says(unittest.TestCase):
             ["ruleDoes", [{"allow": ["apache-2.0"]}, "licence"]],
             ["ruleDoes", [QUOTA, "quota"]],
             ["ruleDoes", [{"per": "user", "max_jobs": 1}, "quota"]],
-            ["ruleDoes", [{"per": "all", "max_frames": 500}, "quota"]])
+            ["ruleDoes", [{"per": "all", "max_frames": 500}, "quota"]],
+            ["ruleDoes", [{"allow": ["fal"]}, "provider"]],
+            ["ruleDoes", [{"deny": ["python-local", "fal"]}, "provider"]])
         self.assertEqual(said, [
             "guem2609, ret*", "every show but rnd*", "Refuses every definition", "Refuses wan22_i2i",
             "Only ltx25_alpha_gen, chord_pbr", "Refuses licences cc-by-nc-4.0", "Only licences apache-2.0",
             "At most 3 jobs and 1000 frames queued or running, for each show",
             "At most 1 job queued or running, for each user, over these shows",
-            "At most 500 frames queued or running, for these shows together"])
+            "At most 500 frames queued or running, for these shows together",
+            "May send work to fal", "May not use python-local, fal"])
 
     def test_what_is_queued_against_a_quota(self):
         empty, two, together = self.run_js(
@@ -104,12 +107,13 @@ class PolicyTab(unittest.TestCase):
         parser = Panels("tab-policy")
         parser.feed(html)
         self.assertEqual([(p["h2"], p["tables"]) for p in parser.panels], [
-            ("Policy", 0), ("Show rules", 1), ("Licence rules", 1), ("Quotas", 1), ("Models and licences", 1)])
+            ("Policy", 0), ("Show rules", 1), ("Licence rules", 1), ("Provider rules", 1), ("Quotas", 1),
+            ("Models and licences", 1)])
         self.assertIn('<button data-tab="policy" id="policyTab" hidden>Policy</button>', html)
         self.assertIn('<script src="/policy.js"></script>', html)
         script = SCRIPT.read_text(encoding="utf-8")
         for el in ("policyTab", "policyBanner", "policyNote", "policyDefaults", "policyShows", "policyLicences",
-                   "policyQuotas", "policyModels"):
+                   "policyProviders", "policyQuotas", "policyModels"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"#{el}"', script)
 

@@ -40,6 +40,7 @@ TOKEN = "e2e-agent-token"
 KEY = "e2e-made-up:5c1f0e9d8b7a6c4d"            # the stand-in's; the secret part must appear nowhere else
 GATEWAY = "e2e-gateway"
 SEQ = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010.plate.v1.%04d.png"     # a shot's plate
+OTHER = "/rdo/shows/qqq/.published/def/def_0020/plate/v1/def_0020.plate.v1.%04d.png"   # a show fal.ai isn't for
 
 
 def wait_port(port: int, timeout: float = 20) -> None:
@@ -63,10 +64,20 @@ class GatewayE2E(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp(prefix="comfyfarm-gateway-"))
         root = cls.tmp.as_posix()
-        work = cls.tmp / "shows/xyz/.published/abc/abc_0010/plate/v1"
-        work.mkdir(parents=True)
-        for f in (1049, 1050):
-            shutil.copy(REPO / "workflows/gpu_test/eval/input.png", work / f"abc_0010.plate.v1.{f}.png")
+        for seq in (SEQ, OTHER):
+            work = cls.tmp / Path(seq.removeprefix("/rdo/")).parent
+            work.mkdir(parents=True)
+            for f in (1049, 1050):
+                shutil.copy(REPO / "workflows/gpu_test/eval/input.png", work / (Path(seq).name % f))
+        # fal.ai is outside Rodeo: the farm's policy allows it on xyz alone (decision 0058).
+        (cls.tmp / "policy.yaml").write_text("""version: 1
+contact: the CG supervisors
+providers:
+  - name: fal-on-xyz
+    shows: [xyz]
+    allow: [fal]
+    reason: The fal.ai pilot's show
+""", encoding="utf-8")
         cls.port, cls.fal_port = free_port(), free_port()
         (cls.tmp / "config.yaml").write_text(f"""
 server: {{host: 127.0.0.1, port: {cls.port}}}
@@ -79,6 +90,7 @@ paths:
   mappings: [{{posix: /rdo/shows, windows: "{root}/shows"}}]
   output_root: "{root}/shows/{{show}}/_project_ref/_cg/comfyui/renders"
 providers: {{enabled: [fal]}}
+policy: {{enabled: true, file: "{root}/policy.yaml"}}
 provenance: {{enabled: true}}
 preview: {{enabled: false}}
 convert: {{scratch_dir: {root}/manager/scratch}}
@@ -213,6 +225,14 @@ gateway:
         self.assertEqual((j["status"], j["error"]),
                          ("failed", "fal.ai couldn't run it (runner_server_error): MOCK_FAIL: the stand-in's "
                                     "model failed"))
+
+    def test_2b_another_show_is_refused_with_the_rule_named(self):
+        """Step 3's gate across processes: fal.ai on a show no rule allows it for."""
+        with self.assertRaises(farm.FarmError) as e:
+            farm.submit("nano_banana2_edit_fal", {"input": f"{OTHER} 1050", "prompt": "rain"})
+        self.assertEqual(str(e.exception), "Show qqq isn't cleared to send work to fal.ai, outside Rodeo: no policy "
+                                           "rule allows it. (Policy: providers.) Ask the CG supervisors if this is "
+                                           "wrong.")
 
     def test_3_on_the_machines_tab(self):
         w = {x["name"]: x for x in farm.workers()}[GATEWAY]

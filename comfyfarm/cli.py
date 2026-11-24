@@ -583,8 +583,9 @@ def run_alerts_test(cfg: Config) -> int:
 
 def run_policy_check(cfg: Config, file: str | None) -> int:
     """`comfyfarm policy check [file]`: is this policy file one the manager would take? Its
-    definitions are checked against this checkout's workflows/, and its licence rules
-    against the licences their models carry."""
+    definitions are checked against this checkout's workflows/, its licence rules against
+    the licences their models carry, and its provider rules against providers/."""
+    from . import catalog as C
     from .comfyenv import spec as ES
     from .definitions import DefinitionRegistry
     from .manager.policy import parse, policy_path
@@ -593,13 +594,15 @@ def run_policy_check(cfg: Config, file: str | None) -> int:
         print("No policy file: give one, or set policy.file in config.yaml.")
         return 1
     definitions = DefinitionRegistry(cfg.resolve(cfg.workflows_dir)).workflows
+    providers = C.current().providers
     try:
-        pf = parse(Path(path).read_text(encoding="utf-8"), set(definitions))
+        pf = parse(Path(path).read_text(encoding="utf-8"), set(definitions),
+                   {n: p.offsite for n, p in providers.items()})
     except (OSError, ValueError) as e:
         print(f"  [FAIL] {path}: {getattr(e, 'strerror', None) or e}")
         return 1
     print(f"  [ ok ] {path}: {len(pf.shows)} show rule(s), {len(pf.licences)} licence rule(s), "
-          f"{len(pf.quotas)} quota(s); shows no rule "
+          f"{len(pf.quotas)} quota(s), {len(pf.providers)} provider rule(s); shows no rule "
           f"names: {pf.other_shows}; a job whose show isn't known: {pf.unknown_show}; a definition that doesn't "
           f"list its models: {pf.unlisted_models}")
 
@@ -614,6 +617,14 @@ def run_policy_check(cfg: Config, file: str | None) -> int:
         what = f"denies licences {', '.join(r.deny)}" if r.deny is not None else \
             f"allows only licences {', '.join(r.allow or [])}"
         print(f"         {r.name}: {shows(r)} {what}: {r.reason}")
+    for r in pf.providers:
+        what = f"may send work to {', '.join(r.allow)}" if r.allow is not None else f"may not use {', '.join(r.deny)}"
+        print(f"         {r.name}: {shows(r)} {what}: {r.reason}")
+    for name, p in sorted(providers.items()):
+        if p.offsite:                   # outside Rodeo: refused on every show no rule allows (decision 0058)
+            allowed = [shows(r) for r in pf.providers if name in (r.allow or [])]
+            print(f"         {p.label} ({name}) is outside Rodeo: " + (f"allowed on {'; '.join(allowed)} only"
+                                                                        if allowed else "no show may use it"))
     for r in pf.quotas:
         most = " and ".join(x for x in (f"{r.max_jobs} job(s)" if r.max_jobs else "",
                                         f"{r.max_frames} frame(s)" if r.max_frames else "") if x)

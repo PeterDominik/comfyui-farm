@@ -58,6 +58,9 @@ class TheFile(unittest.TestCase):
         pf = PO.parse((REPO / "policy.example.yaml").read_text(encoding="utf-8"), known)
         self.assertEqual((pf.version, pf.other_shows, pf.unknown_show, len(pf.shows), len(pf.licences),
                           pf.unlisted_models, len(pf.quotas)), (1, "allow", "allow", 3, 1, "allow", 2))
+        self.assertEqual([(r.name, r.shows, r.allow, r.deny) for r in pf.providers],
+                         [("pilot-fal-on-rnd", ["rnd"], ["fal"], None),
+                          ("example-no-python", ["exmpl2604"], None, ["python-local"])])
 
     def test_what_is_wrong_is_said(self):
         for text, says in (
@@ -323,6 +326,122 @@ quotas:
 """
 
 
+FAL = SimpleNamespace(name="fal", label="fal.ai", offsite=True)
+COMFY = SimpleNamespace(name="comfyui-local", label="ComfyUI Local", offsite=False)
+PROVIDERS = {"comfyui-local": False, "python-local": False, "fal": True}
+OFFSITE = """
+version: 1
+contact: the CG supervisors (#comfyfarm)
+providers:
+  - name: pilot-fal-on-rnd
+    shows: [rnd*]
+    except: [rndsecret]
+    allow: [fal]
+    reason: The fal.ai pilot runs on rnd alone
+  - name: rnd2-no-fal
+    shows: [rnd2]
+    deny: [fal]
+    reason: rnd2 holds client plates
+  - name: guem-no-comfy
+    shows: [guem2609]
+    deny: [comfyui-local]
+    reason: Not on this show's machines
+"""
+
+
+class Providers(InForce):
+    """Outside providers (decision 0058): none until a rule allows it, for a known show."""
+
+    def policy(self, enabled=True) -> PO.Policy:
+        return PO.Policy(enabled, str(self.file), self.saved, lambda: KNOWN, "/rdo/bank/comfy_farm/policy.yaml",
+                         providers=lambda: PROVIDERS)
+
+    def test_the_gate_every_show_but_the_allowed_one(self):
+        """Step 3's gate: fal.ai on every show but the one a rule allows, refused with the rule named."""
+        self.write(OFFSITE)
+        p = self.policy()
+        p.check("nano_banana2_edit_fal", "rnd", provider=FAL)
+        p.check("nano_banana2_edit_fal", "rnd7", provider=FAL)
+        for show in ("bri3", "xyz", "guem2609", "rndsecret"):
+            with self.subTest(show=show), self.assertRaises(PO.Refused) as e:
+                p.check("nano_banana2_edit_fal", show, provider=FAL)
+            self.assertEqual((str(e.exception), e.exception.rule),
+                             (f"Show {show} isn't cleared to send work to fal.ai, outside Rodeo: no policy rule allows "
+                              f"it. (Policy: providers.) Ask the CG supervisors (#comfyfarm) if this is wrong.",
+                              "providers"))
+        with self.assertRaises(PO.Refused) as e:
+            p.check("nano_banana2_edit_fal", "rnd2", provider=FAL)          # allowed by rnd*, denied by its own
+        self.assertEqual((str(e.exception), e.exception.rule),
+                         ("nano_banana2_edit_fal can't run for show rnd2 on fal.ai: rnd2 holds client plates. (Policy "
+                          "rule rnd2-no-fal.) Ask the CG supervisors (#comfyfarm) if this is wrong.", "rnd2-no-fal"))
+
+    def test_the_show_must_be_known(self):
+        self.write(OFFSITE)
+        p = self.policy()
+        with self.assertRaises(PO.Refused) as e:
+            p.check("nano_banana2_edit_fal", None, provider=FAL)
+        self.assertEqual(str(e.exception), "nano_banana2_edit_fal runs on fal.ai, outside Rodeo, so the farm's policy "
+                                           "needs to know the show it is for: give a Show, or an input path inside a "
+                                           "show. Ask the CG supervisors (#comfyfarm) if this is wrong.")
+        p.check("nano_banana2_edit_fal", None, provider=FAL, any_show=True)     # a menu for every show
+        self.write("version: 1\n")
+        with self.assertRaisesRegex(PO.Refused, "needs to know the show"):
+            p.check("nano_banana2_edit_fal", None, provider=FAL, any_show=True)  # no show may use it
+
+    def test_the_farms_own_are_allowed_unless_denied(self):
+        self.write(OFFSITE)
+        p = self.policy()
+        p.check("wan22_i2i", "xyz", provider=COMFY)
+        p.check("wan22_i2i", None, provider=COMFY)
+        with self.assertRaisesRegex(PO.Refused, r"wan22_i2i can't run for show guem2609 on ComfyUI Local: Not on "
+                                                r"this show's machines. \(Policy rule guem-no-comfy.\)"):
+            p.check("wan22_i2i", "guem2609", provider=COMFY)
+
+    def test_off_refuses_outside_providers(self):
+        """The policy is the sign-off: with it off, nothing goes outside Rodeo."""
+        p = self.policy(enabled=False)
+        p.check("wan22_i2i", "rnd", provider=COMFY)
+        with self.assertRaises(PO.Refused) as e:
+            p.check("nano_banana2_edit_fal", "rnd", provider=FAL)
+        self.assertEqual((str(e.exception), e.exception.rule),
+                         ("nano_banana2_edit_fal runs on fal.ai, outside Rodeo, which the farm's policy must allow, "
+                          "and the policy is off (policy.enabled in the manager's config.yaml).", "providers"))
+
+    def test_an_unreadable_policy_refuses_outside_providers(self):
+        p = self.policy()
+        with self.assertRaisesRegex(PO.Refused, "can't be read"):
+            p.offsite("nano_banana2_edit_fal", "rnd", FAL)
+        p.offsite("gpu_test", None, COMFY)                  # an eval of the farm's own: aside (decision 0053)
+
+    def test_what_is_wrong_is_said(self):
+        cases = {
+            "  - {name: a, shows: [rnd], reason: r}": "rule a: give either allow (the outside providers its shows may "
+                                                      "send work to) or deny (the providers they may not use)",
+            "  - {name: a, shows: [rnd], allow: [fall], reason: r}": "rule a names provider fall, which this farm "
+                                                                     "doesn't have (it has comfyui-local, fal, "
+                                                                     "python-local)",
+            "  - {name: a, shows: [rnd], allow: [comfyui-local], reason: r}":
+                "rule a allows comfyui-local, the farm's own: only outside providers need a rule that allows them "
+                "(deny it to refuse it)",
+            "  - {name: a, shows: [rnd], allow: [fal], deny: [fal], reason: r}": "rule a: give either allow",
+        }
+        for rule, said in cases.items():
+            with self.subTest(rule=rule):
+                with self.assertRaises(ValueError) as e:
+                    PO.parse(f"version: 1\nproviders:\n{rule}\n", KNOWN, PROVIDERS)
+                self.assertIn(said, str(e.exception))
+        with self.assertRaisesRegex(ValueError, "two rules are named a"):
+            PO.parse("version: 1\nshows:\n  - {name: a, shows: [x], deny: all, reason: r}\nproviders:\n"
+                     "  - {name: a, shows: [rnd], allow: [fal], reason: r}\n", KNOWN, PROVIDERS)
+
+    def test_the_rules_in_force_are_shown(self):
+        self.write(OFFSITE)
+        rules = self.policy().status()["in_force"]["providers"]
+        self.assertEqual([(r["name"], r["allow"], r["deny"], r["except"]) for r in rules],
+                         [("pilot-fal-on-rnd", ["fal"], None, ["rndsecret"]), ("rnd2-no-fal", None, ["fal"], []),
+                          ("guem-no-comfy", None, ["comfyui-local"], [])])
+
+
 class Quotas(unittest.TestCase):
     """Decision 0045: how much a show, a user on it, or some shows together may have queued or
     running at once, checked at plan with what is queued now."""
@@ -435,7 +554,13 @@ class Check(unittest.TestCase):
             bad.write_text(RULES.replace("wan22_i2i", "wan22_i2v"), encoding="utf-8")
             config = Path(d, "config.yaml")
             config.write_text(f"workers: []\nworkflows_dir: {(REPO / 'workflows').as_posix()}\n", encoding="utf-8")
+            offsite = Path(d, "offsite.yaml")
+            offsite.write_text(OFFSITE, encoding="utf-8")
             for f, code, says in ((good, 0, "guem-no-ai: guem2609 denies everything: The client's contract"),
+                                  (good, 0, "fal.ai (fal) is outside Rodeo: no show may use it"),
+                                  (offsite, 0, "pilot-fal-on-rnd: rnd* (not rndsecret) may send work to fal: The "
+                                               "fal.ai pilot"),
+                                  (offsite, 0, "fal.ai (fal) is outside Rodeo: allowed on rnd* (not rndsecret) only"),
                                   (bad, 1, "[FAIL]"), (bad, 1, "rule unlp-no-wan names wan22_i2v")):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):

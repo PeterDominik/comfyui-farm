@@ -381,3 +381,12 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - the Machines tab shows the gateway's lanes;
   - the gate's CI half: a stand-in job submitted by the Nuke node's code, end to end over
     HTTP. The other half is a stand-in job from Nuke on the manager's machine.
+
+  Step 2 is done: Peter updated and tested it on the pilot on 24 November.
+
+  Step 3 (the off-site policy) is one pull request (0058):
+  - a `providers:` section in `policy.yaml`. An outside provider is refused on every show
+    until a rule allows it, for a known show, and refused with policy off;
+  - `deny` rules for any provider;
+  - checked at plan, in the menus and at dispatch;
+  - `policy.example.yaml` has the pilot's rule, fal on `rnd`.
