@@ -8,10 +8,14 @@
 #
 # Or keep it running: deploy/linux/farmctl.sh start gateway (install_cron.sh gateway).
 #
-# Until phase 11's step 5 it sends jobs only to a stand-in on this machine, which takes no
-# money and sends nothing out. It answers where this file sends fal.ai's jobs, with its key:
+# As it is here it sends jobs only to a stand-in on this machine, which takes no money and
+# sends nothing out. It answers where this file sends fal.ai's jobs, with its keys:
 #
 #   deploy/linux/farmctl.sh start mock_fal      (python tools/mock_fal.py --gateway gateway.yaml)
+#
+# To send them to fal.ai itself, which charges the account for each one (decision 0062): set
+# fal's live: true, leave its url empty, put the account's real keys in the key files, run the
+# check (it asks fal.ai two free questions with them), and restart the gateway.
 
 name: wrk1125l-gateway           # as the dashboard shows it; unique on the farm
 manager: http://127.0.0.1:8000   # the manager on this machine (its server.port), or its manager.json
@@ -27,8 +31,10 @@ gateway:
   providers:
     fal:                         # providers/fal.yaml
       lanes: 2                   # its jobs at once; empty: providers/fal.yaml's
-      url: http://127.0.0.1:8189 # the stand-in (tools/mock_fal.py). Empty: fal.ai itself, from step 5
+      url: http://127.0.0.1:8189 # the stand-in (tools/mock_fal.py); empty with live: true
+      live: false                # true: send jobs to fal.ai itself, which charges for them (url empty)
       media_seconds: 3600        # how long fal.ai keeps what is uploaded and what it makes
+      keep_payloads: false       # true: fal.ai keeps each job's inputs and outputs in the account's request history
       # Each key in a file of its own, readable by this account alone (chmod 600): never in
       # git, the bank folder or this file. ~ is this account's home. The gateway reads them
       # when it starts, and sends them to fal.ai only. For the stand-in, make the key up.

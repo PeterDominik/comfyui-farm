@@ -102,8 +102,8 @@ configs match the behaviour, and the pull request says how it was tested and wha
   both, and paths go through `fileio/paths.py`.
 - **Provider keys.** Only on the gateway's machine, in the files `gateway.yaml` names; never
   in git, the bank folder, `job.json`, events or logs (`tests/test_api_runner.py` checks).
-  Nothing goes to fal.ai itself until phase 11's step 5 (`REAL_SERVICE` in
-  `runners/api/fal.py`): until then the gateway talks to `tools/mock_fal.py` only.
+  Nothing goes to fal.ai itself unless `gateway.yaml` says `live: true` for it (decision
+  0062): tests and CI talk to `tools/mock_fal.py` only, and never set it against fal.ai.
 - **Paid jobs.** A job at an outside provider is held against its show's cap as it is queued,
   and settled as it ends (`comfyfarm/manager/ledger.py`, decision 0060). The ledger never
   guesses down: money is released only when the job certainly never reached the provider, or

@@ -2384,7 +2384,7 @@ cp gateway.example.yaml gateway.yaml            # then edit: manager; paths and 
 mkdir -p ~/.comfyfarm
 (umask 077 && read -rs KEY && printf '%s\n' "$KEY" > ~/.comfyfarm/fal_requests.key)   # paste the key, then Enter
 (umask 077 && read -rs KEY && printf '%s\n' "$KEY" > ~/.comfyfarm/fal_billing.key)    # the billing key, for the bill
-deploy/linux/farmctl.sh start mock_fal          # fal.ai's stand-in, until step 5
+deploy/linux/farmctl.sh start mock_fal          # fal.ai's stand-in, while live is off
 deploy/linux/farmctl.sh check gateway           # its providers, keys and definitions; never a key
 deploy/linux/farmctl.sh start gateway           # or install_cron.sh gateway: kept running
 ```
@@ -2415,10 +2415,23 @@ gateway reads its keys when it starts: restart it after changing them.
   stopped while sending, the job fails, saying to look in the provider's request history.
   After a restart the gateway follows its jobs again from their run folders.
 - **What fal.ai keeps.** Uploads and results are kept `media_seconds` (an hour unless
-  `gateway.yaml` says), asked for with each upload and job.
-- **Nothing reaches fal.ai itself yet.** Until phase 11's step 5 (after the ledger and
-  caps) the gateway sends jobs only to a stand-in on its own machine,
-  `tools/mock_fal.py`, which takes no money and sends nothing out:
+  `gateway.yaml` says), asked for with each upload and job. Each job is sent with
+  `X-Fal-Store-IO: 0`, so its inputs and outputs aren't kept in the account's request
+  history (fal.ai keeps them 90 days otherwise), unless `keep_payloads: true`. Nano Banana 2
+  edit asks for `sync_mode`: its result comes back in fal.ai's answer, never as a file on
+  fal.ai's CDN.
+- **Only the reviewed endpoint.** Each job is sent with `x-app-fal-disable-fallback`, so
+  fal.ai never runs it on another endpoint it thinks equivalent: what runs is what the
+  definition's review priced.
+- **fal.ai itself only when `live`.** With `live: true` for fal in `gateway.yaml` (and its
+  `url` empty) the gateway sends jobs to fal.ai, which charges the account for each one
+  (decision 0062). The key goes to fal.ai's queue, REST and API hosts only, the upload token
+  to its CDN, and results are downloaded from its CDN alone, over https.
+  `farmctl.sh check gateway` then asks fal.ai two questions it answers for free (its prices
+  with the requests key, the balance with the billing key) and says whether each key works.
+  Never a job.
+- **Otherwise a stand-in.** Without `live` the gateway sends jobs only to a stand-in on its
+  own machine, `tools/mock_fal.py`, which takes no money and sends nothing out:
 
   ```bash
   deploy/linux/farmctl.sh start mock_fal        # python tools/mock_fal.py --gateway gateway.yaml
@@ -2428,7 +2441,7 @@ gateway reads its keys when it starts: restart it after changing them.
   `http://127.0.0.1:8189`) and takes the keys in its `keys` files. Its bill charges $0 for
   each job, since it takes no money; `python tools/mock_fal.py --gateway gateway.yaml --bill`
   charges each at fal.ai's price instead, to see the ledger match a bill. Any other
-  address is refused (`REAL_SERVICE` in `comfyfarm/runners/api/fal.py`). In the
+  address is refused unless `live`. In the
   prompt, `MOCK_FAIL` makes its model fail, `MOCK_POLICY` its content check refuse it and
   `MOCK_SLOW` it run a minute.
 

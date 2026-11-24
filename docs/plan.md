@@ -426,3 +426,17 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
     bill not read and a low balance;
   - the Spend tab, the CSV of a show's jobs for any dates, and `comfyfarm spend`;
   - the stand-in's bill charges $0 (it takes no money), or fal.ai's prices with `--bill`.
+  Peter updated and tested it on the pilot on 24 November. Step 4 is done.
+
+  Step 5 (the fal.ai pilot) is two pull requests:
+  1. fal.ai live;
+  2. the week's match, if the first week shows it is needed: each day's charges in the farm
+     beside fal.ai's, for the gate.
+
+  The first is in (0062):
+  - `live: true` for fal in `gateway.yaml` sends jobs to fal.ai itself, off by default; it
+    replaces the `REAL_SERVICE` constant;
+  - each job with `X-Fal-Store-IO: 0` (unless `keep_payloads`) and fal.ai's fallbacks off;
+    Nano Banana 2 edit with `sync_mode`, so its result is never a file on fal.ai's CDN;
+  - with `live`, the key only to fal.ai's own hosts and results only from its CDN;
+  - `farmctl.sh check gateway` tries the keys on two questions fal.ai answers for free.

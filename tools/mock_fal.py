@@ -108,9 +108,11 @@ class MockFal:
         keyed = auth == f"Key {self.key}"
         billing = path in ("/v1/models/billing-events", "/v1/account/billing")
         with self.lock:
+            said = {k.lower(): v for k, v in headers.items()}
             self.calls.append({"method": method, "path": path, "keyed": keyed,
-                               "lifecycle": {k.lower(): v for k, v in headers.items()}.get(
-                                   "x-fal-object-lifecycle-preference")})
+                               "lifecycle": said.get("x-fal-object-lifecycle-preference"),
+                               "store_io": said.get("x-fal-store-io"),
+                               "no_fallback": said.get("x-app-fal-disable-fallback"), "host": parts.netloc})
             if method == "GET" and path.startswith("/files/b/"):
                 f = self.files.get(path)
                 return (200, {"Content-Type": f[1]}, f[0]) if f else _error(404, "No such file")
