@@ -242,6 +242,11 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         """The Machines tab's GPU history graphs (static/gpu_history.js)."""
         return FileResponse(HERE / "static" / "gpu_history.js", media_type="text/javascript", headers=FRESH)
 
+    @app.get("/catalog.js", include_in_schema=False)
+    def catalog_js():
+        """The Submit tab's pickers, Provider > Task > Workflow (static/catalog.js)."""
+        return FileResponse(HERE / "static" / "catalog.js", media_type="text/javascript", headers=FRESH)
+
     @app.get("/usage.js", include_in_schema=False)
     def usage_js():
         """The dashboard's Usage tab: jobs, GPU hours and failures (static/usage.js)."""

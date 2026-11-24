@@ -35,6 +35,12 @@
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
   .sechead { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   .sechead h2 { font-size: 13px; margin: 0; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; flex: 1; }
+  /* Submit's pickers, Provider > Task > Workflow (catalog.js); plain: the workflow list alone */
+  .pickers { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .pickers select { max-width: 100%; min-width: 0; }
+  #tab-submit { min-width: 0; }     /* a grid item: a long workflow name never widens the page */
+  .pickers .sep { color: var(--muted); }
+  .pickers.plain #provSelect, .pickers.plain #taskSelect, .pickers.plain .sep { display: none; }
   input, select, textarea, button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; }
   input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
   textarea { width: 100%; min-height: 54px; resize: vertical; }
@@ -283,7 +289,11 @@
   <section id="tab-submit">
     <div class="sechead">
       <h2>New job</h2>
-      <select id="wfSelect"></select>
+      <div class="pickers plain" id="catalogPickers">
+        <select id="provSelect" title="Provider: where the job runs"></select><span class="sep">›</span>
+        <select id="taskSelect" title="Task: what you want done"></select><span class="sep">›</span>
+        <select id="wfSelect" title="Workflow"></select>
+      </div>
     </div>
     <form id="form" autocomplete="off"></form>
   </section>
@@ -509,6 +519,7 @@
   <div id="pubBody"></div>
 </dialog>
 
+<script src="/catalog.js"></script>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -628,7 +639,7 @@ function applyDeepLink() {
   if (!d || !state.workflows.length) return;          // the workflows aren't loaded yet: boot() applies it
   pendingDeep = null;
   state.wantPublish = d.publish;                      // the form's publish part loads after it
-  if (d.workflow && state.workflows.some(w => w.name === d.workflow)) { $("#wfSelect").value = d.workflow; renderForm(); }
+  if (d.workflow && state.workflows.some(w => w.name === d.workflow)) { catalogShow(d.workflow); renderForm(); }
   else if (d.publish && $("#pubToggle")) { state.wantPublish = false; $("#pubToggle").checked = true; $("#pubBox").hidden = false; }
   const wf = state.workflows.find(w => w.name === $("#wfSelect").value), inputs = (wf?.params || []).filter(p => p.type === "sequence");
   const seqP = inputs.find(p => p.primary) || inputs[0], el = seqP && $("#p_" + seqP.name);
@@ -1531,6 +1542,7 @@ async function boot() {
     $("#templatesTab").hidden = !state.workflows.some(w => w.publish);   // publishing is on
     $("#wfSelect").innerHTML = state.workflows.map(w => `<option value="${esc(w.name)}">${esc(w.label)}</option>`).join("");
     $("#wfSelect").onchange = switchWorkflow;
+    await catalogInit();                      // catalog.js: Provider > Task > Workflow, else the list above
     renderForm();
     applyDeepLink();
     window.batchInit?.();                     // batch.js: its workflow list, the table kept from before
