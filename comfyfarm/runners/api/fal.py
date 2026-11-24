@@ -18,11 +18,14 @@ is followed again after a restart from its id alone. Results are public files on
 CDN, downloaded without the key.
 
 What the gateway uploads and what fal.ai makes for it are kept media_seconds (gateway.yaml),
-asked for with X-Fal-Object-Lifecycle-Preference on the upload and on the job.
+asked for with X-Fal-Object-Lifecycle-Preference on the upload and on the job. Each job is
+also sent with X-Fal-Store-IO: 0, so fal.ai keeps neither its inputs nor its outputs in the
+account's request history (unless keep_payloads), and x-app-fal-disable-fallback, so fal.ai
+never runs it on another endpoint than the reviewed definition's (decision 0062).
 
-Until phase 11's step 5 (after step 4's ledger and caps) the gateway sends nothing to fal.ai
-itself: REAL_SERVICE is off, and every address must be on this machine, a stand-in such as
-tools/mock_fal.py. Step 5 switches it on in a reviewed change."""
+The gateway sends jobs to fal.ai itself only with `live: true` for fal in gateway.yaml, which
+phase 11's step 5 brought (decision 0062): fal.ai charges for them. Otherwise every address
+must be on this machine, a stand-in such as tools/mock_fal.py, as in every test."""
 
 from __future__ import annotations
 
@@ -43,20 +46,24 @@ import httpx
 from . import ApiError
 
 QUEUE, REST, CDN, API = "https://queue.fal.run", "https://rest.fal.ai", "https://v3.fal.media", "https://api.fal.ai"
-REAL_SERVICE = False                    # phase 11's step 5 turns this on
 NEEDS = ("requests",)                   # the billing key is for the bill alone (decision 0061)
 BILL_PAGE = 1000                        # billing events a page; fal.ai gives up to 10,000
 BILL_PAGES = 200                        # pages a read, at most: a read never runs on forever
 LIFECYCLE = "X-Fal-Object-Lifecycle-Preference"
+LIFECYCLE_UPLOAD = "X-Fal-Object-Lifecycle"     # fal.ai's own clients send both with an upload
+STORE_IO = "X-Fal-Store-IO"                     # "0": the job's inputs and outputs aren't kept in its request history
+NO_FALLBACK = "x-app-fal-disable-fallback"      # "true": never run on another endpoint than the one asked
 CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
                  ".mp4": "video/mp4"}
 FORMATS = {"png": "png", "jpg": "jpeg", "jpeg": "jpeg", "webp": "webp"}    # writes.frames.ext -> output_format
 MAX_UPLOAD = 100 * 2**20                # fal.ai's own client sends bigger files in parts; the gateway doesn't
 MAX_DOWNLOAD = 2 * 2**30
 REQUEST_ID = re.compile(r"[A-Za-z0-9-]{1,100}")
-OFF = ("the farm doesn't send jobs to fal.ai itself yet: that comes with phase 11's step 5, after the ledger and "
-       "caps. Until then the gateway uses a stand-in on this machine: set providers.fal.url in gateway.yaml to it, "
-       "e.g. http://127.0.0.1:8189 (python tools/mock_fal.py --port 8189)")
+OFF = ("the gateway sends jobs to fal.ai itself only with providers.fal.live: true in gateway.yaml, and fal.ai "
+       "charges for them; until then it uses a stand-in on this machine: set providers.fal.url to it, e.g. "
+       "http://127.0.0.1:8189 (python tools/mock_fal.py --gateway gateway.yaml)")
+BOTH = ("providers.fal.url in gateway.yaml names a stand-in, and providers.fal.live: true sends jobs to fal.ai "
+        "itself: leave url empty to send them to fal.ai, or set live: false for the stand-in")
 
 
 def local(url: str) -> bool:
@@ -170,11 +177,14 @@ class Adapter:
     """fal.ai, as one gateway's keys reach it. The key is held here and sent in the
     Authorization header to fal.ai's queue and REST hosts: nothing it returns or logs holds it."""
 
-    def __init__(self, keys: dict, url: str = "", media_seconds: int = 3600, transport=None, timeout: float = 60.0):
+    def __init__(self, keys: dict, url: str = "", media_seconds: int = 3600, transport=None, timeout: float = 60.0,
+                 live: bool = False, keep_payloads: bool = False):
         self._key = str(keys.get("requests") or "")
         self._billing = str(keys.get("billing") or "")
         base = url.rstrip("/")
         self.stand_in = bool(base)
+        self.live = bool(live)                  # fal.ai itself, which charges (gateway.yaml, decision 0062)
+        self.keep_payloads = bool(keep_payloads)
         self.queue, self.rest, self.cdn, self.api = (base, base, base, base) if base else (QUEUE, REST, CDN, API)
         self.media_seconds = int(media_seconds)
         self._client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(timeout, connect=10.0),
@@ -186,7 +196,9 @@ class Adapter:
 
     def problems(self) -> list[str]:
         """Why it can't send anything. Its keys are the runner's to check (NEEDS)."""
-        return [] if REAL_SERVICE or (self.stand_in and local(self.queue)) else [OFF]
+        if self.live:
+            return [BOTH] if self.stand_in else []
+        return [] if self.stand_in and local(self.queue) else [OFF]
 
     def bill_problems(self) -> list[str]:
         """Why it can't read fal.ai's bill, beyond what stops it sending anything."""
@@ -196,11 +208,12 @@ class Adapter:
 
     # ---------------------------------------------------------------- calls
     def _may_send(self, url: str, to: str | None = None) -> bool:
-        """Whether a call may go to this address: `to` key (the requests key goes with it), cdn
-        (the upload token does) or None (nothing secret: a result's file)."""
+        """Whether a call may go to this address: `to` key (a key goes with it: fal.ai's queue,
+        REST and API hosts), cdn (the upload token, or a result's file: its CDN) or None."""
         parts = urlsplit(url)
-        if self.stand_in or not REAL_SERVICE:
-            return self.stand_in and local(url) and (to is None or parts.netloc == urlsplit(self.queue).netloc)
+        if self.stand_in or not self.live:
+            return self.stand_in and not self.live and local(url) and (
+                to is None or parts.netloc == urlsplit(self.queue).netloc)
         if parts.scheme != "https":
             return False
         if to == "key":
@@ -218,7 +231,8 @@ class Adapter:
 
     async def _call(self, method: str, url: str, auth: str | None = None, to: str | None = None, **kw):
         if not self._may_send(url, to):
-            why = OFF if not REAL_SERVICE else "it isn't one of fal.ai's addresses"
+            why = (BOTH if self.live and self.stand_in else OFF if not self.live
+                   else "it isn't one of fal.ai's addresses")
             raise ApiError(f"the gateway won't send anything to {urlsplit(url).netloc or url}: {why}")
         headers = dict(kw.pop("headers", None) or {})
         if auth:
@@ -255,6 +269,14 @@ class Adapter:
     def _lifecycle(self) -> str:
         return json.dumps({"expiration_duration_seconds": self.media_seconds})
 
+    def _job_headers(self) -> dict:
+        """Sent with each job (decision 0062): how long its files are kept, its inputs and outputs
+        out of the request history unless keep_payloads, and the reviewed endpoint only."""
+        h = {LIFECYCLE: self._lifecycle(), NO_FALLBACK: "true"}
+        if not self.keep_payloads:
+            h[STORE_IO] = "0"
+        return h
+
     @staticmethod
     def _json(r: httpx.Response, doing: str) -> dict:
         try:
@@ -271,7 +293,8 @@ class Adapter:
 
     # ---------------------------------------------------------------- inputs
     async def _cdn(self) -> tuple[str, str]:
-        """fal.ai's CDN token (asked with the key) and where to upload with it."""
+        """fal.ai's CDN token (asked with the key) and where to upload with it: the CDN's own
+        address, as fal.ai's Python client uploads (the token's base_url is checked to be the CDN's)."""
         if self._token and self._token[2] > time.time() + 60:
             return self._token[0], self._token[1]
         r = await self._call("POST", f"{self.rest}/storage/auth/token?storage_type=fal-cdn-v3", auth=self._keyed(),
@@ -285,7 +308,7 @@ class Adapter:
         base = base.rstrip("/")
         if not self._may_send(base, "cdn"):
             raise ApiError(f"fal.ai said to upload to {urlsplit(base).netloc or base}, which isn't its CDN")
-        self._token = (f"{kind} {token}", base, _until(d.get("expires_at")))
+        self._token = (f"{kind} {token}", self.cdn, _until(d.get("expires_at")))
         return self._token[0], self._token[1]
 
     async def upload(self, path: str, content_type: str) -> str:
@@ -295,7 +318,7 @@ class Adapter:
             raise ApiError(f"{name} is {size / 2**20:.0f} MB; the gateway uploads files of up to "
                            f"{MAX_UPLOAD // 2**20} MB")
         data = await asyncio.to_thread(Path(path).read_bytes)
-        headers = {"Content-Type": content_type, LIFECYCLE: self._lifecycle(),
+        headers = {"Content-Type": content_type, LIFECYCLE: self._lifecycle(), LIFECYCLE_UPLOAD: self._lifecycle(),
                    "X-Fal-File-Name": name.encode("ascii", "replace").decode("ascii")}
         for again in (True, False):
             auth, base = await self._cdn()
@@ -338,7 +361,7 @@ class Adapter:
         for attempt in range(3):
             try:
                 r = await self._call("POST", f"{self.queue}/{endpoint}", auth=self._keyed(), to="key", json=body,
-                                     headers={LIFECYCLE: self._lifecycle()})
+                                     headers=self._job_headers())
             except ApiError as e:
                 if e.kind == "transient" and attempt < 2:
                     await asyncio.sleep(2 ** attempt)
@@ -411,8 +434,9 @@ class Adapter:
             raw = base64.b64decode(data)
             await asyncio.to_thread(Path(dest).write_bytes, raw)
             return
-        if not self._may_send(url):
-            why = OFF if not REAL_SERVICE else "fal.ai's files are on https"
+        if not self._may_send(url, "cdn"):
+            why = (BOTH if self.live and self.stand_in else OFF if not self.live
+                   else "fal.ai's files are on its CDN, over https (*.fal.media)")
             raise ApiError(f"the gateway won't download from {urlsplit(url).netloc or url}: {why}")
         try:
             async with self._client.stream("GET", url) as r:
@@ -448,6 +472,25 @@ class Adapter:
                     continue
                 out[p["endpoint_id"]] = {"unit_price": float(price), "unit": str(p.get("unit") or ""),
                                          "currency": str(p.get("currency") or "")}
+        return out
+
+    async def ask(self, endpoints: list[str]) -> list[tuple[bool, str]]:
+        """Two questions fal.ai answers for free, for `agent --check` (decision 0062): its prices,
+        with the requests key, and the balance, with the billing key. (ok, what it said) each."""
+        out = []
+        try:
+            got = await self.prices(endpoints)
+            priced = ", ".join(f"{e} ${p['unit_price']:g} a {p['unit']}" for e, p in sorted(got.items()))
+            out.append((True, f"fal.ai took the requests key and gave its prices: {priced or 'none of them'}"))
+        except ApiError as e:
+            out.append((False, f"the requests key: {e}"))
+        if self._billing:
+            try:
+                b = await self.balance()
+                out.append((True, "fal.ai took the billing key: the account's balance is "
+                                  + (f"${b['amount']:,.2f}" if b else "not given")))
+            except ApiError as e:
+                out.append((False, f"the billing key: {e}"))
         return out
 
     # ---------------------------------------------------------------- the bill (decision 0061)

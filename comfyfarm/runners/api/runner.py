@@ -207,7 +207,8 @@ class ApiRunner:
                     probs.append(why)
                 else:
                     keys[k] = key
-            adapter = mod.Adapter(keys, url=pc.url, media_seconds=pc.media_seconds, transport=transport)
+            adapter = mod.Adapter(keys, url=pc.url, media_seconds=pc.media_seconds, transport=transport,
+                                  live=pc.live, keep_payloads=pc.keep_payloads)
             self.adapters[name] = adapter
             self.provider_problems[name] = probs + adapter.problems()
 

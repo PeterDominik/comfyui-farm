@@ -1,8 +1,9 @@
 # An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
 # gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
 #
-# Off until the manager's config.yaml lists fal in providers.enabled. Until phase 11's step 5
-# the gateway sends it only to a stand-in on its own machine (tools/mock_fal.py), so nothing
+# Off until the manager's config.yaml lists fal in providers.enabled. The gateway sends it to
+# fal.ai itself, which charges for it, only with providers.fal.live: true in gateway.yaml
+# (decision 0062); otherwise to a stand-in on its own machine (tools/mock_fal.py), so nothing
 # reaches fal.ai and nothing is paid for.
 
 id: nano_banana2_edit_fal
@@ -11,7 +12,8 @@ description: >
   Edits one image as the prompt says, with Google's Nano Banana 2 at fal.ai. A second image
   can be given as a reference (a look, an object, a person to put in). The result is a PNG
   numbered like the input frame. The image and the prompt leave Rodeo's network: they are
-  sent to fal.ai, which keeps them an hour.
+  sent to fal.ai, which keeps the images an hour, and neither the job nor its result in its
+  request history.
 tag: nanobanana                 # in the output file names: <source>.nanobanana_vNNN.<frame>.png
 task: image                     # in the menus: fal.ai > Image > Nano Banana 2 edit
 provider: fal                   # providers/fal.yaml: off-site, through the gateway
@@ -98,9 +100,12 @@ runner:
   upload: {input: image_urls, reference: image_urls}
   send: {prompt: prompt, resolution: resolution, aspect_ratio: aspect_ratio}
   # Never the artist's: one image a job, a PNG (writes.frames.ext), and nothing looked up on
-  # the web, so only what the farm sends goes into the job.
+  # the web, so only what the farm sends goes into the job. sync_mode: the result comes back
+  # in fal.ai's answer itself, so it is never a file on fal.ai's CDN, and isn't kept in the
+  # account's request history (decision 0062).
   fixed:
     num_images: 1
     output_format: png
     enable_web_search: false
     enable_image_search: false
+    sync_mode: true

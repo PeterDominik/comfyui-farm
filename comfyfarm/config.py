@@ -504,7 +504,13 @@ class GatewayProviderConfig(BaseModel):
     lanes: int | None = Field(None, ge=1)       # its jobs at once here; empty: providers/<name>.yaml's lanes
     keys: dict[str, str] = Field(default_factory=dict)  # each key providers/<name>.yaml names -> the file holding it
     url: str = ""                               # a stand-in for the provider (tools/mock_fal.py); empty: the provider
+    # Send jobs to the provider itself, which charges for them (decision 0062); off: only to a
+    # stand-in on this machine (url).
+    live: bool = False
     media_seconds: int = Field(3600, ge=60)     # how long the provider keeps what the gateway uploads and gets made
+    # Let the provider keep each job's inputs and outputs in the account's request history
+    # (fal.ai: 90 days); off: X-Fal-Store-IO: 0 with each job.
+    keep_payloads: bool = False
 
 
 class GatewayConfig(BaseModel):

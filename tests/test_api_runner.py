@@ -127,10 +127,8 @@ class FalAdapter(Tmp):
         kept = [c["lifecycle"] for c in self.mock.calls if c["path"] in ("/files/upload", "/fal-ai/nano-banana-2/edit")]
         self.assertEqual(kept, ['{"expiration_duration_seconds": 3600}'] * 2)
 
-    def test_nothing_reaches_fal_itself_before_step_5(self):
-        """REAL_SERVICE is switched on by phase 11's step 5, in a reviewed change that changes this test."""
-        self.assertFalse(F.REAL_SERVICE)
-
+    def test_nothing_reaches_fal_itself_unless_live(self):
+        """Only gateway.yaml's providers.fal.live: true sends jobs to fal.ai itself (decision 0062)."""
         async def go(a):
             try:
                 return await a.submit(EDIT, {"prompt": "x"})
@@ -140,8 +138,12 @@ class FalAdapter(Tmp):
             with self.subTest(url=url):
                 a = self.adapter(url=url)
                 self.assertEqual(a.problems(), [F.OFF])
-                with self.assertRaisesRegex(ApiError, "step 5"):
+                with self.assertRaisesRegex(ApiError, r"only with providers.fal.live: true in gateway.yaml"):
                     asyncio.run(go(a))
+        both = self.adapter(live=True)                           # live, and a stand-in named: neither
+        self.assertEqual(both.problems(), [F.BOTH])
+        with self.assertRaisesRegex(ApiError, "leave url empty to send them to fal.ai"):
+            asyncio.run(go(both))
         self.assertEqual(self.mock.calls, [])
         stand_in = self.adapter()
         self.assertEqual(stand_in.problems(), [])
@@ -209,6 +211,70 @@ class FalAdapter(Tmp):
         self.assertEqual(asyncio.run(go()), {EDIT: {"unit_price": 0.08, "unit": "image", "currency": "USD"}})
         self.assertEqual([(c["method"], c["path"], c["keyed"]) for c in self.mock.calls],
                          [("GET", "/v1/models/pricing", True)])
+
+    def live(self, **kw):
+        """fal.ai itself, as the gateway reaches it with live: true; its hosts answered here by
+        the stand-in, whose files are on fal.ai's CDN's address. Nothing leaves this process."""
+        self.mock = mock_fal.MockFal(KEY, F.CDN, billing_key="billing:key")
+        return self.adapter(url="", live=True, **kw)
+
+    def test_live_it_goes_to_fals_own_hosts_only(self):
+        async def go():
+            a = self.live()
+            self.assertEqual(a.problems(), [])
+            try:
+                url = await a.upload(self.image(), "image/png")
+                req = await a.submit(EDIT, {"prompt": "rain", "image_urls": [url], "sync_mode": True})
+                made = await a.result(req)
+                await a.download(a.outputs(made)[0], str(self.tmp / "inline.png"))
+                file = await a.submit(EDIT, {"prompt": "rain", "image_urls": [url]})
+                await a.download(a.outputs(await a.result(file))[0], str(self.tmp / "cdn.png"))
+                for wrong in ("https://example.com/x.png", "http://v3.fal.media/files/x.png"):
+                    with self.assertRaisesRegex(ApiError, "fal.ai's files are on its CDN, over https"):
+                        await a.download(wrong, str(self.tmp / "no.png"))
+                return await a.prices([EDIT])
+            finally:
+                await a.close()
+        self.assertEqual(asyncio.run(go())[EDIT]["unit_price"], 0.08)
+        self.assertEqual(png_size(self.tmp / "inline.png"), (1024, 1024))
+        hosts = [(c["method"], c["path"].split("/requests/")[0], c["host"], c["keyed"]) for c in self.mock.calls]
+        self.assertEqual(hosts[:3], [("POST", "/storage/auth/token", "rest.fal.ai", True),
+                                     ("POST", "/files/upload", "v3.fal.media", False),       # the CDN's token
+                                     ("POST", "/fal-ai/nano-banana-2/edit", "queue.fal.run", True)])
+        self.assertEqual({h for m, p, h, k in hosts if k}, {"rest.fal.ai", "queue.fal.run", "api.fal.ai"})
+        self.assertEqual({h for m, p, h, k in hosts if not k}, {"v3.fal.media"})             # never the key
+        sent = [c for c in self.mock.calls if c["path"] == "/fal-ai/nano-banana-2/edit"]
+        self.assertEqual([(c["store_io"], c["no_fallback"]) for c in sent], [("0", "true")] * 2)
+        upload = next(c for c in self.mock.calls if c["path"] == "/files/upload")
+        self.assertEqual(upload["lifecycle"], '{"expiration_duration_seconds": 3600}')
+
+    def test_keep_payloads(self):
+        async def go():
+            a = self.live(keep_payloads=True)
+            try:
+                await a.submit(EDIT, {"prompt": "rain", "image_urls": ["data:image/png;base64,AA=="]})
+            finally:
+                await a.close()
+        asyncio.run(go())
+        sent = [c for c in self.mock.calls if c["path"] == "/fal-ai/nano-banana-2/edit"]
+        self.assertEqual([(c["store_io"], c["no_fallback"]) for c in sent], [(None, "true")])
+
+    def test_two_free_questions(self):
+        """`agent --check` with live: the keys tried on fal.ai's prices and balance, never a job."""
+        async def go(keys):
+            a = self.live(keys=keys)
+            try:
+                return await a.ask([EDIT])
+            finally:
+                await a.close()
+        self.assertEqual(asyncio.run(go({"requests": KEY, "billing": "billing:key"})), [
+            (True, "fal.ai took the requests key and gave its prices: fal-ai/nano-banana-2/edit $0.08 a image"),
+            (True, "fal.ai took the billing key: the account's balance is $50.00")])
+        said = asyncio.run(go({"requests": "wrong", "billing": "wrong:too"}))
+        self.assertEqual([ok for ok, _ in said], [False, False])
+        self.assertIn("refused the gateway's key while reading its prices (401): check keys.requests", said[0][1])
+        self.assertIn("check keys.billing in gateway.yaml on the gateway (it needs fal.ai's BILLING", said[1][1])
+        self.assertFalse([c for c in self.mock.calls if c["path"].startswith("/fal-ai/")])     # no job
 
     def test_its_bill_and_balance(self):
         """fal.ai's billing events and balance, with the billing key (decision 0061): every page,
@@ -301,7 +367,7 @@ class WhatIsSent(Tmp):
         body = F.Adapter.body(wf.api, {"prompt": "rain", "resolution": "2K", "aspect_ratio": ""},
                               {"input": ["u1"], "reference": ["u2"]})
         self.assertEqual(body, {"num_images": 1, "output_format": "png", "enable_web_search": False,
-                                "enable_image_search": False, "prompt": "rain", "resolution": "2K",
+                                "enable_image_search": False, "sync_mode": True, "prompt": "rain", "resolution": "2K",
                                 "image_urls": ["u1", "u2"]})                 # the input first, an empty param left out
         one = F.Adapter.body({"upload": {"input": "image_url"}, "send": {}, "fixed": {}}, {}, {"input": ["u1"]})
         self.assertEqual(one, {"image_url": "u1"})
@@ -869,6 +935,29 @@ class TheGatewaysCheck(Tmp):
         # Without a billing key it sends jobs, and says the bill can't be read (decision 0061).
         self.assertIn("[ -- ] fal: there's no file for fal.ai's billing key (providers.fal.keys.billing in "
                       "gateway.yaml", out.getvalue())
+        self.assertNotIn("fal.ai took", out.getvalue())                    # the stand-in: nothing asked of fal.ai
+
+    def test_agent_check_with_live(self):
+        """With live: true the check asks fal.ai two free questions with the keys (decision 0062)."""
+        import contextlib
+        import io
+        from comfyfarm import cli
+        cfg = AgentConfig(name="gw", base_dir=str(self.tmp), gateway={"enabled": True, "account": "peter-pilot",
+                          "providers": {"fal": {"live": True, "keys": {"requests": str(self.key_file())}}}})
+        asked = []
+
+        async def ask(adapter, endpoints):
+            asked.append((adapter.live, endpoints))
+            return [(True, "fal.ai took the requests key and gave its prices: ..."), (False, "the billing key: no")]
+        out = io.StringIO()
+        with mock.patch.object(F.Adapter, "ask", ask), contextlib.redirect_stdout(out):
+            bad = cli.check_gateway(cfg)
+        self.assertEqual(asked, [(True, [EDIT])])
+        self.assertEqual(bad, 1, out.getvalue())
+        self.assertIn("[ ok ] fal: 2 lane(s), sent to the provider itself, its keys read (account peter-pilot)",
+                      out.getvalue())
+        self.assertIn("[ ok ] fal: fal.ai took the requests key and gave its prices: ...", out.getvalue())
+        self.assertIn("[FAIL] fal: the billing key: no", out.getvalue())
 
 
 if __name__ == "__main__":

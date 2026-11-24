@@ -206,6 +206,8 @@ def check_gateway(cfg) -> int:
             bill = getattr(r.adapters.get(name), "bill_problems", None)
             for p in r.bill_problems.get(name) or (bill() if bill else []):    # the bill's (0061): jobs still run
                 _line(" -- ", f"{name}: {p}")
+            if cfg.gateway.providers[name].live:        # the keys tried with free questions (decision 0062)
+                bad += _ask(r, name)
     said = {w for probs in r.provider_problems.values() for w in probs}     # each said once, above
     for name, v in sorted(r.processes().items()):
         probs = list(v["broken"]) + [p for p in v["problems"] if p not in said]
@@ -218,6 +220,26 @@ def check_gateway(cfg) -> int:
             _line(" -- ", f"API definition {name}: sent once its provider can take jobs (above)")
         else:
             _line(" ok ", f"API definition {name}: the gateway can send it")
+    return bad
+
+
+def _ask(r, name: str) -> int:
+    """A live provider's keys, tried with questions it answers for free: never a job."""
+    import asyncio
+    adapter = r.adapters.get(name)
+    if not hasattr(adapter, "ask"):
+        return 0
+    endpoints = sorted({wf.api["endpoint"] for wf in r._definitions().values() if wf.provider == name and wf.api})
+
+    async def go():
+        try:
+            return await adapter.ask(endpoints)
+        finally:
+            await adapter.close()
+    bad = 0
+    for ok, said in asyncio.run(go()):
+        bad += 0 if ok else 1
+        _line(" ok " if ok else "FAIL", f"{name}: {said}")
     return bad
 
 
