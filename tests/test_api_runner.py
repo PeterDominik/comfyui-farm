@@ -16,6 +16,7 @@ import shutil
 import struct
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -406,7 +407,9 @@ class TheGateway(Tmp):
         shutil.copy(PLATE, self.tmp / "shows" / "plate.png")
         # fal.ai is outside Rodeo: the farm's policy must allow it for the show (decision 0058).
         (self.tmp / "policy.yaml").write_text("version: 1\nproviders:\n  - {name: pilot-fal-on-rnd, shows: [rnd], "
-                                              "allow: [fal], reason: The pilot}\n", encoding="utf-8")
+                                              "allow: [fal], reason: The pilot}\nbudgets:\n  rules:\n  - {name: "
+                                              "pilot-rnd, shows: [rnd], cap: 50, reason: The pilot}\n",
+                                              encoding="utf-8")
         self.cfg = Config.model_validate({
             "database": f"{root}/farm.db", "workers": [], "workflows_dir": f"{root}/workflows",
             "convert": {"scratch_dir": f"{root}/scratch"}, "preview": {"enabled": False},
@@ -541,6 +544,9 @@ class TheGateway(Tmp):
                           "account": "test-pilot"})
         run = self.tmp / "api_runs" / j["prompt_id"]
         self.until(lambda: not run.exists(), "its run folder to go")          # a run that went well leaves nothing
+        spend = self.store.spend_of(jid)                                     # in the ledger (decision 0060)
+        self.assertEqual((spend["state"], spend["amount"], spend["request_id"], spend["account"], spend["reached"]),
+                         ("charged", 0.08, rid, "test-pilot", "yes"))
 
     def test_the_reference_goes_second(self):
         shutil.copy(PLATE, self.tmp / "shows" / "look.png")
@@ -562,6 +568,47 @@ class TheGateway(Tmp):
         self.assertEqual(self.ended(flagged, "failed")["error"],
                          "fal.ai finished, but fal.ai refused it: prompt: The content was flagged (fal.ai's content "
                          "check)")
+        # It reached fal.ai: charged at its estimate until fal.ai's bill says what it cost (decision 0060).
+        self.assertEqual([self.store.spend_of(j)["state"] for j in (failed, flagged)], ["charged", "charged"])
+
+    def test_what_it_says_was_sent(self):
+        """submitted(): what the manager's ledger is told reached the provider (decision 0060),
+        from the run folder after a restart."""
+        r = self.gateway().runner
+        run = self.tmp / "api_runs" / "p1"
+        run.mkdir(parents=True)
+        h = types.SimpleNamespace(job={}, pid="p1")
+        sent = {"provider": "fal", "account": "test-pilot", "endpoint": EDIT, "body": {"prompt": "rain"}}
+
+        def says(request=None, ended=None):
+            for name, data in (("request.json", request), ("exit.json", ended)):
+                if data is None:
+                    (run / name).unlink(missing_ok=True)
+                else:
+                    (run / name).write_text(json.dumps(data), encoding="utf-8")
+            return r.submitted(h)
+        self.assertIsNone(says())                                                   # nothing written: not sent
+        self.assertEqual(says({**sent, "state": "sending"}), {**sent, "request_id": None})    # stopped as it went
+        self.assertEqual(says({**sent, "state": "sending"}, {"reason": "unknown"}), {**sent, "request_id": None})
+        self.assertIsNone(says({**sent, "state": "sending"}, {"reason": "refused"}))          # it said no
+        self.assertEqual(says({**sent, "state": "sent", "request": {"id": "r9"}}), {**sent, "request_id": "r9"})
+        h.job["api_run"] = {**sent, "request_id": "r8"}
+        self.assertEqual(r.submitted(h)["request_id"], "r8")                        # as it was sent, in memory
+        self.assertIsNone(r.submitted(types.SimpleNamespace(job={}, pid=None)))
+
+    def test_a_job_that_never_left_the_gateway_costs_nothing(self):
+        """Its upload failed: the gateway's failed report says nothing was sent (no
+        `submitted`), and the ledger releases its money (decision 0060)."""
+        g = self.gateway()
+        self.transport.fail += [("POST", "/files/upload", httpx.ConnectError, False)] * 6
+        jid = self.submit()
+        self.beat(g)
+        self.assertIn("Uploading plate.png to fal.ai failed", self.ended(jid, "failed")["error"])
+        spend = self.store.spend_of(jid)
+        self.assertEqual((spend["state"], spend["reached"], spend["amount"]), ("released", "no", 0.0))
+        failed = [json.loads(m) for m in self.said if '"event": "failed"' in m][-1]
+        self.assertIsNone(failed["data"]["submitted"])
+        self.assertEqual(self.sent(), [])
 
     def test_cancelled_in_the_queue_and_while_running(self):
         g = self.gateway()
@@ -573,6 +620,7 @@ class TheGateway(Tmp):
         self.beat(g)
         self.ended(queued, "cancelled")
         self.assertEqual(next(iter(self.mock.requests.values()))["cancel"], "queue")
+        self.assertEqual(self.store.spend_of(queued)["state"], "charged")      # until fal.ai's bill says
         self.mock.paused = False
         running = self.submit("MOCK_SLOW")
         self.beat(g)
@@ -624,6 +672,15 @@ class TheGateway(Tmp):
                                          "whether fal.ai got it. It wasn't sent again, so it is never paid for "
                                          "twice"), error)
         self.assertEqual(len(self.sent()), 1)
+        # Its gateway said what it sent and the request's id when it was sent: whatever its run
+        # folder says since, the ledger charges it (decision 0060), and its API JSON keeps the id.
+        failed = [json.loads(m) for m in self.said if '"event": "failed"' in m][-1]
+        self.assertEqual((failed["data"]["submitted"]["endpoint"], failed["data"]["submitted"]["request_id"]),
+                         (EDIT, None))                                  # from the run folder, after the restart
+        spend = self.store.spend_of(jid)
+        rid = next(iter(self.mock.requests))
+        self.assertEqual((spend["state"], spend["reached"], spend["request_id"]), ("charged", "yes", rid))
+        self.assertEqual(self.farm.submitted(self.store.get(jid, with_prompt=True))["request_id"], rid)
 
     def test_an_answer_lost_on_the_way_back(self):
         g = self.gateway()
@@ -635,6 +692,9 @@ class TheGateway(Tmp):
                                          "127.0.0.1:8189 didn't answer in time), so it can't tell whether fal.ai got "
                                          "it. It wasn't sent again"), error)
         self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.store.spend_of(jid)["state"], "unsure")
+        run = self.tmp / "api_runs" / self.job(jid)["prompt_id"]
+        self.assertEqual(json.loads((run / "exit.json").read_text(encoding="utf-8"))["reason"], "unknown")
 
     def test_a_png_or_exr_only(self):
         (self.tmp / "shows" / "plate.tif").write_bytes(b"II*\x00" + b"\x00" * 64)

@@ -23,6 +23,9 @@ From a shell:
     python comfyfarm_client.py submit ltx25_alpha_gen input="/rdo/shows/.../x.%04d.png 1001-1158" --wait
     python comfyfarm_client.py submit ltx25_alpha_gen input="https://<site>/detail/Version/4865327"
                                        # a ShotGrid Version's frames (its movie when it has none)
+    python comfyfarm_client.py submit nano_banana2_edit_fal input=... prompt=... show=rnd --yes
+                                       # a job that costs money: --yes says yes to its estimate,
+                                       # asked for at the policy's budgets.confirm_above
     python comfyfarm_client.py status <job id>
     python comfyfarm_client.py list [--mine]
     python comfyfarm_client.py cancel <job id>
@@ -54,7 +57,12 @@ POSIX = os.name != "nt"
 
 
 class FarmError(Exception):
-    pass
+    """What the farm said is wrong. `confirm`: for a job that costs money, the estimate the
+    farm wants a yes to before it is queued (submit it again with confirm_cost=its amount)."""
+
+    def __init__(self, message: str, confirm: dict | None = None):
+        super().__init__(message)
+        self.confirm = confirm
 
 
 _url_override: str | None = None
@@ -129,10 +137,13 @@ def _request(method: str, path: str, body: dict | None = None, timeout: float = 
             return text if raw else json.loads(text or "{}")
     except urllib.error.HTTPError as e:
         try:
-            detail = json.loads(e.read().decode("utf-8")).get("detail")
+            said = json.loads(e.read().decode("utf-8"))
         except Exception:  # noqa: BLE001
-            detail = None
-        raise FarmError(detail if isinstance(detail, str) else f"HTTP {e.code}: {detail or e.reason}") from None
+            said = {}
+        detail = said.get("detail") if isinstance(said, dict) else None
+        confirm = said.get("confirm") if isinstance(said, dict) and isinstance(said.get("confirm"), dict) else None
+        raise FarmError(detail if isinstance(detail, str) else f"HTTP {e.code}: {detail or e.reason}",
+                        confirm) from None
     except urllib.error.URLError as e:
         raise FarmError(f"Can't reach the farm at {_base()}: {e.reason}") from None
 
@@ -194,13 +205,18 @@ def plan(workflow: str, params: dict, show: str | None = None, shot: str | None 
 
 
 def submit(workflow: str, params: dict, name: str | None = None, priority: int = 0,
-           show: str | None = None, shot: str | None = None, publish: dict | None = None) -> dict:
+           show: str | None = None, shot: str | None = None, publish: dict | None = None,
+           confirm_cost: float | None = None) -> dict:
     """Queue a job. Raises FarmError with a readable message if the input is unusable.
     publish: publish it when it's done, e.g. {} (the defaults) or {"step": "comp",
-    "template": "default", "description": "...", "dry_run": True}; see publish()."""
-    return _request("POST", "/api/v1/jobs", {"workflow": workflow, "params": params, "name": name,
-                                             "priority": priority, "show": show, "shot": shot,
-                                             "user": getpass.getuser(), "publish": publish})
+    "template": "default", "description": "...", "dry_run": True}; see publish().
+    confirm_cost: what the artist said yes to, for a job that costs money: one of the
+    policy's budgets.confirm_above or more raises FarmError with `confirm` without it."""
+    body = {"workflow": workflow, "params": params, "name": name, "priority": priority, "show": show, "shot": shot,
+            "user": getpass.getuser(), "publish": publish}
+    if confirm_cost is not None:
+        body["confirm_cost"] = confirm_cost
+    return _request("POST", "/api/v1/jobs", body)
 
 
 def get(job_id: str) -> dict:
@@ -220,9 +236,10 @@ def cancel(job_id: str) -> dict:
     return _request("DELETE", "/api/v1/jobs/" + urllib.parse.quote(job_id))
 
 
-def retry(job_id: str) -> dict:
-    """Run a finished job again, as a new job (a new version)."""
-    return _request("POST", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/retry")
+def retry(job_id: str, confirm_cost: float | None = None) -> dict:
+    """Run a finished job again, as a new job (a new version); confirm_cost as for submit()."""
+    q = "" if confirm_cost is None else "?" + urllib.parse.urlencode({"confirm_cost": confirm_cost})
+    return _request("POST", f"/api/v1/jobs/{urllib.parse.quote(job_id)}/retry{q}")
 
 
 def retry_failed(job_id: str) -> dict:
@@ -413,8 +430,16 @@ def main(argv: list[str]) -> int:
         elif cmd == "submit":
             wf, flags = args[0], [a for a in args[1:] if a.startswith("--")]
             params = dict(a.split("=", 1) for a in args[1:] if "=" in a and not a.startswith("--"))
+            show = params.pop("show", None)
             params = {k: (v if k == "input" else _parse_value(v)) for k, v in params.items()}
-            job = submit(wf, params, publish={} if "--publish" in flags else None)
+            try:
+                job = submit(wf, params, show=show, publish={} if "--publish" in flags else None)
+            except FarmError as e:
+                if not e.confirm or "--yes" not in flags:
+                    raise
+                print(f"{e.confirm.get('text')} Yes (--yes).", file=sys.stderr)
+                job = submit(wf, params, show=show, publish={} if "--publish" in flags else None,
+                             confirm_cost=e.confirm["amount"])
             print(describe(job))
             print(f"    output: {job['info'].get('output_dir_posix') or job['info'].get('output_dir')}")
             if "--wait" in flags:

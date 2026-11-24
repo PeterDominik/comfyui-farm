@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
+from . import ledger as L
 from .eta import fold, units
 
 log = logging.getLogger("comfyfarm")
@@ -179,6 +180,29 @@ CREATE TABLE IF NOT EXISTS alerts (            -- what the manager alerted about
     cleared_at REAL                           -- none while it holds
 );
 CREATE INDEX IF NOT EXISTS alerts_cleared ON alerts(cleared_at);
+CREATE TABLE IF NOT EXISTS spend (             -- what jobs at outside providers cost, by show; never swept (0060)
+    job_id TEXT PRIMARY KEY,
+    show TEXT NOT NULL,                       -- lower case: the cap is the show's (policy.yaml, budgets)
+    user TEXT NOT NULL,
+    provider TEXT NOT NULL,                   -- providers/<name>.yaml
+    account TEXT,                             -- the provider account it was sent on (gateway.yaml), once known
+    workflow TEXT NOT NULL,
+    fingerprint TEXT,                         -- its definition's, pinned at submit
+    endpoint TEXT,
+    quantity REAL, unit TEXT, unit_price REAL,
+    currency TEXT NOT NULL,                   -- USD, the only one
+    estimate REAL NOT NULL,                   -- US dollars, when it was planned (decision 0059)
+    amount REAL NOT NULL,                     -- what counts against the cap now: 0 once released
+    actual REAL,                              -- what the provider billed, once its bill is read
+    state TEXT NOT NULL,                      -- held, then charged, unsure or released (ledger.py)
+    request_id TEXT,                          -- the provider's, once it had it
+    reached TEXT,                             -- what its gateway said when it ended: yes, maybe, no
+    created_at REAL NOT NULL,
+    settled_at REAL,                          -- when its job ended
+    billed_at REAL
+);
+CREATE INDEX IF NOT EXISTS spend_show ON spend(show);
+CREATE INDEX IF NOT EXISTS spend_request ON spend(request_id);
 """
 
 # What a metrics row keeps of a job: who, what, where and how long, and never its params,
@@ -255,13 +279,32 @@ class JobStore:
                 job[k] = json.dumps(job[k])
         return job
 
-    def insert(self, job: dict) -> dict:
+    def insert(self, job: dict, spend: dict | None = None, check=None) -> dict:
+        """Queue a job. `spend`: its row in the ledger, for a job that costs money (decision
+        0060), and `check(spent)`, called with what its show has spent or holds already, which
+        raises to refuse it: the check, the job and the row are one transaction, so two
+        submits can't both take the last of a cap."""
         job = self._encoded(job)
         cols = ",".join(job)
         with self._lock:
-            self._db.execute(f"INSERT INTO jobs ({cols}) VALUES ({','.join('?' * len(job))})",
-                             tuple(job.values()))
-            self._submitted(job)
+            if spend is None:
+                self._db.execute(f"INSERT INTO jobs ({cols}) VALUES ({','.join('?' * len(job))})",
+                                 tuple(job.values()))
+                self._submitted(job)
+                return self.get(job["id"])
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                if check is not None:
+                    check(self._spent(spend["show"]))
+                self._db.execute(f"INSERT INTO jobs ({cols}) VALUES ({','.join('?' * len(job))})",
+                                 tuple(job.values()))
+                self._submitted(job)
+                self._db.execute(f"INSERT INTO spend ({','.join(spend)}) VALUES ({','.join('?' * len(spend))})",
+                                 tuple(spend.values()))
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
         return self.get(job["id"])
 
     def insert_many(self, jobs: list[dict]) -> None:
@@ -353,6 +396,7 @@ class JobStore:
             self._event(before["id"], event, status, worker, attempt, **detail)
             if status in FINISHED:
                 self._record_metrics(before["id"])
+                self._settle(before["id"], before["status"], status)
         elif fields.get("cancel_requested") and not before["cancel_requested"]:
             self._event(before["id"], "cancel_requested", status, worker, attempt)
         elif status in STAGE_EVENTS and fields.get("stage") is not None:
@@ -397,6 +441,56 @@ class JobStore:
             args.append(until)
         sql = "SELECT * FROM job_metrics" + (f" WHERE {' AND '.join(where)}" if where else "")
         return [dict(r) for r in self._q(sql + " ORDER BY finished_at, job_id LIMIT ?", (*args, limit))]
+
+    # ---------------------------------------------------------------- the ledger (0060)
+    # A job's row is settled here too, as it ends, in the same breath as the change.
+    def _settle(self, job_id: str, before: str, status: str) -> None:
+        row = self._db.execute("SELECT * FROM spend WHERE job_id=?", (job_id,)).fetchone()
+        if row is None or row["state"] != "held":
+            return
+        state = L.settled(dict(row), before, status)
+        self._db.execute("UPDATE spend SET state=?, amount=?, settled_at=? WHERE job_id=?",
+                         (state, 0.0 if state == "released" else row["amount"], now(), job_id))
+
+    def _spent(self, show: str) -> float:
+        r = self._db.execute("SELECT SUM(amount) FROM spend WHERE show=?", (show.lower(),)).fetchone()
+        return round(r[0] or 0.0, 6)
+
+    def spent(self, show: str) -> float:
+        """What `show`'s jobs have spent or hold at outside providers, in US dollars."""
+        with self._lock:
+            return self._spent(show)
+
+    def spend_of(self, job_id: str) -> dict | None:
+        r = self._q("SELECT * FROM spend WHERE job_id=?", (job_id,))
+        return dict(r[0]) if r else None
+
+    def spend_for(self, job_ids: list[str]) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        ids = list(job_ids)
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            for r in self._q(f"SELECT * FROM spend WHERE job_id IN ({','.join('?' * len(part))})", tuple(part)):
+                out[r["job_id"]] = dict(r)
+        return out
+
+    def spend_seen(self, job_id: str, **fields: Any) -> None:
+        """What its gateway said of a held row's request: request_id, account, reached."""
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if fields:
+            with self._lock:
+                self._db.execute(f"UPDATE spend SET {','.join(f'{k}=?' for k in fields)} WHERE job_id=? AND "
+                                 f"state='held'", (*fields.values(), job_id))
+
+    def spend_by_show(self) -> list[dict]:
+        """Each show's spending: {show, amount, held, charged, unsure, jobs}, the most first."""
+        return [dict(r) for r in self._q(
+            "SELECT show, ROUND(SUM(amount), 6) AS amount, "
+            "ROUND(SUM(CASE WHEN state='held' THEN amount ELSE 0 END), 6) AS held, "
+            "ROUND(SUM(CASE WHEN state='charged' THEN amount ELSE 0 END), 6) AS charged, "
+            "ROUND(SUM(CASE WHEN state='unsure' THEN amount ELSE 0 END), 6) AS unsure, "
+            "SUM(CASE WHEN state='released' THEN 0 ELSE 1 END) AS jobs "
+            "FROM spend GROUP BY show ORDER BY amount DESC, show")]
 
     # ---------------------------------------------------------------- GPU history (0049)
     def add_gpu_samples(self, rows: list[tuple]) -> None:

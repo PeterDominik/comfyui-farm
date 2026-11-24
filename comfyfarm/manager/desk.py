@@ -41,6 +41,7 @@ from ..fileio import wire as W
 from ..fileio.ocio import REPO
 from ..protocol import HELD, ON_WORKER, build, duration, now
 from . import eta as E
+from . import ledger as L
 from .alerts import Alerts
 from .evals import Evals
 from .farm import Farm
@@ -626,7 +627,8 @@ class Desk:
             j = self.store.get(jid)
             if not self._holds(j, a.name, h.get("attempt")):
                 drop.append({"job": jid, "attempt": h.get("attempt")})
-            elif j["cancel_requested"] and j["status"] in ON_WORKER and not h.get("cancelling"):
+            elif j["cancel_requested"] and j["status"] in ON_WORKER + ("preparing",) and not h.get("cancelling"):
+                # Preparing: a paid job, which its gateway cancels (Farm.cancel, decision 0060).
                 cancel.append({"job": jid, "attempt": h.get("attempt")})
         jobs = self._claim(a) if self.usable(a) else []       # drained: only the evals pinned to it
         out: dict = {"drop": drop, "cancel": cancel, "jobs": jobs}
@@ -971,9 +973,11 @@ class Desk:
                 j = self.store.transition(jid, (job["status"],), only_prompt=attempt, **fields, **lease)
                 F._emit(j)
             return {"ok": True, "status": job["status"]}
+        if L.paid(job) and ev in ("dispatched", "failed", "cancelled"):
+            self._reached(job, ev, d.get("submitted"))
         if ev == "dispatched":
             # `submitted` is what the runner handed its backend (for ComfyUI the API JSON): kept
-            # for a person to look at, as reported, and never read by the manager.
+            # for a person to look at, as reported, and read by the manager only for the ledger.
             told = d.get("submitted")
             j = self.store.transition(jid, ("preparing",), only_prompt=attempt, status="dispatched",
                                       dispatched_at=d.get("at") or now(), stage="waiting for GPU",
@@ -1021,6 +1025,22 @@ class Desk:
         self.wake()
         now_ = self.store.get(jid)
         return {"ok": j is not None, "status": now_["status"] if now_ else None}
+
+    def _reached(self, job: dict, ev: str, told) -> None:
+        """What a paid job's gateway says reached its provider (decision 0060), for the ledger:
+        `submitted` with the request's id (it had it), without one (it may have: the answer was
+        lost), or none on a failure or a cancel (nothing left the gateway)."""
+        told = told if isinstance(told, dict) else None
+        if (self.store.spend_of(job["id"]) or {}).get("request_id"):
+            return                      # its provider had it, as its gateway said when it was sent
+        if told is not None and ev != "dispatched":
+            self.store.update(job["id"], prompt=told)       # what may have been sent, for its API JSON
+        if told is not None:
+            rid = told.get("request_id")
+            self.store.spend_seen(job["id"], request_id=rid, account=told.get("account"),
+                                  reached="yes" if rid else "maybe")
+        elif ev != "dispatched":
+            self.store.spend_seen(job["id"], reached="no")
 
     # ================================================================ GPU history
     async def _gpu_loop(self) -> None:

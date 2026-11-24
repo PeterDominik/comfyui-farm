@@ -77,6 +77,13 @@ providers:
     shows: [xyz]
     allow: [fal]
     reason: The fal.ai pilot's show
+budgets:
+  confirm_above: 0.1
+  rules:
+    - name: xyz-pilot
+      shows: [xyz]
+      cap: 1
+      reason: The fal.ai pilot's budget
 """, encoding="utf-8")
         cls.port, cls.fal_port = free_port(), free_port()
         (cls.tmp / "config.yaml").write_text(f"""
@@ -220,6 +227,11 @@ gateway:
         self.assertIn("POST /fal-ai/nano-banana-2/edit -> 200", said)
         self.assertIn("GET /v1/models/pricing -> 200", said)               # its prices, read as it started
         self.assertIn(f"GET /fal-ai/nano-banana-2/requests/{ran['request_id']} -> 200", said)
+        # In the ledger (decision 0060): charged at its estimate, with the request fal.ai had.
+        self.assertEqual({k: j["spend"][k] for k in ("state", "amount", "request_id", "account", "show")},
+                         {"state": "charged", "amount": 0.08, "request_id": ran["request_id"], "account": "e2e",
+                          "show": "xyz"})
+        self.assertEqual(j["info"]["cost"]["budget"]["rule"], "xyz-pilot")
 
     def test_2_a_job_fal_refuses(self):
         job = farm.submit("nano_banana2_edit_fal", {"input": f"{SEQ} 1049", "prompt": "MOCK_FAIL"})
@@ -235,6 +247,23 @@ gateway:
         self.assertEqual(str(e.exception), "Show qqq isn't cleared to send work to fal.ai, outside Rodeo: no policy "
                                            "rule allows it. (Policy: providers.) Ask the CG supervisors if this is "
                                            "wrong.")
+
+    def test_2c_a_costly_job_waits_for_a_yes(self):
+        """budgets.confirm_above is $0.10 here: a 2K image ($0.12) is queued once it is said
+        yes to, over HTTP, with its estimate in the farm's answer (decision 0060)."""
+        params = {"input": f"{SEQ} 1049", "prompt": "rain", "resolution": "2K"}
+        with self.assertRaises(farm.FarmError) as e:
+            farm.submit("nano_banana2_edit_fal", params)
+        self.assertIn("a job of $0.10 or more is submitted once you say yes", str(e.exception))
+        self.assertEqual((e.exception.confirm["amount"], e.exception.confirm["confirm"]), (0.12, True))
+        job = farm.submit("nano_banana2_edit_fal", params, confirm_cost=e.exception.confirm["amount"])
+        self.assertEqual(job["spend"]["state"], "held")
+        j = self.wait_for(job["id"])
+        self.assertEqual((j["status"], j["spend"]["state"], j["spend"]["amount"]), ("done", "charged", 0.12))
+        spend = {s["show"]: s for s in farm._request("GET", "/api/v1/policy")["spend_now"]}["xyz"]
+        self.assertEqual((spend["cap"], spend["rule"]), (1, "xyz-pilot"))
+        self.assertGreaterEqual(spend["charged"], 0.2)
+        self.assertIn("function withYes", farm._request("GET", "/spend.js", raw=True))
 
     def test_3_on_the_machines_tab(self):
         w = {x["name"]: x for x in farm.workers()}[GATEWAY]

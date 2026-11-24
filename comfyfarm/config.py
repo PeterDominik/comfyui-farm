@@ -197,6 +197,7 @@ class AlertsConfig(BaseModel):
     failures_in_a_row: int = Field(3, ge=0)             # a machine's last this many jobs all failed
     sweep_problems: bool = True                         # the retention sweeper's latest report lists problems
     rollout_problems: bool = True                       # a rollout or a sync stopped, waiting for a person
+    budgets: bool = True                                # a show past its budget's warn_at, or at its cap (0060)
     # A Google Chat space's incoming webhook (Apps & integrations > Webhooks in the space):
     # https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=... It lets anyone
     # post to the space, so it stays in this file, which is never committed.

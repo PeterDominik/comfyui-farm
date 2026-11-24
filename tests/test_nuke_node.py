@@ -223,6 +223,12 @@ def make_nuke():
     n.toNode = to_node
     n.filename = lambda node: node["file"].value()
     n.message = n.messages.append
+    n.asked, n.answer = [], True
+
+    def ask(text):
+        n.asked.append(text)
+        return n.answer
+    n.ask = ask
     n.delete = lambda node: node.parent.children.remove(node)
     n.executeInMainThread = lambda fn, args=(): fn(*args)
 
@@ -252,13 +258,18 @@ def make_nuke():
 class FakeFarm:
     def __init__(self):
         self.submitted, self.published, self.cancelled, self.jobs, self.n = [], [], [], {}, 0
+        self.yes_needed = None
         self.workflow_list = [LAYOUT, CHORD]
         self.tree, self.catalog_shows = NODE_TREE, []
 
     def publish_options(self, name):
         return dict(PUB_OPTIONS, workflow=name)
 
-    def submit(self, workflow, params, name=None, priority=0, show=None, shot=None, publish=None):
+    def submit(self, workflow, params, name=None, priority=0, show=None, shot=None, publish=None,
+               confirm_cost=None):
+        if self.yes_needed and confirm_cost is None:     # it costs the policy's budgets.confirm_above or more
+            raise farm.FarmError("This job costs about $6.00 at fal.ai, and a job of $5.00 or more is submitted once "
+                                 "you say yes", self.yes_needed)
         self.n += 1
         jid = f"job{self.n:05d}-xxxx"
         job = {"id": jid, "short_id": jid[:8], "status": "queued", "workflow": workflow,
@@ -588,6 +599,23 @@ class TheNode(Base):
         node["cf_version"].setValue(0)                               # pick v001 again
         self.m.knob_changed(node, node["cf_version"])
         self.assertTrue(read["file"].value().endswith("render_v001.%04d.png"))
+
+    def test_a_costly_job_is_asked_about_first(self):
+        """A job of the policy's budgets.confirm_above or more (decision 0060): the farm answers
+        with its estimate, the artist is asked, and it is sent again with the yes."""
+        self.farm.yes_needed = {"amount": 6.0, "text": "About $6.00 at fal.ai.", "confirm": True}
+        plate = self.read("Plate", SEQ, 1001, 1010)
+        node = self.m.create_node(LAYOUT, connect={"input": plate})
+        node["p_prompt"].setValue("rain")
+        self.nuke.answer = False
+        self.m.submit(node)
+        self.assertEqual(self.nuke.asked, ["ComfyFarm: About $6.00 at fal.ai.\n\nSubmit it for about $6.00?"])
+        self.assertEqual(self.farm.submitted, [])
+        self.assertIn("Not submitted: it wasn't confirmed.", node["cf_note"].value())
+        self.nuke.answer = True
+        self.m.submit(node)
+        self.assertEqual(len(self.farm.submitted), 1)
+        self.assertEqual(self.tracked, ["job00001-xxxx"])
 
     def test_submit_refuses_what_the_farm_cant_read(self):
         blur = self.nuke.nodes.Blur()

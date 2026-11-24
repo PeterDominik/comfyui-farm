@@ -419,6 +419,14 @@
       <tbody id="policyProviders"></tbody></table>
   </section>
   <section>
+    <div class="sechead"><h2>Budgets</h2>
+      <span class="muted">What each show may spend at outside providers over its life: a job that doesn't fit in its
+        show's cap is refused before it is queued</span></div>
+    <div class="envhelp" id="policyBudgetDefaults"></div>
+    <table><thead><tr><th>Rule</th><th>Shows</th><th>Cap, each</th><th>Spent or held</th><th>Why</th></tr></thead>
+      <tbody id="policyBudgets"></tbody></table>
+  </section>
+  <section>
     <div class="sechead"><h2>Quotas</h2></div>
     <table><thead><tr><th>Rule</th><th>Shows</th><th>Limit</th><th>Queued or running now</th><th>Why</th></tr></thead>
       <tbody id="policyQuotas"></tbody></table>
@@ -528,6 +536,7 @@
 
 <script src="/catalog.js"></script>
 <script src="/gateway.js"></script>
+<script src="/spend.js"></script>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -553,7 +562,8 @@ function headers(json) {
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { ...headers(!!opts.body), ...(opts.headers || {}) } });
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail ? (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)) : r.statusText);
+  if (!r.ok) throw Object.assign(new Error(body.detail ? (typeof body.detail === "string" ? body.detail
+                                         : JSON.stringify(body.detail)) : r.statusText), { body });
   return body;
 }
 
@@ -863,7 +873,9 @@ function renderForm() {
     try {
       const body = { workflow: wf.name, params, name: $("#jobname").value.trim() || null };
       if ($("#pubToggle")?.checked) body.publish = publishValues("sp_");   // checked with the job
-      const job = await api("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) });
+      // A job of the policy's budgets.confirm_above or more is queued once you say yes (decision 0060).
+      const job = await withYes(yes => api("/api/v1/jobs", { method: "POST", body: JSON.stringify(
+        yes == null ? body : { ...body, confirm_cost: yes }) }), confirm);
       upsert(job); state.open.add(job.id); render();
       const pub = job.info.publish_request;
       msg.className = "msg ok";
@@ -936,7 +948,9 @@ async function updateDest(wf, seqP, outP) {
       }).join("")
       + Object.entries(r.sources || {}).map(([name, s]) =>
         `<br>${esc(wf.params.find(p => p.name === name)?.label || name)}: ${versionText(s)}`).join("")
-      + (r.cost ? `<br><b>Cost</b> ${esc(r.cost.text)}` : "")     // at an outside provider (decision 0059)
+      // At an outside provider: the estimate (decision 0059), and what its show's cap has left (0060).
+      + (r.cost ? `<br><b>Cost</b> ${esc(r.cost.text)}${r.cost.budget ? " " + esc(r.cost.budget.text) : ""}`
+                  + (r.cost.confirm ? ` <span class="warn">You are asked to confirm it when you submit.</span>` : "") : "")
       + etaLine(r.eta)
       + (r.notes || []).map(n => `<br><span class="warn">${esc(n)}</span>`).join("")
       + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, ${r.sources?.[seqP?.name] ? "from the ShotGrid Version" : "read from the input path"}.` : "")
@@ -1044,6 +1058,7 @@ function detail(j) {
     ${pathRow("Output (Windows)", windows)}
     ${publishRows(j)}
     ${j.params?.positive_prompt ? `<div>Prompt</div><div>${esc(j.params.positive_prompt)}</div>` : ""}
+    ${i.cost ? `<div>Cost</div><div>${esc(spendLine(j))}</div>` : ""}
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
     ${j.error ? `<div>Error</div><div class="err">${esc(j.error)}</div>` : ""}
     ${i.traceback ? `<div></div><div><details><summary>traceback</summary><pre>${esc(i.traceback)}</pre></details></div>` : ""}
@@ -1074,7 +1089,7 @@ function render() {
     return `<tr class="row" data-id="${j.id}">
       <td class="mono">${esc(j.short_id)}</td>
       <td>${esc(j.name)}${j.info?.version ? ` <span class="muted">v${String(j.info.version).padStart(3, "0")}</span>` : ""}${j.kind === "set" ? ` <span class="muted">· ${j.info?.set?.batches} batches</span>` : ""}</td>
-      <td class="wfcell" title="${esc(j.workflow)}">${esc(wfLabel(j.workflow))}</td>
+      <td class="wfcell" title="${esc(j.workflow)}">${esc(wfLabel(j.workflow))}${j.info?.cost ? ` <span class="muted" title="${esc(spendLine(j))}">· ${esc(spendShort(j))}</span>` : ""}</td>
       <td class="wfcell">${j.kind === "set" ? "per batch" : j.worker ? esc(j.worker)
         : j.next_worker ? `<span class="muted" title="Expected to take it, from the queue and past run times">→ ${esc(j.next_worker)}</span>` : ""}</td>
       <td>${esc(j.user)}</td>
@@ -1108,7 +1123,11 @@ $("#jobs").addEventListener("click", async e => {
   try {
     if (t.dataset.copy) { if (await copyText(t.dataset.copy)) { t.textContent = "copied"; setTimeout(() => t.textContent = "copy", 1200); } return; }
     if (t.dataset.cancel) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.cancel}`, { method: "DELETE" })); render(); return; }
-    if (t.dataset.retry) { const j = await api(`/api/v1/jobs/${t.dataset.retry}/retry`, { method: "POST" }); upsert(j); state.open.add(j.id); render(); return; }
+    if (t.dataset.retry) {
+      const j = await withYes(yes => api(`/api/v1/jobs/${t.dataset.retry}/retry${yes == null ? "" : "?confirm_cost=" + yes}`,
+                                         { method: "POST" }), confirm);
+      upsert(j); state.open.add(j.id); render(); return;
+    }
     if (t.dataset.retryfailed) { t.disabled = true; upsert(await api(`/api/v1/jobs/${t.dataset.retryfailed}/retry-failed`, { method: "POST" })); await loadBatches(t.dataset.retryfailed); return; }
     if (t.dataset.publish) { await openPublish(state.jobs.get(t.dataset.publish)); return; }
     if (t.dataset.publog) { await openPublishLog(t.dataset.publog); return; }

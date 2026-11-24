@@ -162,7 +162,8 @@ class WhenPlanned(Manager):
 
     def test_the_dashboard_shows_it(self):
         html = (REPO / "comfyfarm/manager/static/index.html").read_text(encoding="utf-8")
-        self.assertIn("(r.cost ? `<br><b>Cost</b> ${esc(r.cost.text)}` : \"\")", html)
+        self.assertIn("(r.cost ? `<br><b>Cost</b> ${esc(r.cost.text)}${r.cost.budget ? \" \" + esc(r.cost.budget.text) "
+                      ": \"\"}`", html)       # with what its show's cap has left (decision 0060)
 
 
 if __name__ == "__main__":

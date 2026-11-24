@@ -766,9 +766,19 @@ def submit(node) -> None:
     full = node.fullName()
     _note(node, "Submitting…")
 
-    def done(job, error):
+    def done(job, error, yes=None):
         n = _by_name(full)
         if n is None:
+            return
+        confirm = getattr(error, "confirm", None)
+        if confirm and yes is None:
+            # It costs the policy's budgets.confirm_above or more: asked, then sent again (decision 0060).
+            if not nuke.ask("ComfyFarm: " + PanelModel.yes_question(confirm)):
+                _note(n, "Not submitted: it wasn't confirmed.", True)
+                return
+            _in_background(lambda: model.submit(wf["name"], raw, name=name, publish=publish,
+                                                confirm_cost=confirm["amount"]),
+                           lambda j, err: done(j, err, confirm["amount"]))
             return
         if error:
             _note(n, str(error), True)

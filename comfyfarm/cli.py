@@ -625,6 +625,17 @@ def run_policy_check(cfg: Config, file: str | None) -> int:
             allowed = [shows(r) for r in pf.providers if name in (r.allow or [])]
             print(f"         {p.label} ({name}) is outside Rodeo: " + (f"allowed on {'; '.join(allowed)} only"
                                                                         if allowed else "no show may use it"))
+    from .manager.prices import money
+    b = pf.budgets
+    if b is None:
+        print("         no budgets: section: no show may spend money at outside providers")
+    else:                               # each show's cap at outside providers, for its life (decision 0060)
+        for r in b.rules:
+            print(f"         {r.name}: {shows(r)} may spend {money(r.cap)} each at outside providers, over the show's "
+                  f"life (an alert at {round((r.warn_at or b.warn_at) * 100)}%): {r.reason}")
+        yes = (f"a job of {money(b.confirm_above)} or more needs a yes" if b.confirm_above is not None
+               else "no yes asked")
+        print(f"         shows no budgets rule names may spend {money(b.other_shows)}; {yes}")
     for r in pf.quotas:
         most = " and ".join(x for x in (f"{r.max_jobs} job(s)" if r.max_jobs else "",
                                         f"{r.max_frames} frame(s)" if r.max_frames else "") if x)

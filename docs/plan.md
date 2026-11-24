@@ -402,3 +402,15 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - the gateway reads fal.ai's prices from its pricing API, daily;
   - each job is estimated when it is planned, shown in the preview and kept with the job;
   - a move of more than 10% is noted, and another unit or currency refused.
+  Peter updated and tested it on the pilot on 24 November.
+
+  The second carries the gate (0060):
+  - `budgets:` in `policy.yaml`: a cap per show for its life, `other_shows`, `confirm_above`
+    and `warn_at`. Without it no show may spend;
+  - the `spend` table, never swept. A paid job's estimate is checked against its show's cap
+    at plan and again as it is queued, in the job's own transaction;
+  - when the job ends its money is charged, released or unsure, from what the gateway says
+    reached fal.ai. The ledger never guesses down;
+  - a paid job is never queued again, and a cancel while it is prepared goes to the gateway;
+  - a yes at `confirm_above`, asked by the dashboard, the Nuke panel and node, and the client;
+  - each job's money on the Queue tab, the budgets on the Policy tab, and a `budgets` alert.

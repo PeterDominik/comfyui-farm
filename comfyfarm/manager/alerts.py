@@ -10,6 +10,8 @@ The rules, each off at 0 (or false) in config.yaml's alerts:
 - sweep_problems: the retention sweeper's latest report lists problems (0041).
 - rollout_problems: a rollout stopped at a machine (0031), or a sync stopped at a machine it
   left drained (0033): each waits for a person.
+- budgets: a show that has spent or holds its budget's warn_at of its cap at outside
+  providers, or all of it (policy.yaml's budgets, decision 0060).
 
 An alert is raised once, when its condition starts, and cleared when it ends; while it holds,
 its message follows what it is about (how many jobs wait). Both are logged, kept in the
@@ -30,6 +32,7 @@ from datetime import datetime
 
 from ..protocol import now
 from . import share
+from .prices import money
 
 log = logging.getLogger("comfyfarm")
 
@@ -37,7 +40,7 @@ __all__ = ["Alerts", "post_google_chat", "KINDS"]
 
 # Each rule's name on the dashboard.
 KINDS = {"machine_silent": "Machine silent", "job_waiting": "Jobs waiting", "failures": "Failures in a row",
-         "sweep": "Sweep problems", "rollout": "Rollout stopped", "sync": "Sync stopped"}
+         "sweep": "Sweep problems", "rollout": "Rollout stopped", "sync": "Sync stopped", "budget": "Budget"}
 
 
 def _when(t: float) -> str:
@@ -144,6 +147,18 @@ class Alerts:
                     out[f"sync:{s['id']}"] = ("sync", m, (
                         f"The {s.get('runner') or 'runner'} sync stopped at {m}: {s.get('error')}. {m} stays "
                         f"drained: look at it, then resume it on the Machines tab."))
+        if c.budgets:
+            for s in self.farm.spend_now():
+                cap, warn = s["cap"], s["warn_at"]
+                if not cap or not warn or s["amount"] < warn * cap - 1e-9:
+                    continue
+                rule = f"policy rule {s['rule']}" if s["rule"] else "policy: budgets.other_shows"
+                spent = f"{money(s['amount'])} of its {money(cap)} cap at outside providers ({rule})"
+                out[f"budget:{s['show']}"] = ("budget", s["show"], (
+                    f"Show {s['show']} has spent or holds {spent}: its jobs there are refused until the cap is raised "
+                    f"in policy.yaml (budgets)." if s["amount"] >= cap - 1e-9 else
+                    f"Show {s['show']} has spent or holds {spent}, {s['amount'] / cap:.0%}: raise the cap in "
+                    f"policy.yaml (budgets) before it runs out, if it should go on."))
         return out
 
     # ---------------------------------------------------------------- raising, clearing
@@ -205,7 +220,8 @@ class Alerts:
         out = {"enabled": c.enabled, "check_seconds": c.check_seconds, "checked_at": self.checked_at,
                "rules": {"machine_silent_minutes": c.machine_silent_minutes,
                          "job_waiting_minutes": c.job_waiting_minutes, "failures_in_a_row": c.failures_in_a_row,
-                         "sweep_problems": c.sweep_problems, "rollout_problems": c.rollout_problems},
+                         "sweep_problems": c.sweep_problems, "rollout_problems": c.rollout_problems,
+                         "budgets": c.budgets},
                "google_chat": bool(c.google_chat), "posted_at": self.posted_at, "post_error": self.post_error,
                "kinds": KINDS, "active": [], "cleared": []}
         if c.enabled:

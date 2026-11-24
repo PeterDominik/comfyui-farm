@@ -57,6 +57,10 @@ LOST_ANSWER = ("The gateway lost {provider}'s answer while sending the job ({why
 RESTARTED = "The gateway stopped while sending the job to {provider}, so it can't tell whether {provider} got it. "
 
 
+class MaybeSent(RunRejected):
+    """The provider's answer was lost as the job was sent: it may have it (never sent again)."""
+
+
 class ApiRegistry(DefinitionRegistry):
     """The API definitions in a folder: the gateway's."""
     RUNNER = "api"
@@ -325,8 +329,20 @@ class ApiRunner:
         return self.runs_dir / pid
 
     def submitted(self, h) -> dict | None:
-        """What the run sent: the provider, its endpoint, the request's id and the body."""
-        return h.job.get("api_run")
+        """What the run sent: the provider, its account and endpoint, the body and the
+        request's id; the id None when the provider may have it but didn't say (decision 0060).
+        None when nothing left the gateway: not sent yet, or the provider said no. After a
+        restart, from the run folder."""
+        if h.job.get("api_run"):
+            return h.job["api_run"]
+        run = self._folder(h.pid) if h.pid else None
+        r = _read_json(run / "request.json") if run else None
+        if not r or r.get("state") not in ("sending", "sent"):
+            return None
+        if r["state"] == "sending" and (_read_json(run / "exit.json") or {}).get("reason") == "refused":
+            return None                 # it answered: not taken
+        req = r.get("request") if r["state"] == "sent" and isinstance(r.get("request"), dict) else {}
+        return {**{k: r.get(k) for k in ("provider", "account", "endpoint", "body")}, "request_id": req.get("id")}
 
     # ================================================================ a run
     async def submit(self, h) -> None:
@@ -359,7 +375,8 @@ class ApiRunner:
         try:
             await self._upload_and_send(h, wf, adapter, provider, values, files, run)
         except RunRejected as e:
-            await asyncio.to_thread(self._ended, h.attempt, {"reason": "refused", "error": str(e)})
+            await asyncio.to_thread(self._ended, h.attempt, {"reason": "unknown" if isinstance(e, MaybeSent)
+                                                             else "refused", "error": str(e)})
             raise
 
     async def _upload_and_send(self, h, wf, adapter, provider: str, values: dict, files: dict, run: Path) -> None:
@@ -428,8 +445,8 @@ class ApiRunner:
             raise
         except ApiError as e:
             if e.kind == "unknown":
-                raise RunRejected(LOST_ANSWER.format(provider=label, why=e)
-                                  + NOT_SENT_AGAIN.format(provider=label)) from None
+                raise MaybeSent(LOST_ANSWER.format(provider=label, why=e)
+                                + NOT_SENT_AGAIN.format(provider=label)) from None
             raise RunRejected(f"{label} didn't take the job: {e}") from None
 
     async def _cancel_when_sent(self, t: asyncio.Task, adapter, pid: str) -> None:

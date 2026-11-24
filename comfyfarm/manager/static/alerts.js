@@ -32,7 +32,9 @@ function alertsRules(r) {
     r.job_waiting_minutes ? `jobs have waited for a machine for ${r.job_waiting_minutes} min` : "",
     r.failures_in_a_row ? `a machine's last ${r.failures_in_a_row} jobs all failed` : "",
     r.sweep_problems ? "the retention sweeper's latest report lists problems" : "",
-    r.rollout_problems ? "a rollout or a ComfyUI sync has stopped, waiting for a person" : ""].filter(Boolean);
+    r.rollout_problems ? "a rollout or a ComfyUI sync has stopped, waiting for a person" : "",
+    r.budgets ? "a show has spent its budget's warn_at of its cap at outside providers, or all of it" : ""]
+    .filter(Boolean);
 }
 
 // What the top of the tab says, if anything: alerts off, or Google Chat not reached.

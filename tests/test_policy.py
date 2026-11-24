@@ -61,6 +61,9 @@ class TheFile(unittest.TestCase):
         self.assertEqual([(r.name, r.shows, r.allow, r.deny) for r in pf.providers],
                          [("pilot-fal-on-rnd", ["rnd"], ["fal"], None),
                           ("example-no-python", ["exmpl2604"], None, ["python-local"])])
+        b = pf.budgets                  # the pilot's (decision 0060)
+        self.assertEqual((b.other_shows, b.confirm_above, b.warn_at), (0, 5, 0.8))
+        self.assertEqual([(r.name, r.shows, r.cap) for r in b.rules], [("pilot-rnd", ["rnd"], 50)])
 
     def test_what_is_wrong_is_said(self):
         for text, says in (
@@ -555,12 +558,19 @@ class Check(unittest.TestCase):
             config = Path(d, "config.yaml")
             config.write_text(f"workers: []\nworkflows_dir: {(REPO / 'workflows').as_posix()}\n", encoding="utf-8")
             offsite = Path(d, "offsite.yaml")
-            offsite.write_text(OFFSITE, encoding="utf-8")
+            budgets = ("\nbudgets:\n  rules:\n    - {name: pilot-rnd, shows: [rnd], cap: 50, "
+                       "reason: Peter's fal.ai pilot}\n")
+            offsite.write_text(OFFSITE.rstrip() + budgets, encoding="utf-8")
             for f, code, says in ((good, 0, "guem-no-ai: guem2609 denies everything: The client's contract"),
                                   (good, 0, "fal.ai (fal) is outside Rodeo: no show may use it"),
                                   (offsite, 0, "pilot-fal-on-rnd: rnd* (not rndsecret) may send work to fal: The "
                                                "fal.ai pilot"),
                                   (offsite, 0, "fal.ai (fal) is outside Rodeo: allowed on rnd* (not rndsecret) only"),
+                                  (offsite, 0, "pilot-rnd: rnd may spend $50.00 each at outside providers, over the "
+                                               "show's life (an alert at 80%): Peter's fal.ai pilot"),
+                                  (offsite, 0, "shows no budgets rule names may spend $0.00; a job of $5.00 or more "
+                                               "needs a yes"),
+                                  (good, 0, "no budgets: section: no show may spend money at outside providers"),
                                   (bad, 1, "[FAIL]"), (bad, 1, "rule unlp-no-wan names wan22_i2v")):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):

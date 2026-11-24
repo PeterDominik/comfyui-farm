@@ -107,13 +107,13 @@ class PolicyTab(unittest.TestCase):
         parser = Panels("tab-policy")
         parser.feed(html)
         self.assertEqual([(p["h2"], p["tables"]) for p in parser.panels], [
-            ("Policy", 0), ("Show rules", 1), ("Licence rules", 1), ("Provider rules", 1), ("Quotas", 1),
-            ("Models and licences", 1)])
+            ("Policy", 0), ("Show rules", 1), ("Licence rules", 1), ("Provider rules", 1), ("Budgets", 1),
+            ("Quotas", 1), ("Models and licences", 1)])
         self.assertIn('<button data-tab="policy" id="policyTab" hidden>Policy</button>', html)
         self.assertIn('<script src="/policy.js"></script>', html)
         script = SCRIPT.read_text(encoding="utf-8")
         for el in ("policyTab", "policyBanner", "policyNote", "policyDefaults", "policyShows", "policyLicences",
-                   "policyProviders", "policyQuotas", "policyModels"):
+                   "policyProviders", "policyBudgetDefaults", "policyBudgets", "policyQuotas", "policyModels"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"#{el}"', script)
 
