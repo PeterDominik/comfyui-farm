@@ -83,6 +83,16 @@ flag.
     broken file never empties a menu.
   - **The shared client** has `catalog(show, hidden)`, and
     `python comfyfarm_client.py catalog show=bri3` prints the menus.
+- **The dashboard's Submit tab picks Provider › Task › Workflow** (step 1's third pull
+  request, `static/catalog.js`).
+  - It asks for the hidden ones too and marks them, since the dashboard runs the GPU test.
+  - No show is picked there: the show comes from the input path, so a refusal is said when
+    the job is planned, as before.
+  - The form is still built from `GET /api/v1/workflows`, and the workflow picker is the
+    one it always was.
+  - If the catalogue can't be read, or doesn't place every workflow, the picker keeps the
+    plain list of every workflow, so none is ever out of reach.
+  - Batch Submit keeps its plain list.
 
 ## Consequences
 

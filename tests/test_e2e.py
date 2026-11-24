@@ -794,6 +794,7 @@ convert:
         self.assertEqual((gpu["label"], [w["name"] for w in gpu["workflows"]], gpu["workflows"][0]["hidden"]),
                          ("Tests", ["gpu_test"], True))
         self.assertIn("    GPU test (process runner)  [gpu_test]  (hidden)", farm.menu_lines(everything))
+        self.assertIn("function catalogPick", farm._request("GET", "/catalog.js", raw=True))   # the Submit pickers
 
     def test_0500_environment(self):
         """Each worker's ComfyUI environment reaches the dashboard. In standalone the agent

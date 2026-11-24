@@ -730,9 +730,12 @@ To try a cancel or the time limit, give it *Seconds per frame*.
 
 **Dashboard:** the address in `manager.json` (e.g. `http://wrk1125l.rodeofx.com:9090`). Its tabs:
 
-- **Submit:** pick the workflow, fill in the form, check the destination line, submit. An input
+- **Submit:** pick the provider, the task and the workflow (ComfyUI Local › Masking › SAM3; see
+  *Menus: providers and tasks*), fill in the form, check the destination line, submit. The
+  farm's hidden workflows (its GPU test) are listed too, marked "hidden from artists". An input
   takes a path or a ShotGrid Version link (see *ShotGrid Version links*). A link to
-  `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in.
+  `/#submit?workflow=<name>&input=<path or Version link>` opens the form filled in, its provider
+  and task picked.
 - **Batch Submit:** many jobs from one table, e.g. one per Version of a ShotGrid playlist, or
   of a ShotGrid query (the latest `mp01` plates of a sequence; see *Batch Submit*).
 - **From ShotGrid:** `/#shotgrid` opens the ComfyFarm button for the bookmarks bar, and how to
