@@ -47,11 +47,20 @@ CATALOGUE_KEYS = ("task", "provider", "family", "hidden")
 EVAL_KEYS = ("inputs", "params", "checks")
 CHECKS = ("files", "size", "like")
 JOB_CLASSES = ("interactive", "batch")
-TARGETS = ("pool", "tractor")
-RUNNER_TYPES = ("comfyui", "process")
+# Where a definition's jobs go: the farm's GPU machines, Tractor, or the gateway agent that
+# sends API jobs to an outside provider (decision 0055).
+TARGETS = ("pool", "tractor", "gateway")
+RUNNER_TYPES = ("comfyui", "process", "api")
 # A process runner's block (runners/process.py, decision 0025): the environment the command
 # runs in (environments/<name>) and the command. Nothing else: it has no graph and no nodes.
 PROCESS_KEYS = ("environment", "command")
+# An API runner's block (decision 0055): the provider's endpoint, which input params are
+# uploaded as which of its fields, which other params are sent as which fields, and fields
+# sent as they are, which no artist sets. The provider and its adapter are the definition's
+# `provider:` (providers/<name>.yaml).
+API_KEYS = ("endpoint", "upload", "send", "fixed")
+API_ENDPOINT = re.compile(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+")
+API_FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 # What a definition writes (the head's `writes:`, docs/decisions/0019) and which nodes write
 # it (the runner block's `outputs:` and `textures:`). A manifest's outputs and textures
 # sections hold both halves. Other kinds of output take the generic route (decision 0036):
@@ -158,28 +167,34 @@ def _writes_to_manifest(writes: dict, runner: dict) -> tuple[dict | None, dict |
     return outputs or None, textures, preview, kinds
 
 
-def _process_block(p: dict, runner: dict) -> dict:
-    """A process runner's definition as a manifest-like dict: the head as for any runner, its
-    writes as `outputs` (frames only), and its block under `process`."""
+def _block_keys(runner: dict, what: str, keys: tuple, example: str) -> None:
+    """A process or API runner's block: no ComfyUI wiring, its own keys only, all of them."""
     comfy = sorted(k for k in runner if k in ("params", *RUNNER_SECTIONS))
     if comfy:
-        raise ValueError(f"runner.{comfy[0]}: is ComfyUI wiring; a process runner takes {' and '.join(PROCESS_KEYS)}")
-    unknown = sorted(set(runner) - {"type", *PROCESS_KEYS})
+        raise ValueError(f"runner.{comfy[0]}: is ComfyUI wiring; {what} takes {' and '.join(keys)}")
+    unknown = sorted(set(runner) - {"type", *keys})
     if unknown:
-        raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)} (a process runner takes "
-                         f"{' and '.join(PROCESS_KEYS)})")
-    missing = [k for k in PROCESS_KEYS if k not in runner]
+        raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)} ({what} takes {' and '.join(keys)})")
+    missing = [k for k in keys if k not in runner]
     if missing:
-        raise ValueError(f"runner: a process runner needs {' and '.join(missing)} (runner: {{type: process, "
-                         f"environment: gpu-test, command: [python, \"{{definition}}/run.py\"]}})")
+        raise ValueError(f"runner: {what} needs {' and '.join(missing)} (runner: {example})")
+
+
+def _process_block(p: dict, runner: dict, kind: str = "process") -> dict:
+    """A process (or API) runner's definition as a manifest-like dict: the head as for any
+    runner, its writes as `outputs` (frames only), and its block under `process` (`api`)."""
+    if kind == "process":
+        _block_keys(runner, "a process runner", PROCESS_KEYS,
+                    'type: process, environment: gpu-test, command: [python, "{definition}/run.py"]}')
     m = {k: v for k, v in p.items() if k not in ("runner", "id", "writes", *HEAD_ONLY)}
     if p.get("id"):
         m["name"] = p["id"]
     for name, spec in (p.get("params") or {}).items():
         wired = sorted(k for k in RUNNER_PARAM_KEYS if k in (spec or {}))
         if wired:
-            raise ValueError(f"params.{name}: {', '.join(wired)} is ComfyUI wiring; a process gets its params in "
-                             f"job.json")
+            raise ValueError(f"params.{name}: {', '.join(wired)} is ComfyUI wiring; "
+                             + ("a process gets its params in job.json" if kind == "process"
+                                else "an API definition sends them as its runner block's upload: and send: say"))
     w = _section(p.get("writes"), "writes")
     generic = A.generic_kinds()
     _keys(w, "writes", ("frames", "preview", *generic))
@@ -192,10 +207,62 @@ def _process_block(p: dict, runner: dict) -> dict:
         m["outputs"] = {"frames": {"ext": wf.get("ext", "png")}}
     if "preview" in w:
         if w["preview"] == "own":
-            raise ValueError("writes.preview: own isn't something a process can do yet; true (the farm makes the "
-                             "preview movie of its frames) or false")
+            raise ValueError(f"writes.preview: own isn't something {'a process' if kind == 'process' else 'an API'} "
+                             f"definition can do; true (the farm makes the preview movie of its frames) or false")
         m["preview"] = w["preview"]
-    m["process"] = {k: runner[k] for k in PROCESS_KEYS}
+    if kind == "process":
+        m["process"] = {k: runner[k] for k in PROCESS_KEYS}
+    return m
+
+
+def _api_block(p: dict, runner: dict) -> dict:
+    """An API runner's definition (decision 0055): as a process's, with its block under `api`.
+    upload: {param: field} for the input params, uploaded to the provider and sent as the
+    URLs of that field (several params to one field make a list, in the params' order);
+    send: {param: field} for the others; fixed: {field: value}, sent as they are."""
+    _block_keys(runner, "an API runner", API_KEYS,
+                "{type: api, endpoint: fal-ai/nano-banana-2/edit, upload: {input: image_urls}, "
+                "send: {prompt: prompt}, fixed: {num_images: 1}}")
+    m = _process_block(p, runner, kind="api")
+    params = {name: spec or {} for name, spec in (p.get("params") or {}).items()}
+    endpoint = runner["endpoint"]
+    if not (isinstance(endpoint, str) and API_ENDPOINT.fullmatch(endpoint)):
+        raise ValueError("runner.endpoint: needs to be the provider's model path, e.g. fal-ai/nano-banana-2/edit")
+    blocks = {}
+    for key in ("upload", "send", "fixed"):
+        b = runner[key] if runner[key] is not None else {}
+        if not isinstance(b, dict):
+            raise ValueError(f"runner.{key}: needs to be a section, e.g. "
+                             + ("{input: image_urls}" if key == "upload" else "{prompt: prompt}" if key == "send"
+                                else "{num_images: 1}"))
+        blocks[key] = b
+    for key in ("upload", "send"):
+        for name, f in blocks[key].items():
+            if name not in params:
+                raise ValueError(f"runner.{key}.{name}: no such parameter in params")
+            kind = params[name].get("type", "string")
+            if key == "upload" and kind not in INPUT_TYPES:
+                raise ValueError(f"runner.upload.{name}: only an input (type: input) is uploaded; send: sends "
+                                 f"the others")
+            if key == "send" and kind in (*INPUT_TYPES, "output_folder"):
+                raise ValueError(f"runner.send.{name}: an input is uploaded (upload:), and the output folder is the "
+                                 f"farm's, never sent")
+            if not (isinstance(f, str) and API_FIELD.fullmatch(f)):
+                raise ValueError(f"runner.{key}.{name}: needs to be the provider's field name, e.g. image_urls")
+    twice = sorted(set(blocks["upload"]) & set(blocks["send"]))
+    if twice:
+        raise ValueError(f"runner: {twice[0]} is both uploaded and sent: one or the other")
+    for f, v in blocks["fixed"].items():
+        if not (isinstance(f, str) and API_FIELD.fullmatch(f)):
+            raise ValueError(f"runner.fixed.{f}: needs to be the provider's field name, e.g. num_images")
+        if not (v is None or isinstance(v, (str, int, float, bool))
+                or (isinstance(v, list) and all(isinstance(x, (str, int, float, bool)) for x in v))):
+            raise ValueError(f"runner.fixed.{f}: needs to be a value (text, a number, true or false, or a list "
+                             f"of them)")
+    clash = sorted(set(blocks["fixed"]) & (set(blocks["send"].values()) | set(blocks["upload"].values())))
+    if clash:
+        raise ValueError(f"runner.fixed.{clash[0]}: also sent from a param; a fixed field is never the artist's")
+    m["api"] = {"endpoint": endpoint, **blocks}
     return m
 
 
@@ -229,6 +296,8 @@ def from_process(p: dict) -> tuple[dict, dict]:
         raise ValueError(f"{', '.join(misplaced)}: belongs in the runner block of a process.yaml")
     if runner["type"] == "process":
         return _process_block(p, runner), {k: p[k] for k in HEAD_ONLY if k in p}
+    if runner["type"] == "api":
+        return _api_block(p, runner), {k: p[k] for k in HEAD_ONLY if k in p}
     unknown = sorted(set(runner) - {"type", "params", *RUNNER_SECTIONS})
     if unknown:
         raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)}")
@@ -284,6 +353,8 @@ def read_definition(directory: Path) -> tuple[dict, dict, str]:
     m = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
     if "process" in m:
         raise ValueError("process: a definition for the process runner is a process.yaml (runner: {type: process})")
+    if "api" in m:
+        raise ValueError("api: an API definition is a process.yaml (runner: {type: api})")
     if "writes" in m:
         raise ValueError("writes: is a process.yaml's (a manifest.yaml says outputs: and textures:)")
     return m, {}, manifest.name
@@ -452,13 +523,16 @@ class Definition:
     def __init__(self, directory: Path):
         self.dir = directory
         m, head, self.source = read_definition(directory)
-        # Which runner runs it, and what that runner's block says (process: environment, command).
-        self.runner_type = "process" if "process" in m else "comfyui"
+        # Which runner runs it, and what that runner's block says (process: environment,
+        # command; api: endpoint, upload, send, fixed).
+        self.runner_type = "process" if "process" in m else "api" if "api" in m else "comfyui"
         self.process: dict | None = m.get("process")
+        self.api: dict | None = m.get("api")
         # The head's own fields (process.yaml): kept and checked, acted on from later phases.
         self.version = head.get("version")
         self.job_class: str = head.get("class") or "interactive"
-        self.targets: list = head["targets"] if "targets" in head else ["pool"]
+        self.targets: list = head["targets"] if "targets" in head else \
+            ["gateway"] if self.runner_type == "api" else ["pool"]
         self.limits: dict = head.get("limits") or {}
         self.models: list = head.get("models") or []
         self.models_listed: bool = "models" in head     # models: [] says it uses no weights (decision 0044)
@@ -499,13 +573,13 @@ class Definition:
         self._m = m                             # the definition as read: the runner's half reads its block
         # The graph's file (a comfyui runner block's `template`): hashed into the fingerprint
         # below, read only by the runner (runners/comfyui_workflow.py). A process has none.
-        self.template: dict | None = None if self.process is not None else \
+        self.template: dict | None = None if self.runner_type != "comfyui" else \
             json.loads((directory / m.get("template", "workflow_api.json")).read_text(encoding="utf-8"))
         # The definition's fingerprint: the manifest and the graph as parsed, so a checkout
         # with other line endings has the same one; for a process, the files its command runs.
         # A job names the one it was planned with, and a machine whose copy differs doesn't
         # run it (build_from, the process runner). Its place in the menus isn't in it.
-        body = self.template if self.process is None else folder_digest(directory)
+        body = self.template if self.runner_type == "comfyui" else folder_digest(directory)
         runs = {k: v for k, v in m.items() if k not in CATALOGUE_KEYS}
         self.digest: str = hashlib.sha256(      # a manifest's is what it always was: head-only fields count when set
             json.dumps([runs, body, *([head] if head else [])], sort_keys=True, default=str)
@@ -623,6 +697,10 @@ class Definition:
             problems.append(f"class: needs to be one of {', '.join(JOB_CLASSES)}")
         if not (isinstance(self.targets, list) and self.targets and all(t in TARGETS for t in self.targets)):
             problems.append(f"targets: needs to be a list of {' and/or '.join(TARGETS)}, e.g. [pool]")
+        elif (self.runner_type == "api") != ("gateway" in self.targets) or \
+                (self.runner_type == "api" and len(self.targets) > 1):
+            problems.append("targets: an API definition's jobs go to the gateway only ([gateway]), and no other "
+                            "definition's do")
         limits = self.limits
         minutes = limits.get("max_minutes", 1) if isinstance(limits, dict) else None
         if not isinstance(limits, dict) or set(limits) - {"max_minutes"} or isinstance(minutes, bool) \
@@ -653,6 +731,8 @@ class Definition:
                             "e.g. nano-banana-2-edit")
         if not isinstance(self.hidden, bool):
             problems.append("hidden: needs to be true (kept out of artists' menus) or false")
+        if provider is None and self.provider_named is None and self.runner_type not in C.DEFAULT_PROVIDER:
+            problems.append(f"provider: an API definition names its provider, one of {C.PROVIDERS}/ (provider: fal)")
         return problems + C.current().problems(task, provider, self.runner_type, self.provider_named is not None)
 
     def _check_eval(self) -> list[str]:

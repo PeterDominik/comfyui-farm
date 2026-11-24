@@ -57,9 +57,10 @@ class TheCheckoutsCatalogueTests(unittest.TestCase):
     def test_it_loads_in_menu_order(self):
         cat = C.load()
         self.assertEqual(cat.errors, [])
-        self.assertEqual(list(cat.providers), ["comfyui-local", "python-local"])
+        self.assertEqual(list(cat.providers), ["comfyui-local", "python-local", "fal"])
         self.assertEqual([(p.label, p.runner, p.target, p.offsite) for p in cat.providers.values()],
-                         [("ComfyUI Local", "comfyui", "pool", False), ("Python Local", "process", "pool", False)])
+                         [("ComfyUI Local", "comfyui", "pool", False), ("Python Local", "process", "pool", False),
+                          ("fal.ai", "api", "gateway", True)])
         self.assertEqual(list(cat.tasks), ["masking", "video", "image", "textures", "tests"])
         self.assertEqual([t.label for t in cat.tasks.values()], ["Masking", "Video", "Image", "Textures", "Tests"])
 
@@ -159,8 +160,10 @@ class DefinitionPlaceTests(Tmp):
 
     def test_its_provider(self):
         self.assertEqual(self.definition(provider="comfyui-local").problems, [])
+        self.assertEqual(self.definition(provider="nope").problems,
+                         ["provider: nope isn't in providers/ (it has comfyui-local, python-local, fal)"])
         self.assertEqual(self.definition(provider="fal").problems,
-                         ["provider: fal isn't in providers/ (it has comfyui-local, python-local)"])
+                         ["provider: fal runs runner.type api definitions, and this one is runner.type comfyui"])
         self.assertEqual(self.definition("gpu_test", provider="comfyui-local").problems,
                          ["provider: comfyui-local runs runner.type comfyui definitions, and this one is runner.type "
                           "process"])
@@ -196,7 +199,7 @@ class CatalogueFileTests(Tmp):
 
     def test_broken_files_are_said_plainly(self):
         root = self.catalogue({
-            "comfyui-local": {"label": "ComfyUI Local", "runner": "comfyui", "target": "pool", "lanes": 2},
+            "comfyui-local": {"label": "ComfyUI Local", "runner": "comfyui", "target": "pool", "price": 2},
             "python-local": {"label": "Python Local", "runner": "python", "target": "pool"},
             "Bad_Name": {"label": "Bad", "runner": "comfyui", "target": "pool"},
             "elsewhere": {"label": "Elsewhere", "runner": "comfyui", "target": "cloud"},
@@ -208,13 +211,13 @@ class CatalogueFileTests(Tmp):
         self.assertEqual(errors, [
             "providers/Bad_Name.yaml: Bad_Name isn't a provider's name: lower-case letters, digits and dashes, "
             "starting with a letter (comfyui-local)",
-            "providers/comfyui-local.yaml: unknown key(s) lanes (a provider has label, description, runner, "
-            "target, offsite, order)",
-            "providers/elsewhere.yaml: target: needs to be where its jobs go (pool, tractor)",
+            "providers/comfyui-local.yaml: unknown key(s) price (a provider has label, description, runner, "
+            "target, offsite, order, adapter, lanes, keys)",
+            "providers/elsewhere.yaml: target: needs to be where its jobs go (pool, tractor, gateway)",
             "providers/first.yaml: order: needs to be a whole number, its place in the menus (smallest first)",
             "providers/maybe.yaml: offsite: needs to be true (its jobs send material outside Rodeo) or false",
             "providers/python-local.yaml: runner: needs to be the runner type its definitions have (comfyui, "
-            "process)",
+            "process, api)",
             "providers/unlabelled.yaml: label: needs to be its name in the menus, e.g. ComfyUI Local",
             "workflows/tasks.yaml: needs to be the tasks in menu order, e.g. masking: {label: Masking}"])
 
@@ -383,8 +386,8 @@ class CheckTests(unittest.TestCase):
             bad = cli.check_catalog() + cli.check_workflows(DefinitionRegistry(REPO / "workflows"))
         self.assertEqual(bad, 0)
         text = out.getvalue()
-        self.assertIn("[ ok ] menus: 2 provider(s) (ComfyUI Local, Python Local), 5 task(s) (Masking, Video, Image, "
-                      "Textures, Tests)", text)
+        self.assertIn("[ ok ] menus: 3 provider(s) (ComfyUI Local, Python Local, fal.ai), 5 task(s) (Masking, Video, "
+                      "Image, Textures, Tests)", text)
         self.assertIn("workflow sam3_ltx_alpha (", text)
         self.assertIn("in the menus under ComfyUI Local > Masking", text)
         self.assertIn("in the menus under Python Local > Tests (hidden from artists)", text)

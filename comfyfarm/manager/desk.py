@@ -16,6 +16,11 @@ still loaded) goes first. A machine gets a second job, prepared ahead of its cur
 only when every GPU is busy. A machine drained from the dashboard takes no new jobs until
 it's resumed.
 
+A gateway agent (decision 0055) has no GPU: it has lanes, a number per outside provider
+(fal: 2), and sends API jobs (runner api) to that provider. An API job goes only to a
+gateway with a free lane of its provider; a gateway takes nothing else. API jobs never wait
+behind GPU jobs, nor GPU jobs behind them.
+
 The desk keeps what agents tell it about their ComfyUI in memory (a manager restart
 forgets it; agents check in again). Jobs live in the database as before, with their
 paths as this machine sees them; between machines they travel in the portable form of
@@ -28,6 +33,7 @@ import hashlib
 import json
 import logging
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 
 from ..fileio import paths as P
@@ -92,6 +98,7 @@ class AgentState:
     env_work: dict | None = None        # what its environment manager is doing about them, as it says
     want_sync: dict | None = None       # tell it to sync its runner's environment in its next reply (0033)
     synced: dict | None = None          # how its last sync goes, as its agent says
+    lanes: dict[str, int] = field(default_factory=dict)   # a gateway's: its jobs at once per provider (0055)
 
 
 def wanted_hash(wanted: dict) -> str | None:
@@ -206,12 +213,31 @@ class Desk:
         """Usable and not drained: it may take jobs."""
         return self.usable(a) and a.name not in self.drained
 
+    def _provider_of(self, workflow: str) -> str | None:
+        wf = self.farm.registry.workflows.get(workflow)
+        return wf.provider if wf is not None else None
+
+    @staticmethod
+    def serves(a: AgentState, wf) -> bool:
+        """The agent is for this kind of definition: a gateway for API ones, a GPU machine for
+        the others (decision 0055)."""
+        return (wf.runner_type == "api") == bool(a.lanes)
+
     def unmet(self, a: AgentState, workflow: str) -> str | None:
-        """Why the workflow's manifest keeps it off this machine (requires), or None."""
+        """Why the workflow's manifest keeps it off this machine (requires), or None. An API
+        job goes to a gateway with lanes for its provider, and nothing else does (0055)."""
         try:
-            req = self.farm.registry.get(workflow).requires
+            wf = self.farm.registry.get(workflow)
         except Exception:  # noqa: BLE001 - an unknown workflow is the plan's to refuse
             return None
+        if not self.serves(a, wf):
+            return ("is a GPU machine: API jobs go to the gateway" if wf.runner_type == "api"
+                    else "is the gateway: it runs only API jobs")
+        if wf.runner_type == "api":
+            if wf.provider not in a.lanes:
+                return f"has no lanes for {wf.provider} (gateway.yaml)"
+            return None
+        req = wf.requires
         need = req.get("vram_gb")
         if need:
             if not vram(a):
@@ -228,9 +254,21 @@ class Desk:
         drained, offline), the job will wait; say so."""
         if not self.agents:
             return None
-        fit = [a for a in self.agents.values() if self.unmet(a, workflow) is None]
+        wf = self.farm.registry.workflows.get(workflow)
+        if wf is not None and wf.runner_type == "api":
+            fit = [a for a in self.agents.values() if self.unmet(a, workflow) is None]
+            if not fit:
+                return (f"No gateway with lanes for {wf.provider} has checked in: the job waits until one does "
+                        f"(gateway.yaml on the manager's machine).")
+            if not any(self.accepting(a) for a in fit):
+                return f"The gateway ({', '.join(a.name for a in fit)}) is offline or drained: the job waits."
+            return None
+        machines = [a for a in self.agents.values() if wf is None or self.serves(a, wf)]
+        if not machines:
+            return None
+        fit = [a for a in machines if self.unmet(a, workflow) is None]
         if not fit:
-            why = self.unmet(next(iter(self.agents.values())), workflow)
+            why = self.unmet(machines[0], workflow)
             return f"No machine on the farm can take it now: it {why}. The job waits until one checks in."
         if not any(self.accepting(a) for a in fit):
             names = ", ".join(a.name for a in fit)
@@ -324,9 +362,11 @@ class Desk:
             # Drained from the dashboard: finishes what it holds, takes nothing new.
             "drained": self.drained.get(a.name),
             "held": len(self.store.held_by(a.name)),
-            # Workflows its manifests keep off this machine (requires), and why.
-            "skips": {n: why for n in list(self.farm.registry.workflows)
-                      if (why := self.unmet(a, n)) is not None},
+            # Workflows its manifests keep off this machine (requires), and why: of the kind it
+            # runs (a GPU machine isn't said to skip API definitions, nor a gateway the others).
+            "skips": {n: why for n, wf in list(self.farm.registry.workflows.items())
+                      if self.serves(a, wf) and (why := self.unmet(a, n)) is not None},
+            "lanes": a.lanes,           # a gateway's, per provider (decision 0055)
             "last_workflow": a.last_workflow,
             # How its backend differs from the farm's environment file, as its agent found
             # (shown, never a reason to hold jobs back).
@@ -398,6 +438,9 @@ class Desk:
         a.max_inflight = int(msg.get("max_inflight") or 2)
         a.tags = sorted({str(t).lower() for t in msg.get("tags") or []})
         a.capacity = int(msg.get("capacity") or a.max_inflight + 1)
+        lanes = msg.get("lanes") if isinstance(msg.get("lanes"), dict) else {}
+        a.lanes = {str(k): int(v) for k, v in lanes.items()
+                   if isinstance(v, int) and not isinstance(v, bool) and v > 0}    # a gateway (decision 0055)
         a.last_seen, a.seq = now(), int(msg.get("seq") or 0)
         a.checked = False               # its node definitions follow
         a.env_wanted = self.store.env_wanted(name).get(name, {})
@@ -467,6 +510,8 @@ class Desk:
         a.problems, a.expected = {}, {}
         held = msg.get("processes")
         for name, wf in self.farm.registry.workflows.items():
+            if not self.serves(a, wf):  # API definitions aren't a GPU machine's, nor others a gateway's
+                continue
             if held is None:            # an agent from before agents reported this (it sent node definitions)
                 probs = [f"{a.name} runs farm code too old to say what it can run: update the farm's code on it"]
             else:
@@ -632,16 +677,22 @@ class Desk:
         jobs never go to a drained machine."""
         t = now()
         usable = [x for x in self.agents.values() if self.usable(x)]          # drained included
-        slots: list[tuple[int, AgentState]] = []                             # (0 free GPU | 1 ahead, machine)
+        # (0 free GPU or lane | 1 ahead, machine, the provider of a gateway's lane)
+        slots: list[tuple[int, AgentState, str | None]] = []
         for x in usable:
             held = self.store.held_by(x.name)
+            if x.lanes:                 # a gateway: a slot per free lane of each provider (decision 0055)
+                taken = Counter(self._provider_of(j["workflow"]) for j in held)
+                for prov, n in x.lanes.items():
+                    slots += [(0, x, prov)] * max(0, n - taken[prov])
+                continue
             busy = sum(1 for j in held if j["status"] in GPU_BUSY)
             room = min(PER_GPU - busy, x.capacity - len(held))
             if room > 0 and busy == 0:
-                slots.append((0, x))
+                slots.append((0, x, None))
                 room -= 1
             if room > 0:
-                slots.append((1, x))
+                slots.append((1, x, None))
         used = [False] * len(slots)
         strict = self.cfg.farm.strict_preflight
         mine = []
@@ -664,7 +715,9 @@ class Desk:
         def best(job: dict, among) -> int | None:
             nonlocal stats
             wf, to = job["workflow"], pin(job)
+            prov = self._provider_of(wf)
             ks = [k for k in among if not used[k] and able(slots[k][1], wf)
+                  and slots[k][2] in (None, prov)
                   and (slots[k][1].name == to if to else slots[k][1].name not in self.drained)]
             if not ks:
                 return None
@@ -676,6 +729,13 @@ class Desk:
 
         for job in self.store.queued():
             wf = job["workflow"]
+            # Its provider switched off since it was queued (decision 0055): it fails, saying so.
+            defn = self.farm.registry.workflows.get(wf)
+            off = self.farm.provider_off(defn) if defn is not None else None
+            if off:
+                self._passed.pop(job["id"], None)
+                self.farm._fail(job["id"], f"Not run: {off}", ("queued",))
+                continue
             # The farm's policy again, as it is now (decision 0046): a rule written since the job
             # was queued fails it rather than run it. A policy that can't be read holds the queue.
             refused = self.farm.refused_by_policy(job)
@@ -744,6 +804,8 @@ class Desk:
     # ================================================================ ETAs
     @staticmethod
     def gpu_type(a: AgentState) -> str:
+        if a.lanes:                     # a gateway: its API jobs' times are the provider's (decision 0055)
+            return "gateway"
         for dev in (a.stats or {}).get("devices") or []:
             return E.gpu_type(dev.get("name"))
         return E.gpu_type(None)
@@ -778,7 +840,32 @@ class Desk:
         free_at: dict[str, float | None] = {}
         count: dict[str, int] = {}
         out: dict[str, dict] = {}
+        # A gateway's lanes run side by side: when each frees, per provider (decision 0055).
+        lanes: dict[tuple[str, str], list] = {}
+
+        def left(j: dict, est: float | None) -> float | None:
+            if est is None:
+                return None
+            if j["status"] == "running" and j.get("started_at"):
+                p = j.get("progress") or 0
+                return max(est * (1 - p) if p > 0.05 else est - (t - j["started_at"]), 5.0)
+            return est
+
+        def lane(x: AgentState, prov: str, run: float | None, job_id: str, after: float) -> None:
+            free = lanes.setdefault((x.name, prov), [t] * x.lanes.get(prov, 0))
+            if not free:
+                out[job_id] = {"done_in": None, "worker": x.name, "run": run}
+                return
+            i = min(range(len(free)), key=lambda k: (free[k] is None, free[k] or 0))
+            at = None if free[i] is None or run is None else max(free[i], after) + run
+            free[i] = at
+            out[job_id] = {"done_in": None if at is None else at - t, "worker": x.name, "run": run}
+
         for x in busy:
+            if x.lanes:
+                for j in self.store.held_by(x.name):
+                    lane(x, self._provider_of(j["workflow"]) or "", left(j, run_time(j, x)), j["id"], t)
+                continue
             at, n = t, 0
             jobs = sorted(self.store.held_by(x.name), key=lambda j: ("running", "dispatched", "preparing").index(j["status"])
                           if j["status"] in GPU_BUSY else 9)
@@ -808,6 +895,12 @@ class Desk:
             fit = [x for x in machines if self.unmet(x, wf) is None and not (strict and x.problems.get(wf))]
             if not fit:
                 out[job["id"]] = {"done_in": None, "worker": None, "run": None}
+                continue
+            if fit[0].lanes:                    # an API job: the gateway's lane that frees first
+                prov = self._provider_of(wf) or ""
+                g = min(fit, key=lambda x: min((f is None, f or 0) for f in lanes.setdefault(
+                    (x.name, prov), [t] * x.lanes.get(prov, 0))) if x.lanes.get(prov) else (True, 0))
+                lane(g, prov, run_time(job, g), job["id"], t)
                 continue
             idle = [x for x in fit if count[x.name] == 0]
             room = [x for x in fit if count[x.name] < PER_GPU]

@@ -38,7 +38,11 @@ PROVIDERS = "providers"                 # one file per provider, under the check
 TASKS = "workflows/tasks.yaml"
 NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")              # a provider's or a task's name
 FAMILY = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
-PROVIDER_KEYS = ("label", "description", "runner", "target", "offsite", "order")
+PROVIDER_KEYS = ("label", "description", "runner", "target", "offsite", "order", "adapter", "lanes", "keys")
+# An outside provider's (runner api, target gateway; decision 0055): the gateway's code that
+# speaks to it (runners/api), how many of its jobs a gateway runs at once unless gateway.yaml
+# says, and the names of the keys gateway.yaml holds for it (never the keys).
+API_PROVIDER_KEYS = ("adapter", "lanes", "keys")
 TASK_KEYS = ("label", "description")
 # The provider of a definition that names none: its runner type's, on the farm's own GPUs.
 DEFAULT_PROVIDER = {"comfyui": "comfyui-local", "process": "python-local"}
@@ -53,6 +57,9 @@ class Provider:
     offsite: bool = False               # its jobs send material outside Rodeo's network
     order: int = 100                    # its place in the menus, smallest first
     description: str = ""
+    adapter: str = ""                   # an API provider's: runners/api/<adapter>.py
+    lanes: int = 0                      # an API provider's jobs at once on a gateway, unless gateway.yaml says
+    keys: tuple = ()                    # the names of the keys gateway.yaml holds for it
 
     def as_dict(self) -> dict:
         return {"name": self.name, "label": self.label, "runner": self.runner, "target": self.target,
@@ -189,6 +196,22 @@ def _provider(path: Path) -> Provider:
         raise ValueError(f"runner: needs to be the runner type its definitions have ({', '.join(RUNNER_TYPES)})")
     if target not in TARGETS:
         raise ValueError(f"target: needs to be where its jobs go ({', '.join(TARGETS)})")
+    if (runner == "api") != (target == "gateway"):
+        raise ValueError("target: an API provider's jobs go to the gateway (runner: api, target: gateway), and no "
+                         "other provider's do")
+    extra = sorted(k for k in API_PROVIDER_KEYS if k in d)
+    if runner != "api" and extra:
+        raise ValueError(f"{extra[0]}: only an API provider (runner: api) has {', '.join(API_PROVIDER_KEYS)}")
+    adapter, lanes, keys = d.get("adapter", ""), d.get("lanes", 1), d.get("keys") or []
+    if runner == "api":
+        if not (isinstance(adapter, str) and NAME.fullmatch(adapter)):
+            raise ValueError("adapter: needs to be the name of the gateway's code that speaks to it, e.g. fal")
+        if isinstance(lanes, bool) or not isinstance(lanes, int) or lanes < 1:
+            raise ValueError("lanes: needs to be a whole number, 1 or more: its jobs at once on a gateway")
+        if not (isinstance(keys, list) and all(isinstance(k, str) and NAME.fullmatch(k) for k in keys)
+                and len(set(keys)) == len(keys)):
+            raise ValueError("keys: needs to be a list of names for the keys gateway.yaml holds, e.g. [requests, "
+                             "billing] (never the keys themselves)")
     offsite, order, description = d.get("offsite", False), d.get("order", 100), d.get("description") or ""
     if not isinstance(offsite, bool):
         raise ValueError("offsite: needs to be true (its jobs send material outside Rodeo) or false")
@@ -197,7 +220,8 @@ def _provider(path: Path) -> Provider:
     if not isinstance(description, str):
         raise ValueError("description: needs to be text")
     return Provider(name=name, label=label.strip(), runner=runner, target=target, offsite=offsite, order=order,
-                    description=description.strip())
+                    description=description.strip(), adapter=adapter if runner == "api" else "",
+                    lanes=lanes if runner == "api" else 0, keys=tuple(keys) if runner == "api" else ())
 
 
 def _tasks(path: Path) -> dict[str, Task]:

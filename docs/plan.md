@@ -356,3 +356,13 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
 
   That is step 1's last pull request; its gate is the pilot's six workflows showing by
   provider and task.
+
+  Step 2 (the gateway) is three pull requests: the definitions, providers and desk; the
+  gateway agent with its API runner, fal.ai adapter and `tools/mock_fal.py`; running it on
+  the manager's machine with an end-to-end test.
+
+  The first is in (0055):
+  - the `api` runner type and `gateway` target;
+  - `providers/fal.yaml`, off until `providers.enabled` in config.yaml lists it;
+  - the desk's lanes: an API job goes only to a gateway's free lane of its provider, and
+    a gateway takes nothing else.

@@ -67,6 +67,12 @@ evals:
   gate: false
   minutes: 30                  # a machine's evals not over by then stop the rollout or sync
 
+# Providers beyond the farm's own GPUs that are switched on (README, Menus: providers and
+# tasks; decision 0055): their workflows show in the menus and can be submitted. Each is a
+# file in providers/. fal.ai's jobs go to the gateway agent (gateway.yaml) on this machine.
+providers:
+  enabled: []                  # e.g. [fal]
+
 # Agents on other machines check in over HTTP (/api/v1/agent/...). They need no open
 # port themselves; the manager's port must be reachable from them.
 agents:

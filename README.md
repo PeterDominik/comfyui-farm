@@ -2126,8 +2126,8 @@ hidden: true                  # kept out of artists' menus (gpu_test); the dashb
   - `offsite` (its jobs send material outside Rodeo) and `order` (smallest first);
   - an optional `description`.
 
-  Today there are `comfyui-local` (every `runner.type: comfyui` definition's) and
-  `python-local` (every `runner.type: process` one's).
+  Today there are `comfyui-local` (every `runner.type: comfyui` definition's),
+  `python-local` (every `runner.type: process` one's) and `fal` (fal.ai, below).
 - **Tasks** are `workflows/tasks.yaml`, in menu order: Masking, Video, Image, Textures and
   Tests.
 - **Checks.** An unknown task or provider, or a provider whose runner type isn't the
@@ -2145,6 +2145,48 @@ hidden: true                  # kept out of artists' menus (gpu_test); the dashb
     and the rule, so a menu can say why.
   - Hidden ones are left out unless `hidden=true` (the dashboard).
   - `python comfyfarm_client.py catalog show=bri3` prints it the way the menus read.
+
+#### API definitions and the gateway
+
+A job can also run at an outside provider, fal.ai first, through the gateway: an agent on
+the manager's machine with lanes instead of GPUs (decision 0055). An API definition is a
+process.yaml with `runner: {type: api}`:
+
+```yaml
+id: nano_banana2_edit_fal
+task: image
+provider: fal                 # an API definition names its provider
+params:
+  input: {type: input, takes: image, required: true, primary: true}
+  prompt: {type: text, required: true}
+  output_path: {type: output_folder}
+writes: {frames: {ext: png}}
+runner:
+  type: api
+  endpoint: fal-ai/nano-banana-2/edit
+  upload: {input: image_urls}   # inputs: uploaded, their URLs sent in this field
+  send: {prompt: prompt}        # other params: sent as this field
+  fixed: {num_images: 1}        # sent as they are; no artist sets them
+```
+
+- **Its jobs go to the gateway only** (`targets: [gateway]`, the default for an API
+  definition). They take a lane of their provider and never wait behind GPU jobs; a
+  gateway takes nothing else.
+- **An API provider's file** also has `adapter` (the gateway's code that speaks to it),
+  `lanes` (its jobs at once on a gateway) and `keys` (the names of the keys the gateway's
+  file holds, never the keys). `providers/fal.yaml`: fal.ai, off-site, 2 lanes.
+- **Off until switched on.** An outside provider's workflows show in the menus and can be
+  submitted only when the manager's config.yaml lists it:
+
+  ```yaml
+  providers:
+    enabled: [fal]
+  ```
+
+  Until then the menus leave them out and a submit is refused, saying so. The farm's own
+  GPUs (ComfyUI Local, Python Local) are always on.
+- **The gateway agent and its runner** come with the next step: until then no machine runs
+  an API job.
 
 Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,
