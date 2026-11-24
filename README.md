@@ -336,6 +336,9 @@ version, and `/api/v1/workers` lists each agent's `agent_version`. On each machi
 git pull && deploy/linux/setup.sh manager|agent && deploy/linux/farmctl.sh restart manager|agent
 ```
 
+On the manager's machine, restart the gateway too, if it runs there
+(`deploy/linux/farmctl.sh restart gateway`, see *The gateway*).
+
 ```powershell
 git pull; deploy\windows\setup.ps1 -Agent; deploy\windows\install_startup.ps1 -Stop -StartNow
 ```
@@ -2195,21 +2198,34 @@ runner:
 #### The gateway
 
 The gateway is an agent with `gateway.enabled` in its config (`gateway.example.yaml`),
-run beside the GPU agent on the manager's machine (decision 0056). It has the API runner
-alone: no ComfyUI and no GPU, and it says its lanes when it checks in. Rollouts and
-ComfyUI syncs leave it out.
+run beside the GPU agent on the manager's machine (decisions 0056, 0057). It has the API
+runner alone: no ComfyUI and no GPU, and it says its lanes when it checks in. The
+Machines tab shows its lanes where a GPU machine shows its GPU (`gateway · fal ×2`).
+Rollouts, ComfyUI syncs and the Runner environments panel leave it out.
+
+On the manager's machine, from the checkout:
 
 ```bash
-cp gateway.example.yaml gateway.yaml            # then edit: name, manager, keys
-python -m comfyfarm agent --config gateway.yaml --check
-python -m comfyfarm agent --config gateway.yaml
+cp gateway.example.yaml gateway.yaml            # then edit: manager; paths and convert.tools as in agent.yaml
+mkdir -p ~/.comfyfarm
+(umask 077 && read -rs KEY && printf '%s\n' "$KEY" > ~/.comfyfarm/fal_requests.key)   # paste the key, then Enter
+deploy/linux/farmctl.sh start mock_fal          # fal.ai's stand-in, until step 5
+deploy/linux/farmctl.sh check gateway           # its providers, keys and definitions; never a key
+deploy/linux/farmctl.sh start gateway           # or install_cron.sh gateway: kept running
 ```
 
-- **Keys.** Each in a file of its own, readable by its account alone (`chmod 600`; a
-  file others can read is refused), named in `gateway.yaml` under
-  `providers.<name>.keys`. The gateway reads them when it starts and sends them to the
-  provider only: they are in no log, job, event, run folder or output
-  (`tests/test_api_runner.py` checks). git ignores `gateway.yaml` and `*.key`.
+`read -rs` keeps the key off the screen and out of the shell's history, and the umask makes
+the file readable by this account alone. For the stand-in, any made-up word is the key.
+`farmctl.sh stop|restart|status|log gateway` (and `mock_fal`) work as for the manager. The
+gateway reads its keys when it starts: restart it after changing them.
+
+- **Keys.** Each in a file of its own, readable by its account alone (a file others can
+  read is refused), named in `gateway.yaml` under `providers.<name>.keys`; `~` is the
+  account's home. The file holds the key alone, as plain text: a byte-order mark some
+  editors put first is dropped, and any other character a key can't have is refused,
+  saying so. The gateway reads them when it starts and sends them to the provider only:
+  they are in no log, job, event, run folder or output (`tests/test_api_runner.py` and
+  `tests/test_e2e_gateway.py` check). git ignores `gateway.yaml` and `*.key`.
 - **Each job:** its inputs are converted as for any job (an EXR to PNG), uploaded, and the
   job is sent once. What is sent is in the run folder (`gateway.runs_dir/<attempt>`) before
   it goes, and the request's id as soon as fal.ai gives it. Its status is asked every
@@ -2227,11 +2243,12 @@ python -m comfyfarm agent --config gateway.yaml
   `tools/mock_fal.py`, which takes no money and sends nothing out:
 
   ```bash
-  python tools/mock_fal.py --port 8189 --key-file /home/<user>/.comfyfarm/fal_requests.key
+  deploy/linux/farmctl.sh start mock_fal        # python tools/mock_fal.py --gateway gateway.yaml
   ```
 
-  with `providers.fal.url: http://127.0.0.1:8189` in `gateway.yaml` and a made-up key.
-  Any other address is refused (`REAL_SERVICE` in `comfyfarm/runners/api/fal.py`). In the
+  It answers where `gateway.yaml` sends fal.ai's jobs (`providers.fal.url`, e.g.
+  `http://127.0.0.1:8189`) and takes the key in its `keys.requests` file. Any other
+  address is refused (`REAL_SERVICE` in `comfyfarm/runners/api/fal.py`). In the
   prompt, `MOCK_FAIL` makes its model fail, `MOCK_POLICY` its content check refuse it and
   `MOCK_SLOW` it run a minute.
 

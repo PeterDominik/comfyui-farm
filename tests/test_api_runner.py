@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -34,7 +35,7 @@ try:   # the gateway talks to providers with httpx
     from comfyfarm.agent.link import LocalLink
     from comfyfarm.runners.api import ApiError
     from comfyfarm.runners.api import fal as F
-    from comfyfarm.runners.api.runner import ApiRunner, read_key
+    from comfyfarm.runners.api.runner import ApiRunner, key_path, read_key
 except ImportError:   # pragma: no cover
     Agent = None
 
@@ -262,6 +263,44 @@ class Keys(Tmp):
         two = self.key_file("one two")
         self.assertEqual(read_key(two), (None, f"the key file {two} should hold the key alone, on one line"))
 
+    def test_as_editors_save_it(self):
+        """A byte-order mark some editors put first is dropped (a pilot key file had one, and
+        its job failed on an HTTP header); any other character a key can't have is refused,
+        saying so."""
+        path = self.key_file()
+        path.write_bytes(b"\xef\xbb\xbf" + KEY.encode() + b"\r\n")
+        self.assertEqual(read_key(path), (KEY, None))
+        self.assertEqual(mock_fal.read_key_file(str(path)), KEY)        # the stand-in reads it the same way
+        path.write_text(KEY + "\u00e9", encoding="utf-8")
+        self.assertEqual(read_key(path), (None, f"the key file {path} holds characters a key doesn't have (an "
+                                                f"editor may have added them): save it again as plain text, the key "
+                                                f"alone"))
+        path.write_text(KEY, encoding="utf-16")
+        self.assertEqual(read_key(path), (None, f"the key file {path} isn't plain text: save it again as plain text "
+                                                f"(UTF-8), the key alone"))
+
+    def test_home_in_a_key_path(self):
+        cfg = AgentConfig(name="gw", base_dir=str(self.tmp))
+        home = str(self.tmp / "home")
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+            self.assertEqual(key_path(cfg, "~/.comfyfarm/fal.key"), self.tmp / "home" / ".comfyfarm" / "fal.key")
+        self.assertEqual(key_path(cfg, "keys/fal.key"), self.tmp / "keys" / "fal.key")     # next to gateway.yaml
+
+    def test_the_stand_in_answers_where_gateway_yaml_sends_fal(self):
+        gw = self.tmp / "gateway.yaml"
+
+        def write(url):
+            gw.write_text(yaml.safe_dump({"name": "gw", "gateway": {"enabled": True, "providers": {
+                "fal": {"url": url, "keys": {"requests": "keys/fal_requests.key"}}}}}), encoding="utf-8")
+        write("http://127.0.0.1:8199")
+        port, key = mock_fal.from_gateway(str(gw))
+        # Next to gateway.yaml, as resolved: on Windows its long name, where the temp folder may be RUNNER~1.
+        self.assertEqual((port, Path(key)), (8199, self.tmp.resolve() / "keys" / "fal_requests.key"))
+        for url in ("", "https://queue.fal.run", "http://10.1.2.3:8199"):
+            write(url)
+            with self.assertRaisesRegex(SystemExit, "doesn't send fal.ai's jobs to a stand-in on this machine"):
+                mock_fal.from_gateway(str(gw))
+
     @unittest.skipIf(os.name == "nt", "file modes are POSIX's")
     def test_one_others_can_read_is_refused(self):
         path = self.key_file(mode=0o644)
@@ -283,7 +322,7 @@ class Keys(Tmp):
                                                                                    "data/scratch-gateway"))
         r = ApiRunner(cfg)
         self.assertEqual((r.problems, r.lanes, r.max_runs), ([], {"fal": 2}, 2))
-        named = Path(cfg.resolve(cfg.gateway.providers["fal"].keys["requests"]))    # this OS's way to write it
+        named = key_path(cfg, "~/.comfyfarm/fal_requests.key")      # this account's home, as this OS writes it
         self.assertEqual(r.provider_problems["fal"], [f"the key file {named} doesn't exist"])
         self.assertEqual(r.processes()["nano_banana2_edit_fal"]["broken"], [])
 

@@ -112,9 +112,17 @@ def _short(result: dict) -> dict:
     return walk(result)
 
 
+def key_path(cfg: AgentConfig, raw: str) -> Path:
+    """A key file as gateway.yaml names it: ~ is the account's home, a relative path is next to
+    gateway.yaml."""
+    return Path(cfg.resolve(os.path.expanduser(raw)))
+
+
 def read_key(path: Path) -> tuple[str | None, str | None]:
     """A key from its file, and what's wrong with the file (None: nothing). A file that other
-    users on this machine can read is refused: the key is an account's, with its money."""
+    users on this machine can read is refused: the key is an account's, with its money. A
+    byte-order mark some editors put first is dropped; any other character a key can't have
+    (it goes in an HTTP header, which is plain ASCII) is refused, saying so."""
     try:
         st = path.stat()
     except OSError:
@@ -122,11 +130,16 @@ def read_key(path: Path) -> tuple[str | None, str | None]:
     if os.name != "nt" and st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         return None, f"the key file {path} can be read by other users on this machine: chmod 600 {path}"
     try:
-        key = path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError) as e:
-        return None, f"can't read the key file {path}: {getattr(e, 'strerror', None) or e}"
+        key = path.read_text(encoding="utf-8-sig").strip()
+    except UnicodeDecodeError:
+        return None, f"the key file {path} isn't plain text: save it again as plain text (UTF-8), the key alone"
+    except OSError as e:
+        return None, f"can't read the key file {path}: {e.strerror or e}"
     if not key or any(c.isspace() for c in key):
         return None, f"the key file {path} should hold the key alone, on one line"
+    if not (key.isascii() and key.isprintable()):
+        return None, (f"the key file {path} holds characters a key doesn't have (an editor may have added them): "
+                      f"save it again as plain text, the key alone")
     return key, None
 
 
@@ -178,7 +191,7 @@ class ApiRunner:
                         probs.append(f"there's no file for {p.label}'s {k} key (providers.{name}.keys.{k} in "
                                      f"gateway.yaml)")
                     continue
-                key, why = read_key(Path(self.cfg.resolve(pc.keys[k])))
+                key, why = read_key(key_path(self.cfg, pc.keys[k]))
                 if why:
                     probs.append(why)
                 else:
@@ -186,8 +199,6 @@ class ApiRunner:
             adapter = mod.Adapter(keys, url=pc.url, media_seconds=pc.media_seconds, transport=transport)
             self.adapters[name] = adapter
             self.provider_problems[name] = probs + adapter.problems()
-            for why in self.provider_problems[name]:
-                log.warning("gateway %s: %s can't take jobs: %s", self.name, p.label, why)
 
     def _problems_of(self, provider: str) -> list[str]:
         if provider not in self.lanes:
@@ -199,6 +210,12 @@ class ApiRunner:
         self.host = host
 
     def start(self) -> list:
+        """Said once as the gateway starts (`agent --check` says them itself)."""
+        for why in self.problems:
+            log.warning("gateway %s: %s", self.name, why)
+        for name, probs in self.provider_problems.items():
+            for why in probs:
+                log.warning("gateway %s: %s can't take jobs: %s", self.name, self._label(name), why)
         self._prune()
         return []
 
@@ -670,4 +687,4 @@ class ApiRunner:
                 pass
 
 
-__all__ = ["ApiRegistry", "ApiRun", "ApiRunner", "read_key"]
+__all__ = ["ApiRegistry", "ApiRun", "ApiRunner", "key_path", "read_key"]

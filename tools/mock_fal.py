@@ -4,11 +4,13 @@ It speaks the parts of fal.ai's API the gateway uses: the upload token and the C
 the queue (submit, status, result, cancel) and the result files, all on one address. It
 checks the key the way fal.ai does, and runs its models in a few seconds, making grey PNGs.
 
-    python tools/mock_fal.py --port 8189 --key-file <a key file> [--queue-seconds 1] [--run-seconds 3]
+    python tools/mock_fal.py --gateway gateway.yaml [--queue-seconds 1] [--run-seconds 3]
+    python tools/mock_fal.py --port 8189 --key-file <a key file>
 
-Point the gateway at it with providers.fal.url: http://127.0.0.1:8189 in gateway.yaml, and
-the key file at the same file as providers.fal.keys.requests. Make up the key (any word):
-the stand-in never sees a real one, and it answers on 127.0.0.1 only.
+With --gateway it answers where gateway.yaml sends fal.ai's jobs (providers.fal.url, e.g.
+http://127.0.0.1:8189) and takes the key in the file providers.fal.keys.requests names
+(deploy/linux/farmctl.sh start mock_fal does this). Make up the key (any word): the stand-in
+never sees a real one, and it answers on 127.0.0.1 only.
 
 It is stricter than fal.ai: a field its model doesn't know is refused, so a typo in a
 definition shows here. Its models: fal-ai/nano-banana-2/edit (PNG only). To make a job go
@@ -30,6 +32,7 @@ import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ENUM = "enum"
@@ -275,15 +278,47 @@ class MockFal:
         return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
+def read_key_file(path: str) -> str:
+    """The key, as the gateway reads it: a byte-order mark some editors put first dropped."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            key = f.read().strip()
+    except (OSError, UnicodeDecodeError) as e:
+        raise SystemExit(f"mock_fal: can't read the key file {path}: {e}") from None
+    if not key or not (key.isascii() and key.isprintable()) or any(c.isspace() for c in key):
+        raise SystemExit(f"mock_fal: the key file {path} should hold the key alone, on one line, as plain text")
+    return key
+
+
+def from_gateway(path: str) -> tuple[int, str]:
+    """Its port and key file, from where gateway.yaml sends fal.ai's jobs."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from comfyfarm.config import load_agent_config
+    from comfyfarm.runners.api.runner import key_path
+    cfg = load_agent_config(path)
+    fal = cfg.gateway.providers.get("fal")
+    url = urlsplit(fal.url) if fal and fal.url else None
+    if url is None or url.hostname not in ("127.0.0.1", "localhost") or not url.port:
+        raise SystemExit(f"mock_fal: {path} doesn't send fal.ai's jobs to a stand-in on this machine: set "
+                         f"providers.fal.url to e.g. http://127.0.0.1:8189")
+    if not fal.keys.get("requests"):
+        raise SystemExit(f"mock_fal: {path} names no key file (providers.fal.keys.requests)")
+    return url.port, str(key_path(cfg, fal.keys["requests"]))
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="A stand-in for fal.ai, on 127.0.0.1.")
+    ap.add_argument("--gateway", help="gateway.yaml: answer where it sends fal.ai's jobs, with its key file")
     ap.add_argument("--port", type=int, default=8189)
-    ap.add_argument("--key-file", required=True, help="the file holding the key it accepts (made up)")
+    ap.add_argument("--key-file", help="the file holding the key it accepts (made up)")
     ap.add_argument("--queue-seconds", type=float, default=1.0, help="each job waits this long in its queue")
     ap.add_argument("--run-seconds", type=float, default=3.0, help="then runs this long")
     args = ap.parse_args(argv)
-    with open(args.key_file, encoding="utf-8") as f:
-        key = f.read().strip()
+    if args.gateway:
+        args.port, args.key_file = from_gateway(args.gateway)
+    if not args.key_file:
+        ap.error("give --gateway gateway.yaml, or --key-file")
+    key = read_key_file(args.key_file)
     mock = MockFal(key, f"http://127.0.0.1:{args.port}", args.queue_seconds, args.run_seconds)
     srv = mock.server(args.port)
     print(f"mock_fal: fal.ai's stand-in on http://127.0.0.1:{args.port} (Ctrl+C to stop)", flush=True)

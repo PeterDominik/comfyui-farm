@@ -6,10 +6,12 @@
 #   python -m comfyfarm agent --config gateway.yaml --check     (what it can and can't do)
 #   python -m comfyfarm agent --config gateway.yaml
 #
-# Until phase 11's step 5 it sends jobs only to a stand-in on this machine, which takes no
-# money and sends nothing out:
+# Or keep it running: deploy/linux/farmctl.sh start gateway (install_cron.sh gateway).
 #
-#   python tools/mock_fal.py --port 8189 --key-file <the file keys.requests names below>
+# Until phase 11's step 5 it sends jobs only to a stand-in on this machine, which takes no
+# money and sends nothing out. It answers where this file sends fal.ai's jobs, with its key:
+#
+#   deploy/linux/farmctl.sh start mock_fal      (python tools/mock_fal.py --gateway gateway.yaml)
 
 name: wrk1125l-gateway           # as the dashboard shows it; unique on the farm
 manager: http://127.0.0.1:8000   # the manager on this machine (its server.port), or its manager.json
@@ -27,11 +29,11 @@ gateway:
       url: http://127.0.0.1:8189 # the stand-in (tools/mock_fal.py). Empty: fal.ai itself, from step 5
       media_seconds: 3600        # how long fal.ai keeps what is uploaded and what it makes
       # Each key in a file of its own, readable by this account alone (chmod 600): never in
-      # git, the bank folder or this file. The gateway reads them when it starts, and sends
-      # them to fal.ai only. For the stand-in, make the key up.
+      # git, the bank folder or this file. ~ is this account's home. The gateway reads them
+      # when it starts, and sends them to fal.ai only. For the stand-in, make the key up.
       keys:
-        requests: /home/<user>/.comfyfarm/fal_requests.key
-        # billing: /home/<user>/.comfyfarm/fal_billing.key     # with the ledger (step 4)
+        requests: ~/.comfyfarm/fal_requests.key
+        # billing: ~/.comfyfarm/fal_billing.key     # with the ledger (step 4)
 
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 

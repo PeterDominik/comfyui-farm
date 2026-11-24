@@ -199,9 +199,9 @@ function renderEnvironments() {
   if (panel.hidden && rolling.hidden) return;
   const rels = state.envs?.releases || [];
   const latest = n => rels.find(r => r.name === n)?.fingerprint || null;
-  // In the Machines table's order.
-  const ws = [...state.workers.values()].sort((a, b) =>
-    (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.name.localeCompare(b.name));
+  // In the Machines table's order. The gateway builds no runner environments (gateway.js).
+  const ws = [...state.workers.values()].filter(w => !(typeof isGateway === "function" && isGateway(w)))
+    .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || a.name.localeCompare(b.name));
   $("#envsNote").innerHTML = state.envsError ? `<span class="err">${esc(state.envsError)}</span>`
     : state.envs?.bank ? `Releases from <code>${esc(state.envs.bank)}/environments</code>`
     : state.envs ? "The manager has no bank (share.dir), so no releases" : "";

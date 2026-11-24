@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Keep the manager or this machine's agent running with your own crontab (no sudo):
-# started when the machine boots, and checked every minute (started again if it stopped).
+# Keep the manager, this machine's agent or the gateway running with your own crontab (no
+# sudo): started when the machine boots, and checked every minute (started again if it stopped).
 #
-#   deploy/linux/install_cron.sh manager|agent [agent.yaml]
-#   deploy/linux/install_cron.sh manager|agent --remove
+#   deploy/linux/install_cron.sh manager|agent|gateway [its .yaml]
+#   deploy/linux/install_cron.sh manager|agent|gateway --remove
 #
 # Only the farm's own lines (marked "# comfyfarm-<role>") are touched.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 role="${1:-}"
-case "$role" in manager|agent) ;; *) echo "usage: $0 manager|agent [agent.yaml | --remove]" >&2; exit 2 ;; esac
+case "$role" in
+  manager|agent|gateway) ;;
+  *) echo "usage: $0 manager|agent|gateway [its .yaml | --remove]" >&2; exit 2 ;;
+esac
 arg="${2:-}"
 mark="# comfyfarm-$role"
 ctl="$ROOT/deploy/linux/farmctl.sh"

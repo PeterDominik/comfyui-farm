@@ -29,7 +29,8 @@ FAKE_PYTHON = textwrap.dedent(f"""\
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "calls.jsonl"), "a") as fh:
         fh.write(json.dumps({{"args": sys.argv[1:], "PYTHONPATH": os.environ.get("PYTHONPATH"),
                              "nousersite": os.environ.get("PYTHONNOUSERSITE"), "umask": os.umask(0o022)}}) + "\\n")
-    serving = {{"manager", "agent"}} & set(sys.argv) and not {{"check", "--check", "pip"}} & set(sys.argv)
+    serving = ({{"manager", "agent"}} & set(sys.argv) or any(a.endswith("mock_fal.py") for a in sys.argv)) \
+        and not {{"check", "--check", "pip"}} & set(sys.argv)
     if serving:
         time.sleep(120)
     """)
@@ -67,7 +68,7 @@ class LinuxDeployTests(unittest.TestCase):
         return [json.loads(line) for line in f.read_text().splitlines()] if f.exists() else []
 
     def stop_all(self):
-        for role in ("manager", "agent"):
+        for role in ("manager", "agent", "gateway", "mock_fal"):
             pid = self.root / f"run/{role}.pid"
             if pid.exists():
                 subprocess.run(["bash", str(self.root / "deploy/linux/farmctl.sh"), "stop", role],
@@ -94,6 +95,25 @@ class LinuxDeployTests(unittest.TestCase):
         self.ctl("stop", "agent")
         self.ctl("start", "manager")
         self.assertEqual(self.calls()[-1]["args"][-1], "manager")
+
+    def test_farmctl_the_gateway_and_falais_stand_in(self):
+        """The gateway is an agent with gateway.yaml; the stand-in answers where it sends fal.ai's jobs."""
+        (self.root / "run").mkdir()
+        (self.root / "run/python").write_text(f"{self.py}\n")
+        self.assertIn("gateway started (pid", self.ctl("start", "gateway").stdout)
+        self.assertEqual(self.calls()[-1]["args"], ["-m", "comfyfarm", "agent", "--config",
+                                                    str(self.root / "gateway.yaml")])
+        self.assertIn("mock_fal started (pid", self.ctl("start", "mock_fal").stdout)
+        self.assertEqual(self.calls()[-1]["args"], [str(self.root / "tools/mock_fal.py"), "--gateway",
+                                                    str(self.root / "gateway.yaml")])
+        self.assertIsNone(self.calls()[-1]["PYTHONPATH"])
+        self.assertEqual(self.ctl("status", "gateway").returncode, 0)
+        self.assertEqual(self.ctl("status", "agent").returncode, 3)     # the machine's GPU agent is another
+        self.ctl("check", "gateway")
+        self.assertEqual(self.calls()[-1]["args"][-1], "--check")
+        self.assertEqual(self.ctl("check", "mock_fal", check=False).returncode, 2)
+        self.assertIn("mock_fal stopped", self.ctl("stop", "mock_fal").stdout)
+        self.assertIn("gateway stopped", self.ctl("stop", "gateway").stdout)
 
     def test_farmctl_verify_and_sync(self):
         (self.root / "run").mkdir()
