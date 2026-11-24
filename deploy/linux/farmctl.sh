@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# Run the farm's manager or this machine's agent in the background, without sudo:
+# Run the farm's manager, this machine's agent or the gateway in the background, without sudo:
 #
-#   deploy/linux/farmctl.sh start|stop|restart|status|ensure|log|check  manager|agent [agent.yaml]
+#   deploy/linux/farmctl.sh start|stop|restart|status|ensure|log|check  manager|agent|gateway [its .yaml]
+#   deploy/linux/farmctl.sh start|stop|restart|status|log mock_fal [gateway.yaml]   fal.ai's stand-in,
+#            answering where gateway.yaml sends fal.ai's jobs (tools/mock_fal.py)
 #   deploy/linux/farmctl.sh stop|status comfyui      the ComfyUI the agent started (comfyui_launch)
 #   deploy/linux/farmctl.sh verify|sync agent [--apply ...]   this machine's ComfyUI against the
 #            farm's (comfyfarm comfyui verify|sync, with agent.yaml)
 #
 #   ensure   start it if it isn't running (install_cron.sh runs this every minute)
 #   log      follow its console output (the full log is logs/comfyfarm.log, logs/agent-<name>.log)
-#   check    comfyfarm check (manager) or comfyfarm agent --check (agent)
+#   check    comfyfarm check (manager) or comfyfarm agent --check (agent, gateway)
+#
+# The gateway (decision 0056) is an agent with gateway.yaml, on the manager's machine.
 #
 # Runs with the Python setup.sh recorded (run/python), or $COMFYFARM_PYTHON, with the
 # pipeline's Python settings removed. Stopping the agent leaves ComfyUI and its jobs running.
@@ -16,7 +20,12 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cmd="${1:-}" role="${2:-}" conf="${3:-}"
-usage() { echo "usage: $0 start|stop|restart|status|ensure|log|check manager|agent [agent.yaml]  |  verify|sync agent [--apply]" >&2; exit 2; }
+usage() {
+  echo "usage: $0 start|stop|restart|status|ensure|log|check manager|agent|gateway [its .yaml]" >&2
+  echo "       $0 start|stop|restart|status|log mock_fal [gateway.yaml]" >&2
+  echo "       $0 verify|sync agent [--apply]" >&2
+  exit 2
+}
 [ -n "$cmd" ] && [ -n "$role" ] || usage
 
 py="${COMFYFARM_PYTHON:-$(cat "$ROOT/run/python" 2>/dev/null || true)}"
@@ -25,6 +34,10 @@ case "$role" in
            check=(-m comfyfarm --config "${conf:-$ROOT/config.yaml}" check) ;;
   agent)   args=(-m comfyfarm agent --config "${conf:-$ROOT/agent.yaml}")
            check=(-m comfyfarm agent --config "${conf:-$ROOT/agent.yaml}" --check) ;;
+  gateway) args=(-m comfyfarm agent --config "${conf:-$ROOT/gateway.yaml}")
+           check=(-m comfyfarm agent --config "${conf:-$ROOT/gateway.yaml}" --check) ;;
+  mock_fal) args=("$ROOT/tools/mock_fal.py" --gateway "${conf:-$ROOT/gateway.yaml}")
+            check=() ;;
   comfyui) ;;
   *) usage ;;
 esac
@@ -94,6 +107,7 @@ case "$role:$cmd" in
   comfyui:status) comfyui_pids | while read -r pid f; do echo "ComfyUI running (pid $pid, $f)"; done ;;
   comfyui:stop)   comfyui_pids | while read -r pid f; do kill -TERM "$pid" && echo "stopped ComfyUI (pid $pid)"; done ;;
   comfyui:*)      usage ;;
+  mock_fal:check|mock_fal:ensure) usage ;;
   *:start)   start ;;
   *:stop)    stop ;;
   *:restart) stop; start ;;

@@ -373,3 +373,11 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - the fal.ai adapter: keys from files on the gateway only, and a job never sent twice;
   - `tools/mock_fal.py`, fal.ai's stand-in. Nothing reaches fal.ai itself before step 5;
   - `workflows/nano_banana2_edit_fal`.
+
+  The third is in (0057):
+  - `farmctl.sh` runs the gateway and the stand-in on the manager's machine;
+  - key files are read as editors save them, after Peter's first run on the manager's
+    machine, whose key file began with a byte-order mark;
+  - the Machines tab shows the gateway's lanes;
+  - the gate's CI half: a stand-in job submitted by the Nuke node's code, end to end over
+    HTTP. The other half is a stand-in job from Nuke on the manager's machine.

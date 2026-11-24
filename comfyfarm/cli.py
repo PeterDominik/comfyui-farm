@@ -203,13 +203,16 @@ def check_gateway(cfg) -> int:
         else:
             _line(" ok ", f"{name}: {lanes} lane(s), sent to {where}, its keys read (account "
                           f"{cfg.gateway.account or 'not named'})")
+    said = {w for probs in r.provider_problems.values() for w in probs}     # each said once, above
     for name, v in sorted(r.processes().items()):
-        probs = list(v["broken"]) + list(v["problems"])
+        probs = list(v["broken"]) + [p for p in v["problems"] if p not in said]
         if probs:
             bad += 1
             _line("FAIL", f"API definition {name}:")
             for p in probs:
                 print(f"         - {p}")
+        elif v["problems"]:
+            _line(" -- ", f"API definition {name}: sent once its provider can take jobs (above)")
         else:
             _line(" ok ", f"API definition {name}: the gateway can send it")
     return bad

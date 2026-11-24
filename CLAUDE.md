@@ -19,6 +19,7 @@ pip install -i https://pypi.org/simple -r requirements-dev.txt   # name the inde
 python -m unittest discover -s tests -t . -v                     # everything, 2-3 minutes
 python -m unittest tests.test_sets tests.test_layout -v          # one or two modules
 python tools/mock_comfyui.py --port 8188 --output mock_output    # a ComfyUI stand-in, no GPU
+python tools/mock_fal.py --gateway gateway.yaml                  # fal.ai's stand-in, where the gateway sends jobs
 python -m comfyfarm standalone                                   # manager and agents in one process
 ```
 
