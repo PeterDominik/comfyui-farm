@@ -283,8 +283,8 @@ class Keys(Tmp):
                                                                                    "data/scratch-gateway"))
         r = ApiRunner(cfg)
         self.assertEqual((r.problems, r.lanes, r.max_runs), ([], {"fal": 2}, 2))
-        self.assertEqual(r.provider_problems["fal"], ["the key file /home/<user>/.comfyfarm/fal_requests.key doesn't "
-                                                      "exist"])
+        named = Path(cfg.resolve(cfg.gateway.providers["fal"].keys["requests"]))    # this OS's way to write it
+        self.assertEqual(r.provider_problems["fal"], [f"the key file {named} doesn't exist"])
         self.assertEqual(r.processes()["nano_banana2_edit_fal"]["broken"], [])
 
     @unittest.skipIf(Agent is None, "the gateway needs httpx")
