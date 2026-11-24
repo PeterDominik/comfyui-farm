@@ -43,6 +43,17 @@ CHORD = {"name": "chord_pbr", "label": "CHORD PBR", "enabled": True, "maps": ["b
          "publish": None,
          "params": [{"name": "input", "type": "sequence", "label": "Texture", "required": True, "takes": "images"},
                     {"name": "output_path", "type": "output_folder", "label": "Output folder"}]}
+NODE_TREE = [   # GET /api/v1/catalog?show=bri3 (decision 0054)
+    {"name": "comfyui-local", "label": "ComfyUI Local", "offsite": False, "tasks": [
+        {"name": "video", "label": "Video", "workflows": [
+            {"name": "ltx25_layout_render", "label": "LTX layout render", "enabled": True, "allowed": True}]},
+        {"name": "textures", "label": "Textures", "workflows": [
+            {"name": "chord_pbr", "label": "CHORD PBR", "enabled": True, "allowed": False,
+             "reason": "chord_pbr can't run for show bri3: Not cleared. (Policy rule bri3-alpha-only.)"},
+            {"name": "off", "label": "Off", "enabled": False, "allowed": True}]}]},
+    {"name": "fal", "label": "fal.ai", "offsite": True, "tasks": [
+        {"name": "image", "label": "Image", "workflows": [
+            {"name": "nano", "label": "Nano Banana 2 edit", "enabled": True, "allowed": True}]}]}]
 PUB_OPTIONS = {"steps": ["ai", "comp"], "step": "ai", "templates": ["ltx25_layout_render/default", "_global/default"],
                "template": "ltx25_layout_render/default", "labels": {}, "description": "Auto Publish"}
 
@@ -242,6 +253,7 @@ class FakeFarm:
     def __init__(self):
         self.submitted, self.published, self.cancelled, self.jobs, self.n = [], [], [], {}, 0
         self.workflow_list = [LAYOUT, CHORD]
+        self.tree, self.catalog_shows = NODE_TREE, []
 
     def publish_options(self, name):
         return dict(PUB_OPTIONS, workflow=name)
@@ -280,6 +292,12 @@ class FakeFarm:
     def workflows(self):
         return self.workflow_list
 
+    def catalog(self, show=None, hidden=False):
+        self.catalog_shows.append(show)
+        if self.tree is None:
+            raise farm.FarmError("404: Not Found")      # an older farm
+        return {"show": show, "providers": self.tree, "errors": []}
+
     def retention(self):
         return {"enabled": True, "keep_days": 3, "at": "03:00"}
 
@@ -289,7 +307,7 @@ class Base(unittest.TestCase):
         self.nuke = make_nuke()
         self.farm = FakeFarm()
         patches = [mock.patch.dict(sys.modules, {"nuke": self.nuke}), mock.patch.object(farm, "POSIX", True)]
-        for name in ("publish_options", "submit", "get", "cancel", "publish", "workflows", "retention"):
+        for name in ("publish_options", "submit", "get", "cancel", "publish", "workflows", "retention", "catalog"):
             patches.append(mock.patch.object(farm, name, getattr(self.farm, name)))
         for p in patches:
             p.start()
@@ -321,6 +339,39 @@ class Base(unittest.TestCase):
 
     def inside(self, node, name):
         return next(c for c in node.children if c.name() == name)
+
+    def groups(self):
+        return [c for c in self.nuke.root_node.children if c.Class() == "Group"]
+
+
+class FakeMenu:
+    """Nuke's menus: commands, separators and submenus, in order."""
+
+    def __init__(self, name=""):
+        self.name, self.items = name, []
+
+    def clearMenu(self):  # noqa: N802 (Nuke naming)
+        self.items = []
+
+    def addCommand(self, label, fn=None):  # noqa: N802
+        self.items.append((label, fn))
+
+    def addSeparator(self):  # noqa: N802
+        self.items.append(("-", None))
+
+    def addMenu(self, label):  # noqa: N802
+        sub = FakeMenu(label)
+        self.items.append((label, sub))
+        return sub
+
+    def shape(self):
+        return [(label, x.shape()) if isinstance(x, FakeMenu) else label for label, x in self.items]
+
+    def command(self, *path):
+        menu = self
+        for label in path[:-1]:
+            menu = next(x for name, x in menu.items if name == label)
+        return next(x for name, x in menu.items if name == path[-1])
 
 
 # ---------------------------------------------------------------- the core
@@ -447,11 +498,62 @@ class TheNode(Base):
         panel = importlib.import_module("comfyfarm_panel")     # Nuke opens the panel first
         self.assertTrue(hasattr(panel.farm_node, "create_node"))
 
-    def test_menu_lists_enabled_workflows(self):
-        menu = mock.Mock()
-        self.m.fill_menu(menu, [LAYOUT, dict(CHORD, enabled=False)])
-        labels = [c.args[0] for c in menu.addCommand.call_args_list]
-        self.assertEqual(labels, ["LTX layout render", "Reload workflows"])
+    def test_the_tab_menu_by_provider_then_task(self):
+        """ComfyFarm > ComfyUI Local > Video > LTX layout render, the farm's menus for the
+        session's show (decision 0054); Reload first; disabled ones left out."""
+        menu = FakeMenu("ComfyFarm")
+        with mock.patch.dict("os.environ", {"RDO_CURRENT_SHOW": "bri3"}):
+            self.m.register_menu(menu)
+        self.assertEqual(self.farm.catalog_shows, ["bri3"])
+        self.assertEqual(menu.shape(), [
+            "Reload workflows", "-",
+            ("ComfyUI Local", [("Video", ["LTX layout render"]),
+                               ("Textures", ["CHORD PBR  (not on this show)"])]),
+            ("fal.ai  (off-site)", [("Image", ["Nano Banana 2 edit"])])])
+        menu.command("ComfyUI Local", "Video", "LTX layout render")()
+        self.assertEqual(self.groups()[-1]["cf_name"].value(), "ltx25_layout_render")
+        menu.command("Reload workflows")()
+        self.assertEqual(len(self.farm.catalog_shows), 2)
+
+    def test_a_workflow_the_show_may_not_use_says_why(self):
+        self.m.register_menu(FakeMenu("ComfyFarm"))
+        made = len(self.groups())
+        self.assertIsNone(self.m.create_from_menu("chord_pbr"))
+        self.assertEqual(self.nuke.messages[-1],
+                         "ComfyFarm: chord_pbr can't run for show bri3: Not cleared. (Policy rule bri3-alpha-only.)")
+        self.assertEqual(len(self.groups()), made)
+
+    def test_an_older_farm_lists_the_workflows_plainly(self):
+        self.farm.tree = None
+        menu = FakeMenu("ComfyFarm")
+        self.m.register_menu(menu)
+        self.assertEqual(menu.shape(), ["Reload workflows", "-", "LTX layout render", "CHORD PBR"])
+        self.assertEqual(self.m.menu_entries(None, [LAYOUT, dict(CHORD, enabled=False)]),
+                         [(("LTX layout render",), "ltx25_layout_render", None)])
+
+    def test_a_farm_not_reached(self):
+        menu = FakeMenu("ComfyFarm")
+        with mock.patch.object(farm, "workflows", side_effect=farm.FarmError("down")):
+            self.m.register_menu(menu)
+        self.assertEqual(menu.shape(), ["Reload workflows (farm not reached)"])
+
+    def test_the_node_label_names_its_provider(self):
+        self.assertEqual(self.m.node_label("wan22_i2i", None), "wan22_i2i")
+        self.assertEqual(self.m.node_label("wan22_i2i", None, "ComfyUI Local"), "ComfyUI Local\nwan22_i2i")
+        self.assertEqual(self.m.node_label("wan22_i2i", {"version": "v003", "status": "done"}, "fal.ai"),
+                         "fal.ai\nwan22_i2i\nv003 done")
+        self.m.register_menu(FakeMenu("ComfyFarm"))                 # the menus, as at Nuke's start
+        node = self.m.create_node(LAYOUT, connect={"input": self.read("Plate", SEQ)})
+        self.assertEqual(node["label"].value(), "ComfyUI Local\nltx25_layout_render")
+        self.assertEqual(node["cf_provider"].value(), "ComfyUI Local")
+        mine = self.m.create_node(LAYOUT, provider="")              # the panel says
+        self.assertEqual(mine["label"].value(), "ltx25_layout_render")
+        self.m.submit(node)
+        self.assertEqual(node["label"].value(), "ComfyUI Local\nltx25_layout_render\njob00001 queued")
+        self.m._catalog = None                                    # the menus didn't load: the node keeps its own
+        self.m.rebuild(node)
+        self.assertEqual(node["cf_provider"].value(), "ComfyUI Local")
+        self.assertTrue(node["label"].value().startswith("ComfyUI Local\n"))
 
     def test_submit_versions_and_result(self):
         plate = self.read("Plate", SEQ, 1001, 1010)

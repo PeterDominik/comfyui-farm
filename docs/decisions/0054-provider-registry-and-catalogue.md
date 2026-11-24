@@ -93,6 +93,20 @@ flag.
   - If the catalogue can't be read, or doesn't place every workflow, the picker keeps the
     plain list of every workflow, so none is ever out of reach.
   - Batch Submit keeps its plain list.
+- **Nuke reads the same menus for the session's show** (`RDO_CURRENT_SHOW`; step 1's fourth
+  pull request).
+  - **The Tab menu:** *ComfyFarm › <provider> › <task> › <workflow>*. The *Create Node*
+    level is gone, and *Reload workflows* is at the top.
+    - A workflow the show may not use is listed "(not on this show)". Picking it shows the
+      policy's reason instead of making the node.
+    - Off-site providers say so, e.g. "fal.ai (off-site)".
+  - **The panel:** three pickers, Provider, Task and Workflow. Under them a card says what
+    the workflow does, where it runs, whether it is off-site, why the show may not use it,
+    and its problems.
+  - **The node's label** names its provider, kept in the node, then its workflow and the
+    picked version. A node made before this keeps its old label until a Rebuild.
+  - **Hidden workflows** are in neither the menu nor the panel.
+  - **Fallback:** a farm without the catalogue gives the plain lists of before.
 
 ## Consequences
 

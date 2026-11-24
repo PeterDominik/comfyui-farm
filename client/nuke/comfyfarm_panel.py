@@ -117,6 +117,7 @@ class PanelModel:
         self.client = client
         self.user = user or getpass.getuser()
         self.workflows: list[dict] = []
+        self.catalog: list | None = None         # the menus' providers (load_catalog), or None: a plain list
         self.session_jobs: dict[str, str] = {}   # id -> last status, for jobs submitted here
         self.sources: dict[str, str] = {}        # id -> Nuke node the input came from
         self._pub_options: dict[str, dict] = {}  # workflow -> its publish options
@@ -130,6 +131,90 @@ class PanelModel:
 
     def workflow(self, name: str) -> dict | None:
         return next((w for w in self.workflows if w["name"] == name), None)
+
+    # ------------------------------------------------------------ the menus (decision 0054)
+    def load_catalog(self, show: str | None = None) -> list | None:
+        """The menus, Provider > Task > Workflow, for a show (GET /api/v1/catalog), without
+        the farm's hidden workflows. None when the farm can't give them (an older farm): the
+        panel and the Tab menu then list the workflows plainly, as before."""
+        try:
+            cat = self.client.catalog(show)
+        except (farm.FarmError, AttributeError):
+            cat = None
+        self.catalog = (cat or {}).get("providers") or None
+        return self.catalog
+
+    @staticmethod
+    def entry(tree: list | None, name: str) -> tuple[dict | None, dict | None, dict | None]:
+        """A workflow in the menus: (its provider, its task, its entry), or Nones."""
+        for p in tree or []:
+            for t in p.get("tasks") or []:
+                for w in t.get("workflows") or []:
+                    if w["name"] == name:
+                        return p, t, w
+        return None, None, None
+
+    @staticmethod
+    def provider_text(p: dict) -> str:
+        return p["label"] + ("  (off-site)" if p.get("offsite") else "")
+
+    @staticmethod
+    def workflow_text(w: dict) -> str:
+        """A workflow's name in a menu, with why an artist may not use it."""
+        return w["label"] + ("" if w.get("enabled", True) else "  (disabled)") + \
+            ("" if w.get("allowed", True) else "  (not on this show)")
+
+    @staticmethod
+    def pick(tree: list | None, provider: str | None = None, task: str | None = None,
+             workflow: str | None = None) -> dict:
+        """What the three pickers list and pick for a choice: [(value, text)] each, and the
+        values picked. A workflow named alone brings its provider and task; a choice that
+        isn't there is the first. A task with no name (Other) is ""."""
+        tree = tree or []
+        if workflow and provider is None:
+            p, t, _ = PanelModel.entry(tree, workflow)
+            if p is not None:
+                provider, task = p["name"], t.get("name") or ""
+        p = next((x for x in tree if x["name"] == provider), tree[0] if tree else None)
+        tasks = (p or {}).get("tasks") or []
+        t = next((x for x in tasks if (x.get("name") or "") == task), None) if task is not None else None
+        t = t or (tasks[0] if tasks else None)
+        flows = (t or {}).get("workflows") or []
+        w = next((x for x in flows if x["name"] == workflow), flows[0] if flows else None)
+        return {"providers": [(x["name"], PanelModel.provider_text(x)) for x in tree],
+                "tasks": [(x.get("name") or "", x["label"]) for x in tasks],
+                "workflows": [(x["name"], PanelModel.workflow_text(x)) for x in flows],
+                "provider": p["name"] if p else None, "task": (t.get("name") or "") if t else None,
+                "workflow": w["name"] if w else None}
+
+    @staticmethod
+    def provider_of(tree: list | None, name: str) -> str:
+        """The label of the provider a workflow is under, or ""."""
+        p, _, _ = PanelModel.entry(tree, name)
+        return p["label"] if p else ""
+
+    @staticmethod
+    def card_html(wf: dict, tree: list | None = None) -> str:
+        """Under the pickers: what the workflow does, where it runs, whether its inputs leave
+        Rodeo, why the session's show may not use it, and its problems."""
+        p, _, w = PanelModel.entry(tree, wf["name"])
+        parts = []
+        if wf.get("description"):
+            parts.append(html.escape(wf["description"].strip()))
+        if p is not None:
+            where = f"Runs on <b>{html.escape(p['label'])}</b>"
+            parts.append(f"<span style='color:#a3a9b0'>{where}"
+                         + (f": {html.escape(p['description'])}" if p.get("description") else ".") + "</span>")
+            if p.get("offsite"):
+                parts.append("<span style='color:#ecc98a'>Off-site: its inputs are sent outside Rodeo's network."
+                             "</span>")
+        if w is not None and not w.get("allowed", True):
+            parts.append(f"<span style='color:#f0a59c'>Not on this show: {html.escape(w.get('reason') or '')}</span>")
+        problems = list(wf.get("problems") or []) + [x for ps in (wf.get("worker_problems") or {}).values()
+                                                    for x in ps]
+        if problems:
+            parts.append(f"<span style='color:#f0a59c'>Problems: {html.escape('; '.join(problems))}</span>")
+        return "<br><br>".join(parts)
 
     @staticmethod
     def inputs(wf: dict) -> list[dict]:
@@ -863,14 +948,27 @@ if QtWidgets is not None:
             # Submit: the workflow's form.
             submit = QtWidgets.QWidget()
             tl = QtWidgets.QVBoxLayout(submit)
-            row = QtWidgets.QHBoxLayout()
-            row.addWidget(QtWidgets.QLabel("Workflow:"))
+            # Provider > Task > Workflow, as every menu reads (decision 0054). Without the
+            # farm's menus (an older farm), the workflow picker alone, listing them all.
+            pickers = QtWidgets.QGridLayout()
+            self.prov_label, self.task_label = QtWidgets.QLabel("Provider:"), QtWidgets.QLabel("Task:")
+            self.prov_combo, self.task_combo = QtWidgets.QComboBox(), QtWidgets.QComboBox()
+            self.prov_combo.setToolTip("Where the job runs")
+            self.task_combo.setToolTip("What you want done")
             self.wf_combo = QtWidgets.QComboBox()
+            self.prov_combo.currentIndexChanged.connect(self._provider_changed)
+            self.task_combo.currentIndexChanged.connect(self._task_changed)
             self.wf_combo.currentIndexChanged.connect(self._workflow_changed)
-            row.addWidget(self.wf_combo, 1)
-            tl.addLayout(row)
+            for i, (label, combo) in enumerate(((self.prov_label, self.prov_combo), (self.task_label, self.task_combo),
+                                                (QtWidgets.QLabel("Workflow:"), self.wf_combo))):
+                pickers.addWidget(label, i, 0)
+                pickers.addWidget(combo, i, 1)
+            pickers.setColumnStretch(1, 1)
+            tl.addLayout(pickers)
+            # The card: what it does, where it runs, off-site, not on this show, problems.
             self.desc_label = QtWidgets.QLabel("")
             self.desc_label.setWordWrap(True)
+            self.desc_label.setTextFormat(QtCore.Qt.RichText)
             tl.addWidget(self.desc_label)
             self.form_host = QtWidgets.QWidget()
             self.form = QtWidgets.QFormLayout(self.form_host)
@@ -966,24 +1064,52 @@ if QtWidgets is not None:
         # -------------------------------------------------------- farm / workflows
         def _connect(self):
             self.status_label.setText("Connecting…")
-            self._async(lambda: (farm.health(), farm.workers(), self.model.load_workflows()), self._connected)
+            show = PanelModel.rdo_context().get("show")      # the session's: what its menus may offer
+            self._async(lambda: (farm.health(), farm.workers(), self.model.load_workflows(),
+                                 self.model.load_catalog(show)), self._connected)
 
         def _connected(self, result, error):
             if error:
                 self.status_label.setText(f"<span style='color:#e0675b'>{html.escape(str(error))}</span>")
                 return
-            health, workers, workflows = result
+            health, workers, workflows, _ = result
             self._show_status(health, workers)
-            current = self.wf_combo.currentData() or self.settings.value("workflow")
-            self.wf_combo.blockSignals(True)
-            self.wf_combo.clear()
-            for wf in workflows:
-                self.wf_combo.addItem(wf["label"] + ("" if wf["enabled"] else "  (disabled)"), wf["name"])
-            idx = max(0, self.wf_combo.findData(current)) if current else 0
-            self.wf_combo.setCurrentIndex(idx)
-            self.wf_combo.blockSignals(False)
+            self._fill_pickers(workflow=self.wf_combo.currentData() or self.settings.value("workflow"))
             self._workflow_changed()
             self._poll(force=True)
+
+        @staticmethod
+        def _fill_combo(combo, items, value):
+            combo.blockSignals(True)
+            combo.clear()
+            for data, text in items:
+                combo.addItem(text, data)
+            combo.setCurrentIndex(max(0, combo.findData(value)) if value is not None else 0)
+            combo.blockSignals(False)
+
+        def _fill_pickers(self, provider=None, task=None, workflow=None):
+            """The three pickers for a choice (pick); without the farm's menus, the workflow
+            picker alone, listing every workflow as before."""
+            tree = self.model.catalog
+            for w in (self.prov_label, self.prov_combo, self.task_label, self.task_combo):
+                w.setVisible(tree is not None)
+            if tree is None:
+                items = [(wf["name"], wf["label"] + ("" if wf["enabled"] else "  (disabled)"))
+                         for wf in self.model.workflows]
+                self._fill_combo(self.wf_combo, items, workflow)
+                return
+            pick = PanelModel.pick(tree, provider, task, workflow)
+            self._fill_combo(self.prov_combo, pick["providers"], pick["provider"])
+            self._fill_combo(self.task_combo, pick["tasks"], pick["task"])
+            self._fill_combo(self.wf_combo, pick["workflows"], pick["workflow"])
+
+        def _provider_changed(self, *_):
+            self._fill_pickers(provider=self.prov_combo.currentData())
+            self._workflow_changed()
+
+        def _task_changed(self, *_):
+            self._fill_pickers(provider=self.prov_combo.currentData(), task=self.task_combo.currentData())
+            self._workflow_changed()
 
         def _show_status(self, health, workers):
             self._workers = workers
@@ -1044,10 +1170,7 @@ if QtWidgets is not None:
             if not wf:
                 return
             self.settings.setValue("workflow", wf["name"])
-            self.desc_label.setText(wf.get("description") or "")
-            if wf.get("problems") or wf.get("worker_problems"):
-                probs = list(wf.get("problems") or []) + [p for ps in (wf.get("worker_problems") or {}).values() for p in ps]
-                self.desc_label.setText((wf.get("description") or "") + "\n\nProblems: " + "; ".join(probs))
+            self.desc_label.setText(PanelModel.card_html(wf, self.model.catalog))
             for p in wf["params"]:
                 widget, row = self._field(wf, p)
                 label = p["label"] + (" *" if p.get("required") else "")
@@ -1278,7 +1401,8 @@ if QtWidgets is not None:
                     connect = {seq: src}
             try:
                 node = farm_node.create_node(wf, raw=raw, job_name=self.name_edit.text().strip() if self.name_edit else "",
-                                             publish_on=pub_on, pub_values=pub, connect=connect)
+                                             publish_on=pub_on, pub_values=pub, connect=connect,
+                                             provider=PanelModel.provider_of(self.model.catalog, wf["name"]))
             except Exception as e:  # noqa: BLE001 - shown in the panel
                 self._message(f"Couldn't create the node: {e}", True)
                 return

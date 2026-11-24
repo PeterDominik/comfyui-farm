@@ -545,5 +545,91 @@ class PanelLogic(unittest.TestCase):
                       "(Shot yht_1040), its frames <code>/rdo/shows/bc1/.published/yht/yht_1040/x.#.exr</code> 1001-1084", html)
 
 
+# ---------------------------------------------------------------- the menus (decision 0054)
+TREE = [   # GET /api/v1/catalog?show=bri3, as the farm draws it
+    {"name": "comfyui-local", "label": "ComfyUI Local", "offsite": False,
+     "description": "ComfyUI workflows on the farm's own GPUs.", "tasks": [
+         {"name": "masking", "label": "Masking", "workflows": [
+             {"name": "ltx25_alpha_gen", "label": "LTX 2.5 alpha generation", "enabled": True, "allowed": True},
+             {"name": "sam3_ltx_alpha", "label": "SAM3 x LTX alpha", "enabled": True, "allowed": False,
+              "reason": "sam3_ltx_alpha can't run for show bri3: Only alpha generation is cleared with the client. "
+                        "(Policy rule bri3-alpha-only.)"}]},
+         {"name": "image", "label": "Image", "workflows": [
+             {"name": "wan22_i2i", "label": "Wan 2.2 image to image", "enabled": False, "allowed": True}]},
+         {"name": None, "label": "Other", "workflows": [
+             {"name": "odd", "label": "Odd one", "enabled": True, "allowed": True}]}]},
+    {"name": "fal", "label": "fal.ai", "offsite": True, "description": "", "tasks": [
+        {"name": "image", "label": "Image", "workflows": [
+            {"name": "nano_banana2_edit_fal", "label": "Nano Banana 2 edit", "enabled": True, "allowed": True}]}]}]
+
+
+class PanelMenus(unittest.TestCase):
+    """The panel's Provider, Task and Workflow pickers and the card under them."""
+
+    def setUp(self):
+        self.panel = importlib.import_module("comfyfarm_panel")
+        self.PM = self.panel.PanelModel
+
+    def test_the_catalogue_for_the_sessions_show(self):
+        client = mock.Mock(FarmError=farm.FarmError)
+        client.catalog.return_value = {"show": "bri3", "providers": TREE, "errors": []}
+        m = self.PM(client=client, user="peter")
+        self.assertIs(m.load_catalog("bri3"), TREE)
+        client.catalog.assert_called_once_with("bri3")
+        client.catalog.side_effect = farm.FarmError("404: Not Found")          # an older farm
+        self.assertIsNone(m.load_catalog("bri3"))
+        self.assertIsNone(m.catalog)
+        self.assertIsNone(self.PM(client=object(), user="peter").load_catalog())   # a client without it
+        client.catalog.side_effect, client.catalog.return_value = None, {"providers": []}
+        self.assertIsNone(m.load_catalog())                                    # nothing in it: the plain list
+
+    def test_what_the_pickers_list_and_pick(self):
+        first = self.PM.pick(TREE)
+        self.assertEqual(first["providers"], [("comfyui-local", "ComfyUI Local"), ("fal", "fal.ai  (off-site)")])
+        self.assertEqual(first["tasks"], [("masking", "Masking"), ("image", "Image"), ("", "Other")])
+        self.assertEqual(first["workflows"], [("ltx25_alpha_gen", "LTX 2.5 alpha generation"),
+                                              ("sam3_ltx_alpha", "SAM3 x LTX alpha  (not on this show)")])
+        self.assertEqual((first["provider"], first["task"], first["workflow"]),
+                         ("comfyui-local", "masking", "ltx25_alpha_gen"))
+        image = self.PM.pick(TREE, "comfyui-local", "image")
+        self.assertEqual(image["workflows"], [("wan22_i2i", "Wan 2.2 image to image  (disabled)")])
+        other = self.PM.pick(TREE, "comfyui-local", "")
+        self.assertEqual((other["task"], other["workflow"]), ("", "odd"))
+        fal = self.PM.pick(TREE, "fal")
+        self.assertEqual((fal["tasks"], fal["workflow"]), ([("image", "Image")], "nano_banana2_edit_fal"))
+
+    def test_a_workflow_brings_its_provider_and_task(self):
+        saved = self.PM.pick(TREE, workflow="nano_banana2_edit_fal")       # the panel's last choice
+        self.assertEqual((saved["provider"], saved["task"], saved["workflow"]),
+                         ("fal", "image", "nano_banana2_edit_fal"))
+        other = self.PM.pick(TREE, workflow="odd")
+        self.assertEqual((other["provider"], other["task"]), ("comfyui-local", ""))
+        gone = self.PM.pick(TREE, workflow="gpu_test")                     # hidden, or gone: the first
+        self.assertEqual(gone["workflow"], "ltx25_alpha_gen")
+        moved = self.PM.pick(TREE, "comfyui-local", "relight", "nope")
+        self.assertEqual((moved["task"], moved["workflow"]), ("masking", "ltx25_alpha_gen"))
+        self.assertEqual(self.PM.pick(None), {"providers": [], "tasks": [], "workflows": [], "provider": None,
+                                              "task": None, "workflow": None})
+        self.assertEqual(self.PM.provider_of(TREE, "nano_banana2_edit_fal"), "fal.ai")
+        self.assertEqual((self.PM.provider_of(TREE, "gpu_test"), self.PM.provider_of(None, "odd")), ("", ""))
+
+    def test_the_card(self):
+        sam3 = {"name": "sam3_ltx_alpha", "description": "Mattes one <subject>.", "problems": []}
+        card = self.PM.card_html(sam3, TREE)
+        self.assertIn("Mattes one &lt;subject&gt;.", card)
+        self.assertIn("Runs on <b>ComfyUI Local</b>: ComfyUI workflows on the farm&#x27;s own GPUs.", card)
+        self.assertIn("Not on this show: sam3_ltx_alpha can&#x27;t run for show bri3: Only alpha generation is cleared "
+                      "with the client. (Policy rule bri3-alpha-only.)", card)
+        self.assertNotIn("Off-site", card)
+        fal = self.PM.card_html({"name": "nano_banana2_edit_fal", "description": ""}, TREE)
+        self.assertEqual(fal, "<span style='color:#a3a9b0'>Runs on <b>fal.ai</b>.</span><br><br>"
+                              "<span style='color:#ecc98a'>Off-site: its inputs are sent outside Rodeo's network."
+                              "</span>")
+        plain = self.PM.card_html({"name": "wan22_i2i", "description": "Reworks one image.",
+                                   "problems": ["no GPU"], "worker_problems": {"m1": ["too small"]}}, None)
+        self.assertEqual(plain, "Reworks one image.<br><br>"
+                                "<span style='color:#f0a59c'>Problems: no GPU; too small</span>")
+
+
 if __name__ == "__main__":
     unittest.main()
