@@ -283,6 +283,7 @@
   <button data-tab="alerts" id="alertsTab" hidden>Alerts<span class="count" id="alertCount"></span></button>
   <button data-tab="templates" id="templatesTab" hidden>Nuke Publish Templates</button>
   <button data-tab="policy" id="policyTab" hidden>Policy</button>
+  <button data-tab="spend" id="spendTab" hidden>Spend</button>
 </nav>
 
 <main>
@@ -472,6 +473,51 @@
     </table></div>
   </section>
 
+  <!-- What jobs at outside providers cost (spend.js): shown when one is switched on (providers.enabled) -->
+  <div id="tab-spend" class="panels" hidden>
+  <section>
+    <div class="sechead"><h2>Spend</h2></div>
+    <div class="envhelp" id="spendBanner" hidden></div>
+    <div class="envhelp">What the farm's jobs at outside providers cost, each show against its cap (policy.yaml's
+      <code>budgets</code>). A job is held at its estimate when it is queued, charged when it reaches the provider,
+      and billed at what the provider's bill says once the bill is read. Read-only.</div>
+    <div class="envhelp" id="spendNote"></div>
+    <div class="uwrap"><table><thead><tr><th>Show</th><th class="num">Cap</th><th class="num">Spent or held</th>
+      <th class="num" title="What the providers' bills charged">Billed</th>
+      <th class="num" title="Jobs that reached a provider whose bill isn't read yet, at their estimates">At
+        estimates</th>
+      <th class="num" title="Jobs that may have reached a provider, held until its bill says">Unsure</th>
+      <th class="num" title="Jobs queued or running, at their estimates">Running</th><th class="num">Left</th>
+      </tr></thead><tbody id="spendShows"></tbody></table></div>
+  </section>
+  <section>
+    <div class="sechead"><h2>Provider accounts</h2>
+      <span class="muted">Their balance and charges come from the provider's bill, read by the gateway</span></div>
+    <div class="uwrap"><table><thead><tr><th>Account</th><th class="num">Balance</th><th class="num">Topped up</th>
+      <th class="num">The farm's jobs</th><th>Other charges on its bill</th><th>Last bill read</th></tr></thead>
+      <tbody id="spendAccounts"></tbody></table></div>
+  </section>
+  <section>
+    <div class="sechead"><h2>Jobs</h2>
+      <select id="spendShow" title="One show only"></select>
+      <input type="date" id="spendSince" title="Queued on or after"> <input type="date" id="spendUntil"
+        title="Queued on or before">
+      <a id="spendCsv" class="small" href="/api/v1/spend?format=csv"
+        title="Every row of these, for a spreadsheet">CSV</a>
+      <span class="muted">The latest 500</span></div>
+    <div class="uwrap"><table><thead><tr><th>Queued</th><th>Show</th><th>Job</th><th>User</th><th>Workflow</th>
+      <th class="num">Estimate</th><th class="num">Billed</th><th>Its money</th></tr></thead>
+      <tbody id="spendRows"></tbody></table></div>
+  </section>
+  <section>
+    <div class="sechead"><h2>Top-ups</h2>
+      <span class="muted">Money put on a provider account, recorded on the manager's host:
+        <code>comfyfarm spend topup fal 50 --note "..."</code></span></div>
+    <div class="uwrap"><table><thead><tr><th>When</th><th>Account</th><th class="num">Amount</th><th>Note</th>
+      <th>By</th></tr></thead><tbody id="spendTopups"></tbody></table></div>
+  </section>
+  </div>
+
   <!-- What needs a person (alerts.js): shown while alerts are on -->
   <div id="tab-alerts" class="panels" hidden>
   <section>
@@ -579,7 +625,7 @@ const about = s => s == null ? "" : s < 60 ? Math.max(5, Math.round(s / 5) * 5) 
   : s < 5940 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 
 // ------------------------------------------------------------- tabs
-const TABS = ["submit", "batch", "queue", "machines", "runtimes", "usage", "alerts", "templates", "policy"];
+const TABS = ["submit", "batch", "queue", "machines", "runtimes", "usage", "alerts", "templates", "policy", "spend"];
 function showTab(tab) {
   if (!TABS.includes(tab)) tab = "submit";
   for (const t of TABS) $("#tab-" + t).hidden = t !== tab;
@@ -592,6 +638,7 @@ function showTab(tab) {
   if (tab === "usage") window.usageShown?.();    // usage.js: jobs, GPU hours and failures
   if (tab === "alerts") window.alertsShown?.();  // alerts.js: what needs a person
   if (tab === "policy") window.policyShown?.();  // policy.js: the rules in force
+  if (tab === "spend") window.spendShown?.();    // spend.js: the ledger
   if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
 }
 // In a narrow window the tabs scroll: keep the open one in view, also when a tab before it

@@ -12,6 +12,8 @@ The rules, each off at 0 (or false) in config.yaml's alerts:
   left drained (0033): each waits for a person.
 - budgets: a show that has spent or holds its budget's warn_at of its cap at outside
   providers, or all of it (policy.yaml's budgets, decision 0060).
+- bills: a provider's bill that its gateway couldn't read when last asked, and a provider
+  account whose balance is below ledger.balance_below (decision 0061).
 
 An alert is raised once, when its condition starts, and cleared when it ends; while it holds,
 its message follows what it is about (how many jobs wait). Both are logged, kept in the
@@ -40,7 +42,8 @@ __all__ = ["Alerts", "post_google_chat", "KINDS"]
 
 # Each rule's name on the dashboard.
 KINDS = {"machine_silent": "Machine silent", "job_waiting": "Jobs waiting", "failures": "Failures in a row",
-         "sweep": "Sweep problems", "rollout": "Rollout stopped", "sync": "Sync stopped", "budget": "Budget"}
+         "sweep": "Sweep problems", "rollout": "Rollout stopped", "sync": "Sync stopped", "budget": "Budget",
+         "bill": "Bill not read", "balance": "Balance low"}
 
 
 def _when(t: float) -> str:
@@ -159,6 +162,20 @@ class Alerts:
                     f"in policy.yaml (budgets)." if s["amount"] >= cap - 1e-9 else
                     f"Show {s['show']} has spent or holds {spent}, {s['amount'] / cap:.0%}: raise the cap in "
                     f"policy.yaml (budgets) before it runs out, if it should go on."))
+        if c.bills:
+            below = self.desk.cfg.ledger.balance_below
+            for a in self.desk.bills.accounts():
+                last, who = a["last_read"], f"{a['label']}'s account {a['account']}"
+                if last and last["error"]:
+                    out[f"bill:{a['provider']}:{a['account']}"] = ("bill", a["provider"], (
+                        f"{last['gateway'] or 'The gateway'} couldn't read {who}'s bill on {_when(last['at'])}: "
+                        f"{last['error']}. Its jobs stay at their estimates in the ledger until it can."))
+                if below and a["balance"] is not None and a["balance"] < below:
+                    stand_in = " (the stand-in's, which takes no money)" if a["stand_in"] else ""
+                    out[f"balance:{a['provider']}:{a['account']}"] = ("balance", a["provider"], (
+                        f"{who} has {money(a['balance'])} left{stand_in}, below ledger.balance_below "
+                        f"({money(below)}): top it up before its jobs are refused there, then record it on the "
+                        f"manager's host: comfyfarm spend topup {a['provider']} <amount>."))
         return out
 
     # ---------------------------------------------------------------- raising, clearing
@@ -221,7 +238,7 @@ class Alerts:
                "rules": {"machine_silent_minutes": c.machine_silent_minutes,
                          "job_waiting_minutes": c.job_waiting_minutes, "failures_in_a_row": c.failures_in_a_row,
                          "sweep_problems": c.sweep_problems, "rollout_problems": c.rollout_problems,
-                         "budgets": c.budgets},
+                         "budgets": c.budgets, "bills": c.bills},
                "google_chat": bool(c.google_chat), "posted_at": self.posted_at, "post_error": self.post_error,
                "kinds": KINDS, "active": [], "cleared": []}
         if c.enabled:

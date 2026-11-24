@@ -381,8 +381,8 @@ class Showing(Ledger):
         self.submit()
         self.submit(resolution="2K")
         self.assertEqual(self.farm.policy_view()["spend_now"], [
-            {"show": "rnd", "amount": 0.2, "held": 0.2, "charged": 0.0, "unsure": 0.0, "jobs": 2, "cap": 50,
-             "rule": "pilot-rnd", "warn_at": 0.8}])
+            {"show": "rnd", "amount": 0.2, "held": 0.2, "charged": 0.0, "unsure": 0.0, "billed": 0.0, "jobs": 2,
+             "cap": 50, "rule": "pilot-rnd", "warn_at": 0.8}])
 
     def test_an_alert_near_the_cap_and_at_it(self):
         self.set_policy(budgets(0.2))

@@ -47,6 +47,9 @@ class LocalLink:
     async def report(self, msg: dict) -> dict:
         return _copy(self.desk.report(_copy(msg)))
 
+    async def bill(self, msg: dict) -> dict:
+        return _copy(self.desk.bill(_copy(msg)))
+
     async def close(self) -> None:
         pass
 
@@ -128,6 +131,9 @@ class HttpLink:
 
     async def report(self, msg: dict) -> dict:
         return await self._post("/report", msg)
+
+    async def bill(self, msg: dict) -> dict:
+        return await self._post("/bill", msg, timeout=120.0)
 
     async def close(self) -> None:
         if self.http is not None:

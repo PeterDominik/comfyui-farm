@@ -162,6 +162,8 @@ class ApiRunner:
         self.lanes: dict[str, int] = {}             # provider -> its jobs at once here
         self.adapters: dict[str, object] = {}       # provider -> its adapter, with its keys
         self.provider_problems: dict[str, list[str]] = {}
+        # What's wrong with a key that only reads the bill (decision 0061): its jobs still run.
+        self.bill_problems: dict[str, list[str]] = {}
         self.problems: list[str] = []               # the gateway's own (gateway.yaml)
         # Each provider's price for each endpoint, as read from it (decision 0059):
         # {(provider, endpoint): {unit_price, unit, currency, at}}.
@@ -199,7 +201,9 @@ class ApiRunner:
                                      f"gateway.yaml)")
                     continue
                 key, why = read_key(key_path(self.cfg, pc.keys[k]))
-                if why:
+                if why and k not in mod.NEEDS:
+                    self.bill_problems.setdefault(name, []).append(why)
+                elif why:
                     probs.append(why)
                 else:
                     keys[k] = key
@@ -270,6 +274,34 @@ class ApiRunner:
         if changed and self.host is not None:
             await self.host.send_nodes()
         return changed
+
+    async def read_bill(self, since: float, until: float) -> list[dict]:
+        """What each provider billed the account between since and until, for the manager's
+        ledger (decision 0061), asked in a check-in reply: one record per provider with
+        `events` and `balance`, or `error` when it can't be read (no billing key, refused, not
+        answered). `stand_in`: it was the stand-in's bill, which takes no money."""
+        out = []
+        for provider, adapter in self.adapters.items():
+            if provider not in self.lanes or not hasattr(adapter, "bill"):
+                continue
+            said = {"provider": provider, "account": self.gc.account, "since": since, "until": until,
+                    "stand_in": bool(getattr(adapter, "stand_in", False)), "events": [], "balance": None}
+            why = ((self.provider_problems.get(provider) or []) + (self.bill_problems.get(provider) or [])
+                   or adapter.bill_problems())
+            if why:
+                out.append({**said, "error": "; ".join(why)})
+                continue
+            try:
+                events = await adapter.bill(since, until)
+                balance = await adapter.balance()
+            except ApiError as e:
+                log.warning("gateway %s: can't read %s's bill: %s", self.name, self._label(provider), e)
+                out.append({**said, "error": str(e)})
+                continue
+            log.info("gateway %s: read %s's bill: %d charge(s) since %s", self.name, self._label(provider),
+                     len(events), time.strftime("%Y-%m-%d %H:%M", time.localtime(since)))
+            out.append({**said, "events": events, "balance": balance, "error": None})
+        return out
 
     async def close(self) -> None:
         for t in self._follows.values():

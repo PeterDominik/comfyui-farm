@@ -60,7 +60,17 @@ alerts:
   sweep_problems: true         # the retention sweeper's latest report lists problems
   rollout_problems: true       # a rollout or a ComfyUI sync stopped, waiting for a person
   budgets: true                # a show past its budget's warn_at, or at its cap (policy.yaml, decision 0060)
+  bills: true                  # a provider's bill not read when asked; a balance below ledger.balance_below
   google_chat: ''              # the space's webhook (Apps & integrations > Webhooks): secret, keep it here
+
+# The spend ledger read against the providers' bills (README, The providers' bills; decision
+# 0061). The gateway reads each bill with its billing key when asked: each night at `at` with
+# nightly, or on this host with `python -m comfyfarm spend reconcile`.
+ledger:
+  nightly: false
+  at: "05:00"                  # the manager's local time
+  grace_hours: 48              # a job its bill doesn't show this long after it ended is taken as not charged
+  balance_below: 0             # an alert when a provider account's balance is below this many dollars; 0: off
 
 # Evals (README, Evals; decision 0053): a definition's eval: run on a machine by `comfyfarm
 # eval`. With gate, rollouts and ComfyUI syncs run them on each machine before going on.

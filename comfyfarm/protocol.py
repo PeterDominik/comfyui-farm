@@ -41,11 +41,19 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              When the manager's sync reaches the machine (it is drained and holds no
              jobs), the reply carries `sync`: {id, runner, file, force}: bring the
              runner's environment to the farm's file, which must be version `file`
-             in the agent's own checkout (decision 0033).
+             in the agent's own checkout (decision 0033). To the gateway, when the
+             ledger wants the providers' bills read (decision 0061), it carries `bill`:
+             {since, until}, epoch seconds.
   report     one step of one job's run: preparing progress, dispatched, running,
              progress, postprocessing, done, failed, cancelled, lost. `dispatched` may
              carry `submitted`: what the runner handed its backend, which the manager
-             keeps for people to look at and never reads.
+             keeps for people to look at. For a job that costs money, `failed` and
+             `cancelled` carry it too, and the ledger reads what reached the provider
+             from it (decision 0060).
+  bill       the gateway, as asked: one provider's bill for {since, until} (decision
+             0061): `provider`, `account`, `events` (each charge: request_id, endpoint,
+             at, quantity, unit, unit_price, cost in US dollars), `balance` ({amount,
+             currency} or null), `stand_in`, and `error` when it couldn't be read.
 
 Every job an agent holds is one run of it, named by its attempt id (also the prompt id
 in ComfyUI). The manager acts on a report only while that run is the job's current one,

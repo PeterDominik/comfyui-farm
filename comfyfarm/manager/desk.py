@@ -43,6 +43,7 @@ from ..protocol import HELD, ON_WORKER, build, duration, now
 from . import eta as E
 from . import ledger as L
 from .alerts import Alerts
+from .bills import Bills
 from .evals import Evals
 from .farm import Farm
 from .rollouts import Rollouts
@@ -148,6 +149,7 @@ class Desk:
         self.syncs = Syncs(self)            # a runner's environment synced on them in turn (decision 0033)
         self.alerts = Alerts(self)          # what needs a person (decision 0052)
         self.evals = Evals(self)            # a definition's reference job on one machine (decision 0053)
+        self.bills = Bills(self)            # the providers' bills, read into the ledger (decision 0061)
 
     @property
     def lease_seconds(self) -> float:
@@ -167,6 +169,8 @@ class Desk:
             self._tasks.append(asyncio.create_task(self._gpu_loop(), name="gpu history"))
         if self.cfg.alerts.enabled:
             self._tasks.append(asyncio.create_task(self.alerts.loop(), name="alerts"))
+        if self.cfg.ledger.nightly:
+            self._tasks.append(asyncio.create_task(self.bills.loop(), name="bills"))
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -632,6 +636,9 @@ class Desk:
                 cancel.append({"job": jid, "attempt": h.get("attempt")})
         jobs = self._claim(a) if self.usable(a) else []       # drained: only the evals pinned to it
         out: dict = {"drop": drop, "cancel": cancel, "jobs": jobs}
+        bill = self.bills.instructions(a)
+        if bill:
+            out["bill"] = bill          # a gateway: read its providers' bills (decision 0061)
         if a.want_nodes:
             out["nodes"], a.want_nodes = True, False
         if a.want_release:
@@ -1025,6 +1032,13 @@ class Desk:
         self.wake()
         now_ = self.store.get(jid)
         return {"ok": j is not None, "status": now_["status"] if now_ else None}
+
+    def bill(self, msg: dict) -> dict:
+        """One provider's bill, read by a gateway as asked (decision 0061)."""
+        a = self._known(msg)
+        if a is None:
+            return {"ok": False, "hello": True}
+        return self.bills.received(a.name, msg)
 
     def _reached(self, job: dict, ev: str, told) -> None:
         """What a paid job's gateway says reached its provider (decision 0060), for the ledger:

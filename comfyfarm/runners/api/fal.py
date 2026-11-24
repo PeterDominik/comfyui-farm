@@ -6,8 +6,12 @@
     cancel   PUT  {queue}/{owner}/{app}/requests/{id}/cancel
     upload   POST {rest}/storage/auth/token?storage_type=fal-cdn-v3, then POST {cdn}/files/upload
     prices   GET  {api}/v1/models/pricing?endpoint_id=a,b         each endpoint's unit price (0059)
+    bill     GET  {api}/v1/models/billing-events?start=&end=      what fal.ai charged, per request (0061)
+    balance  GET  {api}/v1/account/billing?expand=credits         the account's credit balance (0061)
 
-Every call but the upload itself carries the requests key (`Authorization: Key ...`). The
+Every call but the upload itself carries the requests key (`Authorization: Key ...`), but
+the bill's and the balance's, which carry the billing key (fal.ai's BILLING preset): without
+one the bill isn't read, and the manager's ledger keeps its estimates. The
 status, result and cancel URLs are made here from the endpoint's owner and app and the
 request's id, never taken from an answer: the key goes to fal.ai's own hosts only, and a run
 is followed again after a restart from its id alone. Results are public files on fal.ai's
@@ -26,10 +30,11 @@ import asyncio
 import base64
 import ipaddress
 import json
+import math
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -39,7 +44,9 @@ from . import ApiError
 
 QUEUE, REST, CDN, API = "https://queue.fal.run", "https://rest.fal.ai", "https://v3.fal.media", "https://api.fal.ai"
 REAL_SERVICE = False                    # phase 11's step 5 turns this on
-NEEDS = ("requests",)                   # the billing key comes with the ledger (step 4)
+NEEDS = ("requests",)                   # the billing key is for the bill alone (decision 0061)
+BILL_PAGE = 1000                        # billing events a page; fal.ai gives up to 10,000
+BILL_PAGES = 200                        # pages a read, at most: a read never runs on forever
 LIFECYCLE = "X-Fal-Object-Lifecycle-Preference"
 CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
                  ".mp4": "video/mp4"}
@@ -123,6 +130,35 @@ def _detail(r: httpx.Response) -> str:
     return ""
 
 
+def _iso(t: float, up: bool = False) -> str:
+    """A time as fal.ai takes it, to the second: rounded up for the end of a time (it is
+    exclusive), so a charge in its last second is read."""
+    return datetime.fromtimestamp(math.ceil(t) if up else math.floor(t), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _event(e) -> dict | None:
+    """One billing event as the ledger takes it, or None for one it can't read."""
+    if not isinstance(e, dict) or not (isinstance(e.get("request_id"), str) and REQUEST_ID.fullmatch(e["request_id"])):
+        return None
+    try:
+        at = datetime.fromisoformat(str(e.get("timestamp")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    nano, total = e.get("cost_estimate_nano_usd"), e.get("cost_total")
+    if isinstance(nano, (int, float)) and not isinstance(nano, bool) and nano >= 0:
+        cost = nano / 1e9
+    elif isinstance(total, (int, float)) and not isinstance(total, bool) and total >= 0:
+        cost = float(total)
+    else:
+        return None
+
+    def num(v):
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return {"request_id": e["request_id"], "endpoint": str(e.get("endpoint_id") or ""), "at": at,
+            "quantity": num(e.get("quantity")), "unit": str(e["unit"]) if e.get("unit") else None,
+            "unit_price": num(e.get("unit_price")), "cost": round(cost, 9)}
+
+
 def _until(text) -> float:
     try:
         return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
@@ -136,6 +172,7 @@ class Adapter:
 
     def __init__(self, keys: dict, url: str = "", media_seconds: int = 3600, transport=None, timeout: float = 60.0):
         self._key = str(keys.get("requests") or "")
+        self._billing = str(keys.get("billing") or "")
         base = url.rstrip("/")
         self.stand_in = bool(base)
         self.queue, self.rest, self.cdn, self.api = (base, base, base, base) if base else (QUEUE, REST, CDN, API)
@@ -150,6 +187,12 @@ class Adapter:
     def problems(self) -> list[str]:
         """Why it can't send anything. Its keys are the runner's to check (NEEDS)."""
         return [] if REAL_SERVICE or (self.stand_in and local(self.queue)) else [OFF]
+
+    def bill_problems(self) -> list[str]:
+        """Why it can't read fal.ai's bill, beyond what stops it sending anything."""
+        return [] if self._billing else [
+            "there's no file for fal.ai's billing key (providers.fal.keys.billing in gateway.yaml, a key with "
+            "fal.ai's BILLING permissions), so the gateway can't read fal.ai's bill: the ledger keeps its estimates"]
 
     # ---------------------------------------------------------------- calls
     def _may_send(self, url: str, to: str | None = None) -> bool:
@@ -168,7 +211,10 @@ class Adapter:
         return True
 
     def _scrub(self, text: str) -> str:
-        return text.replace(self._key, "***") if self._key else text
+        for key in (self._key, self._billing):
+            if key:
+                text = text.replace(key, "***")
+        return text
 
     async def _call(self, method: str, url: str, auth: str | None = None, to: str | None = None, **kw):
         if not self._may_send(url, to):
@@ -187,12 +233,13 @@ class Adapter:
         except httpx.HTTPError as e:
             raise ApiError(f"the connection to fal.ai failed ({type(e).__name__})", "unknown") from None
 
-    def _refusal(self, r: httpx.Response, doing: str) -> ApiError:
+    def _refusal(self, r: httpx.Response, doing: str, key: str = "requests") -> ApiError:
         detail = self._scrub(_detail(r))[:600]
         code = r.status_code
         if code in (401, 403):
-            return ApiError(f"fal.ai refused the gateway's key while {doing} ({code}): check keys.requests in "
-                            f"gateway.yaml on the gateway")
+            needs = " (it needs fal.ai's BILLING permissions)" if key == "billing" else ""
+            return ApiError(f"fal.ai refused the gateway's key while {doing} ({code}): check keys.{key} in "
+                            f"gateway.yaml on the gateway{needs}")
         if code == 429:
             return ApiError(f"fal.ai is busy (429, too many requests) while {doing}", "transient")
         if code >= 500:
@@ -402,6 +449,42 @@ class Adapter:
                 out[p["endpoint_id"]] = {"unit_price": float(price), "unit": str(p.get("unit") or ""),
                                          "currency": str(p.get("currency") or "")}
         return out
+
+    # ---------------------------------------------------------------- the bill (decision 0061)
+    async def bill(self, since: float, until: float) -> list[dict]:
+        """What fal.ai charged the account between since and until (epoch seconds), one event per
+        charge: {request_id, endpoint, at, quantity, unit, unit_price, cost}, cost in US dollars
+        after discounts. Every page is read, or ApiError: a bill read in part is no bill."""
+        doing = "reading its bill"
+        params = {"start": _iso(since), "end": _iso(until, up=True), "limit": BILL_PAGE}
+        out: list[dict] = []
+        for _ in range(BILL_PAGES):
+            r = await self._call("GET", f"{self.api}/v1/models/billing-events", auth=f"Key {self._billing}",
+                                 to="key", params=params)
+            if not r.is_success:
+                raise self._refusal(r, doing, "billing")
+            d = self._json(r, doing)
+            for e in d.get("billing_events") or []:
+                event = _event(e)
+                if event is not None:
+                    out.append(event)
+            cursor = d.get("next_cursor")
+            if not cursor:
+                return out
+            params = {**params, "cursor": str(cursor)}
+        raise ApiError(f"fal.ai's bill ran over {BILL_PAGES} pages of {BILL_PAGE}: read a shorter time", "transient")
+
+    async def balance(self) -> dict | None:
+        """The account's credit balance, {amount, currency}; None when fal.ai doesn't give one."""
+        r = await self._call("GET", f"{self.api}/v1/account/billing", auth=f"Key {self._billing}", to="key",
+                             params={"expand": "credits"})
+        if not r.is_success:
+            raise self._refusal(r, "reading its balance", "billing")
+        credits = self._json(r, "reading its balance").get("credits")
+        amount = credits.get("current_balance") if isinstance(credits, dict) else None
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            return None
+        return {"amount": float(amount), "currency": str(credits.get("currency") or "")}
 
     async def close(self) -> None:
         await self._client.aclose()

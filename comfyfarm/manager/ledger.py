@@ -17,9 +17,14 @@ says what became of the money:
   sent, a gateway gone silent). Held like a charge until the bill shows whether it did.
 
 The ledger never guesses down: a row counts against its show's cap at its estimate until it
-is released. For the same reason a paid job is never queued again once it may have reached
-its provider (it would be paid for twice): it fails, and says to look in the provider's
-request history (Farm.lost)."""
+is released, or until the provider's bill settles it (manager/bills.py, decision 0061):
+
+- billed: the bill charged it, and its amount is what was charged. A row the bill should show
+  by now and doesn't is billed $0 if it was charged, or released if it was unsure.
+
+For the same reason a paid job is never queued again once it may have reached its provider
+(it would be paid for twice): it fails, and says to look in the provider's request history
+(Farm.lost)."""
 
 from __future__ import annotations
 
@@ -29,7 +34,7 @@ from .prices import money
 __all__ = ["EPS", "STATES", "confirm_text", "fits", "needs_yes", "paid", "row", "settled"]
 
 EPS = 1e-9                  # amounts are rounded to millionths of a dollar (prices.estimate)
-STATES = ("held", "charged", "unsure", "released")
+STATES = ("held", "charged", "unsure", "released", "billed")
 
 
 def paid(job: dict | None) -> bool:

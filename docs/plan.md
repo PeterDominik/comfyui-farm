@@ -414,3 +414,15 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - a paid job is never queued again, and a cancel while it is prepared goes to the gateway;
   - a yes at `confirm_above`, asked by the dashboard, the Nuke panel and node, and the client;
   - each job's money on the Queue tab, the budgets on the Policy tab, and a `budgets` alert.
+  Peter updated and tested it on the pilot on 24 November.
+
+  The third reads the providers' bills (0061):
+  - the manager asks, each night with `ledger.nightly` or with `comfyfarm spend reconcile` on
+    its host; the gateway reads each provider's bill and balance with its billing key;
+  - each job the bill charges is billed at what it charged. An unsure one takes a charge it
+    can be placed with. One the bill doesn't show 48 hours after it ended is billed $0, or
+    released;
+  - top-ups recorded on the manager's host (`comfyfarm spend topup fal 50`), and alerts for a
+    bill not read and a low balance;
+  - the Spend tab, the CSV of a show's jobs for any dates, and `comfyfarm spend`;
+  - the stand-in's bill charges $0 (it takes no money), or fal.ai's prices with `--bill`.

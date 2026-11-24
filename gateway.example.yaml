@@ -34,7 +34,10 @@ gateway:
       # when it starts, and sends them to fal.ai only. For the stand-in, make the key up.
       keys:
         requests: ~/.comfyfarm/fal_requests.key
-        # billing: ~/.comfyfarm/fal_billing.key     # with the ledger (step 4)
+        # A key with fal.ai's BILLING permissions: the gateway reads fal.ai's bill and balance
+        # with it when the manager asks, for the ledger (decision 0061). Without it jobs still
+        # run, and the ledger keeps its estimates. For the stand-in, make it up too.
+        billing: ~/.comfyfarm/fal_billing.key
 
 log_dir: logs                    # logs/agent-<name>.log; relative = next to this file
 

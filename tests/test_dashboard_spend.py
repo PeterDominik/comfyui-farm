@@ -1,7 +1,7 @@
-"""What jobs at outside providers cost on the dashboard (static/spend.js, decisions 0059,
-0060): the money in a job's Queue row and details, the question asked before a job of
-budgets.confirm_above or more is queued, each show's spending on the Policy tab; and the page
-using them.
+"""What jobs at outside providers cost on the dashboard (static/spend.js, decisions 0059 to
+0061): the money in a job's Queue row and details, the question asked before a job of
+budgets.confirm_above or more is queued, each show's spending on the Policy tab, the Spend
+tab's rows; and the page using them.
 
 The functions touch no page, so node runs them alone. Skipped where node isn't installed;
 GitHub's runners have it."""
@@ -60,6 +60,50 @@ class Says(unittest.TestCase):
         self.assertIn("Held: it may have reached the provider, and the farm can't tell.", unsure)
         self.assertEqual(none, "")
 
+    def test_what_the_bill_said(self):
+        billed, nothing, gone = self.run_js(
+            ["rowState", [{"state": "billed", "actual": 0.075}]], ["rowState", [{"state": "billed", "actual": 0}]],
+            ["rowState", [{"state": "released", "billed_at": 1.0}]])
+        self.assertEqual(billed, "Billed $0.075 on the provider's bill.")
+        self.assertEqual(nothing, "Billed $0.00: the provider's bill charges nothing for it.")
+        self.assertEqual(gone, "Released: the provider's bill shows no request of it.")
+        line, = self.run_js(["spendLine", [{"info": {"cost": COST}, "spend": {"state": "billed", "actual": 0.12}}]])
+        self.assertEqual(line, COST["text"] + " Billed $0.12 on the provider's bill.")
+
+    def test_the_spend_tab(self):
+        t = 1795582800          # Wed 25 Nov 2026 05:00 UTC; node runs in UTC
+        show, full = self.run_js(
+            ["showCells", [{"show": "rnd", "cap": 50, "amount": 41.2, "billed": 40, "charged": 1, "unsure": 0.08,
+                            "held": 0.12, "warn_at": 0.8}]],
+            ["showCells", [{"show": "ret2", "cap": 5, "amount": 5, "warn_at": 0.8}]])
+        self.assertEqual(show, {"show": "rnd", "cap": "$50.00", "amount": "$41.20", "billed": "$40.00",
+                                "charged": "$1.00", "unsure": "$0.08", "held": "$0.12", "left": "$8.80",
+                                "cls": "warn"})
+        self.assertEqual((full["left"], full["cls"]), ("$0.00", "err"))
+        read = {"at": t, "stand_in": 1, "error": None, "events": 3, "matched": 2, "zeroed": 1, "released": 0}
+        ok, bad, never = self.run_js(["readText", [read]], ["readText", [{**read, "error": "no billing key"}]],
+                                     ["readText", [None]])
+        self.assertEqual(ok, "25 Nov 05:00 (the stand-in's bill, which takes no money): 3 charges; 2 jobs billed, "
+                             "1 billed nothing, 0 released")
+        self.assertEqual((bad, never), ("25 Nov 05:00: not read: no billing key", "not read yet"))
+        acct, = self.run_js(["accountCells", [{"label": "fal.ai", "account": "peter-pilot", "balance": 41.2,
+                                               "balance_at": t, "stand_in": False, "topped_up": 50, "spent": 8.8,
+                                               "bill": {"other": 0.5, "other_charges": 2}, "last_read": read}]])
+        self.assertEqual({k: acct[k] for k in ("account", "balance", "topped", "spent", "other", "cls")},
+                         {"account": "fal.ai · peter-pilot", "balance": "$41.20", "topped": "$50.00",
+                          "spent": "$8.80", "other": "$0.50 (2 charges no job of the farm's is for)", "cls": ""})
+        row, = self.run_js(["ledgerCells", [{"created_at": t, "show": "rnd", "job_id": "abcdef1234", "job_name": None,
+                                             "user": "ann", "estimate": 0.08, "actual": None, "amount": 0.08,
+                                             "state": "charged"}]])
+        self.assertEqual((row["when"], row["job"], row["estimate"], row["billed"]), ("25 Nov 05:00", "abcdef12",
+                                                                                    "$0.08", ""))
+        href, every = self.run_js(["csvHref", ["rnd", "2026-11-01", ""]], ["csvHref", ["", "", ""]])
+        self.assertEqual((href, every), ("/api/v1/spend?format=csv&show=rnd&since=2026-11-01",
+                                         "/api/v1/spend?format=csv"))
+        note, = self.run_js(["readingNote", [{"reading": {"nightly": True, "at": "05:00", "grace_hours": 48}}]])
+        self.assertTrue(note.startswith("The providers' bills are read each night at 05:00 (ledger.at): comfyfarm "
+                                        "spend reconcile"), note)
+
     def test_the_question_before_a_costly_job(self):
         q, = self.run_js(["yesQuestion", [COST]])
         self.assertEqual(q, COST["text"] + "\n\n" + COST["budget"]["text"] + "\n\nSubmit it for about $0.12?")
@@ -90,6 +134,15 @@ class ThePage(unittest.TestCase):
         self.assertIn("{ ...body, confirm_cost: yes }) }), confirm);", html)
         self.assertIn('const j = await withYes(yes => api(`/api/v1/jobs/${t.dataset.retry}/retry${yes == null ? "" : '
                       '"?confirm_cost=" + yes}`', html)
+        # The Spend tab: its button, its section and the elements spend.js draws.
+        self.assertIn('<button data-tab="spend" id="spendTab" hidden>Spend</button>', html)
+        self.assertIn('"policy", "spend"];', html)
+        self.assertIn('if (tab === "spend") window.spendShown?.();', html)
+        script = SCRIPT.read_text(encoding="utf-8")
+        for el in ("tab-spend", "spendBanner", "spendNote", "spendShows", "spendAccounts", "spendShow", "spendSince",
+                   "spendUntil", "spendCsv", "spendRows", "spendTopups"):
+            self.assertIn(f'id="{el}"', html)
+            self.assertIn(f'"{el}"', script.replace("#", ""))
         policy = (STATIC / "policy.js").read_text(encoding="utf-8")
         self.assertIn("renderBudgets(f?.budgets, p?.spend_now);", policy)
         self.assertIn("budgetNow(rule, spendNow)", policy)

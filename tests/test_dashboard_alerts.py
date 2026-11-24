@@ -23,7 +23,7 @@ from test_dashboard_envs import HARNESS, NODE, STATIC, Panels   # noqa: E402
 SCRIPT = STATIC / "alerts.js"
 T = datetime(2026, 11, 22, 23, 10, tzinfo=timezone.utc).timestamp()     # a Sunday
 RULES = {"machine_silent_minutes": 10, "job_waiting_minutes": 60, "failures_in_a_row": 3, "sweep_problems": True,
-         "rollout_problems": True, "budgets": True}
+         "rollout_problems": True, "budgets": True, "bills": True}
 
 
 def view(**kw):
@@ -61,8 +61,9 @@ class Says(unittest.TestCase):
                               "jobs have waited for a machine for 60 min", "a machine's last 3 jobs all failed",
                               "the retention sweeper's latest report lists problems",
                               "a rollout or a ComfyUI sync has stopped, waiting for a person",
-                              "a show has spent its budget's warn_at of its cap at outside providers, or all of it"])
-        self.assertEqual(len(some), 4)
+                              "a show has spent its budget's warn_at of its cap at outside providers, or all of it",
+                              "a provider's bill couldn't be read, or its balance is low (ledger.balance_below)"])
+        self.assertEqual(len(some), 5)
         self.assertEqual(none, [])
 
     def test_the_banner_and_the_note(self):
