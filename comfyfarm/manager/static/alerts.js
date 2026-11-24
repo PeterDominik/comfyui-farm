@@ -33,7 +33,8 @@ function alertsRules(r) {
     r.failures_in_a_row ? `a machine's last ${r.failures_in_a_row} jobs all failed` : "",
     r.sweep_problems ? "the retention sweeper's latest report lists problems" : "",
     r.rollout_problems ? "a rollout or a ComfyUI sync has stopped, waiting for a person" : "",
-    r.budgets ? "a show has spent its budget's warn_at of its cap at outside providers, or all of it" : ""]
+    r.budgets ? "a show has spent its budget's warn_at of its cap at outside providers, or all of it" : "",
+    r.bills ? "a provider's bill couldn't be read, or its balance is low (ledger.balance_below)" : ""]
     .filter(Boolean);
 }
 

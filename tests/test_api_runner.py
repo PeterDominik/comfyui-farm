@@ -210,6 +210,66 @@ class FalAdapter(Tmp):
         self.assertEqual([(c["method"], c["path"], c["keyed"]) for c in self.mock.calls],
                          [("GET", "/v1/models/pricing", True)])
 
+    def test_its_bill_and_balance(self):
+        """fal.ai's billing events and balance, with the billing key (decision 0061): every page,
+        each charge as the ledger takes it."""
+        t = time.time()
+        self.mock = mock_fal.MockFal(KEY, BASE, billing_key="billing:key", bill=True, balance=50.0,
+                                     wall=lambda: t - 120)
+
+        async def go():
+            a = self.adapter({"requests": KEY, "billing": "billing:key"})
+            try:
+                for res in ("1K", "2K", "4K"):
+                    await a.submit(EDIT, {"prompt": "rain", "image_urls": ["data:image/png;base64,AA=="],
+                                          "resolution": res})
+                await a.submit(EDIT, {"prompt": "MOCK_FAIL", "image_urls": ["data:image/png;base64,AA=="]})
+                with mock.patch.object(F, "BILL_PAGE", 2):
+                    return await a.bill(t - 3600, t), await a.balance()
+            finally:
+                await a.close()
+        events, balance = asyncio.run(go())
+        self.assertEqual([round(e["cost"], 6) for e in events], [0.08, 0.12, 0.16])      # the failed one isn't charged
+        self.assertEqual({k: events[0][k] for k in ("endpoint", "quantity", "unit", "unit_price")},
+                         {"endpoint": EDIT, "quantity": 1.0, "unit": "image", "unit_price": 0.08})
+        self.assertAlmostEqual(events[0]["at"], t - 120, delta=1)
+        self.assertEqual(balance, {"amount": 49.64, "currency": "USD"})
+        billed = [c for c in self.mock.calls if c["path"].startswith("/v1/")]
+        self.assertEqual([c["path"] for c in billed], ["/v1/models/billing-events"] * 2 + ["/v1/account/billing"])
+
+    def test_its_bill_needs_the_billing_key(self):
+        self.mock = mock_fal.MockFal(KEY, BASE, billing_key="billing:key")
+        self.assertIn("there's no file for fal.ai's billing key (providers.fal.keys.billing in gateway.yaml",
+                      self.adapter().bill_problems()[0])
+
+        async def go():
+            a = self.adapter({"requests": KEY, "billing": "billing:wrong"})
+            try:
+                await a.bill(time.time() - 60, time.time())
+            finally:
+                await a.close()
+        with self.assertRaises(ApiError) as e:
+            asyncio.run(go())
+        self.assertEqual(str(e.exception), "fal.ai refused the gateway's key while reading its bill (403): check "
+                                           "keys.billing in gateway.yaml on the gateway (it needs fal.ai's BILLING "
+                                           "permissions)")
+        self.assertEqual(self.adapter({"requests": KEY, "billing": "billing:key"})._scrub("a billing:key b"), "a *** b")
+
+    def test_the_stand_ins_bill_takes_no_money(self):
+        t = time.time()
+        self.mock = mock_fal.MockFal(KEY, BASE, wall=lambda: t - 60)
+
+        async def go():
+            a = self.adapter({"requests": KEY, "billing": KEY})
+            try:
+                await a.submit(EDIT, {"prompt": "rain", "image_urls": ["data:image/png;base64,AA=="]})
+                return await a.bill(t - 3600, t), await a.balance()
+            finally:
+                await a.close()
+        events, balance = asyncio.run(go())
+        self.assertEqual([e["cost"] for e in events], [0.0])
+        self.assertEqual(balance["amount"], 50.0)
+
     def test_sync_mode_files_come_inline(self):
         async def go():
             a = self.adapter()
@@ -302,13 +362,15 @@ class Keys(Tmp):
     def test_the_stand_in_answers_where_gateway_yaml_sends_fal(self):
         gw = self.tmp / "gateway.yaml"
 
-        def write(url):
+        def write(url, **keys):
             gw.write_text(yaml.safe_dump({"name": "gw", "gateway": {"enabled": True, "providers": {
-                "fal": {"url": url, "keys": {"requests": "keys/fal_requests.key"}}}}}), encoding="utf-8")
+                "fal": {"url": url, "keys": {"requests": "keys/fal_requests.key", **keys}}}}}), encoding="utf-8")
         write("http://127.0.0.1:8199")
-        port, key = mock_fal.from_gateway(str(gw))
+        port, key, billing = mock_fal.from_gateway(str(gw))
         # Next to gateway.yaml, as resolved: on Windows its long name, where the temp folder may be RUNNER~1.
-        self.assertEqual((port, Path(key)), (8199, self.tmp.resolve() / "keys" / "fal_requests.key"))
+        self.assertEqual((port, Path(key), billing), (8199, self.tmp.resolve() / "keys" / "fal_requests.key", None))
+        write("http://127.0.0.1:8199", billing="keys/fal_billing.key")      # its bill takes the billing key
+        self.assertEqual(Path(mock_fal.from_gateway(str(gw))[2]), self.tmp.resolve() / "keys" / "fal_billing.key")
         for url in ("", "https://queue.fal.run", "http://10.1.2.3:8199"):
             write(url)
             with self.assertRaisesRegex(SystemExit, "doesn't send fal.ai's jobs to a stand-in on this machine"):
@@ -328,6 +390,13 @@ class Keys(Tmp):
         self.assertEqual(mine.convert.scratch_dir, "/fast/gw")
 
     @unittest.skipIf(Agent is None, "the gateway needs httpx")
+    def test_a_billing_key_file_missing_stops_no_job(self):
+        cfg = AgentConfig(name="gw", base_dir=str(self.tmp), gateway={"enabled": True, "providers": {"fal": {
+            "url": BASE, "keys": {"requests": str(self.key_file()), "billing": "keys/nope.key"}}}})
+        r = ApiRunner(cfg)
+        self.assertEqual(r.provider_problems["fal"], [])
+        self.assertEqual(r.bill_problems["fal"], [f"the key file {key_path(cfg, 'keys/nope.key')} doesn't exist"])
+
     def test_the_example_config(self):
         cfg = load_agent_config(REPO / "gateway.example.yaml")
         self.assertTrue(cfg.gateway.enabled)
@@ -337,6 +406,8 @@ class Keys(Tmp):
         self.assertEqual((r.problems, r.lanes, r.max_runs), ([], {"fal": 2}, 2))
         named = key_path(cfg, "~/.comfyfarm/fal_requests.key")      # this account's home, as this OS writes it
         self.assertEqual(r.provider_problems["fal"], [f"the key file {named} doesn't exist"])
+        billing = key_path(cfg, "~/.comfyfarm/fal_billing.key")      # the bill's: its jobs would still run
+        self.assertEqual(r.bill_problems["fal"], [f"the key file {billing} doesn't exist"])
         self.assertEqual(r.processes()["nano_banana2_edit_fal"]["broken"], [])
 
     @unittest.skipIf(Agent is None, "the gateway needs httpx")
@@ -384,6 +455,10 @@ class RecordingLink(LocalLink if Agent else object):
     async def report(self, msg):
         self.said.append(json.dumps(msg, default=str))
         return await super().report(msg)
+
+    async def bill(self, msg):
+        self.said.append(json.dumps(msg, default=str))
+        return await super().bill(msg)
 
 
 class Logged(logging.Handler):
@@ -570,6 +645,37 @@ class TheGateway(Tmp):
                          "check)")
         # It reached fal.ai: charged at its estimate until fal.ai's bill says what it cost (decision 0060).
         self.assertEqual([self.store.spend_of(j)["state"] for j in (failed, flagged)], ["charged", "charged"])
+
+    def test_it_reads_its_providers_bill_when_asked(self):
+        """In a check-in reply (decision 0061): the gateway reads fal.ai's bill with its billing key,
+        and the manager's ledger bills the job at what fal.ai charged."""
+        self.mock.bill, self.mock.billing_key = True, "billing:key"
+        billing = self.tmp / "keys" / "fal_billing.key"
+        billing.write_text("billing:key\n", encoding="utf-8")
+        os.chmod(billing, 0o600)
+        g = self.gateway(keys={"requests": str(self.keys), "billing": str(billing)})
+        jid = self.submit(resolution="2K")
+        self.beat(g)
+        self.ended(jid)
+        self.assertEqual(self.store.spend_of(jid)["state"], "charged")
+        self.assertEqual(self.desk.bills.want("a test"), [GATEWAY])
+        self.beat(g)
+        self.until(lambda: self.store.bill_reads("fal", 1), "the bill to come back")
+        read = self.store.bill_reads("fal", 1)[0]
+        self.assertEqual((read["error"], read["events"], read["matched"], read["account"], read["stand_in"],
+                          read["gateway"], read["balance"]), (None, 1, 1, "test-pilot", 1, GATEWAY, 49.88))
+        spend = self.store.spend_of(jid)
+        self.assertEqual((spend["state"], spend["actual"], spend["amount"]), ("billed", 0.12, 0.12))
+        said = [json.loads(m) for m in self.said if '"provider": "fal"' in m and '"events"' in m]
+        self.assertEqual(len(said), 1)
+        self.assertNotIn("billing:key", json.dumps(said) + "\n".join(self.log.lines))
+
+    def test_without_a_billing_key_it_says_so(self):
+        g = self.gateway()
+        self.desk.bills.want("a test")
+        self.beat(g)
+        self.until(lambda: self.store.bill_reads("fal", 1), "the bill's answer")
+        self.assertIn("there's no file for fal.ai's billing key", self.store.bill_reads("fal", 1)[0]["error"])
 
     def test_what_it_says_was_sent(self):
         """submitted(): what the manager's ledger is told reached the provider (decision 0060),
@@ -760,6 +866,9 @@ class TheGatewaysCheck(Tmp):
         self.assertIn(f"[ ok ] fal: 2 lane(s), sent to {BASE}, its keys read (account test-pilot)", out.getvalue())
         self.assertIn("[ ok ] API definition nano_banana2_edit_fal: the gateway can send it", out.getvalue())
         self.assertNotIn(KEY.partition(":")[2], out.getvalue())
+        # Without a billing key it sends jobs, and says the bill can't be read (decision 0061).
+        self.assertIn("[ -- ] fal: there's no file for fal.ai's billing key (providers.fal.keys.billing in "
+                      "gateway.yaml", out.getvalue())
 
 
 if __name__ == "__main__":

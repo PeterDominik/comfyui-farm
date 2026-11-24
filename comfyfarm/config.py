@@ -198,6 +198,7 @@ class AlertsConfig(BaseModel):
     sweep_problems: bool = True                         # the retention sweeper's latest report lists problems
     rollout_problems: bool = True                       # a rollout or a sync stopped, waiting for a person
     budgets: bool = True                                # a show past its budget's warn_at, or at its cap (0060)
+    bills: bool = True                                  # a bill that couldn't be read; a low balance (0061)
     # A Google Chat space's incoming webhook (Apps & integrations > Webhooks in the space):
     # https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=... It lets anyone
     # post to the space, so it stays in this file, which is never committed.
@@ -276,6 +277,26 @@ class PolicyConfig(BaseModel):
     folder and checked when a job is planned. Off: everything is allowed, nothing is read."""
     enabled: bool = False
     file: str = "policy.yaml"           # a name in share.dir, or a path of its own
+
+
+class LedgerConfig(BaseModel):
+    """The spend ledger read against the providers' bills (manager/bills.py, decision 0061):
+    the gateway reads each provider's bill with its billing key when asked, and the ledger's
+    rows are settled by it. Asked each night at `at` with nightly; `comfyfarm spend
+    reconcile` on the manager's host asks at any time."""
+    nightly: bool = False
+    at: str = "05:00"                       # the manager's local time (HH:MM)
+    # A job's request the bill doesn't show this long after the job ended is taken as not
+    # charged: billed $0, or released if it may never have reached the provider.
+    grace_hours: float = Field(48.0, gt=0)
+    balance_below: float = Field(0.0, ge=0)     # an alert when a provider's balance is below it; 0: off
+
+    @model_validator(mode="after")
+    def _at(self):
+        hh, _, mm = self.at.partition(":")
+        if not (hh.isdigit() and mm.isdigit() and len(mm) == 2 and int(hh) < 24 and int(mm) < 60):
+            raise ValueError(f"ledger.at is a time of day like 05:00, not {self.at!r}")
+        return self
 
 
 class RetentionConfig(BaseModel):
@@ -405,6 +426,7 @@ class Config(BaseModel):
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     evals: EvalsConfig = Field(default_factory=EvalsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    ledger: LedgerConfig = Field(default_factory=LedgerConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line

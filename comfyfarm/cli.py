@@ -203,6 +203,9 @@ def check_gateway(cfg) -> int:
         else:
             _line(" ok ", f"{name}: {lanes} lane(s), sent to {where}, its keys read (account "
                           f"{cfg.gateway.account or 'not named'})")
+            bill = getattr(r.adapters.get(name), "bill_problems", None)
+            for p in r.bill_problems.get(name) or (bill() if bill else []):    # the bill's (0061): jobs still run
+                _line(" -- ", f"{name}: {p}")
     said = {w for probs in r.provider_problems.values() for w in probs}     # each said once, above
     for name, v in sorted(r.processes().items()):
         probs = list(v["broken"]) + [p for p in v["problems"] if p not in said]
@@ -427,6 +430,15 @@ def main(argv: list[str] | None = None) -> int:
     ev.add_argument("definition", help="a definition with eval: in its process.yaml, e.g. gpu_test")
     ev.add_argument("--machine", action="append", help="a machine to run it on (repeat for more; default: every "
                                                        "machine checking in that may run it)")
+    sp = sub.add_parser("spend", help="the spend ledger: what jobs at outside providers cost, through the manager on "
+                                      "this host (README: Budgets)")
+    sp.add_argument("action", nargs="?", default="show", choices=["show", "reconcile", "topup"],
+                    help="show: each show and account (default); reconcile: read the providers' bills now; "
+                         "topup: record money put on a provider account")
+    sp.add_argument("provider", nargs="?", help="topup: the provider, e.g. fal")
+    sp.add_argument("amount", nargs="?", type=float, help="topup: US dollars, e.g. 50")
+    sp.add_argument("--account", help="topup: the provider account (gateway.yaml's gateway.account)")
+    sp.add_argument("--note", help="topup: what it was, e.g. IT's purchase order")
     from .comfyenv import cli as envcli
     envcli.add_parser(sub)
     from .envs import cli as runnerenvs
@@ -461,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_alerts_test(cfg)
     if args.cmd == "eval":
         return run_eval(cfg, args.definition, args.machine)
+    if args.cmd == "spend":
+        return run_spend(cfg, args)
 
     setup_logging(cfg, args.verbose)
     for note in cfg.obsolete_keys:
@@ -470,6 +484,94 @@ def main(argv: list[str] | None = None) -> int:
     from .manager.app import create_app
     uvicorn.run(create_app(cfg, local_agents=args.cmd != "manager"), host=cfg.server.host,
                 port=cfg.server.port, log_config=None, ws_ping_interval=20)
+    return 0
+
+
+def _host_call(cfg: Config, method: str, path: str, body: dict | None = None):
+    """The manager on this host, as the commands that only it takes call it (decisions 0030, 0061)."""
+    import getpass
+    import json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(f"http://127.0.0.1:{cfg.server.port}{path}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "X-User": getpass.getuser()})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("detail")
+        except ValueError:
+            detail = None
+        raise SystemExit(f"The manager said no: {detail or e}") from None
+    except urllib.error.URLError as e:
+        raise SystemExit(f"No manager on 127.0.0.1:{cfg.server.port} ({e.reason}): run this on the manager's "
+                         f"host, with its config.yaml.") from None
+
+
+def run_spend(cfg: Config, args, wait: float = 60.0, poll: float = 2.0) -> int:
+    """`comfyfarm spend`: the ledger (decisions 0060, 0061), through the manager on this host."""
+    import time
+    from datetime import datetime
+
+    from .manager.prices import money
+
+    def when(t) -> str:
+        return datetime.fromtimestamp(t).strftime("%d %b %H:%M") if t else "never"
+
+    def read_line(r) -> str:
+        who = f"{r['provider']} ({r['account'] or '?'})" + (", the stand-in" if r["stand_in"] else "")
+        if r["error"]:
+            return f"{who}: not read: {r['error']}"
+        bal = f"; balance {money(r['balance'])}" if r["balance"] is not None else ""
+        return (f"{who}: {r['events']} charge(s) read; {r['matched']} job(s) billed, {r['zeroed']} billed nothing, "
+                f"{r['released']} released{bal}")
+
+    if args.action == "topup":
+        if not args.provider or args.amount is None:
+            print("comfyfarm spend topup <provider> <amount> [--account A] [--note N], e.g. spend topup fal 50")
+            return 2
+        rec = _host_call(cfg, "POST", "/api/v1/spend/topups", {"provider": args.provider, "amount": args.amount,
+                                                                "account": args.account, "note": args.note})
+        print(f"Recorded: {money(rec['amount'])} on {rec['provider']} ({rec['account']})"
+              + (f", {rec['note']}" if rec.get("note") else "") + ".")
+        return 0
+    if args.action == "reconcile":
+        asked = _host_call(cfg, "POST", "/api/v1/spend/reconcile")
+        print(f"Asked {', '.join(asked['gateways'])} for the providers' bills.", flush=True)
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            reads = [r for r in _host_call(cfg, "GET", "/api/v1/spend?limit=1")["reads"]
+                     if r["at"] >= asked["wanted_at"]]
+            if reads:
+                for r in reads:
+                    print("  " + read_line(r))
+                return 1 if any(r["error"] for r in reads) else 0
+            time.sleep(poll)
+        print(f"No bill came back within {wait:g} s: see the gateway's log, and the Spend tab later.")
+        return 1
+    v = _host_call(cfg, "GET", "/api/v1/spend?limit=1")
+    print("Shows (spent or held, of each one's cap):")
+    for sh in v["shows"] or []:
+        cap = f" of {money(sh['cap'])}" if sh["cap"] is not None else ""
+        print(f"  {sh['show']}: {money(sh['amount'])}{cap} ({sh['jobs']} job(s); billed {money(sh['billed'])}, "
+              f"charged at estimates {money(sh['charged'])}, unsure {money(sh['unsure'])}, held {money(sh['held'])})")
+    if not v["shows"]:
+        print("  none yet")
+    print("Provider accounts:")
+    for a in v["accounts"] or []:
+        bal = (f"balance {money(a['balance'])} ({when(a['balance_at'])})" if a["balance"] is not None
+               else "no balance read")
+        print(f"  {a['label']} ({a['account']}): topped up {money(a['topped_up'])}, the farm's jobs "
+              f"{money(a['spent'])}, {bal}; other charges on its bill {money(a['bill']['other'])}")
+    if not v["accounts"]:
+        print("  none yet")
+    reading = v["reading"]
+    print(f"Bills: read each night at {reading['at']}" if reading["nightly"] else
+          "Bills: read when asked (ledger.nightly is off): comfyfarm spend reconcile")
+    for r in v["reads"][:3]:
+        print(f"  {when(r['at'])} " + read_line(r))
     return 0
 
 

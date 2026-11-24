@@ -288,6 +288,25 @@ class Agent:
             self.envman.want(reply["environments"])
         if isinstance(reply.get("sync"), dict):
             self.spawn(self.sync(reply["sync"]))
+        if isinstance(reply.get("bill"), dict):
+            self.spawn(self.send_bill(reply["bill"]))
+
+    async def send_bill(self, ask: dict) -> None:
+        """The manager asked (decision 0061): its runner reads each provider's bill for the
+        time asked, and each is sent to the manager's ledger. Only the gateway's runner reads
+        bills; another agent has none to send."""
+        read = getattr(self.runner, "read_bill", None)
+        if read is None:
+            return
+        try:
+            since, until = float(ask["since"]), float(ask["until"])
+        except (KeyError, TypeError, ValueError):
+            return
+        for bill in await read(since, until):
+            try:
+                await self.link.bill({"name": self.name, **bill})
+            except LinkError as e:
+                log.warning("agent %s: the manager didn't take %s's bill: %s", self.name, bill.get("provider"), e)
 
     async def sync(self, order: dict) -> None:
         """The manager asked (a sync it started on its host, decision 0033): the machine's

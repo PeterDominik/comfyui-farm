@@ -32,6 +32,7 @@ from . import prom as PM
 from . import share
 from . import sweeper as SW
 from . import usage as US
+from . import bills as BL
 from .evals import EvalError
 from .farm import Farm, FarmError
 
@@ -136,6 +137,13 @@ class ShotGridQuery(BaseModel):
     filters: dict[str, list[str] | str] = Field(default_factory=dict)   # status, step…: values picked, or a text
     since_days: int | None = None                           # created in the last N days
     latest: bool = True                                     # only the latest of each shot and name
+
+
+class TopUp(BaseModel):
+    provider: str
+    amount: float                       # US dollars; a negative one corrects an earlier one
+    account: str | None = None          # as gateway.yaml's gateway.account; the one the ledger knows if left out
+    note: str | None = None
 
 
 class DrainRequest(BaseModel):
@@ -727,6 +735,47 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
         lists."""
         return farm.policy_view()
 
+    @app.get("/api/v1/spend")
+    def spend(show: str | None = None, since: str | None = None, until: str | None = None, format: str = "json",
+              limit: int = Query(500, ge=1, le=100000), ident: Identity = Depends(identity)):
+        """The spend ledger (decisions 0060, 0061): each show against its cap, each provider account
+        (topped up, spent, the provider's balance, its last bill read), the rows of a show and
+        dates (YYYY-MM-DD, both days in), and the top-ups. format=csv: the rows alone, every one."""
+        try:
+            t0, t1 = BL.days(since, until)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        if format == "csv":
+            name = "_".join(x for x in ("spend", show, since, until) if x) + ".csv"
+            return Response(BL.csv_text(store.spend_rows(show, t0, t1)), media_type="text/csv",
+                            headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        if format != "json":
+            raise HTTPException(400, "format is json or csv.")
+        return desk.bills.view(show, t0, t1, limit)
+
+    @app.post("/api/v1/spend/topups", status_code=201)
+    def spend_topup(req: TopUp, request: Request, ident: Identity = Depends(identity)):
+        """Money put on a provider account, recorded (decision 0061). From the manager's host only
+        (`comfyfarm spend topup`), until the farm has API keys."""
+        _here(request, "Top-ups are recorded from the manager's host only, until the farm has API keys: run "
+                       "`python -m comfyfarm spend topup <provider> <amount>` there.")
+        try:
+            return desk.bills.topup(req.provider, req.amount, req.account, req.note, ident.user)
+        except BL.BillError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/v1/spend/reconcile")
+    def spend_reconcile(request: Request, ident: Identity = Depends(identity)):
+        """Ask the gateways for their providers' bills now (decision 0061). From the manager's host
+        only (`comfyfarm spend reconcile`)."""
+        _here(request, "The bills are asked for from the manager's host only, until the farm has API keys: run "
+                       "`python -m comfyfarm spend reconcile` there.")
+        gateways = desk.bills.want(f"asked by {ident.user or '?'}")
+        if not gateways:
+            raise HTTPException(409, "No gateway is checking in, so no bill can be read: start it "
+                                     "(deploy/linux/farmctl.sh start gateway).")
+        return {"wanted_at": desk.bills.wanted_at, "gateways": gateways}
+
     @app.get("/api/v1/sweeps")
     def sweeps(ident: Identity = Depends(identity)):
         """The retention sweeper's saved reports, newest first, with their totals (decision 0041)."""
@@ -830,6 +879,10 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     @app.post("/api/v1/agent/report", include_in_schema=False, dependencies=[Depends(agent_auth)])
     async def agent_report(request: Request):
         return desk.report(await request.json())
+
+    @app.post("/api/v1/agent/bill", include_in_schema=False, dependencies=[Depends(agent_auth)])
+    async def agent_bill(request: Request):
+        return desk.bill(await request.json())
 
     @app.websocket("/api/v1/events")
     async def events_ws(ws: WebSocket):

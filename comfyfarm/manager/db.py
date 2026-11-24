@@ -203,6 +203,41 @@ CREATE TABLE IF NOT EXISTS spend (             -- what jobs at outside providers
 );
 CREATE INDEX IF NOT EXISTS spend_show ON spend(show);
 CREATE INDEX IF NOT EXISTS spend_request ON spend(request_id);
+CREATE TABLE IF NOT EXISTS bill_events (       -- each provider's bill, as its gateway read it; never swept (0061)
+    provider TEXT NOT NULL,
+    account TEXT,                             -- whose bill it was read from (gateway.yaml's gateway.account)
+    request_id TEXT NOT NULL,
+    endpoint TEXT,
+    at REAL NOT NULL,                         -- when the provider charged it
+    quantity REAL, unit TEXT, unit_price REAL,
+    cost REAL NOT NULL,                       -- US dollars, after discounts
+    job_id TEXT,                              -- the job it is for, once matched; none: not the farm's
+    read_at REAL NOT NULL,
+    PRIMARY KEY (provider, request_id, at)
+);
+CREATE INDEX IF NOT EXISTS bill_events_job ON bill_events(job_id);
+CREATE TABLE IF NOT EXISTS bill_reads (        -- each time a gateway read a provider's bill (0061)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    account TEXT,
+    gateway TEXT,
+    since REAL NOT NULL,
+    until REAL NOT NULL,
+    at REAL NOT NULL,
+    stand_in INTEGER NOT NULL DEFAULT 0,      -- the stand-in's bill (tools/mock_fal.py), which takes no money
+    error TEXT,                               -- why it couldn't be read; none: it was, every page
+    events INTEGER, matched INTEGER, zeroed INTEGER, released INTEGER,
+    balance REAL, currency TEXT               -- the account's credit balance then, if the provider says
+);
+CREATE TABLE IF NOT EXISTS topups (            -- money put on a provider account, as an admin recorded it (0061)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    account TEXT NOT NULL,
+    amount REAL NOT NULL,                     -- US dollars
+    note TEXT,
+    by TEXT,
+    at REAL NOT NULL
+);
 """
 
 # What a metrics row keeps of a job: who, what, where and how long, and never its params,
@@ -483,14 +518,159 @@ class JobStore:
                                  f"state='held'", (*fields.values(), job_id))
 
     def spend_by_show(self) -> list[dict]:
-        """Each show's spending: {show, amount, held, charged, unsure, jobs}, the most first."""
+        """Each show's spending: {show, amount, held, charged, unsure, billed, jobs}, the most first."""
         return [dict(r) for r in self._q(
             "SELECT show, ROUND(SUM(amount), 6) AS amount, "
             "ROUND(SUM(CASE WHEN state='held' THEN amount ELSE 0 END), 6) AS held, "
             "ROUND(SUM(CASE WHEN state='charged' THEN amount ELSE 0 END), 6) AS charged, "
             "ROUND(SUM(CASE WHEN state='unsure' THEN amount ELSE 0 END), 6) AS unsure, "
+            "ROUND(SUM(CASE WHEN state='billed' THEN amount ELSE 0 END), 6) AS billed, "
             "SUM(CASE WHEN state='released' THEN 0 ELSE 1 END) AS jobs "
             "FROM spend GROUP BY show ORDER BY amount DESC, show")]
+
+    def spend_rows(self, show: str | None = None, since: float | None = None, until: float | None = None,
+                   limit: int = 100000) -> list[dict]:
+        """The ledger's rows, newest first: a show's, queued between since and until."""
+        where, args = [], []
+        for cond, v in (("spend.show=?", show.lower() if show else None), ("spend.created_at>=?", since),
+                        ("spend.created_at<?", until)):
+            if v is not None:
+                where.append(cond)
+                args.append(v)
+        sql = ("SELECT spend.*, jobs.name AS job_name FROM spend LEFT JOIN jobs ON jobs.id=spend.job_id"
+               + (f" WHERE {' AND '.join(where)}" if where else ""))
+        return [dict(r) for r in self._q(sql + " ORDER BY spend.created_at DESC LIMIT ?", (*args, limit))]
+
+    # ---------------------------------------------------------------- the bill (0061)
+    def oldest_unbilled(self, provider: str) -> float | None:
+        """When the oldest row the provider's bill hasn't settled yet was queued."""
+        r = self._q("SELECT MIN(created_at) FROM spend WHERE provider=? AND state IN ('held', 'charged', "
+                    "'unsure')", (provider,))
+        return r[0][0] if r else None
+
+    def bill_reads(self, provider: str | None = None, limit: int = 20) -> list[dict]:
+        where, args = ("WHERE provider=? ", (provider,)) if provider else ("", ())
+        return [dict(r) for r in self._q(f"SELECT * FROM bill_reads {where}ORDER BY id DESC LIMIT ?", (*args, limit))]
+
+    def record_bill_error(self, provider: str, account: str | None, gateway: str, since: float, until: float,
+                          error: str, stand_in: bool) -> dict:
+        with self._lock:
+            cur = self._db.execute("INSERT INTO bill_reads (provider, account, gateway, since, until, at, stand_in, "
+                                   "error) VALUES (?,?,?,?,?,?,?,?)",
+                                   (provider, account, gateway, since, until, now(), int(stand_in), error))
+            return dict(self._db.execute("SELECT * FROM bill_reads WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def apply_bill(self, provider: str, account: str | None, gateway: str, since: float, until: float,
+                   events: list[dict], balance: dict | None, stand_in: bool, grace: float) -> dict:
+        """One provider's bill for [since, until), read whole by its gateway, applied to the
+        ledger in one transaction (ledger.py, decision 0061):
+
+        1. its charges are kept (a charge read again is the same row);
+        2. a row whose request the bill charges is billed: its amount becomes what was charged;
+        3. an unsure row (its request's id never known) takes the first charge the farm can't
+           place for the same endpoint between its job's queueing and an hour after its end;
+        4. a row the bill should show by now (its job ended `grace` seconds before `until`, and
+           was queued inside the bill's time) and doesn't: a charged one is billed $0, an unsure
+           one released. Only rows of this account, or of none known.
+
+        The read is recorded, with its counts and the balance."""
+        t = now()
+        mine = "provider=? AND (account=? OR account IS NULL)"
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                for e in events:
+                    self._db.execute("INSERT OR IGNORE INTO bill_events (provider, account, request_id, endpoint, at, "
+                                     "quantity, unit, unit_price, cost, read_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                     (provider, account, e["request_id"], e.get("endpoint"), e["at"], e.get("quantity"),
+                                      e.get("unit"), e.get("unit_price"), e["cost"], t))
+                # 2. By the request's id.
+                self._db.execute("UPDATE bill_events SET job_id=(SELECT job_id FROM spend WHERE spend.provider="
+                                 "bill_events.provider AND spend.request_id=bill_events.request_id) WHERE "
+                                 "job_id IS NULL AND provider=?", (provider,))
+                # 3. Unsure rows, by endpoint and time.
+                taken = 0
+                for row in self._db.execute(f"SELECT * FROM spend WHERE {mine} AND state='unsure' AND request_id IS "
+                                            f"NULL ORDER BY created_at", (provider, account)).fetchall():
+                    e = self._db.execute("SELECT * FROM bill_events WHERE provider=? AND job_id IS NULL AND endpoint=? "
+                                         "AND at>=? AND at<=? ORDER BY at LIMIT 1",
+                                         (provider, row["endpoint"], row["created_at"] - 60,
+                                          (row["settled_at"] or t) + 3600)).fetchone()
+                    if e is None:
+                        continue
+                    self._db.execute("UPDATE bill_events SET job_id=? WHERE provider=? AND request_id=?",
+                                     (row["job_id"], provider, e["request_id"]))
+                    self._db.execute("UPDATE spend SET request_id=? WHERE job_id=?", (e["request_id"], row["job_id"]))
+                    taken += 1
+                # Each ended row a charge is placed for: billed, at what was charged.
+                matched = 0
+                for row in self._db.execute(
+                        "SELECT spend.job_id, ROUND(SUM(bill_events.cost), 9) AS cost, spend.state, spend.actual "
+                        "FROM spend JOIN bill_events ON bill_events.job_id=spend.job_id WHERE spend.provider=? AND "
+                        "spend.state IN ('charged', 'unsure', 'billed') GROUP BY spend.job_id",
+                        (provider,)).fetchall():
+                    if row["state"] == "billed" and row["actual"] == row["cost"]:
+                        continue
+                    self._db.execute("UPDATE spend SET state='billed', actual=?, amount=?, billed_at=? WHERE job_id=?",
+                                     (row["cost"], round(row["cost"], 6), t, row["job_id"]))
+                    matched += 1
+                # 4. What the bill should show by now and doesn't.
+                due = (f"{mine} AND created_at>=? AND settled_at IS NOT NULL AND settled_at<=? AND job_id NOT IN "
+                       f"(SELECT job_id FROM bill_events WHERE job_id IS NOT NULL)")
+                args = (provider, account, since + 60, until - grace)
+                zeroed = self._db.execute(f"UPDATE spend SET state='billed', actual=0, amount=0, billed_at=? WHERE "
+                                          f"{due} AND state='charged'", (t, *args)).rowcount
+                released = self._db.execute(f"UPDATE spend SET state='released', amount=0, billed_at=? WHERE {due} "
+                                            f"AND state='unsure'", (t, *args)).rowcount
+                cur = self._db.execute(
+                    "INSERT INTO bill_reads (provider, account, gateway, since, until, at, stand_in, events, matched, "
+                    "zeroed, released, balance, currency) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (provider, account, gateway, since, until, t, int(stand_in), len(events), matched, zeroed,
+                     released, (balance or {}).get("amount"), (balance or {}).get("currency")))
+                rec = dict(self._db.execute("SELECT * FROM bill_reads WHERE id=?", (cur.lastrowid,)).fetchone())
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+            self._db.execute("COMMIT")
+        return {**rec, "placed_unsure": taken}
+
+    def bill_totals(self, provider: str, account: str | None, since: float | None = None,
+                    until: float | None = None) -> dict:
+        """What the provider's bill charged the account, the farm's jobs and the rest (charges no
+        job of the farm's is for), between since and until."""
+        where, args = ["provider=?", "(account=? OR ? IS NULL)"], [provider, account, account]
+        if since is not None:
+            where.append("at>=?")
+            args.append(since)
+        if until is not None:
+            where.append("at<?")
+            args.append(until)
+        r = self._q("SELECT ROUND(SUM(cost), 6), ROUND(SUM(CASE WHEN job_id IS NULL THEN 0 ELSE cost END), 6), "
+                    "ROUND(SUM(CASE WHEN job_id IS NULL THEN cost ELSE 0 END), 6), "
+                    "SUM(CASE WHEN job_id IS NULL THEN 1 ELSE 0 END) FROM bill_events WHERE " + " AND ".join(where),
+                    tuple(args))[0]
+        return {"billed": r[0] or 0.0, "farm": r[1] or 0.0, "other": r[2] or 0.0, "other_charges": r[3] or 0}
+
+    def add_topup(self, provider: str, account: str, amount: float, note: str | None, by: str | None) -> dict:
+        with self._lock:
+            cur = self._db.execute("INSERT INTO topups (provider, account, amount, note, by, at) VALUES (?,?,?,?,?,?)",
+                                   (provider, account, amount, note, by, now()))
+            return dict(self._db.execute("SELECT * FROM topups WHERE id=?", (cur.lastrowid,)).fetchone())
+
+    def topups(self, limit: int = 200) -> list[dict]:
+        return [dict(r) for r in self._q("SELECT * FROM topups ORDER BY at DESC LIMIT ?", (limit,))]
+
+    def accounts(self) -> list[dict]:
+        """Each provider account the ledger knows, from its rows, bills and top-ups: {provider,
+        account, topped_up, spent}, spent being what its rows count now."""
+        rows = self._q(
+            "SELECT provider, account, SUM(topped) AS topped_up, SUM(spent) AS spent FROM ("
+            " SELECT provider, account, 0 AS topped, amount AS spent FROM spend WHERE account IS NOT NULL"
+            " UNION ALL SELECT provider, account, amount, 0 FROM topups"
+            " UNION ALL SELECT provider, account, 0, 0 FROM bill_reads WHERE account IS NOT NULL"
+            ") GROUP BY provider, account ORDER BY provider, account")
+        return [{"provider": r["provider"], "account": r["account"], "topped_up": round(r["topped_up"] or 0, 6),
+                 "spent": round(r["spent"] or 0, 6)} for r in rows]
 
     # ---------------------------------------------------------------- GPU history (0049)
     def add_gpu_samples(self, rows: list[tuple]) -> None:

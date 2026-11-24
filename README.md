@@ -1223,8 +1223,8 @@ budgets:
   - *unsure*: it may have reached the provider, and the farm can't tell. It is held like a
     charge.
 
-  The ledger never guesses down. What fal.ai billed replaces the estimate with step 4's
-  third pull request.
+  The ledger never guesses down. Once the provider's bill is read (below), a job it charges
+  is *billed* at what it charged.
 - **A paid job is never queued again.** A paid job its gateway lost, or whose gateway
   stopped checking in, fails instead, since a second run would be paid for twice. It says
   to look in the provider's request history.
@@ -1242,6 +1242,54 @@ budgets:
 - **An alert** (`alerts.budgets`, on with alerts) fires when a show reaches its `warn_at`
   share of its cap, and again at the cap.
 - **The cap rests on the show name the client sends** until the Rodeo login (phase 13).
+
+#### The providers' bills
+
+The billing keys are on the gateway, so the manager asks it to read each provider's bill
+and balance, and settles the ledger by it (decision 0061). In the manager's `config.yaml`:
+
+```yaml
+ledger:
+  nightly: false         # true: the bills are read each night at `at`
+  at: "05:00"            # the manager's local time
+  grace_hours: 48        # a job its bill doesn't show this long after it ended is taken as not charged
+  balance_below: 0       # an alert when a provider account's balance is below this many dollars; 0: off
+```
+
+- **Reading.** Each night at `at` (with `nightly`), or when asked on the manager's host, the
+  gateway's next check-in is answered with the time to read. It reaches back to the oldest
+  job the bill hasn't settled yet, and at least a day before the last read; fal.ai's bill
+  reaches 90 days back. The gateway reads every page with its billing key, then the
+  balance, and sends them back. A bill that couldn't be read changes nothing, and says why.
+- **What the bill settles:**
+  - a job the bill charges is *billed* at what it charged, discounts taken off;
+  - an *unsure* job (its request's id never known) takes a charge for its endpoint that the
+    farm can't place, between its job's queueing and an hour after it ended;
+  - a job the bill should show by now and doesn't (it ended `grace_hours` before the end of
+    the time read): a charged one is billed $0, an unsure one released. Only jobs of the
+    account read.
+- **Charges no job of the farm's is for** (other use of the same account) are kept and
+  shown, apart from the farm's.
+- **Top-ups.** Money put on a provider account is recorded on the manager's host, for the
+  Spend tab: `python -m comfyfarm spend topup fal 50 --note "IT, PO 1234"` (`--account`
+  when the ledger knows more than one).
+- **On the manager's host:**
+
+  ```bash
+  python -m comfyfarm spend                 # each show and provider account, and the last bills read
+  python -m comfyfarm spend reconcile       # read the providers' bills now, and say what they settled
+  python -m comfyfarm spend topup fal 50    # money put on fal.ai's account
+  ```
+- **The Spend tab**, shown when an outside provider is switched on, is read-only:
+  - each show: its cap, what it has spent or holds (billed, at estimates, unsure, running)
+    and what is left;
+  - each provider account: its balance as the provider last said, what was topped up, what
+    the farm's jobs spent, other charges on its bill, and its last bill read;
+  - the jobs, for a show and dates, with a CSV of them (`GET /api/v1/spend?format=csv&show=
+    &since=&until=`, both days in);
+  - the top-ups.
+- **Alerts** (`alerts.bills`, on with alerts): a bill the gateway couldn't read when last
+  asked, and a balance below `ledger.balance_below`.
 
 ### Prometheus metrics
 
@@ -1341,6 +1389,7 @@ alerts:
   sweep_problems: true
   rollout_problems: true
   budgets: true
+  bills: true
   google_chat: 'https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...'
 ```
 
@@ -1360,6 +1409,8 @@ alerts:
   - **A budget:** a show has spent or holds its budget's `warn_at` share of its cap at
     outside providers, or all of it (policy.yaml's `budgets:`, see *Budgets*). It clears
     when the cap is raised.
+  - **Bills:** a provider's bill the gateway couldn't read when last asked, and a provider
+    account whose balance is below `ledger.balance_below` (see *The providers' bills*).
 - **Raised once, cleared by itself.** An alert is raised when its condition starts and
   cleared when it ends: the machine checks in, the jobs leave the queue, a job on the
   machine finishes done, the rollout is rolled back. While it holds, its message follows
@@ -2332,6 +2383,7 @@ On the manager's machine, from the checkout:
 cp gateway.example.yaml gateway.yaml            # then edit: manager; paths and convert.tools as in agent.yaml
 mkdir -p ~/.comfyfarm
 (umask 077 && read -rs KEY && printf '%s\n' "$KEY" > ~/.comfyfarm/fal_requests.key)   # paste the key, then Enter
+(umask 077 && read -rs KEY && printf '%s\n' "$KEY" > ~/.comfyfarm/fal_billing.key)    # the billing key, for the bill
 deploy/linux/farmctl.sh start mock_fal          # fal.ai's stand-in, until step 5
 deploy/linux/farmctl.sh check gateway           # its providers, keys and definitions; never a key
 deploy/linux/farmctl.sh start gateway           # or install_cron.sh gateway: kept running
@@ -2349,6 +2401,9 @@ gateway reads its keys when it starts: restart it after changing them.
   saying so. The gateway reads them when it starts and sends them to the provider only:
   they are in no log, job, event, run folder or output (`tests/test_api_runner.py` and
   `tests/test_e2e_gateway.py` check). git ignores `gateway.yaml` and `*.key`.
+  fal.ai takes two: `requests` sends the jobs, and `billing` (a key with fal.ai's BILLING
+  permissions) reads its bill and balance for the ledger (*Budgets*). Without a billing key
+  the jobs still run; `farmctl.sh check gateway` says the bill can't be read.
 - **Each job:** its inputs are converted as for any job (an EXR to PNG), uploaded, and the
   job is sent once. What is sent is in the run folder (`gateway.runs_dir/<attempt>`) before
   it goes, and the request's id as soon as fal.ai gives it. Its status is asked every
@@ -2370,7 +2425,9 @@ gateway reads its keys when it starts: restart it after changing them.
   ```
 
   It answers where `gateway.yaml` sends fal.ai's jobs (`providers.fal.url`, e.g.
-  `http://127.0.0.1:8189`) and takes the key in its `keys.requests` file. Any other
+  `http://127.0.0.1:8189`) and takes the keys in its `keys` files. Its bill charges $0 for
+  each job, since it takes no money; `python tools/mock_fal.py --gateway gateway.yaml --bill`
+  charges each at fal.ai's price instead, to see the ledger match a bill. Any other
   address is refused (`REAL_SERVICE` in `comfyfarm/runners/api/fal.py`). In the
   prompt, `MOCK_FAIL` makes its model fail, `MOCK_POLICY` its content check refuse it and
   `MOCK_SLOW` it run a minute.

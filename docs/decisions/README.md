@@ -66,3 +66,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0058](0058-outside-providers-in-the-policy.md) | Outside providers in the policy: none for a show until a rule allows it | accepted |
 | [0059](0059-prices-and-estimates.md) | Prices and estimates: a reviewed cost block per API definition, priced with the provider's price that day | accepted |
 | [0060](0060-ledger-and-caps.md) | The ledger and caps: each paid job held against its show's cap as it is queued, and never guessed down | accepted |
+| [0061](0061-the-providers-bills.md) | The providers' bills: read by the gateway when the manager asks, and settling the ledger | accepted |

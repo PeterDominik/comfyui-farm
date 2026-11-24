@@ -38,6 +38,7 @@ from test_nuke_node import make_nuke              # noqa: E402
 WEB = bool(importlib.util.find_spec("uvicorn") and importlib.util.find_spec("fastapi"))
 TOKEN = "e2e-agent-token"
 KEY = "e2e-made-up:5c1f0e9d8b7a6c4d"            # the stand-in's; the secret part must appear nowhere else
+BILLING_KEY = "e2e-billing:7d2a9c4e1b"             # its bill's, made up too
 GATEWAY = "e2e-gateway"
 SEQ = "/rdo/shows/xyz/.published/abc/abc_0010/plate/v1/abc_0010.plate.v1.%04d.png"     # a shot's plate
 OTHER = "/rdo/shows/qqq/.published/def/def_0020/plate/v1/def_0020.plate.v1.%04d.png"   # a show fal.ai isn't for
@@ -107,6 +108,9 @@ convert: {{scratch_dir: {root}/manager/scratch}}
         key.write_text(KEY + "\n", encoding="utf-8")
         os.chmod(key, 0o600)
         cls.key = key
+        billing = cls.tmp / "keys/fal_billing.key"           # its bill takes its own key (decision 0061)
+        billing.write_text(BILLING_KEY + "\n", encoding="utf-8")
+        os.chmod(billing, 0o600)
         (cls.tmp / "gateway.yaml").write_text(f"""
 name: {GATEWAY}
 manager: http://127.0.0.1:{cls.port}
@@ -125,13 +129,13 @@ gateway:
   providers:
     fal:
       url: http://127.0.0.1:{cls.fal_port}
-      keys: {{requests: keys/fal_requests.key}}
+      keys: {{requests: keys/fal_requests.key, billing: keys/fal_billing.key}}
 """, encoding="utf-8")
         cls.old_url = os.environ.get("COMFYFARM_URL")
         os.environ["COMFYFARM_URL"] = f"http://127.0.0.1:{cls.port}"
         cls.procs = {}
         cls.start("mock_fal", [str(REPO / "tools/mock_fal.py"), "--gateway", str(cls.tmp / "gateway.yaml"),
-                               "--queue-seconds", "0.3", "--run-seconds", "0.5"])
+                               "--queue-seconds", "0.3", "--run-seconds", "0.5", "--bill"])
         wait_port(cls.fal_port)
         cls.start("manager", ["-m", "comfyfarm", "--config", str(cls.tmp / "config.yaml"), "manager"])
         wait_http(f"http://127.0.0.1:{cls.port}/api/v1/health")
@@ -264,6 +268,30 @@ gateway:
         self.assertEqual((spend["cap"], spend["rule"]), (1, "xyz-pilot"))
         self.assertGreaterEqual(spend["charged"], 0.2)
         self.assertIn("function withYes", farm._request("GET", "/spend.js", raw=True))
+
+    def test_2d_the_bill_read_into_the_ledger(self):
+        """`comfyfarm spend reconcile` on the manager's host (decision 0061): the gateway reads the
+        stand-in's bill with its billing key, and the jobs that finished are billed at what it
+        charged. A top-up recorded the same way shows beside them."""
+        def comfyfarm(*args):
+            r = subprocess.run([sys.executable, "-m", "comfyfarm", "--config", str(self.tmp / "config.yaml"), *args],
+                               cwd=str(REPO), capture_output=True, text=True, timeout=120)
+            return r.returncode, r.stdout + r.stderr
+        code, said = comfyfarm("spend", "reconcile")
+        self.assertEqual(code, 0, said)
+        self.assertIn("fal (e2e), the stand-in:", said)
+        v = farm._request("GET", "/api/v1/spend")
+        done = [r for r in v["rows"] if r["state"] == "billed"]
+        self.assertEqual(sorted(r["actual"] for r in done), [0.08, 0.12])     # 1K and 2K, as the stand-in charged
+        self.assertEqual({r["state"] for r in v["rows"]} - {"billed"}, {"charged"})   # MOCK_FAIL: within the grace
+        code, said = comfyfarm("spend", "topup", "fal", "50", "--note", "IT, the pilot")
+        self.assertEqual((code, said.strip()), (0, "Recorded: $50.00 on fal (e2e), IT, the pilot."))
+        code, said = comfyfarm("spend")
+        self.assertIn("fal.ai (e2e): topped up $50.00, the farm's jobs $0.28, balance $49.80", said)
+        csv = farm._request("GET", "/api/v1/spend?format=csv&show=xyz", raw=True)
+        self.assertTrue(csv.startswith("queued,show,user,job,job_name,workflow,"), csv[:200])
+        self.assertEqual(len(csv.strip().splitlines()), 1 + len(v["rows"]))
+        self.assertNotIn(BILLING_KEY, (self.tmp / "gateway.out").read_text(errors="replace"))
 
     def test_3_on_the_machines_tab(self):
         w = {x["name"]: x for x in farm.workers()}[GATEWAY]

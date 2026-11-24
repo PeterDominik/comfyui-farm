@@ -1,17 +1,22 @@
 """A stand-in for fal.ai, for the gateway with no fal.ai account and no money (decision 0056).
 
 It speaks the parts of fal.ai's API the gateway uses: the upload token and the CDN upload,
-the queue (submit, status, result, cancel), the result files and the pricing API, all on one
-address. It
-checks the key the way fal.ai does, and runs its models in a few seconds, making grey PNGs.
+the queue (submit, status, result, cancel), the result files, the pricing API, and the bill
+and balance (decision 0061), all on one address. It checks the keys the way fal.ai does, and
+runs its models in a few seconds, making grey PNGs.
 
-    python tools/mock_fal.py --gateway gateway.yaml [--queue-seconds 1] [--run-seconds 3]
-    python tools/mock_fal.py --port 8189 --key-file <a key file>
+    python tools/mock_fal.py --gateway gateway.yaml [--queue-seconds 1] [--run-seconds 3] [--bill]
+    python tools/mock_fal.py --port 8189 --key-file <a key file> [--billing-key-file <another>]
 
 With --gateway it answers where gateway.yaml sends fal.ai's jobs (providers.fal.url, e.g.
-http://127.0.0.1:8189) and takes the key in the file providers.fal.keys.requests names
-(deploy/linux/farmctl.sh start mock_fal does this). Make up the key (any word): the stand-in
-never sees a real one, and it answers on 127.0.0.1 only.
+http://127.0.0.1:8189) and takes the keys in the files providers.fal.keys names: requests,
+and billing for the bill (deploy/linux/farmctl.sh start mock_fal does this). Make the keys
+up (any words): the stand-in never sees a real one, and it answers on 127.0.0.1 only.
+
+Its bill charges each job that finished well when it finished, and nothing for one that
+failed or was cancelled. It takes no money, so its bill says $0 for each, unless --bill:
+then each is charged at its price (PRICES, by resolution), as fal.ai would, and taken from
+its balance (--balance, $50).
 
 It is stricter than fal.ai: a field its model doesn't know is refused, so a typo in a
 definition shows here. Its models: fal-ai/nano-banana-2/edit (PNG only). To make a job go
@@ -50,6 +55,7 @@ MODELS = {
     },
 }
 SIDES = {"0.5K": 512, "1K": 1024, "2K": 2048, "4K": 4096}
+FACTORS = {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0}     # Nano Banana 2's price, by resolution
 # What its pricing API says (fal.ai's page, 24 November 2026): {endpoint: (unit price, unit, currency)}.
 PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "image", "USD")}
 
@@ -76,8 +82,13 @@ class MockFal:
     with the key (never the key itself)."""
 
     def __init__(self, key: str, base: str = "http://127.0.0.1:8189", queue_seconds: float = 0.0,
-                 run_seconds: float = 0.0, clock=time.monotonic):
+                 run_seconds: float = 0.0, clock=time.monotonic, billing_key: str | None = None, bill: bool = False,
+                 balance: float = 50.0, wall=time.time):
         self.key = key
+        self.billing_key = billing_key or key   # its bill and balance take this one
+        self.bill = bill                        # charge each job at its price; otherwise $0, it takes no money
+        self.balance = balance
+        self.wall = wall
         self.base = base.rstrip("/")
         self.queue_seconds, self.run_seconds = queue_seconds, run_seconds
         self.clock = clock
@@ -95,6 +106,7 @@ class MockFal:
         path, query = parts.path.rstrip("/") or "/", parse_qs(parts.query)
         auth = {k.lower(): v for k, v in headers.items()}.get("authorization", "")
         keyed = auth == f"Key {self.key}"
+        billing = path in ("/v1/models/billing-events", "/v1/account/billing")
         with self.lock:
             self.calls.append({"method": method, "path": path, "keyed": keyed,
                                "lifecycle": {k.lower(): v for k, v in headers.items()}.get(
@@ -106,6 +118,12 @@ class MockFal:
                 if auth.partition(" ")[2] not in self.tokens or not auth.startswith("Bearer "):
                     return _error(401, "Invalid upload token")
                 return self._upload(headers, body)
+            if billing:
+                if auth != f"Key {self.billing_key}":
+                    return 403, {"Content-Type": "application/json"}, json.dumps({"error": {
+                        "type": "authorization_error", "message": "This key can't read billing (billing:usage:read)"}
+                    }).encode()
+                return self._billing(method, path, query)
             if not keyed:
                 return _error(401, "No user found for Key ID and Secret" if auth else "Missing authorization")
             if method == "POST" and path == "/storage/auth/token":
@@ -152,8 +170,8 @@ class MockFal:
         rid = str(uuid.uuid4())
         prompt = data.get("prompt") or ""
         run = 60.0 if "MOCK_SLOW" in prompt else self.run_seconds
-        self.requests[rid] = {"endpoint": endpoint, "input": data, "at": self.clock(), "run": run,
-                              "cancel": None, "ended": None}
+        self.requests[rid] = {"endpoint": endpoint, "input": data, "at": self.clock(), "wall": self.wall(),
+                              "run": run, "cancel": None, "ended": None}
         owner_app = "/".join(endpoint.split("/")[:2])
         url = f"{self.base}/{owner_app}/requests/{rid}"
         return _ok({"request_id": rid, "response_url": url, "status_url": url + "/status",
@@ -237,6 +255,57 @@ class MockFal:
             return _ok(self._made(r))
         return _error(405, "Method not allowed")
 
+    # ---------------------------------------------------------------- the bill
+    def charges(self) -> list[dict]:
+        """Its bill: a charge for each job that finished well, when it finished."""
+        out = []
+        for rid, r in self.requests.items():
+            prompt = r["input"].get("prompt") or ""
+            if self._state(r) != "done" or r["cancel"] or "MOCK_FAIL" in prompt or "MOCK_POLICY" in prompt:
+                continue
+            price, unit, _ = self.prices.get(r["endpoint"], (0.0, "image", "USD"))
+            factor = FACTORS.get(r["input"].get("resolution") or "1K", 1.0)
+            quantity = factor * int(r["input"].get("num_images") or 1)
+            cost = round(price * quantity, 9) if self.bill else 0.0
+            ended = r["wall"] + self.queue_seconds + r["run"]
+            out.append({"request_id": rid, "endpoint_id": r["endpoint"], "at": ended,
+                        "quantity": quantity, "output_units": quantity, "unit": unit, "unit_price": price,
+                        "percent_discount": 0, "cost_subtotal": cost, "cost_discount": 0, "cost_total": cost,
+                        "cost_estimate_nano_usd": round(cost * 1e9)})
+        return sorted(out, key=lambda e: e["at"])
+
+    def _billing(self, method: str, path: str, query: dict) -> tuple[int, dict, bytes]:
+        if method != "GET":
+            return _error(405, "Method not allowed")
+        if path == "/v1/account/billing":
+            out = {"username": "stand-in"}
+            if "credits" in query.get("expand", []):
+                spent = sum(e["cost_total"] for e in self.charges())
+                out["credits"] = {"current_balance": round(max(self.balance - spent, 0.0), 9), "currency": "USD"}
+            return _ok(out)
+
+        def when(name, default):
+            v = (query.get(name) or [None])[0]
+            if v is None:
+                return default
+            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        try:
+            start, end = when("start", self.wall() - 86400), when("end", self.wall())
+            limit = max(1, min(int((query.get("limit") or ["50"])[0]), 10000))
+            offset = int(base64.b64decode((query.get("cursor") or [""])[0] or b"MA==").decode())
+        except ValueError:
+            return 400, {"Content-Type": "application/json"}, json.dumps({"error": {
+                "type": "validation_error", "message": "start, end, limit or cursor isn't valid"}}).encode()
+        if end - start > 90 * 86400:
+            return 400, {"Content-Type": "application/json"}, json.dumps({"error": {
+                "type": "validation_error", "message": "Date range capped at 90 days per request"}}).encode()
+        events = [e for e in self.charges() if start <= e["at"] < end]
+        page = events[offset:offset + limit]
+        nxt = base64.b64encode(str(offset + limit).encode()).decode() if offset + limit < len(events) else None
+        for e in page:
+            e["timestamp"] = datetime.fromtimestamp(e.pop("at"), timezone.utc).isoformat().replace("+00:00", "Z")
+        return _ok({"billing_events": page, "next_cursor": nxt, "has_more": nxt is not None})
+
     def _made(self, r: dict) -> dict:
         if "made" not in r:
             data = r["input"]
@@ -302,8 +371,8 @@ def read_key_file(path: str) -> str:
     return key
 
 
-def from_gateway(path: str) -> tuple[int, str]:
-    """Its port and key file, from where gateway.yaml sends fal.ai's jobs."""
+def from_gateway(path: str) -> tuple[int, str, str | None]:
+    """Its port and key files (requests, billing), from where gateway.yaml sends fal.ai's jobs."""
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from comfyfarm.config import load_agent_config
     from comfyfarm.runners.api.runner import key_path
@@ -315,7 +384,8 @@ def from_gateway(path: str) -> tuple[int, str]:
                          f"providers.fal.url to e.g. http://127.0.0.1:8189")
     if not fal.keys.get("requests"):
         raise SystemExit(f"mock_fal: {path} names no key file (providers.fal.keys.requests)")
-    return url.port, str(key_path(cfg, fal.keys["requests"]))
+    billing = fal.keys.get("billing")
+    return url.port, str(key_path(cfg, fal.keys["requests"])), str(key_path(cfg, billing)) if billing else None
 
 
 def main(argv=None) -> int:
@@ -325,13 +395,21 @@ def main(argv=None) -> int:
     ap.add_argument("--key-file", help="the file holding the key it accepts (made up)")
     ap.add_argument("--queue-seconds", type=float, default=1.0, help="each job waits this long in its queue")
     ap.add_argument("--run-seconds", type=float, default=3.0, help="then runs this long")
+    ap.add_argument("--billing-key-file", help="the file holding the key its bill takes (made up; default: the "
+                                               "requests key)")
+    ap.add_argument("--bill", action="store_true", help="charge each job at its price on its bill, as fal.ai "
+                                                         "would (default: $0, it takes no money)")
+    ap.add_argument("--balance", type=float, default=50.0, help="its account's balance in US dollars, before --bill")
     args = ap.parse_args(argv)
     if args.gateway:
-        args.port, args.key_file = from_gateway(args.gateway)
+        args.port, args.key_file, billing = from_gateway(args.gateway)
+        args.billing_key_file = args.billing_key_file or billing
     if not args.key_file:
         ap.error("give --gateway gateway.yaml, or --key-file")
     key = read_key_file(args.key_file)
-    mock = MockFal(key, f"http://127.0.0.1:{args.port}", args.queue_seconds, args.run_seconds)
+    billing_key = read_key_file(args.billing_key_file) if args.billing_key_file else None
+    mock = MockFal(key, f"http://127.0.0.1:{args.port}", args.queue_seconds, args.run_seconds,
+                   billing_key=billing_key, bill=args.bill, balance=args.balance)
     srv = mock.server(args.port)
     print(f"mock_fal: fal.ai's stand-in on http://127.0.0.1:{args.port} (Ctrl+C to stop)", flush=True)
     try:
