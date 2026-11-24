@@ -18,7 +18,18 @@ provider: fal                   # providers/fal.yaml: off-site, through the gate
 family: nano-banana-2-edit      # the same model at other providers, for comparing prices (later)
 class: interactive
 limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
-models: []                      # no model weights on the farm: the model is fal.ai's
+# No model weights on the farm: the model is Google's, run by fal.ai. Listed with fal.ai's terms
+# as its licence, so the policy's licence rules see what it uses (decision 0059).
+models: [{file: fal-ai/nano-banana-2/edit, licence: google-via-fal}]
+# What a job costs (decision 0059), from fal.ai's page for the model, reviewed 24 November 2026:
+# $0.08 an image at 1K, 0.75x at 0.5K, 1.5x at 2K and 2x at 4K. The manager estimates each job
+# with fal.ai's price that day (its pricing API, read by the gateway) and notes a move of more
+# than 10% from the reviewed price. Web search would add $0.015: it is fixed off below.
+cost:
+  unit: image
+  price: 0.08
+  quantity: 1                   # num_images, fixed below
+  by: {param: resolution, factors: {"0.5K": 0.75, "1K": 1, "2K": 1.5, "4K": 2}}
 publish: false                  # not published through the pipeline during the pilot
 shotgrid: false                 # not in ShotGrid's right-click menu during the pilot
 # Inputs larger than this many pixels on their longer side are scaled down first: the model

@@ -936,6 +936,7 @@ async function updateDest(wf, seqP, outP) {
       }).join("")
       + Object.entries(r.sources || {}).map(([name, s]) =>
         `<br>${esc(wf.params.find(p => p.name === name)?.label || name)}: ${versionText(s)}`).join("")
+      + (r.cost ? `<br><b>Cost</b> ${esc(r.cost.text)}` : "")     // at an outside provider (decision 0059)
       + etaLine(r.eta)
       + (r.notes || []).map(n => `<br><span class="warn">${esc(n)}</span>`).join("")
       + (!r.picked && r.shot ? `<br>Shot <code>${esc(r.shot)}</code>, show <code>${esc(r.show)}</code>, ${r.sources?.[seqP?.name] ? "from the ShotGrid Version" : "read from the input path"}.` : "")

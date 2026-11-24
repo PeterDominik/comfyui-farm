@@ -197,6 +197,18 @@ class FalAdapter(Tmp):
         self.assertEqual(len(sent), 2)                      # the first once, the lost one once: never again
         self.assertIn(first["id"], mock.requests)
 
+    def test_its_prices(self):
+        """fal.ai's pricing API, as the stand-in answers it (decision 0059)."""
+        async def go():
+            a = self.adapter()
+            try:
+                return await a.prices([EDIT, "fal-ai/not-a-model"])
+            finally:
+                await a.close()
+        self.assertEqual(asyncio.run(go()), {EDIT: {"unit_price": 0.08, "unit": "image", "currency": "USD"}})
+        self.assertEqual([(c["method"], c["path"], c["keyed"]) for c in self.mock.calls],
+                         [("GET", "/v1/models/pricing", True)])
+
     def test_sync_mode_files_come_inline(self):
         async def go():
             a = self.adapter()
@@ -475,6 +487,25 @@ class TheGateway(Tmp):
         return [c for c in self.mock.calls if c["path"] == "/fal-ai/nano-banana-2/edit"]
 
     # ---------------------------------------------------------------- tests
+    def test_it_reads_its_providers_prices_and_says_them(self):
+        """Read when it starts and every prices_hours; sent with what it can run when they
+        change, and the manager estimates from them (decision 0059)."""
+        g = self.gateway()
+        wf = self.farm.registry.workflows["nano_banana2_edit_fal"]
+        self.assertIsNone(self.desk.price(wf))
+        self.assertTrue(self.wait(g.runner.read_prices()))
+        price = self.desk.price(wf)
+        self.assertEqual({k: price[k] for k in ("unit_price", "unit", "currency")},
+                         {"unit_price": 0.08, "unit": "image", "currency": "USD"})
+        self.assertFalse(self.wait(g.runner.read_prices()))                  # the same: nothing to say
+        self.mock.prices[EDIT] = (0.1, "image", "USD")
+        self.assertTrue(self.wait(g.runner.read_prices()))
+        self.assertEqual(self.desk.price(wf)["unit_price"], 0.1)
+        jid = self.submit(resolution="2K")
+        cost = self.job(jid)["info"]["cost"]
+        self.assertEqual((round(cost["amount"], 4), cost["source"]), (0.15, "provider"))
+        self.assertIn("25% above the $0.08", " ".join(self.job(jid)["warnings"]))
+
     def test_it_checks_in_with_its_lanes(self):
         self.gateway()
         a = self.desk.agents[GATEWAY]

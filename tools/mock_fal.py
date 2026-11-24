@@ -1,7 +1,8 @@
 """A stand-in for fal.ai, for the gateway with no fal.ai account and no money (decision 0056).
 
 It speaks the parts of fal.ai's API the gateway uses: the upload token and the CDN upload,
-the queue (submit, status, result, cancel) and the result files, all on one address. It
+the queue (submit, status, result, cancel), the result files and the pricing API, all on one
+address. It
 checks the key the way fal.ai does, and runs its models in a few seconds, making grey PNGs.
 
     python tools/mock_fal.py --gateway gateway.yaml [--queue-seconds 1] [--run-seconds 3]
@@ -49,6 +50,8 @@ MODELS = {
     },
 }
 SIDES = {"0.5K": 512, "1K": 1024, "2K": 2048, "4K": 4096}
+# What its pricing API says (fal.ai's page, 24 November 2026): {endpoint: (unit price, unit, currency)}.
+PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "image", "USD")}
 
 
 def grey_png(width: int, height: int) -> bytes:
@@ -82,6 +85,7 @@ class MockFal:
         self.files: dict[str, tuple[bytes, str]] = {}
         self.tokens: set[str] = set()
         self.requests: dict[str, dict] = {}
+        self.prices = dict(PRICES)      # the tests change them
         self.calls: list[dict] = []
         self.lock = threading.Lock()
 
@@ -112,6 +116,14 @@ class MockFal:
                 until = datetime.now(timezone.utc) + timedelta(hours=1)
                 return _ok({"token": token, "token_type": "Bearer", "base_url": self.base,
                             "expires_at": until.isoformat()})
+            if method == "GET" and path == "/v1/models/pricing":
+                wanted = [e for v in query.get("endpoint_id", []) for e in v.split(",") if e]
+                if not 1 <= len(wanted) <= 50:
+                    return 400, {"Content-Type": "application/json"}, json.dumps({"error": {
+                        "type": "validation_error", "message": "endpoint_id: 1 to 50 endpoint ids"}}).encode()
+                return _ok({"prices": [{"endpoint_id": e, "unit_price": p[0], "unit": p[1], "currency": p[2]}
+                                       for e in wanted for p in [self.prices.get(e)] if p],
+                            "next_cursor": None, "has_more": False})
             segs = path.strip("/").split("/")
             if len(segs) >= 4 and segs[2] == "requests":
                 return self._request(method, "/".join(segs[:2]), segs[3], segs[4:])

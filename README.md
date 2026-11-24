@@ -2200,6 +2200,8 @@ process.yaml with `runner: {type: api}`:
 id: nano_banana2_edit_fal
 task: image
 provider: fal                 # an API definition names its provider
+models: [{file: fal-ai/nano-banana-2/edit, licence: google-via-fal}]   # the model it uses there
+cost: {unit: image, price: 0.08, by: {param: resolution, factors: {"1K": 1, "2K": 1.5}}}
 params:
   input: {type: input, takes: image, required: true, primary: true}
   prompt: {type: text, required: true}
@@ -2237,6 +2239,26 @@ runner:
   or input isn't sent, so the provider uses its default. `workflows/nano_banana2_edit_fal`
   is the first: the input and an optional reference, prompt, resolution and aspect ratio;
   one PNG, and no web or image search, fixed.
+- **What it costs** (decision 0059). An API definition has a `cost` block, from its
+  provider's page for the model, reviewed like the rest of the definition:
+  - `unit`: the provider's billing unit (image);
+  - `price`: one unit's price in US dollars when it was reviewed;
+  - `quantity`: how many units a job is, a number or `{param: <a number param>}` (a
+    video's seconds), 1 if left out;
+  - `by`: a choice param and a factor for each of its choices (Nano Banana 2: 0.75× at
+    0.5K, 1.5× at 2K, 2× at 4K).
+
+  The gateway reads each provider's prices every `gateway.prices_hours` (a day), from its
+  pricing API, and sends them with what it can run. When a job is planned, the manager
+  estimates it from that day's price, or from the reviewed one until the gateway has read
+  it. The estimate shows in the preview as `Cost` and is kept with the job
+  (`info.cost`).
+  - A price that moved more than 10% from the reviewed one is used, and noted.
+  - A price in another unit or another currency than US dollars is refused, never
+    converted: the definition needs reviewing.
+  - The price isn't in the definition's fingerprint, so a review needs no gateway update.
+- **Its model, listed.** An off-site definition lists the model it uses there and its
+  licence under `models:`, so licence rules see it.
 
 #### The gateway
 

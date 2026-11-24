@@ -39,7 +39,11 @@ RUNNER_SECTIONS = ("template", "node_packs", "sequence", "outputs", "textures")
 # The head's fields that manifests don't have. Read and checked now; the scheduler acts on
 # them from later phases (classes and limits with the process runner, targets with Tractor,
 # models with the policy gates, eval with the evals).
-HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval")
+HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval", "cost")
+# What a job costs at an outside provider (decision 0059): its billing unit, the price of one as
+# reviewed, how many units a job is and what scales the price. Left out of the fingerprint: a
+# price is the manager's business and doesn't change what runs.
+COST_KEYS = ("unit", "price", "currency", "quantity", "by")
 # Where it sits in the menus, Provider > Task > Workflow (catalog.py, decision 0054). Left out
 # of the fingerprint: they don't change what runs.
 CATALOGUE_KEYS = ("task", "provider", "family", "hidden")
@@ -537,6 +541,7 @@ class Definition:
         self.models: list = head.get("models") or []
         self.models_listed: bool = "models" in head     # models: [] says it uses no weights (decision 0044)
         self.eval: dict | None = head.get("eval")
+        self.cost: dict | None = head.get("cost")
         self._head = head
         self.name: str = m.get("name") or directory.name
         self.label: str = m.get("label") or self.name
@@ -581,8 +586,9 @@ class Definition:
         # run it (build_from, the process runner). Its place in the menus isn't in it.
         body = self.template if self.runner_type == "comfyui" else folder_digest(directory)
         runs = {k: v for k, v in m.items() if k not in CATALOGUE_KEYS}
+        hashed = {k: v for k, v in head.items() if k != "cost"}
         self.digest: str = hashlib.sha256(      # a manifest's is what it always was: head-only fields count when set
-            json.dumps([runs, body, *([head] if head else [])], sort_keys=True, default=str)
+            json.dumps([runs, body, *([hashed] if hashed else [])], sort_keys=True, default=str)
             .encode("utf-8")).hexdigest()[:16]
         self.params: dict[str, Param] = {}
         self._own_folder_elsewhere = sorted(n for n, p in (m.get("params") or {}).items()
@@ -713,7 +719,64 @@ class Definition:
             problems.append("models: needs to be a list of {file: <the weights file>, licence: <its licence>}")
         if self.eval is not None:
             problems += self._check_eval()
-        return problems + self._check_catalogue()
+        return problems + self._check_cost() + self._check_catalogue()
+
+    def _check_cost(self) -> list[str]:
+        """cost: what a job costs at an outside provider (decision 0059). An API definition has
+        one; no other does. And an off-site definition lists its models, so licence rules
+        see what it uses."""
+        c = self.cost
+        example = "cost: {unit: image, price: 0.08, by: {param: resolution, factors: {1K: 1, 2K: 1.5}}}"
+        problems = []
+        p = C.current().providers.get(self.provider if isinstance(self.provider, str) else "")
+        # A definition its provider runs (a wrong provider is the catalogue's to say).
+        offsite = p is not None and p.offsite and p.runner == self.runner_type
+        if offsite and not (isinstance(self.models, list) and self.models):
+            problems.append(f"models: it runs outside Rodeo, so it lists the model it uses there and its licence, "
+                            f"e.g. models: [{{file: {(self.api or {}).get('endpoint') or 'fal-ai/model'}, "
+                            f"licence: provider-terms}}]")
+        if self.runner_type != "api":
+            return problems + ([] if c is None else ["cost: only an outside provider's definitions cost money "
+                                                     "(runner: {type: api})"])
+        if c is None:
+            return problems + [f"cost: an API definition says what a job costs, from its provider's page, e.g. "
+                               f"{example}"]
+        if not isinstance(c, dict):
+            return problems + [f"cost: needs to be a section like {example}"]
+        problems += [f"cost: {k} isn't something a cost has ({', '.join(COST_KEYS)})"
+                     for k in sorted(set(c) - set(COST_KEYS))]
+        if not (isinstance(c.get("unit"), str) and C.NAME.fullmatch(c["unit"])):
+            problems.append("cost.unit: the provider's billing unit, as its pricing says, e.g. image")
+        price = c.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0:
+            problems.append("cost.price: the price of one unit in US dollars, as reviewed, e.g. 0.08")
+        if c.get("currency", "USD") != "USD":
+            problems.append("cost.currency: the farm's ledger is in US dollars (USD); a price in another currency "
+                            "isn't converted")
+        q = c.get("quantity", 1)
+        if isinstance(q, dict):
+            p = self.params.get(q.get("param") or "") if set(q) == {"param"} else None
+            if p is None or p.type not in ("int", "float"):
+                problems.append("cost.quantity: a number of units, or {param: <a number param>} (e.g. a video's "
+                                "seconds)")
+        elif isinstance(q, bool) or not isinstance(q, int) or q < 1:
+            problems.append("cost.quantity: a number of units, 1 or more, or {param: <a number param>}")
+        by = c.get("by")
+        if by is not None:
+            p = self.params.get(by.get("param") or "") if isinstance(by, dict) else None
+            factors = by.get("factors") if isinstance(by, dict) else None
+            if p is None or p.type != "choice" or not isinstance(factors, dict) or set(by) != {"param", "factors"}:
+                problems.append("cost.by: {param: <a choice param>, factors: {<each choice>: <its multiple of the "
+                                "price>}}, e.g. {param: resolution, factors: {1K: 1, 2K: 1.5}}")
+            else:
+                choices = {str(x) for x in p.choices or []}
+                given = {str(k): v for k, v in factors.items()}
+                if set(given) != choices:
+                    problems.append(f"cost.by.factors: one for each of {p.name}'s choices "
+                                    f"({', '.join(sorted(choices))}), no more")
+                if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0 for v in given.values()):
+                    problems.append("cost.by.factors: each is a number above 0, e.g. 1.5")
+        return problems
 
     def _check_catalogue(self) -> list[str]:
         """Its place in the menus: the fields' shapes, then its task and provider against the

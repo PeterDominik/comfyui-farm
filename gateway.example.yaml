@@ -23,6 +23,7 @@ gateway:
   runs_dir: data/api_runs        # a folder per run (what was sent, the request's id); relative = next to this file
   poll_seconds: 2                # each job's status is asked this often
   default_minutes: 30            # the time limit of a definition without limits.max_minutes
+  prices_hours: 24               # each provider's prices are read this often, for the manager's estimates
   providers:
     fal:                         # providers/fal.yaml
       lanes: 2                   # its jobs at once; empty: providers/fal.yaml's

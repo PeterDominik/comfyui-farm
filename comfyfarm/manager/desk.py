@@ -81,6 +81,7 @@ class AgentState:
     error: str | None = None
     problems: dict[str, list[str]] = field(default_factory=dict)
     expected: dict[str, int] = field(default_factory=dict)   # nodes a run of each workflow goes through, as it reports
+    prices: dict[str, dict] = field(default_factory=dict)    # a gateway's: its provider's price for each (0059)
     want_nodes: bool = False            # ask it for its node definitions again
     farm_nodes: dict | None = None      # its ComfyUI runs other farm nodes than its checkout (agent.py)
     was_alive: bool = False
@@ -509,7 +510,7 @@ class Desk:
         a = self._known(msg)
         if a is None:
             return {"hello": True}
-        a.problems, a.expected = {}, {}
+        a.problems, a.expected, a.prices = {}, {}, {}
         held = msg.get("processes")
         for name, wf in self.farm.registry.workflows.items():
             if not self.serves(a, wf):  # API definitions aren't a GPU machine's, nor others a gateway's
@@ -521,6 +522,9 @@ class Desk:
                 probs = self._held_problems(a, wf, held.get(name))
                 if not probs and held[name].get("expected_nodes"):
                     a.expected[name] = int(held[name]["expected_nodes"])
+                price = (held.get(name) or {}).get("price")
+                if isinstance(price, dict) and held[name].get("digest") == wf.digest:
+                    a.prices[name] = price      # its provider's price as the gateway read it (decision 0059)
             if probs:
                 a.problems[name] = probs
                 for p in probs:
@@ -529,6 +533,12 @@ class Desk:
         self._publish(a)
         self.wake()
         return {"problems": a.problems}
+
+    def price(self, wf) -> dict | None:
+        """An API definition's price at its provider today: the one a gateway read last
+        ({unit_price, unit, currency, at}), None while none has (decision 0059)."""
+        seen = [a.prices[wf.name] for a in self.agents.values() if wf.name in a.prices]
+        return max(seen, key=lambda p: float(p.get("at") or 0)) if seen else None
 
     @staticmethod
     def _broken(a: AgentState, wf, held: dict | None) -> None:

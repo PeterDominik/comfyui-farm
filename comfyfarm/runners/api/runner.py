@@ -159,6 +159,9 @@ class ApiRunner:
         self.adapters: dict[str, object] = {}       # provider -> its adapter, with its keys
         self.provider_problems: dict[str, list[str]] = {}
         self.problems: list[str] = []               # the gateway's own (gateway.yaml)
+        # Each provider's price for each endpoint, as read from it (decision 0059):
+        # {(provider, endpoint): {unit_price, unit, currency, at}}.
+        self.prices: dict[tuple[str, str], dict] = {}
         self._setup(catalog or C.current(), transport)
 
     # ================================================================ gateway.yaml
@@ -217,7 +220,52 @@ class ApiRunner:
             for why in probs:
                 log.warning("gateway %s: %s can't take jobs: %s", self.name, self._label(name), why)
         self._prune()
-        return []
+        return [asyncio.create_task(self._prices_loop(), name=f"prices-{self.name}")]
+
+    async def _prices_loop(self) -> None:
+        while True:
+            try:
+                await self.read_prices()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the last prices stay; read again next time
+                log.exception("gateway %s: reading prices failed", self.name)
+            await asyncio.sleep(self.gc.prices_hours * 3600)
+
+    async def read_prices(self) -> bool:
+        """Each provider's price for the endpoints of its definitions, from its pricing API
+        (decision 0059). The manager estimates jobs from them: when they change, the gateway
+        says so with what it can run. A provider that can't send anything (no key, an address
+        it may not use) or doesn't answer keeps the prices it had. True: they changed."""
+        changed = False
+        for provider, adapter in self.adapters.items():
+            if self.provider_problems.get(provider) or not hasattr(adapter, "prices"):
+                continue
+            endpoints = sorted({wf.api["endpoint"] for wf in self._definitions().values()
+                                if wf.provider == provider and wf.api})
+            if not endpoints:
+                continue
+            try:
+                got = await adapter.prices(endpoints)
+            except ApiError as e:
+                log.warning("gateway %s: can't read %s's prices (the last ones stay): %s", self.name,
+                            self._label(provider), e)
+                continue
+            at = time.time()
+            for endpoint in endpoints:
+                new = got.get(endpoint)
+                old = self.prices.get((provider, endpoint))
+                if new is None:
+                    log.warning("gateway %s: %s doesn't price %s", self.name, self._label(provider), endpoint)
+                    continue
+                if old is None or {k: old[k] for k in new} != new:
+                    changed = True
+                    log.info("gateway %s: %s prices %s at %s %s a %s", self.name, self._label(provider), endpoint,
+                             new["unit_price"], new["currency"], new["unit"])
+                self.prices[(provider, endpoint)] = {**new, "at": at}
+        if changed and self.host is not None:
+            await self.host.send_nodes()
+        return changed
 
     async def close(self) -> None:
         for t in self._follows.values():
@@ -266,7 +314,8 @@ class ApiRunner:
         """Each API definition of this checkout, what this gateway lacks for it (no lanes for its
         provider, no key) and what's wrong with it for its provider."""
         return {name: {"digest": wf.digest, "problems": self._problems_of(wf.provider or ""),
-                       "broken": self.wiring(wf), "expected_nodes": None}
+                       "broken": self.wiring(wf), "expected_nodes": None,
+                       "price": self.prices.get((wf.provider or "", (wf.api or {}).get("endpoint") or ""))}
                 for name, wf in self._definitions().items()}
 
     async def release(self) -> dict:
