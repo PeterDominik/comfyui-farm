@@ -346,3 +346,13 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
 
   The dashboard's Submit tab picks Provider › Task › Workflow from it (`static/catalog.js`),
   the hidden GPU test listed and marked; the plain list stays if the catalogue can't be read.
+
+  Nuke reads the same menus for the session's show:
+  - the Tab menu is ComfyFarm › provider › task › workflow, with Reload workflows at the top;
+  - the panel has Provider, Task and Workflow pickers and a card under them;
+  - the node's label names its provider;
+  - a workflow the show may not use is listed "(not on this show)" and says why;
+  - hidden ones aren't listed.
+
+  That is step 1's last pull request; its gate is the pilot's six workflows showing by
+  provider and task.

@@ -18,8 +18,11 @@ the same schema the panel builds its Submit form from):
             values, the connections and the versions.
 
 Made from the panel (Create node: the form as filled in, wired to the node the input came
-from) or from the Tab menu: ComfyFarm > Create Node > <workflow> (the defaults, wired to
-the selected Read/Write nodes).
+from) or from the Tab menu: ComfyFarm > <provider> > <task> > <workflow>, for example
+ComfyFarm > ComfyUI Local > Masking > SAM3 (the defaults, wired to the selected Read/Write
+nodes). The menus are the farm's (decision 0054) for the session's show: a workflow the show
+may not use is listed "(not on this show)", and picking it says why. The node's label names
+its provider.
 
 Layout of this file:
   the core     everything that doesn't need Nuke: knob specs from a workflow, knob values
@@ -253,10 +256,31 @@ def tile_color(rec: dict | None) -> int:
     return STATUS_TILES.get((rec or {}).get("status"), IDLE_TILE)
 
 
-def node_label(wf_name: str, rec: dict | None) -> str:
+def node_label(wf_name: str, rec: dict | None, provider: str = "") -> str:
+    """The node's label: its provider (ComfyUI Local), its workflow, the picked version."""
+    head = f"{provider}\n{wf_name}" if provider else wf_name
     if not rec:
-        return wf_name
-    return f"{wf_name}\n{rec.get('version') or rec['short_id']} {rec.get('status')}"
+        return head
+    return f"{head}\n{rec.get('version') or rec['short_id']} {rec.get('status')}"
+
+
+def menu_entries(tree: list | None, workflows: list[dict]) -> list[tuple]:
+    """The Tab menu under ComfyFarm: (path, workflow name, why the show may not use it or
+    None) per command, path the submenus then the command's label: (ComfyUI Local, Masking,
+    SAM3 ...). Without the farm's menus (an older farm), the workflows straight under
+    ComfyFarm. Disabled workflows aren't listed; ones the show may not use are, marked."""
+    if tree is None:
+        return [((wf.get("label") or wf["name"],), wf["name"], None) for wf in workflows if wf.get("enabled", True)]
+    out = []
+    for p in tree:
+        for t in p.get("tasks") or []:
+            for w in t.get("workflows") or []:
+                if not w.get("enabled", True):
+                    continue
+                refused = None if w.get("allowed", True) else (w.get("reason") or "The farm's policy refuses it.")
+                out.append(((PanelModel.provider_text(p), t["label"], PanelModel.workflow_text(w)), w["name"],
+                            refused))
+    return out
 
 
 def schema_key(wf: dict) -> str:
@@ -299,6 +323,7 @@ except ImportError:   # the core above stays importable without Nuke (tests, scr
 
 KNOB_CHANGED = "import comfyfarm_node\ncomfyfarm_node.knob_changed(nuke.thisNode(), nuke.thisKnob())"
 _workflows: list[dict] = []          # the farm's workflows, for the Tab menu and Refresh
+_catalog: list | None = None         # the farm's menus for the session's show (decision 0054), or None
 _retention: dict | None = None       # the farm's retention settings (when frames expire)
 _tracked: set[str] = set()           # job ids being followed
 _lock = threading.Lock()
@@ -375,7 +400,7 @@ def _publish_options(wf_name: str) -> dict:
 
 
 def _add_knobs(node, wf: dict, values: dict, job_name: str, publish_on: bool, pub_values: dict | None,
-               keep: dict | None = None) -> None:
+               keep: dict | None = None, provider: str = "") -> None:
     """The ComfyFarm tab, top to bottom: workflow, parameters, job name, publish, actions,
     versions, status. keep: hidden state carried over by Rebuild."""
     keep = keep or {}
@@ -391,6 +416,7 @@ def _add_knobs(node, wf: dict, values: dict, job_name: str, publish_on: bool, pu
     if wf.get("description"):
         add(nuke.Text_Knob("cf_description", "", _html(wf["description"].strip())))
     add(_hidden("cf_name", wf["name"]))
+    add(_hidden("cf_provider", provider))      # its label's first line (decision 0054)
     add(_hidden("cf_schema", json.dumps(wf)))
     add(_hidden("cf_jobs", keep.get("cf_jobs", "[]")))
     add(_hidden("cf_knob_list"))
@@ -500,14 +526,16 @@ def _file_nodes() -> list:
 
 
 def create_node(wf: dict, raw: dict | None = None, job_name: str = "", publish_on: bool = False,
-                pub_values: dict | None = None, connect: dict | None = None):
+                pub_values: dict | None = None, connect: dict | None = None, provider: str | None = None):
     """A ComfyFarm node for the workflow (its definition from the farm).
     raw: the form's values ({param: text}, the panel's); missing ones take the farm's defaults.
     connect: {param: node} for the input arrows. Without it, the selected Read/Write nodes
     (top of the DAG first) go to the inputs in order, and a typed input path that a Read or
     Write in the script reads is connected to it (the path stays when it says more, a
-    range). Returns the node, its panel open."""
+    range). provider: its provider's label, for the node's label (by default the Tab menu's).
+    Returns the node, its panel open."""
     raw = dict(raw or {})
+    provider = PanelModel.provider_of(_catalog, wf["name"]) if provider is None else provider
     ins = image_params(wf)
     selected = sorted(nuke.selectedNodes(), key=lambda n: (n.ypos(), n.xpos()))
     if connect is None:
@@ -534,7 +562,7 @@ def create_node(wf: dict, raw: dict | None = None, job_name: str = "", publish_o
             values[s["param"]] = raw.get(s["param"]) or ""
     node = nuke.nodes.Group(name=_unique_name(f"ComfyFarm_{wf['name']}_"))
     _build_inside(node, wf)
-    _add_knobs(node, wf, values, job_name, publish_on, pub_values)
+    _add_knobs(node, wf, values, job_name, publish_on, pub_values, provider=provider)
     _connect(node, wf, connect)
     anchor = connect.get(ins[0]["name"]) if ins else None
     anchor = anchor or (selected[0] if selected else None)
@@ -544,7 +572,7 @@ def create_node(wf: dict, raw: dict | None = None, job_name: str = "", publish_o
         n.setSelected(False)
     node.setSelected(True)
     node["tile_color"].setValue(IDLE_TILE)
-    node["label"].setValue(node_label(wf["name"], None))
+    node["label"].setValue(node_label(wf["name"], None, provider))
     try:
         node.showControlPanel()
     except Exception:  # noqa: BLE001 - no UI (terminal Nuke)
@@ -560,7 +588,12 @@ def _connect(node, wf: dict, connect: dict) -> None:
 
 
 def create_from_menu(wf_name: str):
-    """Tab menu: ComfyFarm > Create Node > <workflow>, with the farm's defaults."""
+    """Tab menu: ComfyFarm > <provider> > <task> > <workflow>, with the farm's defaults. One
+    the session's show may not use says why instead."""
+    refused = next((why for _, name, why in menu_entries(_catalog, _workflows) if name == wf_name and why), None)
+    if refused:
+        nuke.message(f"ComfyFarm: {refused}")
+        return None
     wf = next((w for w in _workflows if w["name"] == wf_name), None)
     if wf is None:
         try:
@@ -569,7 +602,7 @@ def create_from_menu(wf_name: str):
             nuke.message(f"ComfyFarm: {e}")
             return None
     if wf is None:
-        nuke.message(f"ComfyFarm: the farm has no workflow {wf_name} any more (ComfyFarm > Create Node > Reload).")
+        nuke.message(f"ComfyFarm: the farm has no workflow {wf_name} any more (ComfyFarm > Reload workflows).")
         return None
     return create_node(wf)
 
@@ -652,7 +685,8 @@ def show(node, pick: int | None = None) -> None:
     node["cf_version"].setValue(current)
     rec = records[current] if records else None
     node["cf_status"].setValue(status_text(rec, _retention))
-    node["label"].setValue(node_label(node["cf_name"].value(), rec))
+    provider = node["cf_provider"].value() if "cf_provider" in node.knobs() else ""   # older nodes: none
+    node["label"].setValue(node_label(node["cf_name"].value(), rec, provider))
     node["tile_color"].setValue(tile_color(rec))
     channel = node["cf_map"].value() if "cf_map" in node.knobs() else None
     frames = shown_frames(rec, channel)
@@ -868,6 +902,8 @@ def rebuild(node) -> None:
     pub_on = bool(node["cf_publish"].value()) if "cf_publish" in node.knobs() else False
     pub = publish_values(node)
     keep = {"cf_jobs": node["cf_jobs"].value()}
+    provider = PanelModel.provider_of(_catalog, name) or \
+        (node["cf_provider"].value() if "cf_provider" in node.knobs() else "")
     picked = int(node["cf_version"].getValue())
     for k in reversed(json.loads(node["cf_knob_list"].value() or "[]")):
         if k in node.knobs():
@@ -875,7 +911,7 @@ def rebuild(node) -> None:
     for i in range(node.inputs()):
         node.setInput(i, None)
     _build_inside(node, wf)
-    _add_knobs(node, wf, values, job_name, pub_on, pub, keep)
+    _add_knobs(node, wf, values, job_name, pub_on, pub, keep, provider=provider)
     _connect(node, wf, sources)
     show(node, pick=picked)
     _note(node, "Rebuilt from the farm's workflow.")
@@ -945,27 +981,43 @@ def load_workflows() -> list[dict]:
     return _workflows
 
 
-def fill_menu(menu, workflows: list[dict]) -> None:
-    """ComfyFarm > Create Node > <workflow> (Tab finds them by name), and Reload."""
+def load_menus() -> tuple[list[dict], list | None]:
+    """The farm's workflows (their forms), and its menus for the session's show, or None
+    when the farm can't give them (an older farm: the plain list)."""
+    global _catalog
+    workflows = load_workflows()
+    model = PanelModel(client=farm)
+    _catalog = model.load_catalog(PanelModel.rdo_context().get("show"))
+    return workflows, _catalog
+
+
+def fill_menu(menu, workflows: list[dict], tree: list | None = None) -> None:
+    """ComfyFarm: Reload workflows, then <provider> > <task> > <workflow> (Tab finds them by
+    name)."""
     menu.clearMenu()
-    for wf in workflows:
-        if wf.get("enabled", True):
-            menu.addCommand(wf.get("label") or wf["name"], lambda n=wf["name"]: create_from_menu(n))
-    menu.addSeparator()
     menu.addCommand("Reload workflows", lambda: register_menu(menu))
+    menu.addSeparator()
+    subs = {}
+    for path, name, _ in menu_entries(tree, workflows):
+        parent = menu
+        for i in range(len(path) - 1):
+            if path[:i + 1] not in subs:
+                subs[path[:i + 1]] = parent.addMenu(path[i])
+            parent = subs[path[:i + 1]]
+        parent.addCommand(path[-1], lambda n=name: create_from_menu(n))
 
 
 def register_menu(menu=None) -> None:
-    """Nodes (and so Tab) > ComfyFarm > Create Node: filled from the farm in the background,
-    so a farm that's down doesn't slow Nuke's start (Reload workflows asks again)."""
+    """Nodes (and so Tab) > ComfyFarm: filled from the farm in the background, so a farm
+    that's down doesn't slow Nuke's start (Reload workflows asks again)."""
     if menu is None:
-        menu = nuke.menu("Nodes").addMenu("ComfyFarm").addMenu("Create Node")
+        menu = nuke.menu("Nodes").addMenu("ComfyFarm")
         menu.addCommand("Reload workflows", lambda: register_menu(menu))
 
-    def done(workflows, error):
+    def done(result, error):
         if error:
             menu.clearMenu()
             menu.addCommand("Reload workflows (farm not reached)", lambda: register_menu(menu))
             return
-        fill_menu(menu, workflows)
-    _in_background(load_workflows, done)
+        fill_menu(menu, *result)
+    _in_background(load_menus, done)

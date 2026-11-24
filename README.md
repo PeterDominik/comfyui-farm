@@ -802,7 +802,11 @@ installed: the client is standard library only.
 1. Prerender the plate to a PNG sequence with a Write node (`…/name.%04d.png`), with the
    colour baked in the way the workflow expects. The farm reads the PNGs exactly as they are.
 2. Open the panel (*ComfyFarm → Open panel*, or *Windows → Custom → ComfyFarm*). On the
-   *Submit* tab, fill in the form: paste the input path, *Browse…*, or select the Read (or
+   *Submit* tab, pick the *Provider*, the *Task* and the *Workflow* (ComfyUI Local → Masking →
+   SAM3; the farm's menus, see *Menus: providers and tasks*). The card under them says what
+   it does, where it runs, whether its inputs leave Rodeo (off-site), and why the session's
+   show (`RDO_CURRENT_SHOW`) may not use it, if it may not; such a workflow is listed
+   *(not on this show)*. Then fill in the form: paste the input path, *Browse…*, or select the Read (or
    the Write that rendered it) and click *From selected*, which fills in `path first-last`
    from the node. For a workflow that takes one image (`wan22_i2i`), it fills in
    `path <current frame>` instead: go to the frame first. A workflow with several inputs
@@ -842,8 +846,15 @@ its image inputs as input arrows, and its result as its output (decision 0051).
 
 - **Make one:** in the panel, fill in the form and click *Create node* (the node gets the
   form's values and is wired to the Read the input came from), or press Tab in the node
-  graph and pick *ComfyFarm → Create Node → <workflow>* (the farm's defaults, wired to the
-  selected Read/Write nodes). *Reload workflows* in that menu asks the farm again.
+  graph and pick *ComfyFarm → <provider> → <task> → <workflow>*, e.g. *ComfyFarm → ComfyUI
+  Local → Masking → SAM3* (the farm's defaults, wired to the selected Read/Write nodes).
+  *Reload workflows*, at the top of that menu, asks the farm again.
+  - The menus are the farm's for the Nuke session's show. A workflow that show may not use
+    is listed *(not on this show)*, and picking it says why instead of making the node.
+  - Hidden workflows (the GPU test) aren't listed. A farm without the menus lists the
+    workflows straight under *ComfyFarm*.
+- **Its label** names its provider, then its workflow, then the picked version: *ComfyUI
+  Local / ltx25_layout_render / v003 done*.
 - **Inputs:** connect a Read or Write to each input arrow (Dots are fine). The farm reads
   files, so a comp branch needs a Write rendered first. A one-image input takes the current
   frame. A path typed into the input's *path* knob is used instead of the connection.
