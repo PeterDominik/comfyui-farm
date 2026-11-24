@@ -290,6 +290,9 @@ class Farm:
         files: its outputs may go into this folder, the farm's own (evals/ in its scratch
         folder), and the policy doesn't apply: it is the farm testing a machine, for no show."""
         wf = self.registry.get(workflow)
+        off = self.provider_off(wf)
+        if off:
+            raise FarmError(off, 403)
         cfg = self.cfg if evaluation is None else self.cfg.model_copy(update={
             "paths": self.cfg.paths.model_copy(update={"allowed_output_roots": [evaluation]})})
         values = wf.validate(params or {})
@@ -366,6 +369,16 @@ class Farm:
             return e
         return None
 
+    def provider_off(self, wf) -> str | None:
+        """Why a definition's provider isn't switched on on this farm (decision 0055), or None.
+        The farm's own GPUs (target pool) always are; any other only when the manager's
+        config.yaml lists it in providers.enabled."""
+        p = C.current().providers.get(wf.provider if isinstance(wf.provider, str) else "")
+        if p is None or p.target == "pool" or p.name in self.cfg.providers.enabled:
+            return None
+        return (f"{wf.label} runs on {p.label}, which isn't switched on on this farm (providers.enabled in the "
+                f"manager's config.yaml).")
+
     def catalogue(self, show: str | None, hidden: bool = False) -> dict:
         """GET /api/v1/catalog: the menus, Provider > Task > Workflow, for a show (decision
         0054, catalog.py). Each workflow says whether the policy in force lets the show use
@@ -380,7 +393,8 @@ class Farm:
                 return str(e), e.rule
             return None
 
-        return {"show": show, "providers": cat.tree(self.registry.workflows.values(), refusal, hidden),
+        on = [wf for wf in self.registry.workflows.values() if not self.provider_off(wf)]    # switched on only
+        return {"show": show, "providers": cat.tree(on, refusal, hidden),
                 "errors": list(cat.errors), "load_errors": dict(self.registry.load_errors)}
 
     def policy_view(self) -> dict:

@@ -1,0 +1,14 @@
+# An outside provider: fal.ai (decision 0055). Its jobs go to the gateway agent on the
+# manager's machine, which sends them to fal and brings the results back. Off until the
+# manager's config.yaml switches it on (providers.enabled), and the policy says which shows
+# may use it (step 3 of phase 11). The keys are only in the gateway's gateway.yaml, never here.
+
+label: fal.ai                   # in the menus
+description: Image and video models run by fal.ai, outside Rodeo.
+runner: api                     # its definitions' runner type
+target: gateway                 # its jobs go to the gateway agent
+offsite: true                   # the inputs are sent outside Rodeo's network
+order: 30                       # after the farm's own GPUs
+adapter: fal                    # the gateway's code that speaks to fal's queue API
+lanes: 2                        # its jobs at once on a gateway unless gateway.yaml says (below fal's limit)
+keys: [requests, billing]       # gateway.yaml holds these two: one for requests, one with billing permissions

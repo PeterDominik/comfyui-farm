@@ -226,6 +226,14 @@ class FarmConfig(BaseModel):
     strict_preflight: bool = True
 
 
+class ProvidersConfig(BaseModel):
+    """Which providers beyond the farm's own GPUs are switched on (decision 0055): their
+    definitions show in the menus and can be planned. The farm's own (target pool) always
+    are. A provider is a file in providers/ (catalog.py); which shows may use one is the
+    policy's (step 3 of phase 11)."""
+    enabled: list[str] = Field(default_factory=list)     # e.g. [fal]
+
+
 class ShareConfig(BaseModel):
     """A folder every artist and agent can read. At startup the manager writes its address
     there (manager.json) and copies the repo's client/ into it, so artists' Nuke
@@ -395,6 +403,7 @@ class Config(BaseModel):
     gpu_history: GpuHistoryConfig = Field(default_factory=GpuHistoryConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     evals: EvalsConfig = Field(default_factory=EvalsConfig)
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     database: str = "data/comfyfarm.db"
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line
