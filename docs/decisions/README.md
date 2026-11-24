@@ -61,3 +61,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0053](0053-evals.md) | Evals are farm jobs pinned to a machine, checked by its agent, gating rollouts and syncs | accepted |
 | [0054](0054-provider-registry-and-catalogue.md) | Menus by provider, then task: a provider registry and a task list in the repo, outside the fingerprint | accepted |
 | [0055](0055-gateway-target-and-lanes.md) | API definitions go to a gateway agent's lanes; outside providers are off until switched on | accepted |
+| [0056](0056-gateway-agent-and-api-runner.md) | The gateway is an agent with the API runner alone; keys stay on it, and a job is never sent twice | accepted |

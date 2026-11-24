@@ -1,6 +1,8 @@
 # local, per-machine
 config.yaml
 agent.yaml
+gateway.yaml
+*.key
 data/
 logs/
 run/

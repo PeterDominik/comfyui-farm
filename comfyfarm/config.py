@@ -475,10 +475,31 @@ class ComfyUILaunchConfig(BaseModel):
     startup_seconds: float = 300.0     # a start gets this long to answer before it's tried again
 
 
+class GatewayProviderConfig(BaseModel):
+    """One outside provider on the gateway (decision 0056). Its keys stay on this machine:
+    the files are read when the gateway starts, and what they hold goes only to the provider."""
+    lanes: int | None = Field(None, ge=1)       # its jobs at once here; empty: providers/<name>.yaml's lanes
+    keys: dict[str, str] = Field(default_factory=dict)  # each key providers/<name>.yaml names -> the file holding it
+    url: str = ""                               # a stand-in for the provider (tools/mock_fal.py); empty: the provider
+    media_seconds: int = Field(3600, ge=60)     # how long the provider keeps what the gateway uploads and gets made
+
+
+class GatewayConfig(BaseModel):
+    """The farm's gateway (decisions 0055, 0056): an agent that runs API definitions at outside
+    providers, in lanes, and nothing else. Off: the agent is a GPU machine's."""
+    enabled: bool = False
+    account: str = ""                           # whose accounts the keys are, e.g. peter-pilot: kept with each run
+    runs_dir: str = "data/api_runs"             # a folder per run; relative = next to gateway.yaml
+    poll_seconds: float = Field(2.0, gt=0)      # each run's status is asked this often
+    default_minutes: float = Field(30.0, gt=0)  # the time limit of a definition without limits.max_minutes
+    providers: dict[str, GatewayProviderConfig] = Field(default_factory=dict)
+
+
 class AgentConfig(BaseModel):
     """One agent: runs the manager's jobs on one ComfyUI (agent.example.yaml). Everything
     here describes this machine; how jobs are run (colour, naming, versions) comes with
-    each job from the manager."""
+    each job from the manager. With gateway.enabled it is the farm's gateway instead
+    (gateway.example.yaml)."""
     name: str                                   # as the dashboard shows it, e.g. rtx5090-a
     # The manager's address, or the manager.json it writes in the farm's shared folder
     # (share.dir), read again whenever the manager can't be reached.
@@ -512,8 +533,17 @@ class AgentConfig(BaseModel):
     reconcile_seconds: float = 20.0    # our jobs cross-checked against ComfyUI's queue and history
     lost_after_seconds: float = 300.0  # ComfyUI unreachable this long: its jobs go back to the manager
     delete_comfy_history: bool = True
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
 
     base_dir: Path = Field(default=Path("."), exclude=True)
+
+    @model_validator(mode="after")
+    def _gateway_scratch(self) -> "AgentConfig":
+        # The gateway runs beside the GPU agent on the manager's machine. An agent empties the
+        # scratch folders of jobs it doesn't hold when it starts, so the two never share one.
+        if self.gateway.enabled and "scratch_dir" not in self.convert.model_fields_set:
+            self.convert.scratch_dir = "data/scratch-gateway"
+        return self
 
     def resolve(self, p: str) -> Path:
         path = Path(p)

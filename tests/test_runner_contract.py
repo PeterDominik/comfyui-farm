@@ -11,6 +11,7 @@ try:
     from comfyfarm.runners import base
     from comfyfarm.runners.comfyui import ComfyUIRunner, Runtime
     from comfyfarm.runners.process import ProcessRunner, ProcRun
+    from comfyfarm.runners.api.runner import ApiRun, ApiRunner
 except ImportError:   # pragma: no cover  (no httpx or websockets here)
     Agent = None
 
@@ -83,6 +84,30 @@ class ContractTests(unittest.TestCase):
         rt = ProcRun(job_id="j", proc=None, frac=1.5)
         self.assertEqual((rt.progress(), rt.nodes(), rt.last_push), (0.99, None, 0.0))
         self.assertLessEqual(members(base.RunState), set(dir(rt)))
+
+    def test_the_api_runner_has_all_the_agent_may_call(self):
+        """The gateway's runner (decision 0056): the same seam, with no GPU, no ComfyUI and
+        nothing to sync."""
+        for name in sorted(members(base.Runner)):
+            self.assertTrue(hasattr(ApiRunner, name) or name in ("label", "ready"), name)
+            want, have = getattr(base.Runner, name, None), getattr(ApiRunner, name, None)
+            if callable(want) and callable(have):
+                self.assertEqual(inspect.iscoroutinefunction(have), inspect.iscoroutinefunction(want), name)
+        self.assertIsInstance(inspect.getattr_static(ApiRunner, "ready"), property)
+        self.assertFalse(hasattr(ApiRunner, "sync") or hasattr(ApiRunner, "object_info"))
+        rt = ApiRun(job_id="j", started=0.0, frac=1.5)
+        self.assertEqual((rt.progress(), rt.nodes(), rt.last_push), (0.99, None, 0.0))
+        self.assertLessEqual(members(base.RunState), set(dir(rt)))
+
+    def test_a_gateway_agent_has_the_api_runner_alone(self):
+        from comfyfarm.runners import make_runners
+        gateway = make_runners(AgentConfig(name="gw", gateway={"enabled": True}))
+        self.assertEqual([type(r).__name__ for r in gateway], ["ApiRunner"])
+        gpu = make_runners(AgentConfig(name="gpu-x"))
+        self.assertEqual([type(r).__name__ for r in gpu], ["ComfyUIRunner", "ProcessRunner"])
+        agent = Agent(AgentConfig(name="gw", gateway={"enabled": True}), link=None, runners=gateway)
+        self.assertEqual((agent.lanes, agent._knows_nodes()), ({}, True))   # no providers in its config: no lanes
+        self.assertEqual(Agent(AgentConfig(name="gpu-x"), link=None, runners=gpu).lanes, {})
 
     def test_an_agent_gives_each_job_to_the_runner_that_knows_it(self):
         class Knows(NullRunner):

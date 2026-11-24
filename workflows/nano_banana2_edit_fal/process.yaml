@@ -1,0 +1,95 @@
+# An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
+# gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
+#
+# Off until the manager's config.yaml lists fal in providers.enabled. Until phase 11's step 5
+# the gateway sends it only to a stand-in on its own machine (tools/mock_fal.py), so nothing
+# reaches fal.ai and nothing is paid for.
+
+id: nano_banana2_edit_fal
+label: Nano Banana 2 edit
+description: >
+  Edits one image as the prompt says, with Google's Nano Banana 2 at fal.ai. A second image
+  can be given as a reference (a look, an object, a person to put in). The result is a PNG
+  numbered like the input frame. The image and the prompt leave Rodeo's network: they are
+  sent to fal.ai, which keeps them an hour.
+tag: nanobanana                 # in the output file names: <source>.nanobanana_vNNN.<frame>.png
+task: image                     # in the menus: fal.ai > Image > Nano Banana 2 edit
+provider: fal                   # providers/fal.yaml: off-site, through the gateway
+family: nano-banana-2-edit      # the same model at other providers, for comparing prices (later)
+class: interactive
+limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
+models: []                      # no model weights on the farm: the model is fal.ai's
+publish: false                  # not published through the pipeline during the pilot
+shotgrid: false                 # not in ShotGrid's right-click menu during the pilot
+# Inputs larger than this many pixels on their longer side are scaled down first: the model
+# makes images of up to 4K whatever it is given, and a smaller upload is quicker.
+work_resolution: 2048
+
+params:
+  # One image (takes: image). A sequence or movie must name its frame; the Nuke node uses
+  # the current frame.
+  input:
+    type: input
+    takes: image
+    label: Input image
+    required: true
+    primary: true
+    help: >
+      The image to edit: a file, or a sequence or movie with the frame to use after it, e.g.
+      /rdo/shows/<show>/.../<shot>.plate.%04d.exr 1050. EXRs are converted with the shot's
+      OCIO look first, and images over 2048 pixels are scaled down.
+
+  reference:
+    type: input
+    takes: image
+    label: Reference image
+    help: >
+      Optional: a second image the prompt can refer to, e.g. "give the car the paint of the
+      reference". Sent with the input, in that order.
+
+  prompt:
+    type: text
+    label: Prompt
+    required: true
+    help: What to change, in plain words, e.g. "remove the crane in the background".
+
+  resolution:
+    type: choice
+    label: Resolution
+    choices: ["0.5K", "1K", "2K", "4K"]
+    default: "1K"
+    help: >
+      The size of the result on its longer side. fal.ai charges by it: 1K is the base price,
+      0.5K three quarters of it, 2K one and a half times and 4K twice.
+
+  aspect_ratio:
+    type: choice
+    label: Aspect ratio
+    choices: [auto, "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
+    default: auto
+    help: The shape of the result. auto keeps the input's.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      The result goes into a folder named after the shot inside this one, as
+      <source>.nanobanana_vNNN.<frame>.png. Each run takes the next free version. Leave empty
+      for the show's renders folder. Never inside .published.
+
+writes:
+  frames: {ext: png}
+
+runner:
+  type: api
+  endpoint: fal-ai/nano-banana-2/edit
+  # The input first, then the reference: fal.ai reads them in this order.
+  upload: {input: image_urls, reference: image_urls}
+  send: {prompt: prompt, resolution: resolution, aspect_ratio: aspect_ratio}
+  # Never the artist's: one image a job, a PNG (writes.frames.ext), and nothing looked up on
+  # the web, so only what the farm sends goes into the job.
+  fixed:
+    num_images: 1
+    output_format: png
+    enable_web_search: false
+    enable_image_search: false

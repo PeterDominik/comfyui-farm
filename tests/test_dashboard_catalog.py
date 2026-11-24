@@ -25,9 +25,12 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def farm_tree() -> list:
-    """The farm's own catalogue, hidden ones too, as the dashboard asks for it."""
-    return json.loads(json.dumps(C.load().tree(DefinitionRegistry(REPO / "workflows").workflows.values(),
-                                               hidden=True)))
+    """The farm's own catalogue, hidden ones too, as the dashboard asks for it with no outside
+    provider switched on (providers.enabled, decision 0055): the farm's GPUs only."""
+    cat = C.load()
+    own = [wf for wf in DefinitionRegistry(REPO / "workflows").workflows.values()
+           if cat.providers[wf.provider].target == "pool"]
+    return json.loads(json.dumps(cat.tree(own, hidden=True)))
 
 
 @unittest.skipUnless(NODE, "node isn't installed")

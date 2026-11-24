@@ -75,10 +75,15 @@ class Rollouts:
         if self.open(name):
             raise RolloutError(f"a rollout of {name} is open ({self.open(name)['state']}): resume, roll it back or "
                                f"cancel it first")
-        names = list(machines) if machines else sorted(self.desk.agents)
+        # Every GPU machine, unless named: the gateway has no runner environments (decision 0056).
+        names = list(machines) if machines else sorted(m for m, a in self.desk.agents.items() if not a.lanes)
         unknown = [m for m in names if m not in self.desk.agents]
         if unknown:
             raise RolloutError(f"no machine {', '.join(unknown)} (known: {', '.join(sorted(self.desk.agents))})")
+        gateway = next((m for m in names if self.desk.agents[m].lanes), None)
+        if gateway:
+            raise RolloutError(f"{gateway} is the gateway: it sends jobs to outside providers and builds no runner "
+                               f"environments")
         if not names:
             raise RolloutError("no machine has checked in yet")
         order = self.order(names)

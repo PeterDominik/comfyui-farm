@@ -2185,8 +2185,55 @@ runner:
 
   Until then the menus leave them out and a submit is refused, saying so. The farm's own
   GPUs (ComfyUI Local, Python Local) are always on.
-- **The gateway agent and its runner** come with the next step: until then no machine runs
-  an API job.
+- **What is sent.** The fixed fields, each `send` param under its field, and each `upload`
+  field: the URLs of its inputs, in the params' order. fal.ai names a field that takes
+  several URLs `..._urls` (a list is sent) and one that takes one `..._url`. An empty param
+  or input isn't sent, so the provider uses its default. `workflows/nano_banana2_edit_fal`
+  is the first: the input and an optional reference, prompt, resolution and aspect ratio;
+  one PNG, and no web or image search, fixed.
+
+#### The gateway
+
+The gateway is an agent with `gateway.enabled` in its config (`gateway.example.yaml`),
+run beside the GPU agent on the manager's machine (decision 0056). It has the API runner
+alone: no ComfyUI and no GPU, and it says its lanes when it checks in. Rollouts and
+ComfyUI syncs leave it out.
+
+```bash
+cp gateway.example.yaml gateway.yaml            # then edit: name, manager, keys
+python -m comfyfarm agent --config gateway.yaml --check
+python -m comfyfarm agent --config gateway.yaml
+```
+
+- **Keys.** Each in a file of its own, readable by its account alone (`chmod 600`; a
+  file others can read is refused), named in `gateway.yaml` under
+  `providers.<name>.keys`. The gateway reads them when it starts and sends them to the
+  provider only: they are in no log, job, event, run folder or output
+  (`tests/test_api_runner.py` checks). git ignores `gateway.yaml` and `*.key`.
+- **Each job:** its inputs are converted as for any job (an EXR to PNG), uploaded, and the
+  job is sent once. What is sent is in the run folder (`gateway.runs_dir/<attempt>`) before
+  it goes, and the request's id as soon as fal.ai gives it. Its status is asked every
+  `poll_seconds`; what it made is downloaded into the output folder at once and renamed
+  like any job's frames. Its time limit is `limits.max_minutes` (or
+  `gateway.default_minutes`), the provider's queue included: then it is cancelled there.
+- **Never paid for twice.** A job is sent again only when it certainly never left (no
+  connection, or the provider said it was too busy). If the gateway lost the answer, or
+  stopped while sending, the job fails, saying to look in the provider's request history.
+  After a restart the gateway follows its jobs again from their run folders.
+- **What fal.ai keeps.** Uploads and results are kept `media_seconds` (an hour unless
+  `gateway.yaml` says), asked for with each upload and job.
+- **Nothing reaches fal.ai itself yet.** Until phase 11's step 5 (after the ledger and
+  caps) the gateway sends jobs only to a stand-in on its own machine,
+  `tools/mock_fal.py`, which takes no money and sends nothing out:
+
+  ```bash
+  python tools/mock_fal.py --port 8189 --key-file /home/<user>/.comfyfarm/fal_requests.key
+  ```
+
+  with `providers.fal.url: http://127.0.0.1:8189` in `gateway.yaml` and a made-up key.
+  Any other address is refused (`REAL_SERVICE` in `comfyfarm/runners/api/fal.py`). In the
+  prompt, `MOCK_FAIL` makes its model fail, `MOCK_POLICY` its content check refuse it and
+  `MOCK_SLOW` it run a minute.
 
 Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,

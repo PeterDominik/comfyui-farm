@@ -366,3 +366,10 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - `providers/fal.yaml`, off until `providers.enabled` in config.yaml lists it;
   - the desk's lanes: an API job goes only to a gateway's free lane of its provider, and
     a gateway takes nothing else.
+
+  The second is in (0056):
+  - the gateway, an agent with `gateway.enabled` and the API runner alone
+    (`gateway.example.yaml`), left out of rollouts and syncs;
+  - the fal.ai adapter: keys from files on the gateway only, and a job never sent twice;
+  - `tools/mock_fal.py`, fal.ai's stand-in. Nothing reaches fal.ai itself before step 5;
+  - `workflows/nano_banana2_edit_fal`.
