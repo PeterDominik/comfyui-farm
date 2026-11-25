@@ -299,7 +299,7 @@ shotgrid:
   menu_sync:
     enabled: false
     # command: "source /rdo/rodeo/setup/rdo_rez_launcher/current/env/set_context.sh {show} && /rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline -- python {tool} --pipeline --menu-json {menu} --apply"
-    # show: raa            # the context's show (default: menu.yaml's first)
+    # show: raa            # the context's show (default: menu.yaml's first; with none, the last sync's)
     check_minutes: 5       # how often it looks whether the menu changed
     every_hours: 24        # synced again anyway (an item changed by hand in ShotGrid)
   # Batch Submit's ShotGrid query (README: Batch Submit): the Version fields it can filter

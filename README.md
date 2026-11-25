@@ -2228,8 +2228,14 @@ itself, so nobody has to after a change:
   pipeline context, then rez by its full path (in a terminal `rez` is an alias, which a
   script's shell doesn't expand), then the tool with the menu it wrote to
   `<data>/shotgrid_menu.json` (`{tool}`, `{menu}`, `{farm}`, `{show}`: `menu_sync.show`, else
-  `menu.yaml`'s first show):
+  `menu.yaml`'s first show, else the one the last good sync used):
   `source …/rdo_rez_launcher/current/env/set_context.sh raa && /rdo/software/rez/rez_installations/linux/rocky8/current/bin/rez/rez env rdo_publish_pipeline -- python tools/sg_ami.py --pipeline --menu-json <menu> --apply`
+- **No shows in `menu.yaml`** (every line under `shows:` commented out) takes every
+  ComfyFarm item off ShotGrid at the next sync (decision 0067). The pipeline's context still
+  needs a show: `menu_sync.show`, else the one the last good sync used, which the manager
+  keeps in `<data>/shotgrid_menu_sync.json`. Put the shows back to bring the menu back. To
+  hide a few workflows rather than the whole menu, use `disabled_workflows` (*Turning a
+  workflow off*).
 - **When it doesn't:** a menu with problems, without a `farm_url`, or with no items while
   it names shows (the workflows didn't load) isn't synced. A failed run is tried again at
   the next check. `GET /api/v1/shotgrid/menu`'s `sync` says how the last one went (when,

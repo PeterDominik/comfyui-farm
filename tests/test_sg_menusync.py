@@ -99,11 +99,43 @@ class When(unittest.TestCase):
             self.assertFalse(r["ok"])
             self.assertIn(why, r["why"])
         self.assertEqual(self.run_.calls, [])
-        self.menu = menu({})                                                      # no shows: every item goes, but
-        self.assertIn("no show for the pipeline's context", self.check()["why"])  # the context needs one
+        self.menu = menu({})                                    # no shows: every item goes, but the context needs one,
+        r = self.check()                                        # and no sync has run here to say which
+        self.assertEqual(r["why"], "menu.yaml names no shows, so every ComfyFarm item would come off ShotGrid, but the "
+                                   "pipeline's context needs a show and none has been synced with here yet: set "
+                                   "shotgrid.menu_sync.show")
         self.sync.cfg = MenuSyncConfig(enabled=True, show="bri3")
         self.assertTrue(self.check()["ok"])
         self.assertIn("set_context.sh bri3 &&", self.run_.calls[-1][0][-1])
+
+    def test_no_shows_takes_every_item_off(self):
+        """Decision 0067: menu.yaml with its shows taken out, with the context of the last good sync."""
+        self.assertTrue(self.check(reason="the manager started")["ok"])                   # raa, menu.yaml's first
+        self.assertEqual(json.loads((self.dir / "shotgrid_menu_sync.json").read_text())["show"], "raa")
+        self.menu = menu({})
+        with self.assertLogs("comfyfarm.shotgrid.menusync", "INFO") as logs:
+            r = self.check()
+        self.assertEqual((r["ok"], r["reason"]), (True, "the menu changed"))
+        self.assertIn("names no shows, so every ComfyFarm item comes off ShotGrid (the pipeline's context: raa)",
+                      logs.output[0])
+        self.assertIn("set_context.sh raa &&", self.run_.calls[-1][0][-1])
+        written = json.loads((self.dir / "shotgrid_menu.json").read_text())
+        self.assertEqual(written["items"], [])                  # the tool deletes every item it doesn't list
+        # After a restart too: the show is kept in the data folder.
+        again = MenuSync(MenuSyncConfig(enabled=True), lambda: self.menu, REPO / "tools" / "sg_ami.py", self.dir,
+                         run=self.run_)
+        self.assertTrue(asyncio.run(again.check(reason="the manager started"))["ok"])
+        self.assertIn("set_context.sh raa &&", self.run_.calls[-1][0][-1])
+        # A failed run notes nothing.
+        again.cfg, self.run_.answer = MenuSyncConfig(enabled=True, show="bri3"), (1, "No project has tank_name bri3.")
+        self.assertFalse(asyncio.run(again.check(force=True))["ok"])
+        self.assertEqual(json.loads((self.dir / "shotgrid_menu_sync.json").read_text())["show"], "raa")
+        again.cfg, self.run_.answer = MenuSyncConfig(enabled=True), (0, DONE)
+        # A file that isn't the farm's gives no show.
+        (self.dir / "shotgrid_menu_sync.json").write_text('{"show": "raa; rm -rf ~"}')
+        self.assertIn("none has been synced with here yet", asyncio.run(again.check(force=True))["why"])
+        (self.dir / "shotgrid_menu_sync.json").write_text("[1]")
+        self.assertIn("none has been synced with here yet", asyncio.run(again.check(force=True))["why"])
 
     def test_a_command_naming_something_else(self):
         self.sync.cfg = MenuSyncConfig(enabled=True, command="python {tool} --menu-json {menu} --site {site}")
@@ -197,6 +229,12 @@ class AllTheWay(unittest.TestCase):
         self.assertEqual({v["folder"] for v in items.values()}, {"ComfyFarm Open"})
         r = asyncio.run(sync.check(force=True))                                  # again: nothing to do
         self.assertEqual((r["ok"], r["created"], r["changed"], r["deleted"]), (True, 0, 0, 0))
+        # menu.yaml with no shows (decision 0067): every item posting to the farm comes off.
+        none = MenuSync(cfg, lambda: menu({}), REPO / "tools" / "sg_ami.py", d / "data")
+        r = asyncio.run(none.check(reason="the manager started"))
+        self.assertTrue(r["ok"], r["output"])
+        self.assertEqual((r["created"], r["changed"], r["deleted"]), (0, 0, 10))
+        self.assertEqual(json.loads(store.read_text()), {})
 
 
 if __name__ == "__main__":

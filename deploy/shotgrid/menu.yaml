@@ -3,15 +3,17 @@
 #   ComfyFarm Open ▸ <workflow>
 #
 # Its workflows are those with an image input (worked out from their manifests). After
-# changing this file (or adding a workflow), deploy the manager, then make ShotGrid's menu
-# match it with tools/sg_ami.py (with a script that may: --pipeline in Maya).
+# changing this file (or adding a workflow), deploy the manager: with shotgrid.menu_sync on,
+# it makes ShotGrid's menu match at its next check (a restart: within a minute). Without,
+# run tools/sg_ami.py by hand (with a script that may: --pipeline in Maya).
 
 # What ShotGrid's menu posts to: the manager's address as artists' browsers reach it
 # (manager.json's). Changing it later means syncing again (the old items are removed).
 farm_url: http://wrk1125l.rodeofx.com:9090
 
 # The shows (their tank_name) whose Versions and Playlists have the menu: `all` the
-# workflows that fit, or a list of them.
+# workflows that fit, or a list of them. None (every line commented out): the manager takes
+# every ComfyFarm item off ShotGrid at its next sync (decision 0067).
 shows:
   raa: all
   bri3: all
