@@ -168,7 +168,8 @@ class ThroughTheFarm(Farmed):
         definition(self.workflows, "copy", params={
             **self.FRAMES, "mode": {"type": "choice", "choices": ["ok", "hang"], "default": "ok"}})
         definition(self.workflows, "train", params={
-            **self.FRAMES, "mode": {"type": "choice", "choices": ["batch"], "default": "batch"}},
+            **self.FRAMES, "mode": {"type": "choice", "choices": ["batch"], "default": "batch"},
+            "output_path": {"type": "output_folder", "label": "Output folder"}},
             writes={"file": {"ext": "json"}}, **{"class": "batch"})
 
     def setUp(self):
@@ -267,6 +268,23 @@ class ThroughTheFarm(Farmed):
         self.assertTrue(os.path.exists(report))
         self.until(lambda: not os.path.exists(resume), what="its resume folder removed")
 
+    def test_its_files_go_into_the_folder_picked(self):
+        """A definition that writes files and no frames takes an output folder too: the pilot's
+        batch test, on an image whose path names no shot, had nowhere to go without one."""
+        ref = Path(self.root, "shows/rnd/_project_ref/_cg/comfyui")
+        ref.mkdir(parents=True)
+        (ref / "test.png").write_bytes(b"png")
+        with self.assertRaisesRegex(Exception, "no shot from the input path"):
+            self.farm.submit("train", {"input": "/rdo/shows/rnd/_project_ref/_cg/comfyui/test.png"}, "ann")
+        job = self.farm.submit("train", {"input": "/rdo/shows/rnd/_project_ref/_cg/comfyui/test.png",
+                                         "output_path": "/rdo/shows/rnd/_project_ref/_cg/comfyui/renders"}, "ann")
+        renders = str(ref / "renders").replace("\\", "/")
+        self.assertEqual(job["output_dir"], renders)
+        self.assertEqual(os.path.dirname(job["info"]["resume_dir"]), renders)
+        self.assertEqual(job["info"]["resume_dir_posix"],
+                         "/rdo/shows/rnd/_project_ref/_cg/comfyui/renders/test.train_v001.resume")
+        self.wait(self.farm.cancel(job["id"]))
+
     def test_without_preempt_a_drained_machines_batch_job_carries_on(self):
         train = self.farm.submit("train", {"input": f"{self.SEQ} 1001"}, "ann")
         self.beat()
@@ -296,7 +314,7 @@ class TheBatchTest(unittest.TestCase):
         wf = ProcessRegistry(REPO / "workflows").workflows["batch_test"]
         self.assertEqual((wf.problems, wf.wiring_problems), ([], []))
         self.assertEqual((wf.job_class, wf.environment, wf.port.takes, wf.hidden), ("batch", "gpu-test", "image", True))
-        self.assertEqual(sorted(wf.params), ["hold_gb", "input", "save_every", "step_seconds", "steps"])
+        self.assertEqual(sorted(wf.params), ["hold_gb", "input", "output_path", "save_every", "step_seconds", "steps"])
         self.assertIn("batch_test", DefinitionRegistry(REPO / "workflows").workflows)
 
     def setUp(self):

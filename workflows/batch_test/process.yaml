@@ -10,8 +10,8 @@ description: >
   Counts steps, one every "Seconds per step", holding "Hold GPU memory" of the card, as a
   long job such as training would. A batch job: it waits behind artists' jobs, and when the
   farm needs its GPU it saves where it is and stops, then goes on from there on the next
-  free GPU. Its report, in the show's renders folder (<source>.batchtest_vNNN.json), lists
-  each run: the machine, its card and the steps it did. A test of the farm, not for shots.
+  free GPU. Its report (<source>.batchtest_vNNN.json) lists each run: the machine, its card
+  and the steps it did. A test of the farm, not for shots.
 tag: batchtest                  # in the output file names: <source>.batchtest_vNNN.json
 task: tests                     # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
 hidden: true                    # a test of the farm: not in artists' menus (the dashboard and CLI run it)
@@ -62,6 +62,14 @@ params:
     min: 0
     max: 96
     help: Keeps this much of the card while it runs, as training would.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      Its report and resume folder go into a folder named after the shot inside this one,
+      or straight into it when the image's path names no shot. Leave empty for the show's
+      renders folder. Never inside .published.
 
 writes:
   file: {ext: json}             # its report, named after the job by the farm (decision 0036)
