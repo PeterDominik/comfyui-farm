@@ -714,9 +714,18 @@ graph or an API request can't do.
   Every other kind of output (`writes.file`, `model`, ...) is cleared when a run starts, as
   for any job, so the run that finishes writes it. What a run needs to go on belongs in the
   resume folder.
-- **A drained machine preempts its batch jobs**, with `batch: {preempt: true}` in the manager's
-  config, so they go on elsewhere. Off by default: they finish where they are, as any job on a
-  drained machine. Rollouts and syncs drain machines too.
+- **When the farm wants its GPU**, with `batch: {preempt: true}` in the manager's config. Off
+  by default: batch jobs finish where they are, and an artist's job waits for a free GPU.
+  - **An artist's job that finds no free GPU** stops one batch job (decision 0064). It is on a
+    machine that may run the artist's job and has nothing else on its GPU, the fastest for the
+    job, as placing jobs ranks them. The artist's job waits for that GPU, its stage saying so,
+    rather than being prepared ahead behind another artist's job. One batch job stops for each
+    artist's job. A batch job never stops for another batch job, nor for an API job, which
+    needs no GPU.
+  - **A drained machine** stops its batch jobs, so they go on elsewhere. Rollouts and syncs
+    drain machines too.
+  - A batch job asked to stop that hasn't after 10 minutes (its agent didn't hear, or can't) is
+    left to run, and the artist's job is placed as if it weren't there.
 
 A job whose machine stops checking in is queued again as any job is, and goes on from what it
 saved last.
@@ -733,6 +742,14 @@ run: the machine, its card, the steps it did and how it ended. To try it, with `
    machine takes it and goes on from where it stopped.
 4. When it's done, its report lists two runs on two machines, and its resume folder is gone.
 5. Resume the drained machine.
+
+And with an artist's job, on two machines (drain the others):
+
+1. Submit `batch_test` with 300 steps. Say machine A takes it.
+2. Submit `gpu_test` on a few frames with *Seconds per frame* 5: machine B takes it.
+3. Submit `gpu_test` again with *Seconds per frame* 30. No GPU is free: its stage says it waits
+   for A, the batch test stops there within seconds, and this job runs on A.
+4. The first `gpu_test` ends on B, and the batch test goes on there from where it stopped.
 
 ### How the manager and agents work together
 

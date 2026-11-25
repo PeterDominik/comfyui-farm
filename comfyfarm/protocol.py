@@ -44,8 +44,9 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              in the agent's own checkout (decision 0033). To the gateway, when the
              ledger wants the providers' bills read (decision 0061), it carries `bill`:
              {since, until}, epoch seconds. `preempt`: [{job, attempt, why}], batch jobs
-             whose GPU the farm wants (decision 0063): each saves what it resumes from and
-             stops. An agent lists such a job with `preempting` until it ends.
+             whose GPU the farm wants (decisions 0063, 0064: an artist's job, or the machine
+             drained): each saves what it resumes from and stops. An agent lists such a job
+             with `preempting` until it ends.
   report     one step of one job's run: preparing progress, dispatched, running,
              progress, postprocessing, done, failed, cancelled, lost, preempted (a batch
              job stopped as asked, `why` echoed: the manager queues it again to resume). `dispatched` may
