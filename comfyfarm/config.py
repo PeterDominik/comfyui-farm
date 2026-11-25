@@ -440,6 +440,10 @@ class Config(BaseModel):
     log_dir: str = "logs"
     log_json: bool = False                      # also write logs/comfyfarm.jsonl, one JSON object per line
     workflows_dir: str = "workflows"
+    # Definitions this farm doesn't offer for now (decision 0066): in no menu or list, refused
+    # at submit, never handed out or evaluated. They stay in the repo, and in the farm's ComfyUI
+    # environment, ready to come back by leaving them out of this list.
+    disabled_workflows: list[str] = Field(default_factory=list)
     workers: list[WorkerConfig] = Field(default_factory=lambda: [WorkerConfig(name="local")])
     paths: PathsConfig = Field(default_factory=PathsConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)

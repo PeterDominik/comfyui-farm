@@ -791,6 +791,11 @@ class Desk:
             # Its provider switched off since it was queued (decision 0055): it fails, saying so.
             defn = self.farm.registry.workflows.get(wf)
             off = self.farm.provider_off(defn) if defn is not None else None
+            # Its definition turned off since it was queued (decision 0066): an agent's own copy
+            # would still run it, so the manager fails it here, saying so.
+            if defn is None and wf in getattr(self.farm.registry, "disabled", {}):
+                off = (f"{self.farm.registry.disabled[wf].label or wf} was turned off on this farm after it was "
+                       f"queued (disabled_workflows in the manager's config.yaml).")
             if off:
                 self._passed.pop(job["id"], None)
                 self.farm._fail(job["id"], f"Not run: {off}", ("queued",))

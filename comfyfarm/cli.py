@@ -135,6 +135,8 @@ def check_workflows(reg, what: str = "workflow") -> int:
     from . import catalog as C
     cat = C.current()
     bad = 0
+    for name in sorted(getattr(reg, "disabled", {})):
+        _line(" off", f"{what} {name}: turned off on this farm (disabled_workflows in config.yaml)")
     for name, err in reg.load_errors.items():
         _line("FAIL", f"{what} {name}: {err}")
         bad += 1
@@ -352,11 +354,11 @@ async def run_check(cfg: Config) -> int:
     print(f"comfyfarm {__version__}  config: {cfg.base_dir}")
     for note in cfg.obsolete_keys:
         _line("WARN", f"config.yaml: {note}")
-    reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir))
+    reg = WorkflowRegistry(cfg.resolve(cfg.workflows_dir), off=cfg.disabled_workflows)
     bad = check_catalog()
     bad += check_workflows(reg)
     from .runners.process import ProcessRegistry
-    bad += check_workflows(ProcessRegistry(cfg.resolve(cfg.workflows_dir)), "process")
+    bad += check_workflows(ProcessRegistry(cfg.resolve(cfg.workflows_dir), off=cfg.disabled_workflows), "process")
     bad += check_tools(cfg.convert)
     bad += check_ocio(cfg)
     for m in cfg.paths.mappings:

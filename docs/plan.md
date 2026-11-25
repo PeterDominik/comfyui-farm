@@ -491,3 +491,8 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   Peter drafted Nano Banana Pro edit and BiRefNet against fal.ai itself on 25 November. A fix
   followed for what those drafts showed: the prompt first, the endpoint in the label, units
   in words (BiRefNet's `compute seconds`), long lines wrapped.
+
+  Before step 9's next pull request, Peter asked on 25 November to turn off the LTX and SAM3
+  workflows and keep them in the repo (0066): `disabled_workflows` in the manager's
+  config.yaml takes a definition out of every menu and list and refuses it at submit, while
+  `comfyfarm check` still lists it.

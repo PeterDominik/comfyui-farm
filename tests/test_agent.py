@@ -536,6 +536,22 @@ class AgentTests(unittest.TestCase):
         self.assertEqual((j["worker"], j["prompt_id"], a.held), (None, None, {}))  # never given to a machine
         self.assertIn("failed", [e["event"] for e in self.store.events(job["id"])])
 
+    def test_a_workflow_turned_off_after_a_job_was_queued_fails_it_when_a_machine_would_take_it(self):
+        """Decision 0066: the agent's own copy would run it, so the manager fails it at hand-out."""
+        job = self.submit()
+        reg = self.farm.registry                                # shared by the tests: put back as it was
+        self.addCleanup(reg.reload)
+        self.addCleanup(setattr, reg, "off", reg.off)
+        reg.off = {"ltx25_alpha_gen"}                           # the manager restarted with it in disabled_workflows
+        reg.reload()
+        a = self.ready(self.agent())
+        self.beat(a)
+        self.until(lambda: self.job(job["id"])["status"] == "failed", what="failed")
+        j = self.job(job["id"])
+        self.assertEqual(j["error"], "Not run: LTX 2.5 alpha generation was turned off on this farm after it was "
+                                     "queued (disabled_workflows in the manager's config.yaml).")
+        self.assertEqual((j["worker"], j["prompt_id"], a.held), (None, None, {}))  # never given to a machine
+
     def test_a_policy_that_cant_be_read_holds_the_queue(self):
         job = self.submit()                                                     # queued before policy was on
         self.policy_file("version: 1\nother_shows: maybe\n")                  # never a valid file

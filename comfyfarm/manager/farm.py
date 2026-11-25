@@ -85,7 +85,7 @@ class Farm:
         # Which shows may use the farm, and with what (policy.yaml in the bank folder).
         local, shown = policy_path(cfg)
         self.policy = Policy(cfg.policy.enabled, local, Path(cfg.resolve(cfg.database)).parent / "policy.json",
-                             known=lambda: set(self.registry.workflows), shown_path=shown,
+                             known=self._known, shown_path=shown,
                              providers=lambda: {n: p.offsite for n, p in C.current().providers.items()})
 
     # ================================================================ lifecycle
@@ -434,6 +434,11 @@ class Farm:
     def provider_of(wf):
         """Where a definition runs (catalog.Provider), for the policy's provider rules."""
         return C.current().providers.get(wf.provider if isinstance(wf.provider, str) else "")
+
+    def _known(self) -> set[str]:
+        """The definitions the policy may name: those turned off too (decision 0066), so a rule
+        naming one stays valid for when it comes back."""
+        return set(self.registry.workflows) | set(getattr(self.registry, "disabled", {}))
 
     def provider_off(self, wf) -> str | None:
         """Why a definition's provider isn't switched on on this farm (decision 0055), or None.

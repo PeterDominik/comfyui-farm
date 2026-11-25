@@ -156,7 +156,7 @@ def create_app(cfg: Config, local_agents: bool = True) -> FastAPI:
     store = JobStore(cfg.resolve(cfg.database))
     # The heads only: how a definition wires its runner is checked by the agents, which
     # report one they find broken (docs/decisions/0020).
-    registry = DefinitionRegistry(cfg.resolve(cfg.workflows_dir))
+    registry = DefinitionRegistry(cfg.resolve(cfg.workflows_dir), off=cfg.disabled_workflows)
     events = EventBus()
     farm = Farm(cfg, store, registry, events)
     desk = Desk(farm)
