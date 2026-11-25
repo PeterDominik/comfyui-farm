@@ -72,3 +72,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0064](0064-an-artists-job-preempts-a-batch-job.md) | An artist's job with no free GPU stops one batch job, the fastest for it, and waits for that GPU | accepted |
 | [0065](0065-fal-definitions-drafted-from-fal.md) | fal.ai definitions drafted from fal.ai's own description, through the gateway, and reviewed by hand | accepted |
 | [0066](0066-workflows-turned-off-in-the-managers-config.md) | Workflows turned off in the manager's config: kept in the repo, in no menu or list | accepted |
+| [0067](0067-no-shows-in-menu-yaml-takes-the-menu-off-shotgrid.md) | No shows in menu.yaml takes the farm's menu off ShotGrid | accepted |

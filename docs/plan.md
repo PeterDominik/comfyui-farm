@@ -496,3 +496,6 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   workflows and keep them in the repo (0066): `disabled_workflows` in the manager's
   config.yaml takes a definition out of every menu and list and refuses it at submit, while
   `comfyfarm check` still lists it.
+  On the pilot, the sync took the three off ShotGrid's menu. Peter had first taken every show
+  out of `menu.yaml`, which the sync refused for want of a show for the pipeline's context. He
+  asked that no shows remove every item (0067): the context is then the last good sync's show.

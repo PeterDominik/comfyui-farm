@@ -19,7 +19,11 @@ from the one last synced (menu.yaml edited, a workflow added or changed), and ev
 every_hours anyway (an item changed by hand in ShotGrid). POST
 /api/v1/shotgrid/menu/sync runs it now. A menu with problems, without a farm_url, or
 with no items while it names shows (the workflows didn't load?) isn't synced: the
-status says why. A failed run is tried again at the next check."""
+status says why. A failed run is tried again at the next check.
+
+A menu.yaml that names no shows takes every ComfyFarm item off ShotGrid (decision 0067).
+The pipeline's context still needs a show: shotgrid.menu_sync.show, else the one the last
+good sync used, which the manager keeps in its data folder (shotgrid_menu_sync.json)."""
 
 from __future__ import annotations
 
@@ -39,6 +43,7 @@ log = logging.getLogger("comfyfarm.shotgrid.menusync")
 __all__ = ["MenuSync", "digest", "counts"]
 
 START_DELAY = 20.0                      # seconds after the manager starts
+_SHOW = re.compile(r"^[A-Za-z0-9_]+$")
 OUTPUT_KEPT = 4000                      # characters of the tool's output kept in the status
 
 
@@ -64,6 +69,7 @@ class MenuSync:
         self.menu = menu
         self.tool = Path(tool)
         self.file = Path(folder) / "shotgrid_menu.json"
+        self.state = Path(folder) / "shotgrid_menu_sync.json"     # the context's show the last good sync used
         self._run = run
         self.synced: str | None = None          # the digest of the menu last synced
         self.synced_at = 0.0
@@ -122,11 +128,30 @@ class MenuSync:
             return self._skip(reason, "deploy/shotgrid/menu.yaml has no farm_url (the address ShotGrid's menu posts to)")
         if menu.get("shows") and not menu.get("items"):
             return self._skip(reason, "the menu came out empty though it names shows (did the workflows load?)")
-        show = self.cfg.show or next(iter(menu.get("shows") or {}), "")
+        shows = list(menu.get("shows") or {})
+        show = self.cfg.show or (shows[0] if shows else self._last_show())
         if not show and "{show}" in self.cfg.command:
-            return self._skip(reason, "no show for the pipeline's context: menu.yaml names none, so set "
-                                      "shotgrid.menu_sync.show")
+            return self._skip(reason, "menu.yaml names no shows, so every ComfyFarm item would come off ShotGrid, but "
+                                      "the pipeline's context needs a show and none has been synced with here yet: "
+                                      "set shotgrid.menu_sync.show")
+        if not shows:
+            log.info("ShotGrid menu: deploy/shotgrid/menu.yaml names no shows, so every ComfyFarm item comes off "
+                     "ShotGrid (the pipeline's context: %s)", show or "none")
         return await self._sync(menu, h, reason, show)
+
+    def _last_show(self) -> str:
+        """The context's show the last good sync used, or "" (none yet, or the file unreadable)."""
+        try:
+            show = str(json.loads(self.state.read_text(encoding="utf-8")).get("show") or "")
+        except (OSError, ValueError, AttributeError):
+            return ""
+        return show if _SHOW.match(show) else ""
+
+    def _remember(self, show: str) -> None:
+        try:
+            self.state.write_text(json.dumps({"show": show, "at": time.time()}), encoding="utf-8")
+        except OSError as e:
+            log.warning("ShotGrid menu: couldn't note the context's show in %s: %s", self.state, e)
 
     async def _sync(self, menu: dict, h: str, reason: str, show: str = "") -> dict:
         self.running = True
@@ -148,6 +173,8 @@ class MenuSync:
                      "why": None if ok else _why(code, output), "output": (output or "")[-OUTPUT_KEPT:]}
         if ok:
             self.synced, self.synced_at = h, time.time()
+            if show:
+                self._remember(show)
             log.info("ShotGrid menu synced: %d created, %d changed, %d deleted", n["created"], n["changed"], n["deleted"])
         else:
             log.warning("ShotGrid menu sync failed (exit %s): %s", code, self.last["why"])
