@@ -224,8 +224,10 @@ def check_gateway(cfg) -> int:
 
 
 def _ask(r, name: str) -> int:
-    """A live provider's keys, tried with questions it answers for free: never a job."""
+    """A live provider's keys, tried with questions it answers for free: never a job. In a
+    thread of its own, with its own event loop: `agent --check` calls this from inside one."""
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor
     adapter = r.adapters.get(name)
     if not hasattr(adapter, "ask"):
         return 0
@@ -237,7 +239,9 @@ def _ask(r, name: str) -> int:
         finally:
             await adapter.close()
     bad = 0
-    for ok, said in asyncio.run(go()):
+    with ThreadPoolExecutor(1) as pool:
+        said_all = pool.submit(lambda: asyncio.run(go())).result()
+    for ok, said in said_all:
         bad += 0 if ok else 1
         _line(" ok " if ok else "FAIL", f"{name}: {said}")
     return bad
