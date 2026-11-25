@@ -8,14 +8,15 @@ provider's pricing API every day and sends it with what it can run (`processes[n
 Until it has, the reviewed price is used, and the estimate says so.
 
 The ledger keeps US dollars. A price in another currency, or in another unit than the
-definition's, is refused, never converted: the definition needs reviewing first. A price that
-moved more than DRIFT from the reviewed one is used, with a note."""
+definition's, is refused, never converted: the definition needs reviewing first. A unit is
+the same whatever its case or plural (fal.ai's pricing says "images" where a definition says
+"image"). A price that moved more than DRIFT from the reviewed one is used, with a note."""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-__all__ = ["DRIFT", "PriceError", "drift_note", "estimate", "money", "per"]
+__all__ = ["DRIFT", "PriceError", "drift_note", "estimate", "money", "per", "same_unit"]
 
 DRIFT = 0.10                    # a move this large since the review is noted
 
@@ -34,6 +35,17 @@ def money(x: float) -> str:
 def per(unit: str) -> str:
     """'an image', 'a second': the price of one."""
     return ("an " if unit[:1].lower() in "aeiou" else "a ") + unit
+
+
+def same_unit(a, b) -> bool:
+    """Whether two billing units are one, as providers and definitions write them: case,
+    spaces and a plural s aside ("images" is "image", "Seconds" is "second")."""
+    return _singular(a) == _singular(b)
+
+
+def _singular(unit) -> str:
+    u = "_".join(str(unit or "").lower().split())
+    return u[:-1] if len(u) > 3 and u.endswith("s") and not u.endswith("ss") else u
 
 
 def _when(t) -> str:
@@ -56,7 +68,7 @@ def estimate(wf, values: dict, price: dict | None = None, provider: str | None =
         if (price.get("currency") or "USD") != "USD":
             raise PriceError(f"{who} now prices {wf.label} in {price.get('currency')}, and the farm's ledger is in "
                              f"US dollars: its definition needs reviewing before it runs again.")
-        if price.get("unit") != unit:
+        if not same_unit(price.get("unit"), unit):
             raise PriceError(f"{who} now bills {wf.label} per {price.get('unit')}, and its definition prices it per "
                              f"{unit}: the definition needs reviewing before it runs again.")
         unit_price, source, read_at = float(price["unit_price"]), "provider", price.get("at")

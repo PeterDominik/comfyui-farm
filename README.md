@@ -2362,7 +2362,8 @@ runner:
   (`info.cost`).
   - A price that moved more than 10% from the reviewed one is used, and noted.
   - A price in another unit or another currency than US dollars is refused, never
-    converted: the definition needs reviewing.
+    converted: the definition needs reviewing. A unit is the same whatever its case or
+    plural: fal.ai's pricing says `images` where the definition says `image`.
   - The price isn't in the definition's fingerprint, so a review needs no gateway update.
   - The job is checked against its show's cap and held against it when it is queued
     (*Budgets*, under *Policy*).

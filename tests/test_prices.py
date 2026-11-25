@@ -103,6 +103,17 @@ class TheEstimate(unittest.TestCase):
         down = PR.estimate(self.wf, {"resolution": "1K"}, {**TODAY, "unit_price": 0.06}, "fal.ai")
         self.assertIn("25% below the $0.08", PR.drift_note(self.wf, down, "fal.ai"))
 
+    def test_the_same_unit_however_its_written(self):
+        """fal.ai's pricing says "images" for Nano Banana 2 edit (seen on the pilot, 24 November)."""
+        for unit in ("images", "Image", " IMAGES "):
+            with self.subTest(unit=unit):
+                e = PR.estimate(self.wf, {"resolution": "2K"}, {**TODAY, "unit": unit}, "fal.ai")
+                self.assertEqual((e["amount"], e["unit"], e["source"]), (0.12, "image", "provider"))
+        self.assertTrue(PR.same_unit("seconds", "second"))
+        self.assertTrue(PR.same_unit("gpu seconds", "GPU_second"))
+        self.assertFalse(PR.same_unit("megapixels", "image"))
+        self.assertFalse(PR.same_unit("pass", "pas"))           # a double s is no plural
+
     def test_another_unit_or_currency_is_refused(self):
         with self.assertRaises(PR.PriceError) as e:
             PR.estimate(self.wf, {"resolution": "1K"}, {**TODAY, "unit": "megapixel"}, "fal.ai")

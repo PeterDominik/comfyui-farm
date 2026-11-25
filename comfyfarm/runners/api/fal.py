@@ -480,7 +480,7 @@ class Adapter:
         out = []
         try:
             got = await self.prices(endpoints)
-            priced = ", ".join(f"{e} ${p['unit_price']:g} a {p['unit']}" for e, p in sorted(got.items()))
+            priced = ", ".join(f"{e} ${p['unit_price']:g}, billed in {p['unit']}" for e, p in sorted(got.items()))
             out.append((True, f"fal.ai took the requests key and gave its prices: {priced or 'none of them'}"))
         except ApiError as e:
             out.append((False, f"the requests key: {e}"))
