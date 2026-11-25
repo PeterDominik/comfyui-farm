@@ -950,8 +950,11 @@ class TheGatewaysCheck(Tmp):
             asked.append((adapter.live, endpoints))
             return [(True, "fal.ai took the requests key and gave its prices: ..."), (False, "the billing key: no")]
         out = io.StringIO()
+
+        async def as_the_command_does():          # `agent --check` checks from inside an event loop
+            return cli.check_gateway(cfg)
         with mock.patch.object(F.Adapter, "ask", ask), contextlib.redirect_stdout(out):
-            bad = cli.check_gateway(cfg)
+            bad = asyncio.run(as_the_command_does())
         self.assertEqual(asked, [(True, [EDIT])])
         self.assertEqual(bad, 1, out.getvalue())
         self.assertIn("[ ok ] fal: 2 lane(s), sent to the provider itself, its keys read (account peter-pilot)",
