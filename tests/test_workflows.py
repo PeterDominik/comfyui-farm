@@ -351,7 +351,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any("wired in by the gateway" in p for p in wf.static_check()))
         wf = Workflow(WF_DIR / "ltx25_alpha_gen")
         wf.outputs.pop("frames")
-        self.assertTrue(any("needs outputs.frames" in p for p in wf.static_check()))
+        self.assertTrue(any("type output_folder needs something written into it" in p for p in wf.static_check()))
         self.assertEqual(self.wf.validate({"input": "x"}).get("output_path"), None)
 
     def test_lora_path_separators(self):

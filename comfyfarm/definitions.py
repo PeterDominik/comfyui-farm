@@ -927,9 +927,11 @@ class Definition:
         kinds = {p.type for p in self.params.values() if p.type in INPUT_TYPES}
         if len(kinds) > 1:
             problems.append("inputs are written either `type: input` or the older `type: sequence`, not both")
-        if self.output_folder_param and not (self.outputs.get("frames") or self.textures):
-            problems.append(f"param {self.output_folder_param}: type output_folder needs outputs.frames "
-                            f"or textures")
+        # Frames and texture sets choose their folder from it, and so does a kind on the generic
+        # route when it is all a definition writes (decision 0036): a report, a model.
+        if self.output_folder_param and not (self.outputs.get("frames") or self.textures or self.writes):
+            problems.append(f"param {self.output_folder_param}: type output_folder needs something written into "
+                            f"it: frames, a texture set or another kind (writes)")
         if self.textures:
             if self.outputs.get("frames"):
                 problems.append("textures and outputs.frames can't be used together")

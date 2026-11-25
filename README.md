@@ -637,7 +637,8 @@ farm names them after the job, beside the frames and with their version:
 `_comfyfarm_1234abcd_file.json` becomes `abc_0010.gputest_v001.json`, and
 `..._file_stats.json` becomes `abc_0010.gputest_v001_stats.json`. A run that writes none
 fails, since its definition said it would. Without frames, the files choose the output
-folder and its version themselves. The job lists all it wrote by kind (`outputs.artifacts`:
+folder and its version themselves, in the folder the artist picks when the definition has an
+`output_folder` param, as for frames. The job lists all it wrote by kind (`outputs.artifacts`:
 `frames`, `file`), and the dashboard shows the files under the job.
 
 Two more kinds take the same route (decision 0037). `movie` is a video (`ext`: mp4, mov,
