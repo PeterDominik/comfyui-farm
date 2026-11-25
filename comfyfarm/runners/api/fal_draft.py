@@ -202,6 +202,8 @@ def fields(takes: dict, comps: dict) -> tuple[list[Field], dict, list[str], list
     if not images:
         todo.append("it takes no image: the farm's fal.ai definitions need an input image to name the job's "
                     "outputs, until text-only jobs come")
+    # The prompt first, as an artist reads the form, then the rest in fal.ai's order.
+    out = [f for f in out if f.kind == "text"] + [f for f in out if f.kind != "text"]
     return params + out, fixed, left, todo
 
 
@@ -225,12 +227,26 @@ def name_for(endpoint: str) -> str:
     return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", "/".join(parts).lower())).strip("_") + "_fal"
 
 
+def label_for(endpoint: str, display: str) -> str:
+    """fal.ai's name for the model, with what this endpoint does when the name doesn't say:
+    a model's endpoints (edit, image-to-video, text-to-video) share one display name."""
+    parts = endpoint.split("/")
+    what = parts[-1].replace("-", " ") if len(parts) > 2 else ""
+    if not display:
+        return endpoint
+    if what and not all(w in display.lower().split() for w in what.lower().split()):
+        return f"{display} {what}"
+    return display
+
+
 def tag_for(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.removesuffix("_fal"))[:20] or "fal"
 
 
 def _unit(unit: str) -> str:
-    u = "_".join(str(unit or "").lower().split())
+    """A billing unit as a definition writes it: singular, its words joined by hyphens
+    ("compute seconds" is compute-second), as manager/prices.same_unit reads it."""
+    u = "-".join(w for w in re.split(r"[\s_-]+", str(unit or "").lower()) if w)
     return u[:-1] if len(u) > 3 and u.endswith("s") and not u.endswith("ss") else u
 
 
@@ -241,16 +257,25 @@ def _q(v) -> str:
 
 def _flow(key: str, items: list, indent: int) -> list[str]:
     """A list in YAML's flow style, wrapped to the farm's line length."""
-    pad, lines, line = " " * indent, [], f"{' ' * indent}{key}: ["
+    return _wrapped(key, [_q(item) for item in items], indent, "[", "]")
+
+
+def _mapping(key: str, pairs: dict, indent: int) -> list[str]:
+    """A section in YAML's flow style ({param: field, ...}), wrapped to the farm's line length."""
+    return _wrapped(key, [f"{k}: {v}" for k, v in pairs.items()], indent, "{", "}")
+
+
+def _wrapped(key: str, words: list[str], indent: int, open_: str, close: str) -> list[str]:
+    pad, lines, line = " " * indent, [], f"{' ' * indent}{key}: {open_}"
     cont = " " * len(line)
-    for i, item in enumerate(items):
-        word = _q(item) + ("]" if i == len(items) - 1 else ",")
-        if len(line) + 1 + len(word) > WIDTH and line.strip() not in (f"{key}: [", ""):
+    for i, w in enumerate(words):
+        word = w + (close if i == len(words) - 1 else ",")
+        if len(line) + 1 + len(word) > WIDTH and not line.endswith(open_):
             lines.append(line.rstrip())
             line = cont + word
         else:
-            line += ("" if line.endswith("[") else " ") + word
-    return lines + [line] if items else [f"{pad}{key}: []"]
+            line += ("" if line.endswith(open_) else " ") + word
+    return lines + [line] if words else [f"{pad}{key}: {open_}{close}"]
 
 
 def _comments(text: str, first: str = "# ", more: str = "#   ") -> list[str]:
@@ -287,8 +312,10 @@ def draft(model: dict, price: dict | None, today: str) -> Draft:
     if meta.get("status") == "deprecated":
         todo.append("fal.ai says this endpoint is deprecated")
     licence = f"fal-{meta.get('license_type') or 'unknown'}"
-    label = str(meta.get("display_name") or endpoint)
+    label = label_for(endpoint, str(meta.get("display_name") or ""))
     about = " ".join(str(meta.get("description") or "").split())
+    if about and about[-1] not in ".!?":
+        about += "."                    # fal.ai's descriptions don't always end a sentence
     sends = {f.param: f.name for f in params if f.kind != "input"}
     upload = {f.param: f.name for f in params if f.kind == "input"}
 
@@ -366,11 +393,10 @@ def draft(model: dict, price: dict | None, today: str) -> Draft:
                           f"inside .published.", 4), ""]
     if wr:
         L += ["writes:", "  frames: {ext: png}", ""]
-    L += ["runner:", "  type: api", f"  endpoint: {endpoint}",
-          f"  upload: {{{', '.join(f'{p}: {n}' for p, n in upload.items())}}}",
-          f"  send: {{{', '.join(f'{p}: {n}' for p, n in sends.items())}}}"]
+    L += ["runner:", "  type: api", f"  endpoint: {endpoint}", *_mapping("upload", upload, 2),
+          *_mapping("send", sends, 2)]
     if left:
-        L.append(f"  # Left to fal.ai's defaults: {', '.join(left)}.")
+        L += _comments(f"Left to fal.ai's defaults: {', '.join(left)}.", "  # ", "  #   ")
     if fixed:
         L.append("  # Never the artist's (decision 0062): the result comes back in fal.ai's answer (sync_mode).")
         L += ["  fixed:", *[f"    {k}: {_q(v)}" for k, v in fixed.items()]]

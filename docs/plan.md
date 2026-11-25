@@ -488,3 +488,6 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - the stand-in describes its models;
   - `nano_banana_pro_edit_fal`, drafted and reviewed;
   - the tests take every fal.ai definition alike, so a new one is one file.
+  Peter drafted Nano Banana Pro edit and BiRefNet against fal.ai itself on 25 November. A fix
+  followed for what those drafts showed: the prompt first, the endpoint in the label, units
+  in words (BiRefNet's `compute seconds`), long lines wrapped.

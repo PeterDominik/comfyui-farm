@@ -2429,8 +2429,9 @@ runner:
   (`info.cost`).
   - A price that moved more than 10% from the reviewed one is used, and noted.
   - A price in another unit or another currency than US dollars is refused, never
-    converted: the definition needs reviewing. A unit is the same whatever its case or
-    plural: fal.ai's pricing says `images` where the definition says `image`.
+    converted: the definition needs reviewing. A unit is the same whatever its case, its
+    plural, or the spaces, hyphens or underscores between its words: fal.ai's pricing says
+    `images` where the definition says `image`, and `compute seconds` for `compute-second`.
   - The price isn't in the definition's fingerprint, so a review needs no gateway update.
   - The job is checked against its show's cap and held against it when it is queued
     (*Budgets*, under *Policy*).
@@ -2535,8 +2536,11 @@ What the draft makes of them:
 - Each image field (`..._url`, `..._urls`) is an input. The first is `input`, required, since
   the farm names a job's outputs after it; a field that takes several also gets an optional
   `reference`.
-- The prompt is a text param. A field with choices is a choice, a number a number with its
-  range, a yes/no a checkbox, each with fal.ai's default and help.
+- The prompt is a text param, first after the inputs. A field with choices is a choice, a
+  number a number with its range, a yes/no a checkbox, each with fal.ai's default and help, in
+  fal.ai's order.
+- The label is fal.ai's name for the model, with what the endpoint does when the name doesn't
+  say (`Nano Banana Pro edit`): a model's endpoints share one name.
 - What the farm decides is fixed, never the artist's: one image, a PNG, the result in fal.ai's
   answer (`sync_mode`), no web search.
 - A model's finer knobs (temperature, safety levels, a conversation) are left to fal.ai's
