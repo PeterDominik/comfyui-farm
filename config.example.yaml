@@ -14,6 +14,10 @@ database: data/comfyfarm.db
 log_dir: logs
 # log_json: true    # also write logs/comfyfarm.jsonl: the same lines, one JSON object each, for a log collector
 workflows_dir: workflows
+# Definitions this farm doesn't offer for now (README: Turning a workflow off): in no menu or
+# list, refused at submit, never handed out or evaluated. They stay in the repo and in the
+# farm's ComfyUI environment; take a name out of the list to bring it back.
+# disabled_workflows: [ltx25_alpha_gen, ltx25_layout_render, sam3_ltx_alpha]
 
 # standalone: the ComfyUI instances on this machine that run jobs, each with an agent in
 # this process. Keep ComfyUI itself on 127.0.0.1 (no --listen); only its agent talks to

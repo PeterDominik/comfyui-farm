@@ -2703,6 +2703,30 @@ outputs:                       # nodes the gateway points at each job's versione
   "Unknown parameter". The Nuke panel and dashboard read the parameters from the farm,
   so they follow on their own; only scripts that send the old name need changing.
 
+### Turning a workflow off
+
+To stop offering a workflow for a while without taking it out of the repo, name it in the
+manager's `config.yaml` and restart the manager (`deploy/linux/farmctl.sh restart manager`):
+
+```yaml
+disabled_workflows: [ltx25_alpha_gen, ltx25_layout_render, sam3_ltx_alpha]
+```
+
+A workflow named there (decision 0066):
+- is in no menu or list: the Nuke panel, the dashboard (its hidden ones too), ShotGrid's
+  menu at its next sync, `/api/v1/workflows` and the catalogue;
+- is refused at submit, with a message saying it is turned off and where;
+- fails, saying so, if a job of it was queued before it was turned off. A job already on a
+  machine finishes;
+- is never evaluated, and isn't counted in a machine's problems;
+- stays in the repo and in the farm's ComfyUI environment (`comfyfarm comfyui snapshot`
+  still counts its node packs and models), and policy rules that name it stay valid.
+
+`python -m comfyfarm check` lists each one as `[ off]`. A name in the list that isn't a
+definition is a warning in the manager's log. Take a name out of the list and restart the
+manager to bring the workflow back. Agents need nothing: they take only what the manager
+hands out.
+
 ## Operations notes
 
 When something goes wrong (an agent or the manager down, jobs failing or waiting, a machine

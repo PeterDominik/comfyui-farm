@@ -1054,18 +1054,25 @@ class Definition:
 class DefinitionRegistry:
     """The definitions in a folder, one per subfolder with a process.yaml or a manifest.yaml.
     This one is the manager's: their heads checked here (decision 0020), whatever runs them.
-    A runner's registry sets RUNNER and reads only the definitions it runs."""
+    A runner's registry sets RUNNER and reads only the definitions it runs.
+
+    `off`: definitions this farm doesn't offer (the manager's disabled_workflows, decision
+    0066). Each is still read, and kept in `disabled`, not `workflows`: so it is in no menu or
+    list, nothing hands it out or evaluates it, and asking for it says it is turned off."""
     KIND = Definition
     RUNNER: str | None = None
 
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, off=()):
         self.directory = directory
+        self.off = {str(n) for n in off or ()}
         self.workflows: dict[str, Definition] = {}
+        self.disabled: dict[str, Definition] = {}
         self.load_errors: dict[str, str] = {}
         self.reload()
 
     def reload(self) -> None:
         self.workflows.clear()
+        self.disabled.clear()
         self.load_errors.clear()
         if not self.directory.is_dir():
             log.warning("workflows folder %s not found", self.directory)
@@ -1079,15 +1086,26 @@ class DefinitionRegistry:
                 continue                # another runner's; one whose type can't be read reports why
             try:
                 wf = self.KIND(d)
+                if wf.name in self.off:
+                    self.disabled[wf.name] = wf
+                    log.info("workflow %s is turned off on this farm (disabled_workflows)", wf.name)
+                    continue
                 self.workflows[wf.name] = wf
                 for p in wf.problems:
                     log.error("workflow %s: %s", wf.name, p)
             except Exception as e:  # noqa: BLE001 - report and keep the others
                 self.load_errors[d.name] = str(e)
                 log.exception("failed to load workflow %s", d.name)
+        for name in sorted(self.off - set(self.disabled) - set(self.load_errors)):
+            if self.RUNNER is None:     # a runner's registry reads only its own kind
+                log.warning("disabled_workflows names %s, which isn't a definition in %s", name, self.directory)
 
     def get(self, name: str) -> Definition:
         wf = self.workflows.get(name)
+        if wf is None and name in self.disabled:
+            off = self.disabled[name]
+            raise ParamError(f"{off.label or name} ({name}) is turned off on this farm for now. Ask the farm's "
+                             f"admins: it is in disabled_workflows in the manager's config.yaml.")
         if wf is None:
             raise ParamError(f"Unknown workflow '{name}'. Available: {', '.join(self.workflows) or 'none'}.")
         if not wf.enabled:
