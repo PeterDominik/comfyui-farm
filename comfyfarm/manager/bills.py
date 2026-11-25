@@ -46,7 +46,9 @@ class Bills:
         self.cfg = desk.cfg.ledger
         self.wanted_at: float | None = None         # when a read was last wanted
         self.wanted_by: str | None = None
-        self.asked: dict[str, float] = {}           # gateway -> the want it was given
+        # Each read wanted is numbered: two can be wanted in the same tick of a clock (Windows').
+        self.wants = 0
+        self.asked: dict[str, int] = {}             # gateway -> the want it was given
 
     # ---------------------------------------------------------------- when
     def next_run(self, t: float) -> float:
@@ -70,6 +72,7 @@ class Bills:
         """Ask every gateway checking in for its providers' bills, at its next check-in. The
         gateways that will be asked."""
         self.wanted_at, self.wanted_by = now(), by
+        self.wants += 1
         gateways = sorted(a.name for a in self.desk.agents.values() if a.lanes and self.desk.alive(a.name))
         log.info("ledger: the providers' bills are wanted (%s): %s", by,
                  ", ".join(gateways) or "no gateway checking in")
@@ -92,9 +95,9 @@ class Bills:
 
     def instructions(self, a) -> dict | None:
         """For a gateway's check-in reply: `bill`, once for each read wanted."""
-        if self.wanted_at is None or not a.lanes or self.asked.get(a.name) == self.wanted_at:
+        if not self.wants or not a.lanes or self.asked.get(a.name) == self.wants:
             return None
-        self.asked[a.name] = self.wanted_at
+        self.asked[a.name] = self.wants
         since, until = self.window(a.lanes)
         return {"since": since, "until": until}
 

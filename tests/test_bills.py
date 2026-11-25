@@ -157,6 +157,16 @@ class Asking(Bills):
         self.desk.bills.want("again")
         self.assertIsNotNone(self.desk.bills.instructions(a))
 
+    def test_two_reads_wanted_in_the_same_tick(self):
+        """Windows' clock can give two asks the same time: each is still asked for."""
+        a = self.desk.agents[GATEWAY]
+        with mock.patch("comfyfarm.manager.bills.now", return_value=1795582800.0):
+            self.desk.bills.want("one")
+            self.assertIsNotNone(self.desk.bills.instructions(a))
+            self.desk.bills.want("two")
+            self.assertIsNotNone(self.desk.bills.instructions(a))
+            self.assertIsNone(self.desk.bills.instructions(a))
+
     def test_the_time_read(self):
         t = now()
         since, until = self.desk.bills.window(["fal"])
