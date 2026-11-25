@@ -16,6 +16,12 @@ still loaded) goes first. A machine gets a second job, prepared ahead of its cur
 only when every GPU is busy. A machine drained from the dashboard takes no new jobs until
 it's resumed.
 
+A batch job (decision 0063: a process definition's `class: batch`) queues after artists'
+jobs and takes only a free GPU, and nothing is prepared ahead behind one: it may hold the card
+for hours. With batch.preempt, a drained machine's batch jobs are told to stop (`preempt` in
+the check-in reply): each saves what it resumes from, stops, and is queued again to go on
+elsewhere.
+
 A gateway agent (decision 0055) has no GPU: it has lanes, a number per outside provider
 (fal: 2), and sends API jobs (runner api) to that provider. An API job goes only to a
 gateway with a free lane of its provider; a gateway takes nothing else. API jobs never wait
@@ -39,7 +45,7 @@ from dataclasses import dataclass, field
 from ..fileio import paths as P
 from ..fileio import wire as W
 from ..fileio.ocio import REPO
-from ..protocol import HELD, ON_WORKER, build, duration, now
+from ..protocol import HELD, ON_WORKER, batch, build, duration, now
 from . import eta as E
 from . import ledger as L
 from .alerts import Alerts
@@ -297,11 +303,12 @@ class Desk:
         self.store.set_drained(name, by, on)
         if on:
             self.drained[name] = {"by": by, "since": now()}
-            log.info("worker %s drained by %s: no new jobs", name, by or "?")
+            log.info("worker %s drained by %s: no new jobs%s", name, by or "?",
+                     "; its batch jobs are preempted" if self.cfg.batch.preempt else "")
         else:
             self.drained.pop(name, None)
             log.info("worker %s resumed by %s", name, by or "?")
-            self.wake()
+        self.wake()                     # its check-in hears it: new jobs, or its batch jobs to preempt
         a = self.agents.get(name)
         if a is not None:
             self._publish(a)
@@ -626,7 +633,8 @@ class Desk:
         return reply
 
     def _instructions(self, a: AgentState, listed: dict) -> dict:
-        drop, cancel = [], []
+        drop, cancel, preempt = [], [], []
+        drained = self.drained.get(a.name) if self.cfg.batch.preempt else None
         for jid, h in listed.items():
             j = self.store.get(jid)
             if not self._holds(j, a.name, h.get("attempt")):
@@ -634,8 +642,16 @@ class Desk:
             elif j["cancel_requested"] and j["status"] in ON_WORKER + ("preparing",) and not h.get("cancelling"):
                 # Preparing: a paid job, which its gateway cancels (Farm.cancel, decision 0060).
                 cancel.append({"job": jid, "attempt": h.get("attempt")})
+            elif drained is not None and batch(j) and j["status"] in GPU_BUSY and not j["cancel_requested"] \
+                    and not h.get("preempting"):
+                # A drained machine's batch job goes on elsewhere (decision 0063).
+                by = drained.get("by")
+                preempt.append({"job": jid, "attempt": h.get("attempt"),
+                                "why": f"{a.name} was drained" + (f" by {by}" if by else "")})
         jobs = self._claim(a) if self.usable(a) else []       # drained: only the evals pinned to it
         out: dict = {"drop": drop, "cancel": cancel, "jobs": jobs}
+        if preempt:
+            out["preempt"] = preempt
         bill = self.bills.instructions(a)
         if bill:
             out["bill"] = bill          # a gateway: read its providers' bills (decision 0061)
@@ -712,7 +728,8 @@ class Desk:
             if room > 0 and busy == 0:
                 slots.append((0, x, None))
                 room -= 1
-            if room > 0:
+            # Nothing is prepared ahead behind a batch job (decision 0063): it may hold the card for hours.
+            if room > 0 and not any(batch(j) and j["status"] in GPU_BUSY for j in held):
                 slots.append((1, x, None))
         used = [False] * len(slots)
         strict = self.cfg.farm.strict_preflight
@@ -739,6 +756,7 @@ class Desk:
             prov = self._provider_of(wf)
             ks = [k for k in among if not used[k] and able(slots[k][1], wf)
                   and slots[k][2] in (None, prov)
+                  and not (slots[k][0] and batch(job))      # a batch job takes only a free GPU (0063)
                   and (slots[k][1].name == to if to else slots[k][1].name not in self.drained)]
             if not ks:
                 return None
@@ -1027,6 +1045,9 @@ class Desk:
             F.lost(job, d.get("reason") or f"{a.name} lost the job.")
             j = self.store.get(jid)
             j = j if j and not self._holds(j, a.name, attempt) else None
+        elif ev == "preempted":
+            # A batch job stopped as asked: queued again, to resume (decision 0063).
+            j = F.preempted(job, str(d["why"])[:300] if d.get("why") else None)
         else:
             return {"ok": False, "error": f"Unknown event {ev!r}."}
         self.wake()

@@ -783,7 +783,7 @@ convert:
         """Decision 0054: GET /api/v1/catalog, Provider > Task > Workflow, through the client."""
         cat = farm.catalog(show="bri3")
         self.assertEqual((cat["show"], cat["errors"], cat["load_errors"]), ("bri3", [], {}))
-        self.assertEqual([p["label"] for p in cat["providers"]], ["ComfyUI Local"])        # gpu_test is hidden
+        self.assertEqual([p["label"] for p in cat["providers"]], ["ComfyUI Local"])        # the tests are hidden
         tasks = {t["label"]: [w["name"] for w in t["workflows"]] for t in cat["providers"][0]["tasks"]}
         self.assertEqual(list(tasks), ["Masking", "Video", "Image", "Textures"])
         self.assertEqual(sorted(tasks["Masking"]), ["ltx25_alpha_gen", "sam3_ltx_alpha"])
@@ -791,8 +791,8 @@ convert:
         everything = farm.catalog(hidden=True)
         self.assertEqual([p["label"] for p in everything["providers"]], ["ComfyUI Local", "Python Local"])
         gpu = everything["providers"][1]["tasks"][0]
-        self.assertEqual((gpu["label"], [w["name"] for w in gpu["workflows"]], gpu["workflows"][0]["hidden"]),
-                         ("Tests", ["gpu_test"], True))
+        self.assertEqual((gpu["label"], [w["name"] for w in gpu["workflows"]], [w["hidden"] for w in gpu["workflows"]]),
+                         ("Tests", ["batch_test", "gpu_test"], [True, True]))
         self.assertIn("    GPU test (process runner)  [gpu_test]  (hidden)", farm.menu_lines(everything))
         self.assertIn("function catalogPick", farm._request("GET", "/catalog.js", raw=True))   # the Submit pickers
 

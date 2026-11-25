@@ -701,6 +701,11 @@ class Definition:
             problems.append("version: needs to be a whole number, 1 or more")
         if self.job_class not in JOB_CLASSES:
             problems.append(f"class: needs to be one of {', '.join(JOB_CLASSES)}")
+        elif self.job_class == "batch" and (self.runner_type != "process" or self.textures):
+            # A batch job is stopped and resumed (decision 0063): only a process can save where
+            # it is, and a texture set's batches are runs of their own.
+            problems.append("class: batch is for process definitions (runner.type: process) that write no texture "
+                            "set: a batch job is stopped and resumed, which ComfyUI's and API runs can't do")
         if not (isinstance(self.targets, list) and self.targets and all(t in TARGETS for t in self.targets)):
             problems.append(f"targets: needs to be a list of {' and/or '.join(TARGETS)}, e.g. [pool]")
         elif (self.runner_type == "api") != ("gateway" in self.targets) or \

@@ -68,3 +68,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0060](0060-ledger-and-caps.md) | The ledger and caps: each paid job held against its show's cap as it is queued, and never guessed down | accepted |
 | [0061](0061-the-providers-bills.md) | The providers' bills: read by the gateway when the manager asks, and settling the ledger | accepted |
 | [0062](0062-fal-ai-live.md) | fal.ai live: a gateway.yaml setting, with fal.ai keeping as little as it can | accepted |
+| [0063](0063-batch-class-preemption-and-resume.md) | Batch jobs: after artists' jobs, preempted with a file, resumed from a folder beside their outputs | accepted |

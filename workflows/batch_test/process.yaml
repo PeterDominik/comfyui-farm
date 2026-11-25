@@ -1,0 +1,72 @@
+# The farm's batch test (decision 0063): a stand-in for a long job such as training, in the
+# batch class. It counts steps holding some of the card, keeps where it is in its resume
+# folder, and when the farm wants its GPU (its machine drained, or an artist's job) it saves
+# there and stops, to go on from there on the next free GPU, often another machine.
+# Full reference: "Batch jobs" in README.md.
+
+id: batch_test
+label: Batch test (process runner)
+description: >
+  Counts steps, one every "Seconds per step", holding "Hold GPU memory" of the card, as a
+  long job such as training would. A batch job: it waits behind artists' jobs, and when the
+  farm needs its GPU it saves where it is and stops, then goes on from there on the next
+  free GPU. Its report, in the show's renders folder (<source>.batchtest_vNNN.json), lists
+  each run: the machine, its card and the steps it did. A test of the farm, not for shots.
+tag: batchtest                  # in the output file names: <source>.batchtest_vNNN.json
+task: tests                     # in the menus: Provider > Task > Workflow (workflows/tasks.yaml)
+hidden: true                    # a test of the farm: not in artists' menus (the dashboard and CLI run it)
+class: batch                    # after artists' jobs; preempted and resumed (decision 0063)
+limits: {max_minutes: 120}      # each run's: a run that resumes it has its own
+models: []                      # it loads no model weights (decision 0044)
+publish: false                  # nothing to publish
+shotgrid: false                 # not in ShotGrid's right-click menu
+
+params:
+  input:
+    type: input
+    takes: image
+    label: Image
+    required: true
+    help: >
+      Any image on show storage, e.g. /rdo/shows/rnd/.../test.png: it names the job's outputs
+      (their show and shot), and is not read.
+
+  steps:
+    type: int
+    label: Steps
+    default: 300
+    min: 1
+    max: 100000
+
+  step_seconds:
+    type: float
+    label: Seconds per step
+    default: 1
+    min: 0
+    max: 60
+
+  save_every:
+    type: int
+    label: Save every (steps)
+    default: 10
+    min: 1
+    max: 100000
+    help: >
+      Where it is goes into its resume folder this often, and whenever the farm asks for its
+      GPU. A run that was stopped without saving (its machine died) goes on from the last save.
+
+  hold_gb:
+    type: float
+    label: Hold GPU memory (GB)
+    default: 0
+    min: 0
+    max: 96
+    help: Keeps this much of the card while it runs, as training would.
+
+writes:
+  file: {ext: json}             # its report, named after the job by the farm (decision 0036)
+
+runner:
+  type: process
+  environment: gpu-test         # environments/gpu-test: torch 2.13 (CUDA 13.0), numpy, pillow
+  command: [python, "{definition}/run.py"]

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -24,7 +25,7 @@ from ..fileio import paths as P
 from ..fileio import scratch as S
 from ..fileio import textures as T
 from ..fileio.errors import SequenceError
-from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, now
+from ..protocol import ACTIVE, FINISHED, HELD, ON_WORKER, batch, now
 from ..definitions import DefinitionRegistry, ParamError
 from ..publish.publisher import Publisher, PublishError, show_folder, summary as publish_summary
 from ..shotgrid import ShotGrid
@@ -35,7 +36,7 @@ from ..shotgrid.lookup import NotFound, Refused, Unavailable
 from . import eta as E
 from . import ledger as L
 from . import prices as PR
-from .db import JobStore
+from .db import PREEMPTED, JobStore
 from .events import EventBus
 from .policy import Policy, policy_path
 from .policy import Refused as PolicyRefused
@@ -128,6 +129,29 @@ class Farm:
             self.events.publish({"type": "job", "job": job})
             if job.get("parent_id"):
                 self._refresh_set(job["parent_id"])
+            if job["status"] in FINISHED and batch(job):
+                self._clear_resume(job)
+
+    def _clear_resume(self, job: dict) -> None:
+        """A finished batch job's resume folder goes, however it ended (decision 0063). The manager
+        removes it, not an agent: it acts only on the job's current run, so a run of it that
+        another machine took over can't lose its folder to a stale one. In a thread of its own:
+        it is on show storage, and this may be called from the event loop or a request's thread."""
+        info = job.get("info") or {}
+        folder, out = info.get("resume_dir"), info.get("output_dir")
+        if not (folder and out and P.normalize(folder).endswith(A.RESUME)
+                and P.normalize(folder).startswith(P.normalize(out).rstrip("/") + "/")):
+            return                      # only the folder the farm named, in the job's own output folder
+
+        def remove() -> None:
+            try:
+                shutil.rmtree(folder)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log.warning("job %s: couldn't remove its resume folder %s: %s", job["id"][:8], folder,
+                            e.strerror or e)
+        threading.Thread(target=remove, name=f"resume-{job['id'][:8]}", daemon=True).start()
 
     def submitted(self, job: dict) -> dict:
         """What the job's last run handed its backend, for a person to look at (the
@@ -776,7 +800,7 @@ class Farm:
         """A job's frozen info: everything about it worked out at submit. `artifact`: what the
         handler of its kind of output keeps (decision 0034), frozen per job with the rest."""
         pc, wf, out_dir = self.cfg.paths, plan["wf"], plan["out_dir"]
-        return {
+        info = {
             "show": plan["show"], "seq": plan["seq_name"], "shot": plan["shot"], "source": plan["source"],
             "tag": wf.tag, "version": plan["version"],
             "input": seq.as_dict() if seq else None,
@@ -797,8 +821,15 @@ class Farm:
             # The agent writes its provenance file beside the outputs (decision 0038).
             "provenance": self.cfg.provenance.enabled,
             "cost": plan.get("cost"),           # what it was estimated at when it was planned (decision 0059)
+            "class": wf.job_class,              # batch: queued after artists' jobs, preempted and resumed (0063)
             **artifact,
         }
+        if wf.job_class == "batch":
+            # Where it keeps what it resumes from, beside its outputs and named like them (0063).
+            resume = A.resume_dir({"info": info, "collect": info.get("collect")})
+            info["resume_dir"] = resume
+            info["resume_dir_posix"] = P.to_posix(resume, pc.mappings) if resume else None
+        return info
 
     def _insert_set(self, plan: dict, set_id: str, user: str, name: str | None, priority: int) -> dict:
         """A texture set: the set the artist sees (one output folder, reserved by it) and
@@ -998,6 +1029,33 @@ class Farm:
             self.wake()
         else:
             self._fail(job["id"], f"{reason} Gave up after {job['attempts']} attempts.", HELD, only_prompt=pid)
+
+    def preempted(self, job: dict, why: str | None) -> dict | None:
+        """A batch job's run stopped as asked, having saved what it resumes from (decision
+        0063): it is queued again, to go on on the next free GPU. Not a failed attempt: a run
+        that reached its runner gives back the attempt it was counted. Only about the run the
+        job is on now, as lost() is; a cancel asked meanwhile ends it cancelled."""
+        pid = job.get("prompt_id")
+        job = self.store.get(job["id"])
+        if not job or job["status"] not in HELD or not pid or job["prompt_id"] != pid:
+            return None
+        if job["cancel_requested"]:
+            return self._finish_cancel(job["id"], only_prompt=pid)
+        info = dict(job["info"] or {})
+        why = (str(why).strip() or None) if why else None
+        info["preempted"] = [*(info.get("preempted") or []),
+                             {"at": now(), "worker": job["worker"], "why": why or "the farm wanted its GPU"}][-20:]
+        attempts = job["attempts"] - 1 if job["dispatched_at"] else job["attempts"]
+        j = self.store.transition(job["id"], HELD, only_prompt=pid, status="queued", worker=None, prompt_id=None,
+                                  progress=0, stage=PREEMPTED, started_at=None, dispatched_at=None, lease_until=None,
+                                  attempts=max(0, attempts), info=info)
+        if j is None:
+            return None
+        log.info("job %s preempted on %s (%s): queued again to resume", job["id"][:8], job["worker"],
+                 info["preempted"][-1]["why"])
+        self._emit(j)
+        self.wake()
+        return j
 
     def record_run(self, workflow: str, seconds: float, node_count: int | None) -> None:
         self.store.record_run(workflow, seconds, node_count)

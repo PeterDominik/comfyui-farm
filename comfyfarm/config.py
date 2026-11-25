@@ -228,6 +228,14 @@ class FarmConfig(BaseModel):
     strict_preflight: bool = True
 
 
+class BatchConfig(BaseModel):
+    """Batch jobs (decision 0063): process definitions that say `class: batch`. They queue
+    after artists' jobs and take only a free GPU; nothing is prepared ahead behind one."""
+    # A drained machine's batch jobs save what they resume from, stop and are queued again,
+    # to go on elsewhere. Off: they finish where they are, as any job on a drained machine.
+    preempt: bool = False
+
+
 class ProvidersConfig(BaseModel):
     """Which providers beyond the farm's own GPUs are switched on (decision 0055): their
     definitions show in the menus and can be planned. The farm's own (target pool) always
@@ -438,6 +446,7 @@ class Config(BaseModel):
     convert: ConvertConfig = Field(default_factory=ConvertConfig)
     textures: TexturesConfig = Field(default_factory=TexturesConfig)
     farm: FarmConfig = Field(default_factory=FarmConfig)
+    batch: BatchConfig = Field(default_factory=BatchConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     preview: PreviewConfig = Field(default_factory=PreviewConfig)
     provenance: ProvenanceConfig = Field(default_factory=ProvenanceConfig)
@@ -476,6 +485,9 @@ class ProcessRunnerConfig(BaseModel):
     runs_dir: str = "data/runs"                 # a folder per run; relative = next to agent.yaml
     default_minutes: float = Field(60.0, gt=0)  # the time limit of a definition without limits.max_minutes
     grace_seconds: float = Field(15.0, ge=0)    # after cancel or the limit, before it is killed
+    # A batch run asked to stop for another job (decision 0063) saves what it resumes from and
+    # exits within this; then it is stopped as at a cancel.
+    preempt_seconds: float = Field(120.0, gt=0)
 
 
 class EnvsConfig(BaseModel):

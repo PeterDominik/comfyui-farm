@@ -43,9 +43,12 @@ ComfyUI and reports back. Agents only ever call the manager (they need no open p
              runner's environment to the farm's file, which must be version `file`
              in the agent's own checkout (decision 0033). To the gateway, when the
              ledger wants the providers' bills read (decision 0061), it carries `bill`:
-             {since, until}, epoch seconds.
+             {since, until}, epoch seconds. `preempt`: [{job, attempt, why}], batch jobs
+             whose GPU the farm wants (decision 0063): each saves what it resumes from and
+             stops. An agent lists such a job with `preempting` until it ends.
   report     one step of one job's run: preparing progress, dispatched, running,
-             progress, postprocessing, done, failed, cancelled, lost. `dispatched` may
+             progress, postprocessing, done, failed, cancelled, lost, preempted (a batch
+             job stopped as asked, `why` echoed: the manager queues it again to resume). `dispatched` may
              carry `submitted`: what the runner handed its backend, which the manager
              keeps for people to look at. For a job that costs money, `failed` and
              `cancelled` carry it too, and the ledger reads what reached the provider
@@ -86,8 +89,14 @@ HELD = ("preparing", "dispatched", "running", "postprocessing")     # leased to 
 FINISHED = ("done", "failed", "cancelled")
 
 # report events
-EVENTS = ("progress", "dispatched", "running", "postprocessing", "done", "failed", "cancelled", "lost")
-TERMINAL = ("done", "failed", "cancelled", "lost")
+EVENTS = ("progress", "dispatched", "running", "postprocessing", "done", "failed", "cancelled", "lost", "preempted")
+TERMINAL = ("done", "failed", "cancelled", "lost", "preempted")
+
+
+def batch(job: dict | None) -> bool:
+    """A batch job (decision 0063): its definition's `class: batch`, frozen in its info at
+    submit. It queues after artists' jobs, and may be preempted and resumed."""
+    return ((job or {}).get("info") or {}).get("class") == "batch"
 
 
 def now() -> float:
@@ -130,4 +139,4 @@ class LinkError(Exception):
     """The manager couldn't be reached, or refused the call."""
 
 
-__all__ = ["ACTIVE", "ON_WORKER", "HELD", "FINISHED", "EVENTS", "TERMINAL", "now", "build", "LinkError"]
+__all__ = ["ACTIVE", "ON_WORKER", "HELD", "FINISHED", "EVENTS", "TERMINAL", "batch", "now", "build", "LinkError"]

@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "client") not in sys.path:
     sys.path.insert(0, str(REPO / "client"))
 client = importlib.import_module("comfyfarm_client")
-TASKS_OF = {"chord_pbr": "textures", "gpu_test": "tests", "ltx25_alpha_gen": "masking",
+TASKS_OF = {"batch_test": "tests", "chord_pbr": "textures", "gpu_test": "tests", "ltx25_alpha_gen": "masking",
             "ltx25_layout_render": "video", "nano_banana2_edit_fal": "image", "sam3_ltx_alpha": "masking",
             "wan22_i2i": "image"}
 BEFORE = ("chord_pbr", "gpu_test", "ltx25_alpha_gen", "ltx25_layout_render", "sam3_ltx_alpha", "wan22_i2i")
@@ -79,7 +79,7 @@ class TheCheckoutsCatalogueTests(unittest.TestCase):
                 self.assertEqual(wf.provider, "python-local" if wf.runner_type == "process" else "comfyui-local")
                 self.assertIsNone(wf.provider_named)
                 self.assertIsNone(wf.family)
-                self.assertEqual(wf.hidden, name == "gpu_test")
+                self.assertEqual(wf.hidden, name in ("gpu_test", "batch_test"))      # the farm's own tests
 
     def test_where_each_shows(self):
         cat = C.load()

@@ -64,6 +64,8 @@ comfyui_launch:
 #   runs_dir: data/runs          # a folder per run; relative = next to this file
 #   default_minutes: 60          # the time limit of a definition without limits.max_minutes
 #   grace_seconds: 15            # after a cancel or the time limit, before it is killed
+#   preempt_seconds: 120         # a batch job asked to stop for another job saves and exits within
+#                                # this, then is stopped as at a cancel (decision 0063)
 # claim_wait_seconds: 300        # how long a process job waits for ComfyUI to free the card
 #                                # (its own prompts queued) before it starts anyway, with a warning
 

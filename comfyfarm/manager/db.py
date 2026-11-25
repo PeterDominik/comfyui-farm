@@ -22,13 +22,16 @@ from .eta import fold, units
 
 log = logging.getLogger("comfyfarm")
 
-__all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "now"]
+__all__ = ["JobStore", "ACTIVE", "ON_WORKER", "HELD", "FINISHED", "PREEMPTED", "now"]
 
 JSON_FIELDS = ("params", "info", "warnings", "outputs", "prompt", "request")
 
 # Stages worth a line in a job's timeline: the steps before and after the GPU run. While it
 # runs, the stage is the node ComfyUI is on, which changes too often to keep.
 STAGE_EVENTS = ("preparing", "postprocessing")
+# A preempted batch job's stage while it waits to resume (decision 0063): its timeline says
+# "preempted", and why.
+PREEMPTED = "preempted: resumes on the next free GPU"
 _COUNTER = re.compile(r"\s+\d+/\d+$")      # "converting EXR to PNG 12/240" is one step, not 240
 
 
@@ -421,12 +424,15 @@ class JobStore:
         attempt = fields.get("prompt_id") or before["prompt_id"]
         if status != before["status"]:
             event, detail = status, {"error": fields.get("error")}
-            if status == "queued" and before["status"] in HELD:
+            if status == "queued" and before["status"] in HELD and fields.get("stage") == PREEMPTED:
+                event = "preempted"             # a batch job, stopped to resume elsewhere (decision 0063)
+                detail["reason"] = (((fields.get("info") or {}).get("preempted") or [{}])[-1]).get("why")
+            elif status == "queued" and before["status"] in HELD:
                 event = "requeued"
                 detail["reason"] = (fields.get("warnings") or [None])[-1]
             elif status == "queued" and before["status"] in FINISHED:
                 event = "retried"
-            if status in STAGE_EVENTS or fields.get("stage") not in (None, status, "queued", "requeued"):
+            if status in STAGE_EVENTS or fields.get("stage") not in (None, status, "queued", "requeued", PREEMPTED):
                 detail["stage"] = stage_label(fields.get("stage"))
             self._event(before["id"], event, status, worker, attempt, **detail)
             if status in FINISHED:
@@ -845,17 +851,21 @@ class JobStore:
                        (worker, *ON_WORKER))[0][0]
 
     def queued(self, with_prompt: bool = False) -> list[dict]:
-        """Queued runs in dispatch order: priority, then the user with the fewest runs
-        already on the farm (so one person can't hog the GPU), then the set (or job) with
-        the fewest (so a big set lets other jobs in between its batches, the same
-        artist's too), then age."""
-        rows = self._q("SELECT * FROM jobs WHERE status='queued' AND kind != 'set' "
-                       "ORDER BY created_at ASC, rowid ASC")
+        """Queued runs in dispatch order: artists' jobs before batch jobs (decision 0063),
+        then priority, then the user with the fewest runs already on the farm (so one person
+        can't hog the GPU), then the set (or job) with the fewest (so a big set lets other
+        jobs in between its batches, the same artist's too), then age."""
+        rows = self._q("SELECT *, json_extract(info, '$.class') = 'batch' AS is_batch FROM jobs "
+                       "WHERE status='queued' AND kind != 'set' ORDER BY created_at ASC, rowid ASC")
         busy = self._q("SELECT user, COALESCE(parent_id, id) AS grp FROM jobs "
                        "WHERE status IN ('preparing','dispatched','running') AND kind != 'set'")
         users, groups = Counter(r["user"] for r in busy), Counter(r["grp"] for r in busy)
-        rows = sorted(rows, key=lambda r: (-r["priority"], users[r["user"]], groups[r["parent_id"] or r["id"]]))
-        return [self._row(r, with_prompt=with_prompt) for r in rows]
+        rows = sorted(rows, key=lambda r: (bool(r["is_batch"]), -r["priority"], users[r["user"]],
+                                           groups[r["parent_id"] or r["id"]]))
+        out = [self._row(r, with_prompt=with_prompt) for r in rows]
+        for d in out:
+            d.pop("is_batch", None)     # the order's, not the job's
+        return out
 
     def batch_states(self, set_id: str) -> list[dict]:
         """What a set's status is worked out from: each batch's state, without its prompt

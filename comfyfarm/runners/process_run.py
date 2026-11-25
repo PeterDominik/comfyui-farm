@@ -6,7 +6,7 @@ of the farm's environment or the command's.
 
 The agent writes run.json into the run folder: what to run and for how long.
 
-    {"command": [...], "env": {name: value}, "seconds": 3600, "grace": 15}
+    {"command": [...], "env": {name: value}, "seconds": 3600, "grace": 15, "preempt": 120}
 
 The supervisor keeps there:
 
@@ -14,13 +14,18 @@ The supervisor keeps there:
                  lock, not by a process id that the system may have given to another program
     state.json   {"state": "running", "pid": <the command's>, "started_at": <unix time>}
     log.txt      what the command printed
-    exit.json    {"reason": exited | cancelled | timeout | not_started, "code": <exit code>,
-                  "seconds": <how long it ran>, "error": <why it didn't start>}
+    exit.json    {"reason": exited | cancelled | timeout | preempted | not_started,
+                  "code": <exit code>, "seconds": <how long it ran>, "error": <why it didn't start>}
 
 The command runs in the run folder, in its own process group. It stops when a `cancel`
 file appears there, or when its time is up. It gets `grace` seconds to stop on its own
 (SIGTERM on Linux, CTRL_BREAK on Windows), then it is killed with what it started. The
-time limit is kept here, not in the agent, so it holds while the agent restarts."""
+time limit is kept here, not in the agent, so it holds while the agent restarts.
+
+A `preempt` file (decision 0063) asks a batch job to save what it resumes from and stop: it
+has `preempt` seconds to exit on its own, and is then stopped as at a cancel. Once asked, the
+run is preempted however it ends, unless it is cancelled, and its time limit no longer
+counts."""
 
 from __future__ import annotations
 
@@ -131,6 +136,8 @@ def supervise(run: Path) -> int:
     spec = json.loads((run / "run.json").read_text(encoding="utf-8"))
     env = {**os.environ, **{str(k): str(v) for k, v in (spec.get("env") or {}).items()}}
     seconds, grace = spec.get("seconds"), float(spec.get("grace") or 15)
+    preempt = float(spec.get("preempt") or 120)
+    asked = None                        # when the preempt file was seen
     t0 = time.monotonic()
     with open(run / "log.txt", "ab") as log:
         try:
@@ -144,6 +151,10 @@ def supervise(run: Path) -> int:
         while proc.poll() is None:
             if (run / "cancel").exists():
                 reason = "cancelled"
+            elif asked is not None or (run / "preempt").exists():
+                asked = time.monotonic() if asked is None else asked
+                if time.monotonic() - asked > preempt:
+                    reason = "preempted"        # it didn't stop in time: what it saved last is what resumes
             elif seconds and time.monotonic() - t0 > float(seconds):
                 reason = "timeout"
             if reason != "exited":
@@ -153,6 +164,8 @@ def supervise(run: Path) -> int:
         code = proc.wait()
         if reason == "exited" and (run / "cancel").exists():
             reason = "cancelled"        # it stopped on its own when asked, as a command should
+        elif reason == "exited" and (asked is not None or (run / "preempt").exists()):
+            reason = "preempted"        # however it ended: the run that resumes it finds what it saved
         if not WINDOWS:
             # Whatever it started and left behind goes with it: it would hold the GPU.
             try:
