@@ -1,9 +1,10 @@
 """A stand-in for fal.ai, for the gateway with no fal.ai account and no money (decision 0056).
 
 It speaks the parts of fal.ai's API the gateway uses: the upload token and the CDN upload,
-the queue (submit, status, result, cancel), the result files, the pricing API, and the bill
-and balance (decision 0061), all on one address. It checks the keys the way fal.ai does, and
-runs its models in a few seconds, making grey PNGs.
+the queue (submit, status, result, cancel), the result files, the pricing API, the bill and
+balance (decision 0061), and the model API's description of each of its models, with an
+OpenAPI schema for `comfyfarm fal draft` (decision 0065), all on one address. It checks the
+keys the way fal.ai does, and runs its models in a few seconds, making grey PNGs.
 
     python tools/mock_fal.py --gateway gateway.yaml [--queue-seconds 1] [--run-seconds 3] [--bill]
     python tools/mock_fal.py --port 8189 --key-file <a key file> [--billing-key-file <another>]
@@ -19,7 +20,8 @@ then each is charged at its price (PRICES, by resolution), as fal.ai would, and 
 its balance (--balance, $50).
 
 It is stricter than fal.ai: a field its model doesn't know is refused, so a typo in a
-definition shows here. Its models: fal-ai/nano-banana-2/edit (PNG only). To make a job go
+definition shows here. Its models: fal-ai/nano-banana-2/edit and fal-ai/nano-banana-pro/edit
+(PNG only). To make a job go
 wrong, put in the prompt: MOCK_FAIL (the model fails), MOCK_POLICY (the content check
 refuses it), MOCK_SLOW (it runs a minute).
 
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import struct
 import sys
 import threading
@@ -53,11 +56,78 @@ MODELS = {
         "resolution": ((ENUM, ("0.5K", "1K", "2K", "4K")), False),
         "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5", "6")), False),
     },
+    # As fal.ai's model API describes it (25 November 2026): its image_urls are optional there.
+    "fal-ai/nano-banana-pro/edit": {
+        "prompt": (str, True), "image_urls": (list, False), "num_images": (int, False), "seed": (int, False),
+        "aspect_ratio": ((ENUM, ("auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16",
+                                 "4:1", "1:4", "8:1", "1:8")), False),
+        "output_format": ((ENUM, ("jpeg", "png", "webp")), False),
+        "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5", "6")), False),
+        "sync_mode": (bool, False), "system_prompt": (str, False), "temperature": (float, False),
+        "resolution": ((ENUM, ("1K", "2K", "4K")), False), "limit_generations": (bool, False),
+        "enable_web_search": (bool, False),
+    },
 }
+# What the model API says of each, beside its schema (fal.ai's model pages, 25 November 2026).
+ABOUT = {
+    "fal-ai/nano-banana-2/edit": {"display_name": "Nano Banana 2", "category": "image-to-image",
+                                  "license_type": "commercial", "status": "active",
+                                  "description": "Google's image editing model."},
+    "fal-ai/nano-banana-pro/edit": {"display_name": "Nano Banana Pro", "category": "image-to-image",
+                                    "license_type": "commercial", "status": "active",
+                                    "description": "Google's state-of-the-art image editing model."},
+}
+DEFAULTS = {"num_images": 1, "aspect_ratio": "auto", "output_format": "png", "resolution": "1K",
+            "safety_tolerance": "4", "sync_mode": False, "enable_web_search": False, "enable_image_search": False,
+            "limit_generations": True, "system_prompt": "", "temperature": 1.0}
+SAID = {"prompt": "The prompt for image editing.",
+        "image_urls": "The URLs of the images to use for image-to-image generation or image editing.",
+        "aspect_ratio": "The aspect ratio of the generated image.", "resolution": "The resolution of the image to "
+        "generate.", "seed": "The seed for the random number generator."}
 SIDES = {"0.5K": 512, "1K": 1024, "2K": 2048, "4K": 4096}
-FACTORS = {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0}     # Nano Banana 2's price, by resolution
-# What its pricing API says (fal.ai's page, 24 November 2026): {endpoint: (unit price, unit, currency)}.
-PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "images", "USD")}     # "images", as fal.ai's pricing says it
+# Each model's price by resolution, as a multiple of its price at 1K (fal.ai's pages, 24 and 25 November).
+FACTORS = {"fal-ai/nano-banana-2/edit": {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0},
+           "fal-ai/nano-banana-pro/edit": {"1K": 1.0, "2K": 1.0, "4K": 2.0}}
+# What its pricing API says (fal.ai's pages): {endpoint: (unit price, unit, currency)}.
+PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "images", "USD"),      # "images", as fal.ai's pricing says it
+          "fal-ai/nano-banana-pro/edit": (0.15, "images", "USD")}
+
+
+def openapi(endpoint: str) -> dict:
+    """An OpenAPI schema of one of its models, shaped as fal.ai's model API gives one: a POST
+    of its input to the endpoint, and a GET of its output from the request."""
+    base = "".join(w.capitalize() for w in re.split(r"[^A-Za-z0-9]+", endpoint.split("/", 1)[1]) if w)
+    props, required = {}, []
+    for f, (kind, req) in MODELS[endpoint].items():
+        s: dict = {"title": f.replace("_", " ").title()}
+        if isinstance(kind, tuple):
+            s.update(type="string", enum=list(kind[1]))
+        elif kind is list:
+            s.update(type="array", items={"type": "string"})
+        else:
+            s["type"] = {str: "string", int: "integer", float: "number", bool: "boolean"}[kind]
+        if f in DEFAULTS:
+            s["default"] = DEFAULTS[f]
+        if f in SAID:
+            s["description"] = SAID[f]
+        props[f] = s
+        if req:
+            required.append(f)
+    ref = "#/components/schemas/"
+    return {"openapi": "3.0.4", "info": {"title": "Queue OpenAPI for " + endpoint, "version": "1.0.0"},
+            "components": {"schemas": {
+                f"{base}Input": {"type": "object", "properties": props, "required": required},
+                f"{base}Output": {"type": "object", "required": ["images", "description"], "properties": {
+                    "images": {"title": "Images", "type": "array", "items": {"$ref": ref + "ImageFile"}},
+                    "description": {"title": "Description", "type": "string"}}},
+                "ImageFile": {"type": "object", "required": ["url"], "properties": {
+                    "url": {"type": "string"}, "content_type": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                    "width": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
+            "paths": {
+                f"/{endpoint}": {"post": {"requestBody": {"required": True, "content": {
+                    "application/json": {"schema": {"$ref": f"{ref}{base}Input"}}}}}},
+                f"/{endpoint}/requests/{{request_id}}": {"get": {"responses": {"200": {"content": {
+                    "application/json": {"schema": {"$ref": f"{ref}{base}Output"}}}}}}}}}
 
 
 def grey_png(width: int, height: int) -> bytes:
@@ -136,6 +206,12 @@ class MockFal:
                 until = datetime.now(timezone.utc) + timedelta(hours=1)
                 return _ok({"token": token, "token_type": "Bearer", "base_url": self.base,
                             "expires_at": until.isoformat()})
+            if method == "GET" and path == "/v1/models":
+                wanted = [e for e in query.get("endpoint_id", []) if e in MODELS]
+                expand = "openapi-3.0" in query.get("expand", [])
+                return _ok({"models": [{"endpoint_id": e, "metadata": ABOUT[e], **({"openapi": openapi(e)}
+                                                                                   if expand else {})}
+                                       for e in wanted], "has_more": False, "next_cursor": None})
             if method == "GET" and path == "/v1/models/pricing":
                 wanted = [e for v in query.get("endpoint_id", []) for e in v.split(",") if e]
                 if not 1 <= len(wanted) <= 50:
@@ -191,7 +267,8 @@ class MockFal:
                 if v not in kind[1]:
                     problems.append({"loc": ["body", field], "msg": f"Input should be one of {', '.join(kind[1])}",
                                      "type": "enum"})
-            elif not isinstance(v, kind) or (kind is int and isinstance(v, bool)):
+            elif not isinstance(v, (int, float) if kind is float else kind) or (kind in (int, float)
+                                                                                and isinstance(v, bool)):
                 problems.append({"loc": ["body", field], "msg": f"Input should be a valid {kind.__name__}",
                                  "type": f"{kind.__name__}_type"})
         for field in sorted(set(data) - set(schema)):
@@ -266,7 +343,7 @@ class MockFal:
             if self._state(r) != "done" or r["cancel"] or "MOCK_FAIL" in prompt or "MOCK_POLICY" in prompt:
                 continue
             price, unit, _ = self.prices.get(r["endpoint"], (0.0, "image", "USD"))
-            factor = FACTORS.get(r["input"].get("resolution") or "1K", 1.0)
+            factor = FACTORS.get(r["endpoint"], {}).get(r["input"].get("resolution") or "1K", 1.0)
             quantity = factor * int(r["input"].get("num_images") or 1)
             cost = round(price * quantity, 9) if self.bill else 0.0
             ended = r["wall"] + self.queue_seconds + r["run"]

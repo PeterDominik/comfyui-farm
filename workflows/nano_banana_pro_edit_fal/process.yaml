@@ -1,0 +1,111 @@
+# Drafted by `comfyfarm fal draft fal-ai/nano-banana-pro/edit` (decision 0065), then reviewed
+# on 25 November 2026 against fal.ai's page for the model: its price, what the artist may set,
+# its licence and its menu.
+#
+# An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
+# gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
+# The gateway sends it to fal.ai itself, which charges for it, only with providers.fal.live:
+# true in gateway.yaml (decision 0062); otherwise to the stand-in (tools/mock_fal.py).
+
+id: nano_banana_pro_edit_fal
+label: Nano Banana Pro edit
+description: >
+  Edits one image as the prompt says, with Google's Nano Banana Pro at fal.ai: slower and
+  dearer than Nano Banana 2, for harder edits. A second image can be given as a reference (a
+  look, an object, a person to put in). The result is a PNG numbered like the input frame.
+  The image and the prompt leave Rodeo's network: they are sent to fal.ai, which keeps the
+  images an hour, and neither the job nor its result in its request history.
+tag: nanobananapro              # in the output file names: <source>.nanobananapro_vNNN.<frame>.png
+task: image                     # in the menus: fal.ai > Image > Nano Banana Pro edit
+provider: fal                   # providers/fal.yaml: off-site, through the gateway
+family: nano-banana-pro-edit    # the same model at other providers, for comparing prices (later)
+class: interactive
+limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
+# No model weights on the farm: the model is Google's, run by fal.ai. Listed with fal.ai's terms
+# as its licence, as Nano Banana 2 is, so the policy's licence rules see what it uses.
+models: [{file: fal-ai/nano-banana-pro/edit, licence: google-via-fal}]
+# What a job costs (decision 0059), from fal.ai's page for the model, reviewed 25 November 2026:
+# $0.15 an image, twice that at 4K. The manager estimates each job with fal.ai's price that day
+# (its pricing API, read by the gateway). Web search would add $0.015: it is fixed off below.
+cost:
+  unit: image
+  price: 0.15
+  quantity: 1                   # num_images, fixed below
+  by: {param: resolution, factors: {"1K": 1, "2K": 1, "4K": 2}}
+publish: false                  # not published through the pipeline during the pilot
+shotgrid: false                 # not in ShotGrid's right-click menu during the pilot
+# Inputs larger than this many pixels on their longer side are scaled down first: the model
+# makes images of up to 4K whatever it is given, and a smaller upload is quicker.
+work_resolution: 2048
+
+params:
+  # One image (takes: image). A sequence or movie must name its frame; the Nuke node uses
+  # the current frame. fal.ai takes none at all for this endpoint, but the farm needs one: it
+  # names the job's outputs (show, shot, version).
+  input:
+    type: input
+    takes: image
+    label: Input image
+    required: true
+    primary: true
+    help: >
+      The image to edit: a file, or a sequence or movie with the frame to use after it, e.g.
+      /rdo/shows/<show>/.../<shot>.plate.%04d.exr 1050. EXRs are converted with the shot's
+      OCIO look first, and images over 2048 pixels are scaled down.
+
+  reference:
+    type: input
+    takes: image
+    label: Reference image
+    help: >
+      Optional: a second image the prompt can refer to, e.g. "give the car the paint of the
+      reference". Sent with the input, in that order.
+
+  prompt:
+    type: text
+    label: Prompt
+    required: true
+    help: What to change, in plain words, e.g. "remove the crane in the background".
+
+  resolution:
+    type: choice
+    label: Resolution
+    choices: ["1K", "2K", "4K"]
+    default: "1K"
+    help: >
+      The size of the result on its longer side. fal.ai charges the same for 1K and 2K, and
+      twice as much for 4K.
+
+  aspect_ratio:
+    type: choice
+    label: Aspect ratio
+    choices: [auto, "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
+    default: auto
+    help: The shape of the result. auto keeps the input's.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      The result goes into a folder named after the shot inside this one, as
+      <source>.nanobananapro_vNNN.<frame>.png. Each run takes the next free version. Leave
+      empty for the show's renders folder. Never inside .published.
+
+writes:
+  frames: {ext: png}
+
+runner:
+  type: api
+  endpoint: fal-ai/nano-banana-pro/edit
+  # The input first, then the reference: fal.ai reads them in this order.
+  upload: {input: image_urls, reference: image_urls}
+  send: {prompt: prompt, resolution: resolution, aspect_ratio: aspect_ratio}
+  # Left to fal.ai's defaults: seed, safety_tolerance, system_prompt, temperature and
+  # limit_generations. Never the artist's: one image a job, a PNG (writes.frames.ext), nothing
+  # looked up on the web, and the result in fal.ai's answer itself (sync_mode), so it is never
+  # a file on fal.ai's CDN, nor kept in the account's request history (decision 0062).
+  fixed:
+    num_images: 1
+    output_format: png
+    enable_web_search: false
+    sync_mode: true

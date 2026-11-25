@@ -11,7 +11,9 @@
                comfyui verify: list how this machine's ComfyUI differs from it (comfyenv)
   alerts       alerts test: post a test message to config.yaml's alerts.google_chat
   eval         a definition's eval on the machines (all that may run it, or --machine), through
-               the manager on this host, and how each check went (README: Evals)"""
+               the manager on this host, and how each check went (README: Evals)
+  fal draft    a process.yaml for a fal.ai endpoint, from fal.ai's description of it, to review
+               before it is committed (README: More fal.ai models)"""
 
 from __future__ import annotations
 
@@ -465,6 +467,14 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("amount", nargs="?", type=float, help="topup: US dollars, e.g. 50")
     sp.add_argument("--account", help="topup: the provider account (gateway.yaml's gateway.account)")
     sp.add_argument("--note", help="topup: what it was, e.g. IT's purchase order")
+    fl = sub.add_parser("fal", help="fal.ai's endpoints, through the gateway's settings (README: More fal.ai models)")
+    fl.add_argument("action", choices=["draft"],
+                    help="draft: a process.yaml for an endpoint, from fal.ai's description of it, to review")
+    fl.add_argument("endpoint", help="its id, as on its page at fal.ai/models, e.g. fal-ai/nano-banana-pro/edit")
+    fl.add_argument("--gateway", help="the gateway's gateway.yaml, which says how to reach fal.ai and where its "
+                                      "keys are (default: the repo root's)")
+    fl.add_argument("--write", action="store_true",
+                    help="write it into workflows/<name>/process.yaml, to review there, instead of printing it")
     from .comfyenv import cli as envcli
     envcli.add_parser(sub)
     from .envs import cli as runnerenvs
@@ -483,6 +493,8 @@ def main(argv: list[str] | None = None) -> int:
         return envcli.run(args)
     if args.cmd == "env":
         return runnerenvs.run(args)
+    if args.cmd == "fal":
+        return run_fal(args)
     if args.cmd == "agent":
         if args.check:
             from .config import default_agent_config_path, load_agent_config
@@ -534,6 +546,65 @@ def _host_call(cfg: Config, method: str, path: str, body: dict | None = None):
     except urllib.error.URLError as e:
         raise SystemExit(f"No manager on 127.0.0.1:{cfg.server.port} ({e.reason}): run this on the manager's "
                          f"host, with its config.yaml.") from None
+
+
+def run_fal(args) -> int:
+    """`comfyfarm fal draft <endpoint>` (decision 0065): fal.ai's description of an endpoint and
+    its price, read the way the gateway reads fal.ai (gateway.yaml: its keys, and live or the
+    stand-in), turned into a process.yaml to review. Printed, or written into workflows/ with
+    --write; what to review goes to stderr. Never a job: both questions are free."""
+    from datetime import date
+
+    from .config import load_agent_config
+    from .runners.api import ApiError
+    from .runners.api import fal_draft as FD
+    from .runners.api.runner import ApiRunner
+    path = Path(args.gateway) if args.gateway else REPO / "gateway.yaml"
+    if not path.is_file():
+        print(f"No gateway.yaml at {path}: run this on the gateway's machine, or name its file with --gateway",
+              file=sys.stderr)
+        return 1
+    r = ApiRunner(load_agent_config(path))
+    adapter, why = r.adapters.get("fal"), r.problems + r.provider_problems.get("fal", [])
+    if adapter is None or why:
+        print(f"The gateway's settings ({path}) can't reach fal.ai: " + ("; ".join(why) or "no providers.fal"),
+              file=sys.stderr)
+        return 1
+
+    async def ask():
+        try:
+            model = await adapter.describe(args.endpoint)
+            try:
+                return model, (await adapter.prices([args.endpoint])).get(args.endpoint), None
+            except ApiError as e:
+                return model, None, str(e)
+        finally:
+            await adapter.close()
+    try:
+        model, price, unpriced = asyncio.run(ask())
+        d = FD.draft(model, price, date.today().isoformat())
+    except (ApiError, FD.DraftError) as e:
+        print(f"Can't draft {args.endpoint}: {e}", file=sys.stderr)
+        return 1
+    problems = FD.check(d.text, d.name)
+    if args.write:
+        folder = REPO / "workflows" / d.name
+        if folder.exists():
+            print(f"{folder} is there already: a draft never replaces a definition. Print it and compare instead.",
+                  file=sys.stderr)
+            return 1
+        folder.mkdir(parents=True)
+        (folder / "process.yaml").write_text(d.text, encoding="utf-8")
+        print(f"Wrote {folder / 'process.yaml'}")
+    else:
+        print(d.text, end="")
+    print("\nReview it before it is committed (README: More fal.ai models). The TODO lines at its top:",
+          file=sys.stderr)
+    for t in d.todo + ([f"fal.ai's price wasn't read: {unpriced}"] if unpriced else []):
+        print(f"  - {t}", file=sys.stderr)
+    print("What the farm says of it as it is: " + ("; ".join(problems) if problems else "it loads, with no problem."),
+          file=sys.stderr)
+    return 0
 
 
 def run_spend(cfg: Config, args, wait: float = 60.0, poll: float = 2.0) -> int:

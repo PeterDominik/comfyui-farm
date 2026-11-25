@@ -2411,7 +2411,8 @@ runner:
   several URLs `..._urls` (a list is sent) and one that takes one `..._url`. An empty param
   or input isn't sent, so the provider uses its default. `workflows/nano_banana2_edit_fal`
   is the first: the input and an optional reference, prompt, resolution and aspect ratio;
-  one PNG, and no web or image search, fixed.
+  one PNG, and no web or image search, fixed. `nano_banana_pro_edit_fal` is the same with
+  Nano Banana Pro, at $0.15 an image, twice that at 4K (see *More fal.ai models*).
 - **What it costs** (decision 0059). An API definition has a `cost` block, from its
   provider's page for the model, reviewed like the rest of the definition:
   - `unit`: the provider's billing unit (image);
@@ -2511,6 +2512,58 @@ gateway reads its keys when it starts: restart it after changing them.
   address is refused unless `live`. In the
   prompt, `MOCK_FAIL` makes its model fail, `MOCK_POLICY` its content check refuse it and
   `MOCK_SLOW` it run a minute.
+
+#### More fal.ai models
+
+A new fal.ai model is one reviewed process.yaml in one pull request (decision 0065). Its first
+draft comes from fal.ai itself: on the gateway's machine, from the checkout,
+
+```bash
+env -u PYTHONPATH -u PYTHONHOME "$(cat run/python)" -m comfyfarm fal draft fal-ai/nano-banana-pro/edit
+env -u PYTHONPATH -u PYTHONHOME "$(cat run/python)" -m comfyfarm fal draft fal-ai/nano-banana-pro/edit --write
+```
+
+prints the draft, or writes it into `workflows/<name>/process.yaml` (never over a folder that
+is there). The endpoint is its id on its page at `fal.ai/models`. It reads fal.ai the way the
+gateway does, with `gateway.yaml` (`--gateway` for another file): its requests key, and fal.ai
+itself only with `live: true`, otherwise the stand-in, which describes its own models. It asks
+two free questions, never a job: the model API's description of the endpoint (its name,
+category, licence type, and an OpenAPI schema of what it takes and returns), and its price.
+
+What the draft makes of them:
+
+- Each image field (`..._url`, `..._urls`) is an input. The first is `input`, required, since
+  the farm names a job's outputs after it; a field that takes several also gets an optional
+  `reference`.
+- The prompt is a text param. A field with choices is a choice, a number a number with its
+  range, a yes/no a checkbox, each with fal.ai's default and help.
+- What the farm decides is fixed, never the artist's: one image, a PNG, the result in fal.ai's
+  answer (`sync_mode`), no web search.
+- A model's finer knobs (temperature, safety levels, a conversation) are left to fal.ai's
+  defaults, named in a comment.
+- An `images` or `image` result is frames.
+- `cost` has the pricing API's price and unit.
+
+What it couldn't decide is a `TODO` line at its top, and `comfyfarm fal draft` also lists them,
+with what the farm says of the draft as it is. A price it couldn't read is 0, which the farm
+refuses, so the definition can't run until someone writes the reviewed price.
+
+The review, before the pull request:
+
+- the price against the model's page, and what changes it (`cost.by`: a multiple at 4K);
+- what the artist may set: drop what an artist shouldn't touch, and write labels and help for
+  artists;
+- the licence (`models:`), the menu's task, the label, the tag and the description;
+- the `Drafted by` line at the top says it was reviewed, and when.
+
+fal.ai's endpoints the farm can't run yet are drafted too, with a `TODO` saying why:
+
+- one that takes no image (text to image or video);
+- one that takes a video or audio;
+- one that returns a video.
+
+The tests check that every reviewed fal.ai definition the stand-in knows sends only the fields
+fal.ai's schema has, and fixes what its draft fixes (`tests/test_fal_draft.py`).
 
 Everything below about manifests holds for both. In a process.yaml the per-parameter
 `targets`, `loader`, `path_node`, `empty` and `given`, and the sections `template`,

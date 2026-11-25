@@ -20,6 +20,7 @@ python -m unittest discover -s tests -t . -v                     # everything, 2
 python -m unittest tests.test_sets tests.test_layout -v          # one or two modules
 python tools/mock_comfyui.py --port 8188 --output mock_output    # a ComfyUI stand-in, no GPU
 python tools/mock_fal.py --gateway gateway.yaml                  # fal.ai's stand-in, where the gateway sends jobs
+python -m comfyfarm fal draft <endpoint>                         # a fal.ai definition to review, read as the gateway does
 python -m comfyfarm standalone                                   # manager and agents in one process
 ```
 
@@ -34,7 +35,7 @@ python -m comfyfarm standalone                                   # manager and a
 |---|---|
 | `comfyfarm/manager/` | `app.py` REST and dashboard, `farm.py` plan and submit, `desk.py` agents, leases and placement, `rollouts.py` environment rollouts, `syncs.py` ComfyUI syncs one machine at a time, `prices.py`, `ledger.py` and `bills.py` what paid jobs cost, the caps and the providers' bills, `db.py` SQLite |
 | `comfyfarm/agent/` | one per GPU machine, and the gateway's (`gateway.yaml`): takes jobs, prepares inputs, collects outputs, reports to the manager; `envman.py` keeps its runner environments as the manager says |
-| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half), `process_run.py` (each run's supervisor) and `api/` (the gateway's API runner, `runner.py`, and an adapter per outside provider, `fal.py`) |
+| `comfyfarm/runners/` | what runs a job on the GPU, behind `base.py`: `comfyui.py` (its client, websocket, health, environment), `comfyui_workflow.py` (a workflow's graph: its wiring checked, the graph built), `process.py` (the process runner and a process definition's half), `process_run.py` (each run's supervisor) and `api/` (the gateway's API runner, `runner.py`, an adapter per outside provider, `fal.py`, and `fal_draft.py`, a fal.ai definition drafted from fal.ai's schema) |
 | `comfyfarm/definitions.py` | a definition's head: reading `process.yaml` / `manifest.yaml`, params, validation, the fingerprint |
 | `comfyfarm/catalog.py`, `providers/` | the menus, Provider > Task > Workflow: one file per provider, the tasks in `workflows/tasks.yaml`; each definition's place is checked against them |
 | `comfyfarm/protocol.py` | the only messages manager and agent exchange |
