@@ -27,7 +27,8 @@ from test_process_runner import PYTHON, Environment, FakeHost, Farmed, definitio
 
 from comfyfarm.definitions import DefinitionRegistry  # noqa: E402
 from comfyfarm.manager.db import PREEMPTED, JobStore  # noqa: E402
-from comfyfarm.protocol import now  # noqa: E402
+from comfyfarm.manager.desk import PREEMPT_WAIT  # noqa: E402
+from comfyfarm.protocol import FINISHED, now  # noqa: E402
 from comfyfarm.runners import process_run as PR  # noqa: E402
 from comfyfarm.runners.process import ProcessRegistry, ProcessRunner  # noqa: E402
 
@@ -225,8 +226,90 @@ class ThroughTheFarm(Farmed):
     def status(self, job):
         return self.store.get(job["id"])["status"]
 
-    def test_drained_it_saves_stops_and_goes_on_elsewhere(self):
+    def end(self, jobs, *agents):
+        """Every one of these jobs cancelled, its agents told, and its run stopped."""
+        for j in jobs:
+            if self.status(j) not in FINISHED:
+                self.wait(self.farm.cancel(j["id"]))
+
+        async def go():
+            end = time.time() + 30
+            while time.time() < end and any(self.status(j) not in FINISHED for j in jobs):
+                for a in agents:
+                    await a._obey(await a._heartbeat())
+                await asyncio.sleep(0.05)
+        self.wait(go())
+        self.assertTrue(all(self.status(j) in FINISHED for j in jobs), [self.status(j) for j in jobs])
+
+    def running_on(self, job, agent):
+        self.until(lambda: self.status(job) == "running", what=f"{job['id'][:8]} running")
+        self.assertEqual(self.store.get(job["id"])["worker"], agent.name)
+
+    def test_the_gate_an_artists_job_stops_a_batch_job_which_finishes_on_another_machine(self):
+        """Phase 11, step 6's gate (docs/plan.md, decision 0064). gpu1 runs a batch job and gpu2
+        an artist's job. A second artist's job finds no free GPU: the batch job saves, stops
+        and is queued again, and the artist's job takes gpu1 rather than waiting behind the
+        other on gpu2. The batch job goes on on gpu2 once it is free, and finishes."""
         self.farm.cfg.batch.preempt = True
+        train = self.farm.submit("train", {"input": f"{self.SEQ} 1001"}, "ann")
+        self.beat()
+        self.running_on(train, self.agent)
+        first = self.store.get(train["id"])["prompt_id"]
+        gpu2 = self.add_second()
+        bob = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "hang"}, "bob")
+        self.beat(gpu2)
+        self.running_on(bob, gpu2)
+        carol = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "hang"}, "carol")
+        self.beat(gpu2)                         # whichever machine checks in places it
+        row = self.store.get(carol["id"])
+        self.assertEqual((row["status"], row["worker"]), ("queued", None))          # not ahead on gpu2
+        self.assertEqual(row["stage"], "waiting for gpu1: a batch job there is saving where it is and stopping for it")
+        why = f"carol's job {carol['id'][:8]} needed its GPU"
+        self.assertEqual(self.beat()["preempt"], [{"job": train["id"], "attempt": first, "why": why}])
+        self.until(lambda: self.status(train) == "queued", what="the batch job queued again")
+        self.beat()
+        self.running_on(carol, self.agent)
+        self.beat(gpu2)
+        self.assertEqual(self.status(train), "queued")        # every GPU busy: it waits, and stops no one
+        self.end([bob], gpu2)
+        self.beat(gpu2)
+        self.until(lambda: self.status(train) in FINISHED, what="the batch job to end")
+        row = self.store.get(train["id"])
+        self.assertEqual((row["status"], row["worker"], row["attempts"]), ("done", "gpu2", 1), row["error"])
+        self.assertEqual([(p["worker"], p["why"]) for p in row["info"]["preempted"]], [("gpu1", why)])
+        self.assertEqual(self.desk._preempting, {})
+        self.end([carol], self.agent)
+
+    def test_one_batch_job_makes_way_for_each_artists_job(self):
+        """And one that doesn't stop is left to run (PREEMPT_WAIT)."""
+        self.farm.cfg.batch.preempt = True
+        gpu2 = self.add_second()
+        one, two = (self.farm.submit("train", {"input": f"{self.SEQ} 1001"}, "ann") for _ in range(2))
+        self.beat()
+        self.beat(gpu2)
+        self.running_on(one, self.agent)
+        self.running_on(two, gpu2)
+        carol = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "hang"}, "carol")
+        for _ in range(2):                      # gpu1 doesn't check in: its batch job doesn't hear
+            self.assertNotIn("preempt", self.beat(gpu2))
+            self.assertEqual({k: w["for"] for k, w in self.desk._preempting.items()}, {one["id"]: carol["id"]})
+        dave = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003", "mode": "hang"}, "dave")
+        said = self.beat(gpu2)["preempt"]
+        self.assertEqual([(p["job"], p["why"]) for p in said],
+                         [(two["id"], f"dave's job {dave['id'][:8]} needed its GPU")])
+        # gpu1's batch job hasn't stopped after PREEMPT_WAIT: it is left to run, and not asked again.
+        self.desk._preempting[one["id"]]["at"] -= PREEMPT_WAIT + 1
+        self.desk.check_leases()
+        self.assertNotIn(one["id"], self.desk._preempting)
+        self.assertEqual(self.desk._unmoved, {self.store.get(one["id"])["prompt_id"]: one["id"]})
+        self.until(lambda: self.status(two) == "queued", what="gpu2's batch job queued again")
+        self.beat(gpu2)                         # carol, first in the queue, takes gpu2; dave waits ahead of it
+        self.assertEqual([self.store.get(j["id"])["worker"] for j in (carol, dave)], ["gpu2", "gpu2"])
+        self.assertNotIn("preempt", self.beat())
+        self.assertEqual(self.status(one), "running")
+        self.end([one, two, carol, dave], self.agent, gpu2)
+
+    def test_drained_it_saves_stops_and_goes_on_elsewhere(self):
         train = self.farm.submit("train", {"input": f"{self.SEQ} 1001"}, "ann")
         resume = train["info"]["resume_dir"]
         self.assertEqual((train["info"]["class"], os.path.basename(resume)),
@@ -236,11 +319,13 @@ class ThroughTheFarm(Farmed):
         self.until(lambda: self.status(train) == "running", what="the batch job running")
         self.assertTrue(os.path.isdir(resume))
         first = self.store.get(train["id"])["prompt_id"]
-        # An artist's job isn't prepared ahead behind it: it waits for a free GPU.
+        # An artist's job isn't prepared ahead behind it: it waits for a free GPU (without
+        # batch.preempt; with it, it would stop the batch job, as the next tests show).
         copy = self.farm.submit("copy", {"input": f"{self.SEQ} 1001-1003"}, "bob")
         self.beat()
         self.assertEqual(self.status(copy), "queued")
         # Drained: it is told to stop, saves, and is queued again, not counted as an attempt.
+        self.farm.cfg.batch.preempt = True
         self.desk.set_drained("gpu1", True, by="peter")
         reply = self.beat()
         self.assertEqual(reply["preempt"], [{"job": train["id"], "attempt": first, "why": "gpu1 was drained by peter"}])

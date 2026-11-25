@@ -238,8 +238,10 @@ farm:
 # Batch jobs (README, Batch jobs; decision 0063): process definitions with class: batch. They
 # queue after artists' jobs and take only a free GPU.
 batch:
-  preempt: false           # true: a drained machine's batch jobs save where they are, stop, and
-                           # are queued again to go on elsewhere (off: they finish where they are)
+  preempt: false           # true: when the farm wants their GPU, batch jobs save where they are,
+                           # stop, and are queued again to go on elsewhere: for an artist's job
+                           # that finds no free GPU (0064), or their machine drained. Off: they
+                           # finish where they are
 
 # Publishing finished jobs through the pipeline (README, Publishing): a Nuke template staged
 # with the job's frames, then Daiquiri's update_and_render_nuke dispatched to Tractor.

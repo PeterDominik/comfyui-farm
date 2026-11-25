@@ -18,9 +18,11 @@ it's resumed.
 
 A batch job (decision 0063: a process definition's `class: batch`) queues after artists'
 jobs and takes only a free GPU, and nothing is prepared ahead behind one: it may hold the card
-for hours. With batch.preempt, a drained machine's batch jobs are told to stop (`preempt` in
-the check-in reply): each saves what it resumes from, stops, and is queued again to go on
-elsewhere.
+for hours. With batch.preempt, batch jobs are told to stop (`preempt` in the check-in reply)
+when the farm wants their GPU: each saves what it resumes from, stops, and is queued again to
+go on elsewhere. A drained machine's batch jobs stop. An artist's job that finds no free GPU
+stops one batch job, on the fastest machine for it that runs nothing else, and waits for that
+GPU rather than being prepared ahead elsewhere (decision 0064).
 
 A gateway agent (decision 0055) has no GPU: it has lanes, a number per outside provider
 (fal: 2), and sends API jobs (runner api) to that provider. An API job goes only to a
@@ -45,7 +47,7 @@ from dataclasses import dataclass, field
 from ..fileio import paths as P
 from ..fileio import wire as W
 from ..fileio.ocio import REPO
-from ..protocol import HELD, ON_WORKER, batch, build, duration, now
+from ..protocol import HELD, ON_WORKER, TERMINAL, batch, build, duration, now
 from . import eta as E
 from . import ledger as L
 from .alerts import Alerts
@@ -69,6 +71,10 @@ PER_GPU = 2
 # A job waiting this long for the machine it's meant for (one that stopped checking in but
 # isn't counted out yet) goes to the next machine with room.
 STEAL_SECONDS = 20.0
+# A batch job asked to make way for an artist's job (decision 0064) that hasn't stopped after
+# this is left to run: its supervisor stops a run after process_runner.preempt_seconds (120),
+# so its agent didn't hear, or can't. The artist's job is placed as if there were none.
+PREEMPT_WAIT = 600.0
 
 
 @dataclass
@@ -145,6 +151,11 @@ class Desk:
         # job id -> (the machine it's meant for, since when): another machine may take it
         # after STEAL_SECONDS.
         self._passed: dict[str, tuple[str, float]] = {}
+        # Batch jobs making way for an artist's job (decision 0064): batch job id -> {for (the
+        # artist's job), attempt, machine, why, at}. Its agent is told in its check-in replies
+        # until it says it is stopping.
+        self._preempting: dict[str, dict] = {}
+        self._unmoved: dict[str, str] = {}      # attempt -> batch job id: asked, and didn't stop
         self._order: tuple[str, ...] = ()
         # Machines drained from the dashboard (kept in the database): name -> {by, since}.
         self.drained: dict[str, dict] = self.store.drained()
@@ -633,8 +644,7 @@ class Desk:
         return reply
 
     def _instructions(self, a: AgentState, listed: dict) -> dict:
-        drop, cancel, preempt = [], [], []
-        drained = self.drained.get(a.name) if self.cfg.batch.preempt else None
+        drop, cancel, preempt, its = [], [], [], {}
         for jid, h in listed.items():
             j = self.store.get(jid)
             if not self._holds(j, a.name, h.get("attempt")):
@@ -642,13 +652,22 @@ class Desk:
             elif j["cancel_requested"] and j["status"] in ON_WORKER + ("preparing",) and not h.get("cancelling"):
                 # Preparing: a paid job, which its gateway cancels (Farm.cancel, decision 0060).
                 cancel.append({"job": jid, "attempt": h.get("attempt")})
-            elif drained is not None and batch(j) and j["status"] in GPU_BUSY and not j["cancel_requested"] \
-                    and not h.get("preempting"):
-                # A drained machine's batch job goes on elsewhere (decision 0063).
-                by = drained.get("by")
-                preempt.append({"job": jid, "attempt": h.get("attempt"),
-                                "why": f"{a.name} was drained" + (f" by {by}" if by else "")})
+            else:
+                its[jid] = j
         jobs = self._claim(a) if self.usable(a) else []       # drained: only the evals pinned to it
+        # Its batch jobs the farm wants the GPU of (decisions 0063, 0064): asked once placing jobs
+        # decided, so one an artist's job needs here is told in this reply.
+        drained = self.drained.get(a.name) if self.cfg.batch.preempt else None
+        for jid, j in its.items():
+            if listed[jid].get("preempting") or not batch(j) or j["status"] not in GPU_BUSY or j["cancel_requested"]:
+                continue
+            way = self._preempting.get(jid)
+            if way is not None and way["attempt"] == j["prompt_id"]:
+                preempt.append({"job": jid, "attempt": j["prompt_id"], "why": way["why"]})
+            elif drained is not None:
+                by = drained.get("by")
+                preempt.append({"job": jid, "attempt": j["prompt_id"],
+                                "why": f"{a.name} was drained" + (f" by {by}" if by else "")})
         out: dict = {"drop": drop, "cancel": cancel, "jobs": jobs}
         if preempt:
             out["preempt"] = preempt
@@ -716,8 +735,9 @@ class Desk:
         usable = [x for x in self.agents.values() if self.usable(x)]          # drained included
         # (0 free GPU or lane | 1 ahead, machine, the provider of a gateway's lane)
         slots: list[tuple[int, AgentState, str | None]] = []
+        held_of: dict[str, list[dict]] = {}
         for x in usable:
-            held = self.store.held_by(x.name)
+            held = held_of[x.name] = self.store.held_by(x.name)
             if x.lanes:                 # a gateway: a slot per free lane of each provider (decision 0055)
                 taken = Counter(self._provider_of(j["workflow"]) for j in held)
                 for prov, n in x.lanes.items():
@@ -809,6 +829,8 @@ class Desk:
                                 + ". Run `python -m comfyfarm check` on the farm machine.", ("queued",))
                 continue
             i = best(job, range(len(slots)))
+            if (i is None or slots[i][0]) and self._make_way(job, usable, held_of, able, t):
+                continue                # no free GPU: a batch job is stopping for it, and it waits for that one
             if i is None:
                 continue                # no room on a machine that can run it (or none may): it waits
             target = slots[i][1]
@@ -839,6 +861,42 @@ class Desk:
             self.farm._emit(j)
             out.append(self._payload(self.store.get(j["id"], with_prompt=True), a))
         return out
+
+    def _make_way(self, job: dict, usable: list, held_of: dict, able, t: float) -> bool:
+        """An artist's job that finds no free GPU stops a batch job (decision 0064), with
+        batch.preempt: one on a machine that may run the artist's job and holds nothing else on
+        its GPU, the fastest for it (_rank_key). One batch job stops for one artist's job, and
+        the artist's job waits for that GPU. True: one is stopping for it (just asked, or
+        before). A batch job never stops for another, nor for an API job, which needs no GPU."""
+        if not self.cfg.batch.preempt or batch(job):
+            return False
+        jid, wf = job["id"], job["workflow"]
+        if any(w["for"] == jid for w in self._preempting.values()):
+            return True
+        defn = self.farm.registry.workflows.get(wf)
+        if defn is None or defn.runner_type == "api":
+            return False
+        ways = []
+        for x in usable:
+            if x.lanes or x.name in self.drained or not able(x, wf):
+                continue
+            busy = [j for j in held_of.get(x.name) or [] if j["status"] in GPU_BUSY]
+            if busy and all(batch(j) and not j["cancel_requested"] and j["id"] not in self._preempting
+                            and j["prompt_id"] not in self._unmoved for j in busy):
+                ways.append((x, busy[0]))
+        if not ways:
+            return False
+        size, stats = E.units(job), self.store.run_stats()
+        x, victim = min(ways, key=lambda w: self._rank_key(w[0], workflow=wf, size=size, stats=stats))
+        why = f"{job['user']}'s job {jid[:8]} needed its GPU"
+        self._preempting[victim["id"]] = {"for": jid, "attempt": victim["prompt_id"], "machine": x.name, "why": why,
+                                          "at": t}
+        log.info("job %s on %s makes way for %s (batch.preempt)", victim["id"][:8], x.name, jid[:8])
+        j = self.store.transition(jid, ("queued",), stage=f"waiting for {x.name}: a batch job there is saving where "
+                                                          f"it is and stopping for it")
+        self.farm._emit(j)
+        self.wake()                     # its agent hears it now, in the check-in it is waiting in
+        return True
 
     # ================================================================ ETAs
     @staticmethod
@@ -1050,6 +1108,8 @@ class Desk:
             j = F.preempted(job, str(d["why"])[:300] if d.get("why") else None)
         else:
             return {"ok": False, "error": f"Unknown event {ev!r}."}
+        if ev in TERMINAL:
+            self._preempting.pop(jid, None)     # its run ended: its GPU is free, whoever wanted it
         self.wake()
         now_ = self.store.get(jid)
         return {"ok": j is not None, "status": now_["status"] if now_ else None}
@@ -1149,6 +1209,19 @@ class Desk:
             del self._offered[jid]
         for jid in [k for k in self._passed if (self.store.get(k) or {}).get("status") != "queued"]:
             del self._passed[jid]
+        for jid, way in list(self._preempting.items()):
+            j = self.store.get(jid)
+            if not j or j["status"] not in HELD or j["prompt_id"] != way["attempt"]:
+                del self._preempting[jid]       # it stopped, ended or moved on
+            elif t - way["at"] > PREEMPT_WAIT:
+                log.warning("job %s on %s didn't stop for %s within %s: it is left to run", jid[:8], way["machine"],
+                            way["for"][:8], duration(PREEMPT_WAIT))
+                self._unmoved[way["attempt"]] = jid
+                del self._preempting[jid]
+                self.wake()                     # the artist's job is placed as if there were none
+        for attempt, jid in list(self._unmoved.items()):
+            if (self.store.get(jid) or {}).get("prompt_id") != attempt:
+                del self._unmoved[attempt]
 
 
-__all__ = ["Desk", "AgentState", "ALIVE_SECONDS", "GPU_BUSY", "STEAL_SECONDS", "vram"]
+__all__ = ["Desk", "AgentState", "ALIVE_SECONDS", "GPU_BUSY", "PREEMPT_WAIT", "STEAL_SECONDS", "vram"]

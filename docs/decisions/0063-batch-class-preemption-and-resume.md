@@ -75,7 +75,7 @@ second job ahead on a machine whose GPU is busy (`PER_GPU`).
 ## Consequences
 
 - The next pull request has an artist's job preempt a batch job when it finds no free GPU,
-  and carries the gate.
+  and carries the gate (0064).
 - Each run of a batch job has its own time limit (`limits.max_minutes`), not the job as a
   whole.
 - The queue's ETAs don't know yet that nothing waits ahead behind a batch job, so a job behind

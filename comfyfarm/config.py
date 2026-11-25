@@ -231,8 +231,9 @@ class FarmConfig(BaseModel):
 class BatchConfig(BaseModel):
     """Batch jobs (decision 0063): process definitions that say `class: batch`. They queue
     after artists' jobs and take only a free GPU; nothing is prepared ahead behind one."""
-    # A drained machine's batch jobs save what they resume from, stop and are queued again,
-    # to go on elsewhere. Off: they finish where they are, as any job on a drained machine.
+    # Batch jobs save what they resume from, stop and are queued again, to go on elsewhere, when
+    # the farm wants their GPU: an artist's job that finds no free GPU stops one (decision
+    # 0064), and a drained machine's stop. Off: they finish where they are.
     preempt: bool = False
 
 

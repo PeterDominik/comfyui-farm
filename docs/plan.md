@@ -457,3 +457,13 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
     The job is queued again, its attempt given back, and its next run goes on from its folder;
   - with `batch.preempt`, off by default, a drained machine's batch jobs are preempted;
   - `workflows/batch_test`, the farm's test of it.
+  With a fix: a definition that writes only files may have an output folder, and
+  `batch_test` has one. Peter updated and tested it on the pilot on 24 November.
+
+  The second carries the gate (0064). With `batch.preempt`, an artist's job that finds no
+  free GPU stops one batch job:
+  - on a machine that may run the artist's job and has nothing else on its GPU, the fastest
+    for it;
+  - one batch job for each artist's job, and the artist's job waits for that GPU;
+  - never for a batch job, an eval or an API job;
+  - one that hasn't stopped after 10 minutes is left to run.
