@@ -89,3 +89,13 @@ definition needs an input image: it names the job's outputs.
   estimated, with the models that need it.
 - The order of phase 11 changes: step 9 comes before step 7, as Peter asked. Steps 7 and 8
   follow it.
+
+Later: Peter's first drafts against fal.ai itself (25 November) found every field the reviewed
+Nano Banana Pro edit sends in fal.ai's own schema. They also showed what the stand-in hadn't:
+- fal.ai lists the prompt last, so the draft now puts it first after the inputs;
+- a model's endpoints share one display name, so the label adds what the endpoint does;
+- a description may not end a sentence;
+- BiRefNet is priced in `compute seconds`, which the draft wrote as a unit the farm refused. A
+  unit's words are now joined by hyphens (`compute-second`), and the ledger reads spaces,
+  hyphens and underscores between them alike;
+- a long `send` and its comments are wrapped to the farm's line length.

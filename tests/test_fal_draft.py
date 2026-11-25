@@ -67,8 +67,8 @@ class TheDraft(unittest.TestCase):
         self.assertEqual(FD.check(d.text, d.name), [])                  # it loads, as the farm reads it
         y = loaded(d.text)
         self.assertEqual((y["id"], y["label"], y["task"], y["provider"], y["family"], y["class"]),
-                         ("nano_banana_pro_edit_fal", "Nano Banana Pro", "image", "fal", "nano-banana-pro-edit",
-                          "interactive"))
+                         ("nano_banana_pro_edit_fal", "Nano Banana Pro edit", "image", "fal",
+                          "nano-banana-pro-edit", "interactive"))
         self.assertEqual(y["models"], [{"file": PRO, "licence": "fal-commercial"}])
         self.assertEqual(y["cost"], {"unit": "image", "price": 0.15, "quantity": 1})
         self.assertEqual(list(y["params"]), ["input", "reference", "prompt", "seed", "aspect_ratio", "resolution",
@@ -86,8 +86,9 @@ class TheDraft(unittest.TestCase):
         # The farm's, never the artist's: one PNG, in fal.ai's answer, nothing from the web.
         self.assertEqual(runner["fixed"], {"num_images": 1, "output_format": "png", "sync_mode": True,
                                            "enable_web_search": False})
-        self.assertIn("# Left to fal.ai's defaults: safety_tolerance, system_prompt, temperature, limit_generations.",
-                      d.text)
+        said = " ".join(ln.strip(" #") for ln in d.text.splitlines() if ln.startswith("  #"))
+        self.assertIn("Left to fal.ai's defaults: safety_tolerance, system_prompt, temperature, limit_generations.",
+                      said)
         self.assertEqual(d.todo, [
             "image_urls is optional at fal.ai: the farm needs an input image to name the job's outputs, so the "
             "draft requires one",
@@ -96,6 +97,30 @@ class TheDraft(unittest.TestCase):
         self.assertTrue(d.text.startswith("# Drafted by `comfyfarm fal draft fal-ai/nano-banana-pro/edit` on "
                                           "2026-11-25"))
         self.assertLessEqual(max(len(line) for line in d.text.splitlines()), 120)
+
+    def test_what_the_first_live_draft_showed(self):
+        """Peter's `comfyfarm fal draft` against fal.ai itself, 25 November: fal.ai lists the prompt
+        after the other fields, its descriptions may end without a full stop, BiRefNet's price is
+        "per compute seconds", and its fields made lines too long for the farm's 120."""
+        model = described()
+        props = model["openapi"]["components"]["schemas"]["NanoBananaProEditInput"]["properties"]
+        props["prompt"] = props.pop("prompt")                        # last, as fal.ai's own schema has it
+        model["metadata"]["description"] = "Google's new state-of-the-art image generation and editing model"
+        d = FD.draft(model, PRICE, "2026-11-25")
+        self.assertEqual(list(loaded(d.text)["params"])[:3], ["input", "reference", "prompt"])
+        self.assertIn("editing model. The inputs and the prompt leave", " ".join(loaded(d.text)["description"].split()))
+        many = {f"knob_{i}": {"type": "boolean", "default": False} for i in range(12)}
+        bire = FD.draft(reshaped({"image_url": {"type": "string", "required": True}, **many},
+                                 {"image": {"$ref": "#/components/schemas/ImageFile"}}, endpoint="fal-ai/birefnet/v2",
+                                 display_name="Birefnet Background Removal V2", category="image-to-image"),
+                        {"unit_price": 0.000575, "unit": "compute seconds", "currency": "USD"}, "2026-11-25")
+        y = loaded(bire.text)
+        self.assertEqual((y["label"], y["cost"]["unit"]), ("Birefnet Background Removal V2", "compute-second"))
+        self.assertEqual(list(y["runner"]["send"]), list(many))       # wrapped, and all there
+        self.assertLessEqual(max(len(line) for line in bire.text.splitlines()), 120)    # the farm's lines
+        self.assertNotIn("cost.unit", " ".join(FD.check(bire.text, bire.name)))
+        self.assertEqual(FD.label_for("fal-ai/kling-video/v3/pro/image-to-video", "Kling Video v3"),
+                         "Kling Video v3 image to video")
 
     def test_one_image_in_and_one_out(self):
         """BiRefNet's shape: image_url, and an `image` back."""

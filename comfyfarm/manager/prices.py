@@ -14,6 +14,7 @@ the same whatever its case or plural (fal.ai's pricing says "images" where a def
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 __all__ = ["DRIFT", "PriceError", "drift_note", "estimate", "money", "per", "same_unit"]
@@ -38,13 +39,14 @@ def per(unit: str) -> str:
 
 
 def same_unit(a, b) -> bool:
-    """Whether two billing units are one, as providers and definitions write them: case,
-    spaces and a plural s aside ("images" is "image", "Seconds" is "second")."""
+    """Whether two billing units are one, as providers and definitions write them: case, the
+    spaces, hyphens or underscores between words, and a plural s aside ("images" is "image",
+    "compute seconds" is "compute-second")."""
     return _singular(a) == _singular(b)
 
 
 def _singular(unit) -> str:
-    u = "_".join(str(unit or "").lower().split())
+    u = "-".join(w for w in re.split(r"[\s_-]+", str(unit or "").lower()) if w)
     return u[:-1] if len(u) > 3 and u.endswith("s") and not u.endswith("ss") else u
 
 

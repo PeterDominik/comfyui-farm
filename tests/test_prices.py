@@ -111,6 +111,9 @@ class TheEstimate(unittest.TestCase):
                 self.assertEqual((e["amount"], e["unit"], e["source"]), (0.12, "image", "provider"))
         self.assertTrue(PR.same_unit("seconds", "second"))
         self.assertTrue(PR.same_unit("gpu seconds", "GPU_second"))
+        # fal.ai's pricing for BiRefNet (the pilot's first `fal draft`, 25 November), and the
+        # name a definition writes for it.
+        self.assertTrue(PR.same_unit("compute seconds", "compute-second"))
         self.assertFalse(PR.same_unit("megapixels", "image"))
         self.assertFalse(PR.same_unit("pass", "pas"))           # a double s is no plural
 
