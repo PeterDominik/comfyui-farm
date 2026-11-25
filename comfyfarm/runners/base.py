@@ -48,6 +48,7 @@ class Host(Protocol):
     async def run_failed(self, run, message: str, traceback: str | None = None) -> None: ...
     async def run_interrupted(self, run) -> None: ...
     async def run_lost(self, run, reason: str) -> None: ...
+    async def run_preempted(self, run) -> None: ...     # stopped as asked, to resume elsewhere (Preemptible)
 
 
 class Runner(Protocol):
@@ -84,6 +85,16 @@ class Runner(Protocol):
     def files(self, run, result, kind: str, spec: dict) -> list: ...
     async def fetch(self, entry, dest) -> None: ...     # one of them (or the preview video) to dest
     async def forget(self, pid: str | None) -> None: ...  # drop the backend's record of the run
+
+
+class Preemptible(Protocol):
+    """A runner whose runs can be stopped for another job and resumed (decision 0063): a batch
+    job saves what it resumes from in its resume folder and stops. Optional: only batch jobs
+    are preempted, and only process definitions may be batch, so the process runner alone has
+    it. `preempt` asks; True: gone without having started. False: the run ends as preempted,
+    reported with Host.run_preempted."""
+
+    async def preempt(self, run) -> bool: ...
 
 
 class Syncable(Protocol):

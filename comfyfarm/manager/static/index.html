@@ -1124,6 +1124,9 @@ function detail(j) {
     ${publishRows(j)}
     ${j.params?.positive_prompt ? `<div>Prompt</div><div>${esc(j.params.positive_prompt)}</div>` : ""}
     ${i.cost ? `<div>Cost</div><div>${esc(spendLine(j))}</div>` : ""}
+    ${i.class === "batch" ? `<div>Batch</div><div>${esc(batchLine(j))}</div>` : ""}
+    ${i.class === "batch" && ["queued", "preparing", "dispatched", "running"].includes(j.status)
+      ? pathRow("Resume folder", i.resume_dir_posix || i.resume_dir) : ""}
     ${(j.warnings || []).map(w => `<div>Warning</div><div class="warn">${esc(w)}</div>`).join("")}
     ${j.error ? `<div>Error</div><div class="err">${esc(j.error)}</div>` : ""}
     ${i.traceback ? `<div></div><div><details><summary>traceback</summary><pre>${esc(i.traceback)}</pre></details></div>` : ""}
@@ -1485,10 +1488,18 @@ async function openPublishLog(id) {
   dlg.showModal();
 }
 
+// A batch job (decision 0063): what that means, and each time it was preempted.
+function batchLine(j) {
+  const p = (j.info || {}).preempted || [], last = p[p.length - 1];
+  return "Waits behind artists' jobs, and saves where it is and stops when the farm needs its GPU, to go on from "
+    + "there on the next free one." + (last ? ` Preempted ${p.length === 1 ? "once" : p.length + " times"}, last on `
+    + `${last.worker || "?"}: ${last.why}.` : "");
+}
 // A job's timeline: every status it went through, on which machine, and how long each lasted.
 const EVENT_LABEL = { submitted: "Submitted", queued: "Queued", preparing: "Taken by an agent", dispatched: "Sent to ComfyUI",
   running: "Running", postprocessing: "Collecting outputs", done: "Done", failed: "Failed", cancelled: "Cancelled",
-  requeued: "Queued again", retried: "Retried", cancel_requested: "Cancel asked for", stage: "Step" };
+  requeued: "Queued again", retried: "Retried", cancel_requested: "Cancel asked for", stage: "Step",
+  preempted: "Preempted" };
 async function openTimeline(id) {
   const j = state.jobs.get(id) || {};
   const t = await api(`/api/v1/jobs/${id}/events`);

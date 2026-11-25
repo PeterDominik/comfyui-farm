@@ -171,7 +171,8 @@ class ProcessYamlTests(unittest.TestCase):
 
     def test_head_only_fields_are_read_and_change_the_fingerprint(self):
         def head(p):
-            p.update({"version": 2, "class": "batch", "targets": ["pool", "tractor"], "limits": {"max_minutes": 45},
+            p.update({"version": 2, "class": "interactive", "targets": ["pool", "tractor"],
+                      "limits": {"max_minutes": 45},
                       "models": [{"file": "wan2.2_i2v_low_noise_14B_fp8.safetensors", "licence": "apache-2.0"}],
                       "eval": {"inputs": {"input": "eval/a.png"}, "checks": {"files": {"png": 81}}}})
         folder = self.as_process("wan22_i2i", head)
@@ -180,8 +181,15 @@ class ProcessYamlTests(unittest.TestCase):
         wf = Workflow(folder)
         self.assertEqual(wf.problems, [])
         self.assertEqual((wf.version, wf.job_class, wf.targets, wf.limits["max_minutes"], wf.models[0]["licence"],
-                          wf.eval["checks"]["files"]["png"]), (2, "batch", ["pool", "tractor"], 45, "apache-2.0", 81))
+                          wf.eval["checks"]["files"]["png"]), (2, "interactive", ["pool", "tractor"], 45, "apache-2.0",
+                                                              81))
         self.assertNotEqual(wf.digest, self.registry.workflows["wan22_i2i"].digest)
+
+    def test_only_a_process_may_be_batch(self):
+        """A batch job is stopped and resumed (decision 0063), which a ComfyUI graph can't do."""
+        wf = Workflow(self.as_process("wan22_i2i", lambda p: p.update({"class": "batch"})))
+        self.assertFalse(wf.enabled)
+        self.assertIn("class: batch is for process definitions (runner.type: process)", " | ".join(wf.problems))
 
     def test_bad_head_fields_disable_the_workflow_and_say_why(self):
         def bad(p):

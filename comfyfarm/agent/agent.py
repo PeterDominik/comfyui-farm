@@ -19,6 +19,11 @@ at once, max_inflight, plus one). For each job it:
 4. reports each step to the manager. A report that can't be delivered (the manager is
    restarting) waits and goes later, in order.
 
+A batch job (decision 0063) gets its resume folder made before it runs. When the manager wants
+its GPU (`preempt`), the runner asks it to save what it resumes from and stop, and the agent
+reports it preempted: the manager queues it again, and its next run, here or elsewhere, goes on
+from that folder.
+
 Jobs arrive with studio paths and @scratch/ / @repo/ (fileio.wire); the agent sees them
 through its own paths.mappings, scratch folder and checkout. It keeps its jobs in memory:
 after a restart the manager hands them back and the agent asks the runner where each
@@ -68,6 +73,8 @@ class Held:
     slot: bool = False              # has one of the runner's max_inflight places
     submitting: bool = False
     cancelling: bool = False
+    preempting: bool = False        # a batch job asked to stop for another job (decision 0063)
+    preempt_why: str | None = None  # why, as the manager said: echoed when it is reported preempted
     finished: bool = False          # its last report is on its way; forgotten once delivered
     dropped: bool = False           # the manager moved on: stop, report nothing
     dispatched_at: float | None = None
@@ -233,8 +240,8 @@ class Agent:
                 await asyncio.sleep(2.0)
 
     def _held_list(self) -> list[dict]:
-        return [{"job": h.id, "attempt": h.attempt, "status": h.status, "cancelling": h.cancelling}
-                for h in self.held.values()]
+        return [{"job": h.id, "attempt": h.attempt, "status": h.status, "cancelling": h.cancelling,
+                 "preempting": h.preempting} for h in self.held.values()]
 
     async def _hello(self) -> None:
         self._seq += 1
@@ -277,6 +284,10 @@ class Agent:
             h = self.held.get(c["job"])
             if h and h.attempt == c["attempt"]:
                 await self._cancel(h)
+        for p in reply.get("preempt") or []:
+            h = self.held.get(p["job"])
+            if h and h.attempt == p["attempt"]:
+                await self._preempt(h, p.get("why"))
         for p in reply.get("jobs") or []:
             await self._take(p)
         if reply.get("nodes"):
@@ -544,6 +555,13 @@ class Agent:
                 except OSError as e:
                     await self.run_failed(h, f"Can't create the output folder {out_dir}: {e.strerror or e}")
                     return
+            resume = info.get("resume_dir")
+            if resume:                  # a batch job's (decision 0063): what an earlier run saved stays
+                try:
+                    await asyncio.to_thread(O.makedirs_readable, resume)
+                except OSError as e:
+                    await self.run_failed(h, f"Can't create the job's resume folder {resume}: {e.strerror or e}")
+                    return
             # What the run writes, readied by the handler of each kind (decisions 0034, 0036).
             for handler in A.for_job(h.job):
                 try:
@@ -708,6 +726,8 @@ class Agent:
         if h.cancelling and not h.dropped:
             if await h.runner.cancel(h):
                 await self._cancelled(h)
+        elif h.preempting and not h.dropped:
+            await self._ask_preempt(h)
 
     # ---------------------------------------------------------------- endings
     async def run_failed(self, h: Held, message: str, traceback: str | None = None) -> None:
@@ -744,6 +764,45 @@ class Agent:
         self._release(h)
         S.cleanup(h.job, self.scratch_root)
         await self._report(h, "lost", reason=reason)
+
+    async def run_preempted(self, h: Held) -> None:
+        """A batch job's run stopped as asked, having saved what it resumes from (decision 0063):
+        the manager queues it again. Its resume folder stays; its scratch here goes."""
+        if h.finished or h.dropped:
+            return
+        self._release(h)
+        S.cleanup(h.job, self.scratch_root)
+        log.info("agent %s: job %s preempted (%s)", self.name, h.id[:8], h.preempt_why or "its runner stopped it")
+        await self._report(h, "preempted", why=h.preempt_why)
+        if h.pid and h.runner is not None and h.status in ON_WORKER:
+            await h.runner.forget(h.pid)
+
+    async def _preempt(self, h: Held, why: str | None) -> None:
+        """The manager wants this batch job's GPU (decision 0063): it saves what it resumes from
+        and stops. One still being prepared stops at once, having run nothing."""
+        if h.preempting or h.cancelling or h.finished:
+            return
+        h.preempting, h.preempt_why = True, (str(why)[:300] if why else None)
+        if h.status == "preparing":
+            if h.submitting:
+                return                  # _submit asks the runner once the run is in
+            if h.task and not h.task.done():
+                h.task.cancel()
+                await asyncio.gather(h.task, return_exceptions=True)
+            await self.run_preempted(h)
+        elif h.status in ON_WORKER:
+            await self._ask_preempt(h)
+        # postprocessing: it finishes
+
+    async def _ask_preempt(self, h: Held) -> None:
+        ask = getattr(h.runner, "preempt", None)
+        if ask is None:                 # only batch jobs are preempted, and only processes may be batch
+            log.warning("agent %s: job %s can't be preempted: %s doesn't stop runs to resume them", self.name,
+                        h.id[:8], h.runner.label)
+            return
+        if await ask(h):
+            await self.run_preempted(h)
+        # otherwise the runner says when it has stopped (run_preempted)
 
     async def _cancel(self, h: Held) -> None:
         """The manager cancelled this job: take it out of the runner."""

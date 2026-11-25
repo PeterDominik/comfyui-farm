@@ -440,3 +440,20 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
     Nano Banana 2 edit with `sync_mode`, so its result is never a file on fal.ai's CDN;
   - with `live`, the key only to fal.ai's own hosts and results only from its CDN;
   - `farmctl.sh check gateway` tries the keys on two questions fal.ai answers for free.
+
+  Peter's first job on fal.ai ran on 24 November, from the dashboard, once fal.ai's
+  plural unit (`images`) was taken as the definition's `image`.
+
+  Step 6 (batch class, preemption and resume) is two pull requests:
+  1. the batch class, the resume folder, and a drained machine's batch jobs preempted;
+  2. an artist's job preempting a batch job, which carries the gate.
+
+  The first is in (0063):
+  - `class: batch` for process definitions only, frozen in the job; batch jobs queue after
+    artists' jobs, take only a free GPU, and nothing is prepared ahead behind one;
+  - each batch job's resume folder beside its outputs, named like them, made by the agent
+    and removed by the manager when the job ends;
+  - the `preempt` file: the command saves and exits within `preempt_seconds`, or is stopped.
+    The job is queued again, its attempt given back, and its next run goes on from its folder;
+  - with `batch.preempt`, off by default, a drained machine's batch jobs are preempted;
+  - `workflows/batch_test`, the farm's test of it.

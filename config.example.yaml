@@ -235,6 +235,12 @@ farm:
   health_seconds: 5        # ComfyUI checked this often
   delete_comfy_history: true
 
+# Batch jobs (README, Batch jobs; decision 0063): process definitions with class: batch. They
+# queue after artists' jobs and take only a free GPU.
+batch:
+  preempt: false           # true: a drained machine's batch jobs save where they are, stop, and
+                           # are queued again to go on elsewhere (off: they finish where they are)
+
 # Publishing finished jobs through the pipeline (README, Publishing): a Nuke template staged
 # with the job's frames, then Daiquiri's update_and_render_nuke dispatched to Tractor.
 publish:

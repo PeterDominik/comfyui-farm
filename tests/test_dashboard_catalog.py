@@ -58,8 +58,10 @@ class Picks(unittest.TestCase):
         python, textures, gone = self.run_js(["catalogPick", [tree, "python-local", None, None]],
                                              ["catalogPick", [tree, "comfyui-local", "textures", None]],
                                              ["catalogPick", [tree, "comfyui-local", "relight", "nope"]])
-        self.assertEqual(([o["label"] for o in python["tasks"]], python["workflow"]), (["Tests"], "gpu_test"))
-        self.assertEqual(python["workflows"][0]["label"], "GPU test (process runner) (hidden from artists)")
+        self.assertEqual(([o["label"] for o in python["tasks"]], python["workflow"]), (["Tests"], "batch_test"))
+        self.assertEqual([o["label"] for o in python["workflows"]],
+                         ["Batch test (process runner) (hidden from artists)",
+                          "GPU test (process runner) (hidden from artists)"])
         self.assertEqual((textures["task"], textures["workflow"]), ("textures", "chord_pbr"))
         self.assertEqual((gone["task"], gone["workflow"]), ("masking", "ltx25_alpha_gen"))   # gone: the first
 

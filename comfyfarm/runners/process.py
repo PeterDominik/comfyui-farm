@@ -25,8 +25,11 @@ command reads job.json and writes, as it goes:
                    <writes.<kind>.prefix><anything>, with writes.<kind>.ext when it says one
                    (decision 0036); the farm names them after the job
 
-It stops when job.json's `cancel` file appears. Runs outlive the agent: the next agent finds
-them again by their folder and the supervisor's lock."""
+It stops when job.json's `cancel` file appears. A batch job (decision 0063) also has a
+`resume_dir`, a folder beside its outputs that it keeps what it resumes from in, and stops when
+its `preempt` file appears, having saved there: the run that resumes it, maybe on another
+machine, finds it. Runs outlive the agent: the next agent finds them again by their folder and
+the supervisor's lock."""
 
 from __future__ import annotations
 
@@ -285,8 +288,12 @@ class ProcessRunner:
             "writes": {**({"frames": {"ext": wf.frames_ext}} if wf.frames_ext else {}),
                        **(request.get("writes") or {})},
             "seconds": seconds, "events": str(run / "events.jsonl"), "result": str(run / "result.json"),
-            "cancel": str(run / "cancel")}, self.host.view)
+            "cancel": str(run / "cancel"),
+            # A batch job's (decision 0063): where it keeps what it resumes from, and its stop sign.
+            "resume_dir": (h.job.get("info") or {}).get("resume_dir"), "preempt": str(run / "preempt")},
+            self.host.view)
         spec = {"command": wf.argv(python, run), "seconds": seconds, "grace": self.pc.grace_seconds,
+                "preempt": self.pc.preempt_seconds,
                 "env": {"COMFYFARM_JOB": str(run / "job.json"), "COMFYFARM_RUN": str(run), "PYTHONUNBUFFERED": "1"}}
         try:
             proc = await asyncio.to_thread(self._start, run, job, spec)
@@ -321,11 +328,17 @@ class ProcessRunner:
         self._ask_to_stop(h.pid)
         return False
 
-    def _ask_to_stop(self, pid: str | None) -> None:
+    async def preempt(self, h) -> bool:
+        """Ask a batch run to save what it resumes from and stop (decision 0063): the supervisor
+        gives it preempt_seconds. False: it ends as preempted (Host.run_preempted)."""
+        self._ask_to_stop(h.pid, "preempt")
+        return False
+
+    def _ask_to_stop(self, pid: str | None, sign: str = "cancel") -> None:
         run = self._folder(pid) if pid else None
         if run is not None and run.is_dir() and not (run / "exit.json").exists():
             try:
-                (run / "cancel").touch()
+                (run / sign).touch()
             except OSError:
                 pass
 
@@ -398,8 +411,8 @@ class ProcessRunner:
             return
         run = self._folder(pid)
         ended = _read_json(run / "exit.json") or {}
-        if ended.get("reason") == "exited" and ended.get("code") == 0:
-            await asyncio.to_thread(shutil.rmtree, run, True)
+        if (ended.get("reason") == "exited" and ended.get("code") == 0) or ended.get("reason") == "preempted":
+            await asyncio.to_thread(shutil.rmtree, run, True)   # a preempted run's work is in its resume folder
 
     # ================================================================ following runs
     async def _watch_loop(self) -> None:
@@ -504,6 +517,8 @@ class ProcessRunner:
             await self.host.run_succeeded(h, ended)
         elif reason == "cancelled":
             await self.host.run_interrupted(h)
+        elif reason == "preempted":
+            await self.host.run_preempted(h)
         elif reason == "timeout":
             minutes = (wf.seconds(self.pc.default_minutes) / 60) if wf else None
             limit = f"{minutes:g} minutes" if minutes else "its time limit"

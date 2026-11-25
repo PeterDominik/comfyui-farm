@@ -59,6 +59,15 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(list(inspect.signature(have).parameters), list(inspect.signature(want).parameters), name)
         self.assertFalse(hasattr(ProcessRunner, "sync"))     # its environments are the environment manager's
 
+    def test_only_the_process_runner_stops_runs_to_resume_them(self):
+        """Batch jobs (decision 0063) are process definitions: only its runner is Preemptible."""
+        for name in sorted(members(base.Preemptible)):
+            want, have = getattr(base.Preemptible, name), getattr(ProcessRunner, name, None)
+            self.assertIsNotNone(have, name)
+            self.assertEqual(inspect.iscoroutinefunction(have), inspect.iscoroutinefunction(want), name)
+            self.assertEqual(len(inspect.signature(have).parameters), len(inspect.signature(want).parameters), name)
+            self.assertFalse(hasattr(ComfyUIRunner, name) or hasattr(ApiRunner, name), name)
+
     def test_the_comfyui_runner_says_what_ran_a_job(self):
         """For its provenance (decision 0038): ComfyUI's version and commit, Python, torch, and
         how the machine differed from the farm's environment file when last checked."""

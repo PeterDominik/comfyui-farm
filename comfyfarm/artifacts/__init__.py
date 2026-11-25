@@ -16,8 +16,11 @@ from __future__ import annotations
 import importlib
 import pkgutil
 
+from ..fileio.paths import normalize
 from .base import Handler, PlanContext, PlanError, PrepareError, RunContext
 
+PROVENANCE = ".provenance.json"     # how each kind names a job's provenance file (decision 0038)
+RESUME = ".resume"                  # and a batch job's resume folder, named the same way (0063)
 _found: list | None = None
 
 
@@ -54,6 +57,20 @@ def generic_kinds() -> list[str]:
     return [h.kind for h in handlers() if getattr(h, "generic", False)]
 
 
+def resume_dir(job: dict) -> str | None:
+    """Where a batch job keeps what it resumes from (decision 0063): a folder in its output
+    folder, named like its outputs as its provenance file is (plate.batchtest_v001.resume).
+    None: it has no output folder, or writes nothing the farm names."""
+    info = job.get("info") or {}
+    out = info.get("output_dir")
+    for handler in for_job(job):
+        name = handler.provenance(info)
+        if name and out:
+            base = name[:-len(PROVENANCE)] if name.endswith(PROVENANCE) else name
+            return normalize(out).rstrip("/") + "/" + base + RESUME
+    return None
+
+
 def merge(into: dict, more: dict) -> dict:
     """What several handlers give, together: their `writes` side by side, their
     `artifacts` one after the other; anything else is one handler's own."""
@@ -68,4 +85,4 @@ def merge(into: dict, more: dict) -> dict:
 
 
 __all__ = ["Handler", "PlanContext", "PlanError", "PrepareError", "RunContext", "handlers", "for_definition",
-           "for_job", "by_kind", "generic_kinds", "merge"]
+           "for_job", "by_kind", "generic_kinds", "merge", "resume_dir", "PROVENANCE", "RESUME"]

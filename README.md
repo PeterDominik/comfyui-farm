@@ -621,6 +621,7 @@ in `$COMFYFARM_JOB`):
 | `writes` | what it writes: `frames` (`ext`), and each other kind its definition says (`file`, see below) with its `dir`, `prefix` and `ext` |
 | `events`, `result`, `cancel` | the files it writes and watches (below) |
 | `seconds` | its time limit |
+| `resume_dir`, `preempt` | a batch job's: where it keeps what it resumes from, and its stop sign (see *Batch jobs*) |
 
 It writes progress to `events` as JSON lines (`{"progress": 0.5, "stage": "frame 2/4"}`).
 It can write `result`: an error for the artist if it fails (`{"error": "..."}`), and
@@ -685,6 +686,52 @@ Phase 3's gate, on each machine:
 5. Run the ComfyUI workflow again: it loads its models again, and finishes.
 
 To try a cancel or the time limit, give it *Seconds per frame*.
+
+#### Batch jobs
+
+A process definition that says `class: batch` (decision 0063) is for long jobs such as
+training. Only process definitions may: a batch job is stopped and resumed, which a ComfyUI
+graph or an API request can't do.
+
+- **It waits behind artists' jobs.** The queue puts every artist's job first, whatever a batch
+  job's priority. A batch job takes only a free GPU, and nothing is prepared ahead behind one,
+  since it may hold the card for hours.
+- **Its resume folder.** Each batch job has one, in its output folder and named like its
+  outputs: `abc_0010.batchtest_v001.resume/`. The agent makes it before the run starts, and
+  `job.json` names it (`resume_dir`). The command keeps there what it needs to go on: a
+  checkpoint, the step it is at. The manager removes the folder when the job ends, however it
+  ends; the job's details on the dashboard show it while the job is active.
+- **Preempted.** When the farm wants its GPU, the agent writes the `preempt` file `job.json`
+  names. The command saves what it resumes from into its resume folder and exits. After
+  `process_runner.preempt_seconds` (2 minutes) it is stopped as at a cancel, and goes on from
+  what it saved last. Once asked, the run counts as preempted however it ends, unless it is
+  cancelled; its time limit stops counting.
+- **Queued again, not failed.** A preempted job goes back to the queue and isn't counted as a
+  failed attempt. Its next run, often on another machine, finds what it saved and goes on.
+  Its timeline says *Preempted* and why; its details say how many times.
+- **Its outputs.** Frames a run writes stay in the output folder for the run that finishes.
+  Every other kind of output (`writes.file`, `model`, ...) is cleared when a run starts, as
+  for any job, so the run that finishes writes it. What a run needs to go on belongs in the
+  resume folder.
+- **A drained machine preempts its batch jobs**, with `batch: {preempt: true}` in the manager's
+  config, so they go on elsewhere. Off by default: they finish where they are, as any job on a
+  drained machine. Rollouts and syncs drain machines too.
+
+A job whose machine stops checking in is queued again as any job is, and goes on from what it
+saved last.
+
+`batch_test` (`workflows/batch_test`) is the farm's test of it. It counts steps, one every
+*Seconds per step*, holding *Hold GPU memory* of the card. It saves where it is every *Save
+every* steps and when it is preempted. Its report (`<source>.batchtest_v001.json`) lists each
+run: the machine, its card, the steps it did and how it ended. To try it, with `batch:
+{preempt: true}`:
+
+1. Submit `batch_test` (Python Local › Tests) on any image of `rnd`, with 300 steps.
+2. At step 40 or so, drain its machine on the Machines tab.
+3. Within seconds it stops and is queued again: its stage says *preempted*, and another
+   machine takes it and goes on from where it stopped.
+4. When it's done, its report lists two runs on two machines, and its resume folder is gone.
+5. Resume the drained machine.
 
 ### How the manager and agents work together
 
@@ -2212,7 +2259,7 @@ id: wan22_i2i
 label: WAN 2.2 image to image
 task: image                   # in the menus: Provider > Task > Workflow
 requires: {vram_gb: 24}
-class: interactive            # or batch
+class: interactive            # or batch: a process definition's long job (see Batch jobs)
 targets: [pool]               # and/or tractor
 limits: {max_minutes: 30}
 models:
@@ -2253,7 +2300,8 @@ key in the wrong half is refused with a message saying where it goes.
 `class`, `targets`, `limits`, `models`, `eval` and `version` are optional. They are checked
 when the workflow loads. `models` (every weights file the workflow loads, with its licence)
 is what the farm's policy checks licences against (see *Policy*; `models: []` for none).
-`eval` is the definition's reference job (see *Evals*). The others are not used yet.
+`eval` is the definition's reference job (see *Evals*). `class: batch` makes a process
+definition's jobs batch jobs (see *Batch jobs*). The others are not used yet.
 `python tools/manifest_to_process.py workflows/<name>` prints a manifest as a process.yaml
 (`--write` saves it; comments are not carried over, and you remove the manifest yourself). A
 converted workflow keeps its fingerprint until a head field is added, so machines on the old

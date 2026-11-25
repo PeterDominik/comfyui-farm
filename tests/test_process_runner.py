@@ -75,6 +75,17 @@ if mode == "wait":                      # until the test says go, or the farm sa
         if os.path.exists(job["cancel"]):
             sys.exit(0)
         time.sleep(0.05)
+if mode == "batch":                     # a batch job (decision 0063): saves where it is when asked to stop
+    saved = os.path.join(job["resume_dir"], "saved")
+    if not os.path.exists(saved):
+        event(progress=0.3, stage="step 3")
+        while not os.path.exists(job["preempt"]):
+            if os.path.exists(job["cancel"]):
+                sys.exit(0)
+            time.sleep(0.05)
+        open(saved, "w").write(job["attempt"])
+        sys.exit(0)
+    event(progress=0.6, stage="resumed from " + open(saved).read())     # then on to its outputs
 files = (job.get("input") or {}).get("files") or [None] * 3     # the input's files, in order
 writes = job.get("writes") or {}
 for i, src in enumerate(files, 1):
@@ -99,7 +110,7 @@ def definition(root: Path, name: str, **extra) -> Path:
     folder = root / name
     folder.mkdir(parents=True, exist_ok=True)
     p = {"id": name, "label": name.title(),
-         "params": {"mode": {"type": "choice", "choices": ["ok", "fail", "error", "hang", "spawn", "wait"],
+         "params": {"mode": {"type": "choice", "choices": ["ok", "fail", "error", "hang", "spawn", "wait", "batch"],
                              "default": "ok"}},
          "writes": {"frames": {"ext": "png"}},
          "runner": {"type": "process", "environment": "py", "command": ["python", "{definition}/run.py"]}}
@@ -298,6 +309,10 @@ class FakeHost:
     async def run_lost(self, h, reason):
         h.finished = True
         self.said.append(("lost", reason))
+
+    async def run_preempted(self, h):
+        h.finished = True
+        self.said.append(("preempted",))
 
 
 @unittest.skipIf(Held is None, "the agent needs httpx and websockets")
