@@ -57,7 +57,7 @@ MODELS = {
 SIDES = {"0.5K": 512, "1K": 1024, "2K": 2048, "4K": 4096}
 FACTORS = {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0}     # Nano Banana 2's price, by resolution
 # What its pricing API says (fal.ai's page, 24 November 2026): {endpoint: (unit price, unit, currency)}.
-PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "image", "USD")}
+PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "images", "USD")}     # "images", as fal.ai's pricing says it
 
 
 def grey_png(width: int, height: int) -> bytes:

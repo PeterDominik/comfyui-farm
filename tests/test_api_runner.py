@@ -208,7 +208,7 @@ class FalAdapter(Tmp):
                 return await a.prices([EDIT, "fal-ai/not-a-model"])
             finally:
                 await a.close()
-        self.assertEqual(asyncio.run(go()), {EDIT: {"unit_price": 0.08, "unit": "image", "currency": "USD"}})
+        self.assertEqual(asyncio.run(go()), {EDIT: {"unit_price": 0.08, "unit": "images", "currency": "USD"}})
         self.assertEqual([(c["method"], c["path"], c["keyed"]) for c in self.mock.calls],
                          [("GET", "/v1/models/pricing", True)])
 
@@ -268,7 +268,8 @@ class FalAdapter(Tmp):
             finally:
                 await a.close()
         self.assertEqual(asyncio.run(go({"requests": KEY, "billing": "billing:key"})), [
-            (True, "fal.ai took the requests key and gave its prices: fal-ai/nano-banana-2/edit $0.08 a image"),
+            (True, "fal.ai took the requests key and gave its prices: fal-ai/nano-banana-2/edit $0.08, billed in "
+                   "images"),
             (True, "fal.ai took the billing key: the account's balance is $50.00")])
         said = asyncio.run(go({"requests": "wrong", "billing": "wrong:too"}))
         self.assertEqual([ok for ok, _ in said], [False, False])
@@ -297,7 +298,7 @@ class FalAdapter(Tmp):
         events, balance = asyncio.run(go())
         self.assertEqual([round(e["cost"], 6) for e in events], [0.08, 0.12, 0.16])      # the failed one isn't charged
         self.assertEqual({k: events[0][k] for k in ("endpoint", "quantity", "unit", "unit_price")},
-                         {"endpoint": EDIT, "quantity": 1.0, "unit": "image", "unit_price": 0.08})
+                         {"endpoint": EDIT, "quantity": 1.0, "unit": "images", "unit_price": 0.08})
         self.assertAlmostEqual(events[0]["at"], t - 120, delta=1)
         self.assertEqual(balance, {"amount": 49.64, "currency": "USD"})
         billed = [c for c in self.mock.calls if c["path"].startswith("/v1/")]
@@ -640,7 +641,7 @@ class TheGateway(Tmp):
         self.assertTrue(self.wait(g.runner.read_prices()))
         price = self.desk.price(wf)
         self.assertEqual({k: price[k] for k in ("unit_price", "unit", "currency")},
-                         {"unit_price": 0.08, "unit": "image", "currency": "USD"})
+                         {"unit_price": 0.08, "unit": "images", "currency": "USD"})
         self.assertFalse(self.wait(g.runner.read_prices()))                  # the same: nothing to say
         self.mock.prices[EDIT] = (0.1, "image", "USD")
         self.assertTrue(self.wait(g.runner.read_prices()))

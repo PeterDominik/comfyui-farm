@@ -340,6 +340,23 @@ class PanelLogic(unittest.TestCase):
         self.assertFalse(PM.takes_one({"params": [{"name": "input", "type": "sequence", "takes": "images"}]}))
         self.assertFalse(PM.takes_one({"params": [{"name": "input", "type": "sequence"}]}))   # an older farm
 
+    def test_the_preview_waits_for_required_fields(self):
+        """Nano Banana 2's prompt is required: the preview said "Prompt is required." while it was
+        being typed (the pilot, 24 November). It now says what to fill in, and asks nothing."""
+        wf = {"params": [{"name": "input", "type": "sequence", "required": True},
+                         {"name": "ref", "type": "sequence", "label": "Reference", "required": True},
+                         {"name": "prompt", "type": "text", "label": "Prompt", "required": True},
+                         {"name": "seed", "type": "int"}]}
+        said = self.panel.PanelModel.waiting_for
+        self.assertEqual(said(wf, {"input": "", "ref": "", "prompt": ""}),
+                         "Fill in Reference and Prompt to check the job and see where it writes.")
+        self.assertEqual(said(wf, {"input": "/a.png", "ref": "/b.png", "prompt": "  \n"}),
+                         "Fill in Prompt to check the job and see where it writes.")
+        self.assertEqual(said(wf, {"input": "/a.png", "ref": "/b.png", "prompt": "a smiling face", "seed": ""}), "")
+        three = {"params": wf["params"] + [{"name": "subject", "type": "text", "required": True}]}
+        self.assertEqual(said(three, {}), "Fill in Reference, Prompt and subject to check the job and see where it "
+                                          "writes.")
+
     def test_form_to_params(self):
         params = self.m.params_from_form(WF, {"input": " /a.%04d.png 1-2 ", "output_path": "   ", "seed": " 7 ",
                                               "prompt": "  keep  spaces ", "flip": 0, "size": "768", "extra": "x"})

@@ -235,6 +235,20 @@ class PanelModel:
         return next((p["name"] for p in ins if p.get("primary")), None) or (ins[0]["name"] if ins else None)
 
     @staticmethod
+    def waiting_for(wf: dict, raw: dict) -> str:
+        """What the destination preview waits for before it asks the farm: the required fields
+        still empty, other than the primary input (that one empty leaves the preview blank). The
+        farm would refuse the plan ("Prompt is required."), which read as a fault."""
+        main = PanelModel.sequence_param(wf)
+        empty = [p.get("label") or p["name"] for p in wf.get("params") or []
+                 if p.get("required") and p["name"] != main and p["type"] != "bool"
+                 and not str(raw.get(p["name"]) or "").strip()]
+        if not empty:
+            return ""
+        names = empty[0] if len(empty) == 1 else ", ".join(empty[:-1]) + " and " + empty[-1]
+        return f"Fill in {names} to check the job and see where it writes."
+
+    @staticmethod
     def takes_one(wf: dict, name: str | None = None) -> bool:
         """The input (default: the primary) takes one image: a sequence's frame is named
         (the current frame)."""
@@ -1355,8 +1369,10 @@ if QtWidgets is not None:
                 return
             raw = self._raw()
             seq = PanelModel.sequence_param(wf)
-            if seq and not raw.get(seq, "").strip():
-                self.dest_label.setText("")
+            waits = PanelModel.waiting_for(wf, raw)
+            if (seq and not raw.get(seq, "").strip()) or waits:
+                self._plan_seq += 1          # an answer still on its way is for the form as it was
+                self.dest_label.setText(f"<span style='color:#a3a9b0'>{html.escape(waits)}</span>" if waits else "")
                 return
             self._plan_seq += 1
             n = self._plan_seq

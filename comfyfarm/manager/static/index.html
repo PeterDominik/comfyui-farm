@@ -898,21 +898,19 @@ function renderForm() {
     + `<label>Job name (optional)<input id="jobname" placeholder="defaults to the shot"></label>`
     + (wf.publish ? '<div id="pubSlot" style="grid-column:1/-1"></div>' : "")
     + `<div class="actions"><button class="primary" type="submit">Submit</button><span class="msg" id="formMsg"></span></div>`;
-  for (const p of [...inputs, outP, ...wf.params.filter(p => p.naming)])
-    if (p) $("#p_" + p.name).addEventListener(p.type === "choice" ? "change" : "input", () => scheduleDest(wf, seqP, outP));
+  // Every field re-runs the preview, as in the Nuke panel: a choice can change what it costs.
+  for (const p of wf.params)
+    $("#p_" + p.name)?.addEventListener(["choice", "bool"].includes(p.type) ? "change" : "input",
+                                        () => scheduleDest(wf, seqP, outP));
   f.onclick = e => { if (e.target.dataset.showjob) { state.open.add(e.target.dataset.showjob); showTab("queue"); render(); } };
   if (wf.publish) loadPublishForm(wf);
   else state.wantPublish = false;              // a deep link's publish=1: nothing to tick here
   f.onsubmit = async e => {
     e.preventDefault();
-    const params = {};
-    for (const p of wf.params) {
-      const el = $("#p_" + p.name);
-      let v = p.type === "bool" ? el.checked : el.value;
-      if ((p.type === "int" || p.type === "float") && v !== "") v = Number(v);
-      if (v !== "" && v != null) params[p.name] = v;
-      if (p.type !== "sequence" && p.type !== "output_folder") store.set("comfyfarm.last." + wf.name + "." + p.name, String(v));
-    }
+    const params = formParams(wf);
+    for (const p of wf.params)
+      if (p.type !== "sequence" && p.type !== "output_folder")
+        store.set("comfyfarm.last." + wf.name + "." + p.name, String(params[p.name] ?? ""));
     const msg = $("#formMsg");
     if (!state.auth && !$("#user").value.trim()) { msg.className = "msg err"; msg.textContent = "Enter your user name (top right) first."; return; }
     msg.className = "msg"; msg.textContent = "Checking input…";
@@ -950,6 +948,29 @@ function convertLine(c) {
       + (c.slate_frame != null ? `, first frame (${c.slate_frame}) is a slate and is skipped` : "");
   return "";
 }
+// The form's values as Submit sends them: an empty field is left out (the farm applies its default).
+function formParams(wf) {
+  const params = {};
+  for (const p of wf.params) {
+    const el = $("#p_" + p.name);
+    if (!el) continue;
+    let v = p.type === "bool" ? el.checked : el.value;
+    if ((p.type === "int" || p.type === "float") && v !== "") v = Number(v);
+    if (v !== "" && v != null) params[p.name] = v;
+  }
+  return params;
+}
+// What the preview waits for before it asks the farm: the required fields still empty, other
+// than the main input (that one empty leaves the preview blank). The farm would refuse the plan
+// ("Prompt is required."), which read as a fault. Touches no page (tests/test_dashboard_spend.py).
+function previewWaitsFor(wf, params) {
+  const inputs = wf.params.filter(p => p.type === "sequence"), main = inputs.find(p => p.primary) || inputs[0];
+  const empty = wf.params.filter(p => p.required && p !== main && String(params[p.name] ?? "").trim() === "")
+    .map(p => p.label || p.name);
+  if (!empty.length) return "";
+  const names = empty.length === 1 ? empty[0] : empty.slice(0, -1).join(", ") + " and " + empty[empty.length - 1];
+  return `Fill in ${names} to check the job and see where it writes.`;
+}
 // Shows exactly where the frames will land and what they'll be called, before submitting.
 let destTimer, destSeq = 0;
 function scheduleDest(wf, seqP, outP, delay = 450) {
@@ -959,17 +980,14 @@ function scheduleDest(wf, seqP, outP, delay = 450) {
 async function updateDest(wf, seqP, outP) {
   const el = $("#dest");
   if (!el) return;
-  const params = {};
-  for (const p of wf.params.filter(p => p.type === "sequence")) {   // every input: the others are checked too
-    const v = $("#p_" + p.name).value.trim();
-    if (v || p === seqP) params[p.name] = v;
+  // Every field, as Submit sends it: the estimate depends on them (a resolution), and the farm
+  // checks them all.
+  const params = formParams(wf), waits = previewWaitsFor(wf, params);
+  if ((seqP && !String(params[seqP.name] ?? "").trim()) || waits) {
+    ++destSeq;                   // an answer still on its way is for the form as it was
+    el.className = "dest"; el.innerHTML = waits && `<span class="muted">${esc(waits)}</span>`;
+    return;
   }
-  if (outP && $("#p_" + outP.name).value.trim()) params[outP.name] = $("#p_" + outP.name).value.trim();
-  for (const p of wf.params.filter(p => p.naming)) {   // these are in the file names
-    const v = $("#p_" + p.name).value.trim();
-    if (v) params[p.name] = v;
-  }
-  if (seqP && !params[seqP.name]) { el.className = "dest"; el.innerHTML = ""; return; }
   const n = ++destSeq;
   try {
     const r = await api("/api/v1/plan", { method: "POST", body: JSON.stringify({ workflow: wf.name, params }) });

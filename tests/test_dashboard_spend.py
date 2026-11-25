@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -119,6 +120,52 @@ class Says(unittest.TestCase):
                                 {"text": "ret2: $5.00 of $5.00 (1 job)", "cls": "err"}])
         self.assertEqual(others, [{"text": "bri3: $0.08 of $0.00 (1 job)", "cls": "err"}])
         self.assertEqual(nothing, [{"text": "nothing spent", "cls": "muted"}])
+
+
+def page_function(name: str) -> str:
+    """One of index.html's own functions that touch no page, as a script node can run."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    start = re.search(rf"\n(async )?function {name}\(", html).start() + 1
+    return html[start:html.index("\n}\n", start) + 3]
+
+
+@unittest.skipUnless(NODE, "node isn't installed")
+class ThePreview(unittest.TestCase):
+    """The Submit tab's preview (where it writes, what it costs) and the fields it waits for."""
+    WF = {"params": [{"name": "input", "type": "sequence", "primary": True, "required": True},
+                     {"name": "prompt", "type": "text", "label": "Prompt", "required": True},
+                     {"name": "resolution", "type": "choice", "label": "Resolution", "choices": ["1K", "2K"]},
+                     {"name": "output_path", "type": "output_folder"}]}
+
+    def test_it_waits_for_a_required_field(self):
+        """Nano Banana 2's prompt is required: the preview said "Prompt is required." while it was
+        being typed (the pilot, 24 November). It now says what to fill in, and asks nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "preview.js"
+            script.write_text(page_function("previewWaitsFor"), encoding="utf-8")
+            harness, data = Path(tmp) / "harness.js", Path(tmp) / "cases.json"
+            harness.write_text(HARNESS, encoding="utf-8")
+            ref = {"name": "ref", "type": "sequence", "label": "Reference", "required": True}
+            two = {"params": self.WF["params"] + [ref]}
+            data.write_text(json.dumps([["previewWaitsFor", [self.WF, {"input": "/x/test.png"}]],
+                                        ["previewWaitsFor", [self.WF, {"input": "/x/test.png", "prompt": " \n "}]],
+                                        ["previewWaitsFor", [self.WF, {"input": "/x/test.png", "prompt": "a face"}]],
+                                        ["previewWaitsFor", [self.WF, {}]],
+                                        ["previewWaitsFor", [two, {"input": "/x/test.png"}]]]), encoding="utf-8")
+            out = subprocess.run([NODE, str(harness), str(script), str(data)], capture_output=True, text=True,
+                                 encoding="utf-8", timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        fill = "Fill in Prompt to check the job and see where it writes."
+        self.assertEqual(json.loads(out.stdout), [fill, fill, "", fill, "Fill in Prompt and Reference to check the "
+                                                                         "job and see where it writes."])
+
+    def test_it_sends_every_field_and_follows_each(self):
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        update = page_function("updateDest")
+        self.assertIn("const params = formParams(wf), waits = previewWaitsFor(wf, params);", update)
+        self.assertLess(update.index("waits"), update.index('api("/api/v1/plan"'))
+        self.assertIn("const params = formParams(wf);", html)                 # Submit sends the same
+        self.assertIn("for (const p of wf.params)\n    $(\"#p_\" + p.name)?.addEventListener(", html)
 
 
 class ThePage(unittest.TestCase):
