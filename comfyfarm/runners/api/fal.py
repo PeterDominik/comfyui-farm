@@ -6,6 +6,7 @@
     cancel   PUT  {queue}/{owner}/{app}/requests/{id}/cancel
     upload   POST {rest}/storage/auth/token?storage_type=fal-cdn-v3, then POST {cdn}/files/upload
     prices   GET  {api}/v1/models/pricing?endpoint_id=a,b         each endpoint's unit price (0059)
+    describe GET  {api}/v1/models?endpoint_id=e&expand=openapi-3.0  an endpoint's name and schema (0065)
     bill     GET  {api}/v1/models/billing-events?start=&end=      what fal.ai charged, per request (0061)
     balance  GET  {api}/v1/account/billing?expand=credits         the account's credit balance (0061)
 
@@ -473,6 +474,23 @@ class Adapter:
                 out[p["endpoint_id"]] = {"unit_price": float(price), "unit": str(p.get("unit") or ""),
                                          "currency": str(p.get("currency") or "")}
         return out
+
+    async def describe(self, endpoint: str) -> dict:
+        """fal.ai's description of an endpoint, for `comfyfarm fal draft` (decision 0065): its
+        name, category, status and licence type (`metadata`), and an OpenAPI schema of what it
+        takes and returns (`openapi`). Free, and never a job. The model API is public; the
+        requests key goes with it, as with every call to fal.ai, for its higher rate limit."""
+        doing = f"reading its description of {endpoint}"
+        r = await self._call("GET", f"{self.api}/v1/models", auth=self._keyed(), to="key",
+                             params={"endpoint_id": endpoint, "expand": "openapi-3.0"})
+        if not r.is_success:
+            raise self._refusal(r, doing)
+        found = [m for m in self._json(r, doing).get("models") or []
+                 if isinstance(m, dict) and m.get("endpoint_id") == endpoint]
+        if not found:
+            raise ApiError(f"fal.ai has no endpoint {endpoint}: check its id on the model's page (fal.ai/models)",
+                           "refused")
+        return found[0]
 
     async def ask(self, endpoints: list[str]) -> list[tuple[bool, str]]:
         """Two questions fal.ai answers for free, for `agent --check` (decision 0062): its prices,

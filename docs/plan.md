@@ -113,6 +113,8 @@ Griptape. It runs on the three pilot machines and the `rnd` project.
 11. **ComfyUI Cloud (P8).** Gate: an existing graph runs on ComfyUI Cloud unchanged, charged
     to its show.
 
+On 24 November Peter moved step 9 ahead of steps 7 and 8.
+
 After phase 13 (Rodeo login): paid jobs for other shows, and Rodeo's fal.ai account in
 place of Peter's (a key swap on the gateway). Until then a cap rests on a show name the
 client types. Decision records follow the steps from 0054.
@@ -467,3 +469,22 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   - one batch job for each artist's job, and the artist's job waits for that GPU;
   - never for a batch job, an eval or an API job;
   - one that hasn't stopped after 10 minutes is left to run.
+  Peter updated and tested it on the pilot on 24 November: the gate passed. Step 6 is done.
+
+  Step 9 comes next, before steps 7 and 8: Peter asked on 24 November for fal.ai's models
+  before LoRA training. He chose the draft tool and a reviewed first set of the most-used
+  models in image generation and editing, video generation, and video editing and upscaling,
+  in a few pull requests, more later one each. The pull requests:
+  1. `comfyfarm fal draft`, and Nano Banana Pro edit;
+  2. image generation: jobs with no input image, prices fal.ai gives in tokens or megapixels,
+     and the image models;
+  3. video generation: video results, and the video models;
+  4. video editing and upscaling: video inputs, and those models.
+
+  The first is in (0065):
+  - `comfyfarm fal draft <endpoint>` drafts a process.yaml from fal.ai's model API (its
+    OpenAPI schema) and its price, read as the gateway reads fal.ai, with TODO lines for the
+    review; `--write` puts it in `workflows/`;
+  - the stand-in describes its models;
+  - `nano_banana_pro_edit_fal`, drafted and reviewed;
+  - the tests take every fal.ai definition alike, so a new one is one file.

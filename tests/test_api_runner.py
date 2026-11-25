@@ -36,7 +36,7 @@ try:   # the gateway talks to providers with httpx
     from comfyfarm.agent.link import LocalLink
     from comfyfarm.runners.api import ApiError
     from comfyfarm.runners.api import fal as F
-    from comfyfarm.runners.api.runner import ApiRunner, key_path, read_key
+    from comfyfarm.runners.api.runner import ApiRegistry, ApiRunner, key_path, read_key
 except ImportError:   # pragma: no cover
     Agent = None
 
@@ -956,7 +956,9 @@ class TheGatewaysCheck(Tmp):
             return cli.check_gateway(cfg)
         with mock.patch.object(F.Adapter, "ask", ask), contextlib.redirect_stdout(out):
             bad = asyncio.run(as_the_command_does())
-        self.assertEqual(asked, [(True, [EDIT])])
+        every = sorted(wf.api["endpoint"] for wf in ApiRegistry(REPO / "workflows").workflows.values())
+        self.assertIn(EDIT, every)
+        self.assertEqual(asked, [(True, every)])                 # every reviewed fal.ai definition's
         self.assertEqual(bad, 1, out.getvalue())
         self.assertIn("[ ok ] fal: 2 lane(s), sent to the provider itself, its keys read (account peter-pilot)",
                       out.getvalue())

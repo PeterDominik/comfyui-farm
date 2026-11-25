@@ -24,9 +24,10 @@ REPO = Path(__file__).resolve().parent.parent
 if str(REPO / "client") not in sys.path:
     sys.path.insert(0, str(REPO / "client"))
 client = importlib.import_module("comfyfarm_client")
+# The farm's own definitions. fal.ai's are more each time one is reviewed in (decision 0065): the
+# tests check them all alike, so a new one needs no test changed.
 TASKS_OF = {"batch_test": "tests", "chord_pbr": "textures", "gpu_test": "tests", "ltx25_alpha_gen": "masking",
-            "ltx25_layout_render": "video", "nano_banana2_edit_fal": "image", "sam3_ltx_alpha": "masking",
-            "wan22_i2i": "image"}
+            "ltx25_layout_render": "video", "sam3_ltx_alpha": "masking", "wan22_i2i": "image"}
 BEFORE = ("chord_pbr", "gpu_test", "ltx25_alpha_gen", "ltx25_layout_render", "sam3_ltx_alpha", "wan22_i2i")
 
 
@@ -69,7 +70,8 @@ class TheCheckoutsCatalogueTests(unittest.TestCase):
     def test_every_definition_has_a_task_and_its_runners_provider(self):
         reg = DefinitionRegistry(REPO / "workflows")
         self.assertEqual(reg.load_errors, {})
-        self.assertEqual({n: wf.task for n, wf in reg.workflows.items()}, TASKS_OF)
+        self.assertEqual({n: wf.task for n, wf in reg.workflows.items() if wf.runner_type != "api"}, TASKS_OF)
+        self.assertIn("nano_banana2_edit_fal", reg.workflows)
         for name, wf in reg.workflows.items():
             with self.subTest(definition=name):
                 self.assertEqual(wf.problems, [])
@@ -286,13 +288,19 @@ class TreeTests(unittest.TestCase):
     def test_the_farms_menus(self):
         cat = C.load()
         reg = DefinitionRegistry(REPO / "workflows")
-        self.assertEqual(flat(cat.tree(reg.workflows.values())), [
+        shown = flat(cat.tree(reg.workflows.values()))
+        fal = [x for x in shown if x[0] == "fal.ai"]
+        self.assertEqual(shown[:len(shown) - len(fal)], [
             ("ComfyUI Local", "Masking", "ltx25_alpha_gen"), ("ComfyUI Local", "Masking", "sam3_ltx_alpha"),
             ("ComfyUI Local", "Video", "ltx25_layout_render"), ("ComfyUI Local", "Image", "wan22_i2i"),
-            ("ComfyUI Local", "Textures", "chord_pbr"), ("fal.ai", "Image", "nano_banana2_edit_fal")])
+            ("ComfyUI Local", "Textures", "chord_pbr")])
+        # fal.ai's last (its order: 30), each under its task: as many as are reviewed in.
+        self.assertEqual(sorted(fal), sorted(("fal.ai", cat.tasks[wf.task].label, n) for n, wf in reg.workflows.items()
+                                             if wf.runner_type == "api"))
+        self.assertIn(("fal.ai", "Image", "nano_banana2_edit_fal"), fal)
         tree = cat.tree(reg.workflows.values(), hidden=True)
-        self.assertEqual(flat(tree)[-2:], [("Python Local", "Tests", "gpu_test"),
-                                           ("fal.ai", "Image", "nano_banana2_edit_fal")])
+        self.assertEqual(flat(tree)[-len(fal) - 2:], [("Python Local", "Tests", "batch_test"),
+                                                     ("Python Local", "Tests", "gpu_test"), *fal])
         self.assertEqual({k: tree[0][k] for k in ("name", "label", "runner", "target", "offsite")},
                          {"name": "comfyui-local", "label": "ComfyUI Local", "runner": "comfyui", "target": "pool",
                           "offsite": False})
