@@ -340,12 +340,14 @@ class Adapter:
         """What fal.ai is sent: the fixed fields, each sent param under its field, and each
         uploaded field: the URLs of its inputs in the params' order (`urls` is in that order),
         a list for an ..._urls field, one URL for an ..._url one. An empty param or input
-        isn't sent: fal.ai uses its default."""
+        isn't sent: fal.ai uses its default. A choice with a value in runner.values sends that
+        value (decision 0069), such as an image size's width and height."""
         out = dict(api.get("fixed") or {})
+        mapped = api.get("values") or {}
         for param, field in (api.get("send") or {}).items():
             v = values.get(param)
             if v is not None and v != "":
-                out[field] = v
+                out[field] = mapped[param].get(str(v), v) if param in mapped else v
         fields: dict[str, list[str]] = {}
         for param, us in urls.items():
             fields.setdefault(api["upload"][param], []).extend(us)
