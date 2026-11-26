@@ -22,8 +22,9 @@ its balance (--balance, $50).
 It is stricter than fal.ai: a field its model doesn't know is refused, so a typo in a
 definition shows here. Its models (PNG only): Nano Banana 2 and Nano Banana Pro, each to make an
 image (fal-ai/nano-banana-2, fal-ai/nano-banana-pro) and to edit one (.../edit), FLUX.2 [pro]
-(fal-ai/flux-2-pro), priced by the megapixel, and BiRefNet (fal-ai/birefnet/v2), by the compute
-second. To make a job go
+(fal-ai/flux-2-pro), priced by the megapixel, BiRefNet (fal-ai/birefnet/v2), by the compute
+second, and, described but not priced yet, GPT Image 2 (openai/gpt-image-2, and its /edit) and
+Nano Banana 2.1 (google/nano-banana-2.1). To make a job go
 wrong, put in the prompt: MOCK_FAIL (the model fails), MOCK_POLICY (the content check
 refuses it), MOCK_SLOW (it runs a minute).
 
@@ -104,6 +105,32 @@ MODELS = {
         "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5")), False), "enable_safety_checker": (bool, False),
         "output_format": ((ENUM, ("jpeg", "png")), False), "sync_mode": (bool, False),
     },
+    # Models fal.ai runs for their makers, as its model API described them to Peter on 26
+    # November 2026 (tests/data/fal/): their schemas file them under fal-ai/ (see openapi()).
+    "openai/gpt-image-2": {
+        "prompt": (str, True), "image_size": ((SIZE, tuple(PRESETS) + ("auto",)), False),
+        "background": ((ENUM, ("auto", "transparent", "opaque")), False),
+        "quality": ((ENUM, ("auto", "low", "medium", "high")), False), "num_images": (int, False),
+        "output_format": ((ENUM, ("jpeg", "png", "webp")), False), "output_compression": (int, False),
+        "sync_mode": (bool, False), "enable_safety_checker": (bool, False),
+    },
+    "openai/gpt-image-2/edit": {
+        "prompt": (str, True), "image_urls": (list, True), "image_size": ((SIZE, tuple(PRESETS) + ("auto",)), False),
+        "background": ((ENUM, ("auto", "transparent", "opaque")), False),
+        "quality": ((ENUM, ("auto", "low", "medium", "high")), False), "num_images": (int, False),
+        "output_format": ((ENUM, ("jpeg", "png", "webp")), False), "output_compression": (int, False),
+        "sync_mode": (bool, False), "enable_safety_checker": (bool, False), "mask_url": (str, False),
+    },
+    "google/nano-banana-2.1": {
+        "prompt": (str, True), "num_images": (int, False), "seed": (int, False),
+        "aspect_ratio": ((ENUM, ("auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16",
+                                 "4:1", "1:4", "8:1", "1:8")), False),
+        "output_format": ((ENUM, ("jpeg", "png", "webp")), False),
+        "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5", "6")), False), "sync_mode": (bool, False),
+        "system_prompt": (str, False), "resolution": ((ENUM, ("1K", "2K", "4K")), False),
+        "limit_generations": (bool, False), "enable_web_search": (bool, False),
+        "thinking_level": ((ENUM, ("minimal", "medium", "high")), False),
+    },
     # As fal.ai's model API described it to Peter's draft (25 November 2026). One image in, one out.
     "fal-ai/birefnet/v2": {
         "image_url": (str, True),
@@ -134,6 +161,19 @@ ABOUT = {
                           "status": "active", "description": "Image editing with FLUX.2 [pro] from Black Forest "
                           "Labs. Ideal for high-quality image manipulation, style transfer, and sequential editing "
                           "workflows."},
+    "openai/gpt-image-2": {"display_name": "GPT Image 2 API", "category": "text-to-image",
+                           "license_type": "commercial", "status": "active",
+                           "description": "GPT Image 2, OpenAI's latest image model, is capable of creating extremely "
+                                          "detailed images with fine typography."},
+    "openai/gpt-image-2/edit": {"display_name": "GPT Image 2 API", "category": "image-to-image",
+                                "license_type": "commercial", "status": "active",
+                                "description": "GPT Image 2, OpenAI's latest image model, is capable of making "
+                                               "fine-grained, detailed edits to images."},
+    "google/nano-banana-2.1": {"display_name": "Nano Banana 2.1", "category": "text-to-image",
+                               "license_type": "commercial", "status": "active",
+                               "description": "Nano Banana 2.1 by Google generates images from text prompts, with "
+                                              "output resolutions up to 4K, adjustable aspect ratios, and optional "
+                                              "web search grounding."},
     "fal-ai/birefnet/v2": {"display_name": "Birefnet Background Removal", "category": "image-to-image",
                            "license_type": "commercial", "status": "active",
                            "description": "bilateral reference framework (BiRefNet) for high-resolution dichotomous "
@@ -148,7 +188,10 @@ DEFAULTS = {"num_images": 1, "aspect_ratio": "auto", "output_format": "png", "re
 DEFAULTS_BY = {"fal-ai/nano-banana-pro": {"aspect_ratio": "1:1", "thinking_level": "high"},
                "fal-ai/flux-2-pro": {"image_size": "landscape_4_3", "output_format": "jpeg", "safety_tolerance": "2",
                                      "enable_safety_checker": True},
-               "fal-ai/nano-banana-2": {"thinking_level": "minimal"}}
+               "fal-ai/nano-banana-2": {"thinking_level": "minimal"},
+               "openai/gpt-image-2": {"image_size": "landscape_4_3", "quality": "high", "background": "auto"},
+               "openai/gpt-image-2/edit": {"image_size": "auto", "quality": "high", "background": "auto"},
+               "google/nano-banana-2.1": {"thinking_level": "medium", "safety_tolerance": "4"}}
 SAID = {"prompt": "The prompt for image editing.",
         "image_urls": "The URLs of the images to use for image-to-image generation or image editing.",
         "aspect_ratio": "The aspect ratio of the generated image.", "resolution": "The resolution of the image to "
@@ -208,6 +251,9 @@ def openapi(endpoint: str) -> dict:
             required.append(f)
     ref = "#/components/schemas/"
     gives = OUTPUT.get(endpoint, "images")
+    # fal.ai files a model it runs for its maker under its own owner: openai/gpt-image-2's
+    # schema says POST /fal-ai/gpt-image-2 (26 November 2026). Jobs go to the endpoint's name.
+    filed = endpoint if endpoint.startswith("fal-ai/") else "fal-ai/" + endpoint.split("/", 1)[1]
     made = ({"image": {"$ref": ref + "ImageFile"}, "mask_image": {"$ref": ref + "ImageFile"}} if gives == "image" else
             {"images": {"title": "Images", "type": "array", "items": {"$ref": ref + "ImageFile"}},
              "description": {"title": "Description", "type": "string"}})
@@ -223,9 +269,9 @@ def openapi(endpoint: str) -> dict:
                     "url": {"type": "string"}, "content_type": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                     "width": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
             "paths": {
-                f"/{endpoint}": {"post": {"requestBody": {"required": True, "content": {
+                f"/{filed}": {"post": {"requestBody": {"required": True, "content": {
                     "application/json": {"schema": {"$ref": f"{ref}{base}Input"}}}}}},
-                f"/{endpoint}/requests/{{request_id}}": {"get": {"responses": {"200": {"content": {
+                f"/{filed}/requests/{{request_id}}": {"get": {"responses": {"200": {"content": {
                     "application/json": {"schema": {"$ref": f"{ref}{base}Output"}}}}}}}}}
 
 

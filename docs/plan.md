@@ -113,7 +113,21 @@ Griptape. It runs on the three pilot machines and the `rnd` project.
 11. **ComfyUI Cloud (P8).** Gate: an existing graph runs on ComfyUI Cloud unchanged, charged
     to its show.
 
-On 24 November Peter moved step 9 ahead of steps 7 and 8.
+On 24 November Peter moved step 9 ahead of steps 7 and 8. On 26 November he agreed the order
+for the rest:
+1. step 9's last image models: GPT Image 2 and its edit, and Nano Banana 2.1;
+2. a licence pass: every local definition lists its models' licences, and the policy keeps
+   any model not cleared for production on `rnd`;
+3. ComfyUI Local > Masking with licence-cleared models: SAM 3.1, BiRefNet-HR-matting and
+   MultiMatte, CorridorKey after legal's sign-off (the project's masking licence check,
+   26 November);
+4. step 9's video generation, then video editing and upscaling;
+5. then steps 7, 8, 10 and 11.
+
+Licences (Peter, 26 November). Rodeo uses no model that needs a licence it doesn't hold, even
+through a provider's API: LTX-2.x is dropped, the farm's local LTX workflows and fal.ai's
+alike. A model whose licence comes with using it through a provider's API may go to
+production. CHORD runs on `rnd` only, never on a production show.
 
 After phase 13 (Rodeo login): paid jobs for other shows, and Rodeo's fal.ai account in
 place of Peter's (a key swap on the gateway). Until then a cap rests on a show name the
@@ -511,3 +525,8 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   megapixel, at six sizes that `runner.values` sends as fal.ai's width and height. GPT Image 2
   and Nano Banana 2.1 couldn't be drafted: fal.ai describes partner endpoints (`openai/`,
   `google/`) in a form the draft tool doesn't read yet.
+  The descriptions Peter saved showed why: fal.ai files a model it runs for its maker under
+  its own owner in the schema (`POST /fal-ai/gpt-image-2` for `openai/gpt-image-2`). The draft
+  tool now finds it there, follows fal.ai's own field order, and takes the image field fal.ai
+  requires as the input (GPT Image 2 edit's `image_urls`, not its `mask_url`). Their prices
+  come from Peter's next drafts.

@@ -10,6 +10,7 @@ command against the stand-in (tools/mock_fal.py). Nothing reaches fal.ai itself.
 import contextlib
 import io
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -188,6 +189,46 @@ class TheDraft(unittest.TestCase):
         self.assertIn("cost: fal.ai bills it by processed megapixels: say how many a job is (cost.quantity)", d.todo)
         self.assertEqual(FD.check(d.text, d.name), [])
 
+    def test_fal_ais_own_descriptions(self):
+        """The model API's answers Peter saved on 26 November 2026 (tests/data/fal/). A model
+        fal.ai runs for its maker is filed under fal-ai/ in its schema; the definition keeps the
+        endpoint's own name, as fal.ai's clients send jobs to it."""
+        drafts = {}
+        for f in sorted((REPO / "tests" / "data" / "fal").glob("*.json")):
+            model = json.loads(f.read_text(encoding="utf-8"))["models"][0]
+            with self.subTest(endpoint=model["endpoint_id"]):
+                d = FD.draft(model, None, "2026-11-26")
+                drafts[model["endpoint_id"]] = loaded(d.text)
+                # Only the price is left to write: the pricing API wasn't asked here.
+                self.assertEqual(FD.check(d.text, d.name), ["cost.price: the price of one unit in US dollars, as "
+                                                            "reviewed, e.g. 0.08"])
+        self.assertEqual(sorted(drafts), ["fal-ai/flux-2-pro", "google/nano-banana-2.1", "openai/gpt-image-2",
+                                          "openai/gpt-image-2/edit"])
+        gpt = drafts["openai/gpt-image-2"]
+        self.assertEqual((gpt["runner"]["endpoint"], gpt["id"]), ("openai/gpt-image-2", "openai_gpt_image_2_fal"))
+        self.assertEqual(list(gpt["params"]), ["prompt", "image_size", "background", "quality", "output_path"])
+        # The input is the image field fal.ai requires, not the first it lists.
+        edit = drafts["openai/gpt-image-2/edit"]
+        self.assertEqual(edit["runner"]["upload"], {"input": "image_urls", "reference": "image_urls",
+                                                    "mask": "mask_url"})
+        self.assertNotIn("required", edit["params"]["mask"])
+        # fal.ai's own order (x-fal-order-properties), the prompt first.
+        self.assertEqual(list(drafts["fal-ai/flux-2-pro"]["params"]), ["prompt", "image_size", "seed", "output_path"])
+        self.assertEqual(drafts["google/nano-banana-2.1"]["runner"]["fixed"],
+                         {"num_images": 1, "output_format": "png", "sync_mode": True, "enable_web_search": False})
+
+    def test_where_a_schema_files_an_endpoint(self):
+        paths = {"/fal-ai/gpt-image-2": {"post": {}}, "/fal-ai/gpt-image-2/edit": {"post": {}},
+                 "/fal-ai/gpt-image-2/requests/{request_id}": {"get": {}}}
+        self.assertEqual(FD.filed_as("openai/gpt-image-2", paths), "fal-ai/gpt-image-2")
+        self.assertEqual(FD.filed_as("openai/gpt-image-2/edit", paths), "fal-ai/gpt-image-2/edit")
+        self.assertEqual(FD.filed_as("fal-ai/gpt-image-2", paths), "fal-ai/gpt-image-2")     # its own name
+        self.assertEqual(FD.filed_as("openai/sora", paths), "openai/sora")                  # none: as it is
+        with self.assertRaises(FD.DraftError) as e:
+            FD.schemas({"endpoint_id": "openai/sora", "openapi": {"paths": paths}})
+        self.assertEqual(str(e.exception), "openai/sora's schema has no POST /openai/sora with a JSON body (it "
+                                           "describes POST /fal-ai/gpt-image-2, /fal-ai/gpt-image-2/edit)")
+
     def test_a_price_it_cant_read_or_count(self):
         unpriced = FD.draft(described(), None, "2026-11-25")
         self.assertEqual(loaded(unpriced.text)["cost"]["price"], 0)
@@ -303,6 +344,16 @@ class TheCommand(unittest.TestCase):
         code, _, err = self.run_it(PRO)
         self.assertEqual(code, 1)
         self.assertIn("No gateway.yaml at", err)
+
+    def test_a_model_fal_runs_for_its_maker(self):
+        """What stopped Peter's drafts of GPT Image 2 and Nano Banana 2.1 on 26 November: their
+        schemas name fal-ai/, their endpoints openai/ and google/."""
+        for endpoint in ("openai/gpt-image-2", "openai/gpt-image-2/edit", "google/nano-banana-2.1"):
+            with self.subTest(endpoint=endpoint):
+                code, out, err = self.run_it(endpoint)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(loaded(out)["runner"]["endpoint"], endpoint)
+                self.assertIn("cost.price: the price of one unit in US dollars", err)    # the stand-in has none
 
     def test_its_price_unread_is_a_todo_not_a_stop(self):
         self.mock.prices.pop(PRO)

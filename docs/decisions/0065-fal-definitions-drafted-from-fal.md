@@ -99,3 +99,12 @@ Nano Banana Pro edit sends in fal.ai's own schema. They also showed what the sta
   unit's words are now joined by hyphens (`compute-second`), and the ledger reads spaces,
   hyphens and underscores between them alike;
 - a long `send` and its comments are wrapped to the farm's line length.
+
+Later still (26 November): the model API's descriptions of GPT Image 2 and Nano Banana 2.1,
+models fal.ai runs for their makers, file them under fal.ai's own owner: `openai/gpt-image-2`
+is `POST /fal-ai/gpt-image-2` in its schema. The draft tool finds an endpoint under its own
+name, else under `fal-ai/` with the same app and path; the definition keeps the endpoint's
+name, which fal.ai's clients send jobs to and its pricing API knows. The draft also follows
+fal.ai's own field order (`x-fal-order-properties`) when the schema gives one, and an image
+field fal.ai requires comes first, as the input. The saved descriptions are the tests' data
+(`tests/data/fal/`).
