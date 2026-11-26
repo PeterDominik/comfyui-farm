@@ -20,6 +20,18 @@ requires: {vram_gb: 32}
 # (publish.default_step, ai) unless the artist picks another. publish: {step: <step>} here
 # would offer another first.
 
+# The weights it loads and their licence (decisions 0044, 0070). LTX-2.x's community licence
+# needs a paid licence from Lightricks for a company of Rodeo's size, which Rodeo doesn't hold,
+# so the farm's policy refuses it on every show (Peter, 26 November 2026). Gemma 4's text
+# encoder is Apache-2.0; the 12B one comes with LTX's projection, so it is LTX's.
+models:
+  - {file: ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-video-vae-bf16.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-audio-vae-bf16.safetensors, licence: ltx-2-community-license}
+  - {file: LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors, licence: ltx-2-community-license}
+  - {file: gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors, licence: ltx-2-community-license}
+  - {file: gemma4_e2b_it_int8_convrot.safetensors, licence: apache-2.0}
+
 params:
   # The images the workflow takes: a batch of frames (takes: images), read with the exact
   # frames.

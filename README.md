@@ -1164,6 +1164,14 @@ policy:
   file: policy.yaml        # a name in share.dir, or a path of its own
 ```
 
+- **Rodeo's licence rules** (decision 0070) are in `policy.example.yaml`: production shows
+  take only models whose licence is cleared for Rodeo (`production-cleared-licences`: Apache-2.0,
+  MIT, Meta's SAM License, and models licensed with their use through a provider's API); the
+  others, CHORD's research-only weights among them, run on `rnd` only; LTX-2.x runs on no show
+  (`no-licence-rodeo-lacks`: it needs a paid licence Rodeo doesn't hold); and a definition that
+  doesn't list its models is refused (`unlisted_models: deny`). Every definition in the repo
+  lists its models, and `tests/test_licences.py` keeps it so: a definition with a licence no
+  rule names yet needs a rule first.
 - **Start from `policy.example.yaml`.** Each rule names its shows (patterns work: `ret*`;
   `*` is every job, its show known or not), shows to leave out (`except: [rnd*]`), and a
   reason the artist reads.

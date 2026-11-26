@@ -39,8 +39,10 @@ class ProcessYamlTests(unittest.TestCase):
         return yaml.safe_load((REPO / "workflows" / name / "process.yaml").read_text(encoding="utf-8"))
 
     # The head-only fields the farm's ComfyUI workflows set: CHORD lists its models (decision 0044)
-    # and has an eval (0053).
-    HEAD_SET = {"chord_pbr": {"models", "eval"}}
+    # and has an eval (0053); the others list their models since decision 0070.
+    HEAD_SET = {"chord_pbr": {"models", "eval"}, **{n: {"models"} for n in ("ltx25_alpha_gen",
+                                                                            "ltx25_layout_render", "sam3_ltx_alpha",
+                                                                            "wan22_i2i")}}
 
     def manifest_of(self, name: str) -> dict:
         """The manifest.yaml that one of the farm's workflows is equal to, but for its head-only
@@ -355,7 +357,10 @@ class ProcessYamlTests(unittest.TestCase):
             self.assertEqual(TOOL.main([str(self.tmp)]), 1)
         self.assertIn("already there", err.getvalue())
         (folder / "manifest.yaml").unlink()
-        self.assertEqual(Workflow(folder).digest, self.registry.workflows["wan22_i2i"].digest)
+        # The repo's, but for its models (decision 0070), which a manifest can't hold.
+        shutil.move(str(folder), str(self.tmp / "written"))
+        without = Workflow(self.as_process("wan22_i2i", lambda p: p.pop("models")))
+        self.assertEqual(Workflow(self.tmp / "written").digest, without.digest)
 
 
 if __name__ == "__main__":

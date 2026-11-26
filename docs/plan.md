@@ -530,3 +530,8 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   tool now finds it there, follows fal.ai's own field order, and takes the image field fal.ai
   requires as the input (GPT Image 2 edit's `image_urls`, not its `mask_url`). Their prices
   come from Peter's next drafts.
+
+  The licence pass (0070): every definition lists its models' licences (Wan 2.2's, and the LTX
+  workflows', SAM 3's and ViTMatte's, added), and `policy.example.yaml` holds Rodeo's rules:
+  production shows only cleared licences, the rest on `rnd` only, LTX-2.x on no show, and a
+  definition without its models refused. `tests/test_licences.py` keeps every licence decided.

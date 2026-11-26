@@ -22,6 +22,18 @@ requires: {vram_gb: 32}
 # Inputs are used at their own size: the workflow scales the layout to 544 on its shorter
 # side itself. 24 fps, seed 42 and the sampler settings are fixed in the workflow.
 
+# The weights it loads and their licence (decisions 0044, 0070). LTX-2.x's community licence
+# needs a paid licence from Lightricks for a company of Rodeo's size, which Rodeo doesn't hold,
+# so the farm's policy refuses it on every show (Peter, 26 November 2026). The Gemma 4 text
+# encoder comes with LTX's projection, so it is LTX's.
+models:
+  - {file: ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-video-vae-bf16.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-audio-vae-bf16.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors, licence: ltx-2-community-license}
+  - {file: LTX/ltx-2.5-22b-ic-lora-layout-to-render-1.0.safetensors, licence: ltx-2-community-license}
+  - {file: gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors, licence: ltx-2-community-license}
+
 params:
   # Two inputs. The layout is primary: it names the outputs and numbers their frames.
   input:
