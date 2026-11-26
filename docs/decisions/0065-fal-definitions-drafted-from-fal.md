@@ -107,4 +107,4 @@ name, else under `fal-ai/` with the same app and path; the definition keeps the 
 name, which fal.ai's clients send jobs to and its pricing API knows. The draft also follows
 fal.ai's own field order (`x-fal-order-properties`) when the schema gives one, and an image
 field fal.ai requires comes first, as the input. The saved descriptions are the tests' data
-(`tests/data/fal/`).
+(`tests/fal_models/`).

@@ -190,11 +190,11 @@ class TheDraft(unittest.TestCase):
         self.assertEqual(FD.check(d.text, d.name), [])
 
     def test_fal_ais_own_descriptions(self):
-        """The model API's answers Peter saved on 26 November 2026 (tests/data/fal/). A model
+        """The model API's answers Peter saved on 26 November 2026 (tests/fal_models/). A model
         fal.ai runs for its maker is filed under fal-ai/ in its schema; the definition keeps the
         endpoint's own name, as fal.ai's clients send jobs to it."""
         drafts = {}
-        for f in sorted((REPO / "tests" / "data" / "fal").glob("*.json")):
+        for f in sorted((REPO / "tests" / "fal_models").glob("*.json")):
             model = json.loads(f.read_text(encoding="utf-8"))["models"][0]
             with self.subTest(endpoint=model["endpoint_id"]):
                 d = FD.draft(model, None, "2026-11-26")

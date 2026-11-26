@@ -106,7 +106,7 @@ MODELS = {
         "output_format": ((ENUM, ("jpeg", "png")), False), "sync_mode": (bool, False),
     },
     # Models fal.ai runs for their makers, as its model API described them to Peter on 26
-    # November 2026 (tests/data/fal/): their schemas file them under fal-ai/ (see openapi()).
+    # November 2026 (tests/fal_models/): their schemas file them under fal-ai/ (see openapi()).
     "openai/gpt-image-2": {
         "prompt": (str, True), "image_size": ((SIZE, tuple(PRESETS) + ("auto",)), False),
         "background": ((ENUM, ("auto", "transparent", "opaque")), False),
