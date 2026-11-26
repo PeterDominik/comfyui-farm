@@ -406,6 +406,14 @@ class Core(Base):
         self.assertIn("/rdo/shows/<show>/renders", specs["output_path"]["tooltip"])
         self.assertEqual(specs["mode"]["choices"], ["fast", "best"])
         self.assertEqual((specs["cfg"]["min"], specs["cfg"]["max"]), (0, 10))
+        # No input (decision 0068): the folder is required, so it has no "empty" to offer.
+        t2i = {"name": "gen", "params": [{"name": "prompt", "type": "text", "required": True},
+                                         {"name": "output_path", "type": "output_folder", "required": True,
+                                          "help": "Where the result goes: it says the show."}]}
+        folder = {s["param"]: s for s in self.m.knob_specs(t2i)}["output_path"]
+        self.assertEqual((folder["label"], folder["tooltip"]),
+                         ("output_path *", "Where the result goes: it says the show."))
+        self.assertEqual(self.m.image_params(t2i), [])
 
     def test_knob_values_from_the_form(self):
         specs = {s["param"]: s for s in self.m.knob_specs(LAYOUT)}

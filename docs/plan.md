@@ -477,7 +477,10 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   in a few pull requests, more later one each. The pull requests:
   1. `comfyfarm fal draft`, and Nano Banana Pro edit;
   2. image generation: jobs with no input image, prices fal.ai gives in tokens or megapixels,
-     and the image models;
+     and the image models, in two: first the jobs with no input and the models priced by the
+     image or the compute second (Nano Banana 2 and Pro from a prompt, BiRefNet); then, from
+     live drafts, those priced in megapixels or tokens (FLUX 2 Pro, GPT Image 2, Nano Banana
+     2.1);
   3. video generation: video results, and the video models;
   4. video editing and upscaling: video inputs, and those models.
 
@@ -499,3 +502,8 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   On the pilot, the sync took the three off ShotGrid's menu. Peter had first taken every show
   out of `menu.yaml`, which the sync refused for want of a show for the pipeline's context. He
   asked that no shows remove every item (0067): the context is then the last good sync's show.
+
+  Step 9's second pull request (0068): a job with no input image takes its show, sequence and
+  shot from its Output folder, which such a definition requires, and is named after the shot
+  or the show, from frame 1001. Nano Banana 2 and Nano Banana Pro from a prompt, and BiRefNet
+  background removal by the compute second, reviewed.

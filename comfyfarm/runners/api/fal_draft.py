@@ -199,9 +199,6 @@ def fields(takes: dict, comps: dict) -> tuple[list[Field], dict, list[str], list
         else:
             param = re.sub(r"_urls?$", "", name)
             params.append(Field(name, param, "input", _label(param, s), _help(s), name in required, many=many))
-    if not images:
-        todo.append("it takes no image: the farm's fal.ai definitions need an input image to name the job's "
-                    "outputs, until text-only jobs come")
     # The prompt first, as an artist reads the form, then the rest in fal.ai's order.
     out = [f for f in out if f.kind == "text"] + [f for f in out if f.kind != "text"]
     return params + out, fixed, left, todo
@@ -348,8 +345,10 @@ def draft(model: dict, price: dict | None, today: str) -> Draft:
          "",
          f"id: {name}",
          f"label: {_q(label)}"]
-    L += _block("description", (about + " " if about else "") + "The inputs and the prompt leave Rodeo's network: "
-                "they are sent to fal.ai, which keeps the inputs an hour.", 0)
+    inputs = any(f.kind == "input" for f in params)
+    L += _block("description", (about + " " if about else "") + ("The inputs and the prompt leave Rodeo's network: "
+                "they are sent to fal.ai, which keeps the inputs an hour." if inputs else "The prompt leaves Rodeo's "
+                "network: it is sent to fal.ai."), 0)
     L += [f"tag: {tag_for(name)}",
           f"task: {task or 'image'}" + ("" if task else "                    # TODO: from fal.ai's category"),
           "provider: fal",
@@ -362,7 +361,7 @@ def draft(model: dict, price: dict | None, today: str) -> Draft:
           "cost:", *cost,
           "publish: false",
           "shotgrid: false"]
-    if any(f.kind == "input" for f in params):
+    if inputs:
         L.append("work_resolution: 2048          # inputs over this are scaled down first: a smaller upload is quicker")
     L += ["", "params:"]
     for f in params:
@@ -387,10 +386,17 @@ def draft(model: dict, price: dict | None, today: str) -> Draft:
                 L.append(f"    max: {_q(f.maximum)}")
         L += _block("help", f.help, 4)
         L.append("")
-    L += ["  output_path:", "    type: output_folder", "    label: Output folder",
-          *_block("help", f"The result goes into a folder named after the shot inside this one, as <source>."
-                          f"{tag_for(name)}_vNNN.<frame>.png. Leave empty for the show's renders folder. Never "
-                          f"inside .published.", 4), ""]
+    if inputs:
+        L += ["  output_path:", "    type: output_folder", "    label: Output folder",
+              *_block("help", f"The result goes into a folder named after the shot inside this one, as <source>."
+                              f"{tag_for(name)}_vNNN.<frame>.png. Leave empty for the show's renders folder. Never "
+                              f"inside .published.", 4), ""]
+    else:                               # no input: the folder says the job's show (decision 0068)
+        L += ["  output_path:", "    type: output_folder", "    label: Output folder", "    required: true",
+              *_block("help", f"Where the result goes, on show storage, e.g. /rdo/shows/<show>/_project_ref/_cg/"
+                              f"comfyui/renders: with no input image, it says which show the job is for. It is "
+                              f"named after the folder's shot, else its show, as <shot>.{tag_for(name)}_vNNN.1001.png. "
+                              f"Each run takes the next free version. Never inside .published.", 4), ""]
     if wr:
         L += ["writes:", "  frames: {ext: png}", ""]
     L += ["runner:", "  type: api", f"  endpoint: {endpoint}", *_mapping("upload", upload, 2),

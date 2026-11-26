@@ -46,8 +46,8 @@ class Says(unittest.TestCase):
         return json.loads(out.stdout)
 
     def test_money_as_the_manager_says_it(self):
-        said = self.run_js(*[["money", [x]] for x in (0.08, 1.5, 0.0075, 0.1425, 41.2, 1234.5, 0)])
-        self.assertEqual(said, ["$0.08", "$1.50", "$0.0075", "$0.1425", "$41.20", "$1,234.50", "$0.00"])
+        said = self.run_js(*[["money", [x]] for x in (0.08, 1.5, 0.0075, 0.1425, 41.2, 1234.5, 0, 0.000575)])
+        self.assertEqual(said, ["$0.08", "$1.50", "$0.0075", "$0.1425", "$41.20", "$1,234.50", "$0.00", "$0.000575"])
 
     def test_a_jobs_row_and_details(self):
         short = self.run_js(["spendShort", [job()]], ["spendShort", [job("held")]], ["spendShort", [job("charged")]],

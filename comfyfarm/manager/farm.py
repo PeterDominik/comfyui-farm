@@ -21,6 +21,7 @@ from .. import artifacts as A
 from .. import catalog as C
 from ..config import Config
 from ..fileio import inputs as I
+from ..fileio import naming as N
 from ..fileio import paths as P
 from ..fileio import scratch as S
 from ..fileio import textures as T
@@ -355,6 +356,10 @@ class Farm:
         others = self._plan_other_inputs(wf, use, seq, show, shot, job_id) if seq is not None else {}
         show_ = seq.show if seq else show
         shot_ = seq.shot if seq else shot
+        seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
+        if not wf.sequence_param:
+            show_, seq_name, shot_ = self._folder_context(wf, values, cfg.paths, show_, shot_,
+                                                          needs_show=evaluation is None)
         # The farm's policy, once the show is known (decisions 0043, 0044): a refused job is never planned.
         # The farm's own reference jobs skip its show rules, but not an outside provider's (0058).
         try:
@@ -387,8 +392,8 @@ class Farm:
                 raise FarmError(str(e), 403) from None
             cost["confirm"] = L.needs_yes(budget, cost["amount"])
             cost["confirm_above"] = budget["confirm_above"]
-        seq_name = (src.get("sequence") if src else None) or (seq.seq_name if seq else None)
-        source = seq.source if seq else wf.tag
+        # With no input, the files are named after the shot, else the show (decision 0068).
+        source = seq.source if seq else (shot_ or show_ or wf.tag)
         plan = {"notes": notes + (list((seq.convert or {}).get("notes", [])) if seq else []),
                 "wf": wf, "values": values, "seq": seq, "inputs": others, "sources": sources,
                 "show": show_, "shot": shot_, "seq_name": seq_name,
@@ -414,6 +419,23 @@ class Farm:
         except PolicyRefused as e:
             raise FarmError(str(e), 403) from None
         return plan
+
+    @staticmethod
+    def _folder_context(wf, values: dict, pc, show: str | None, shot: str | None, needs_show: bool = True) -> tuple:
+        """(show, sequence, shot) of a job with no input (decision 0068): where its Output folder
+        sits on show storage, read with paths.context_patterns as an input's path is. The show
+        and shot the request names fill what the folder doesn't say. An eval's folder is the
+        farm's own, in no show (`needs_show` false)."""
+        picked = values.get(wf.output_folder_param) if wf.output_folder_param else None
+        folder = N.resolve_output_folder(picked, pc) if picked else ""
+        ctx = P.context_from_path(folder + "/", pc.context_patterns, pc.shot_name) if folder else {}
+        show_ = ctx.get("show") or show
+        if not show_ and needs_show:
+            where = N.default_output_root_display(pc).replace("{show}", "<show>")
+            raise FarmError(f"{wf.label or wf.name} takes no input image, so its Output folder says which show the "
+                            f"job is for, and {picked or 'none was given'} isn't in a show's folder. Pick one on "
+                            f"show storage, e.g. {where}.")
+        return show_, ctx.get("seq"), ctx.get("shot") or shot
 
     def refused_by_policy(self, job: dict) -> PolicyRefused | None:
         """Whether the policy in force now refuses a job already planned: its show and licence

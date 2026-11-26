@@ -943,6 +943,13 @@ class Definition:
                             f"e.g. 1024; leave it out to use inputs as they are")
         elif wr and not self.port:
             problems.append("work_resolution needs an input param (it scales the input)")
+        # No input (a text-to-image model, decision 0068): its Output folder says the job's show,
+        # for the policy and a paid job's cap, and names and holds what it writes.
+        out_p = self.params.get(self.output_folder_param or "")
+        if not self.ports and not self.textures and (self.outputs.get("frames") or self.writes) \
+                and not (out_p and out_p.required):
+            problems.append("no input: needs an output_folder param with required: true, which says the job's "
+                            "show (decision 0068)")
         req = self.requires
         if "bad" in req:
             problems.append(f"requires must be a mapping ({{vram_gb: 32, tags: [...]}}), not {req['bad']!r}")

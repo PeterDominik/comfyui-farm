@@ -27,10 +27,11 @@ class PriceError(Exception):
 
 
 def money(x: float) -> str:
-    """US dollars as people read them: $0.08, $1.50, $0.0075."""
+    """US dollars as people read them: $0.08, $1.50, $0.0075, and a price under a cent to the
+    millionth the ledger keeps (BiRefNet's $0.000575 a compute second)."""
     if abs(x - round(x, 2)) < 1e-9:
         return f"${x:,.2f}"
-    return "$" + f"{x:.4f}".rstrip("0")
+    return "$" + f"{x:.{6 if abs(x) < 0.01 else 4}f}".rstrip("0")
 
 
 def per(unit: str) -> str:

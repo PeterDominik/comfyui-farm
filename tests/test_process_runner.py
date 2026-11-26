@@ -111,7 +111,9 @@ def definition(root: Path, name: str, **extra) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     p = {"id": name, "label": name.title(),
          "params": {"mode": {"type": "choice", "choices": ["ok", "fail", "error", "hang", "spawn", "wait", "batch"],
-                             "default": "ok"}},
+                             "default": "ok"},
+                    # No input: the folder says the job's show (decision 0068).
+                    "output_path": {"type": "output_folder", "required": True}},
          "writes": {"frames": {"ext": "png"}},
          "runner": {"type": "process", "environment": "py", "command": ["python", "{definition}/run.py"]}}
     for k, v in extra.items():

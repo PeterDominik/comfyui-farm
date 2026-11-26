@@ -293,6 +293,48 @@ gateway:
         self.assertEqual(len(csv.strip().splitlines()), 1 + len(v["rows"]))
         self.assertNotIn(BILLING_KEY, (self.tmp / "gateway.out").read_text(errors="replace"))
 
+    def test_2e_an_image_from_a_prompt_from_the_nuke_node(self):
+        """Decision 0068: Nano Banana 2 with no input image. The node has no input arrow; its
+        Output folder says the show (fal.ai's rule and cap are xyz's) and names the frame, 1001."""
+        renders = "/rdo/shows/xyz/_project_ref/_cg/comfyui/renders"
+        (self.tmp / "shows/xyz/_project_ref/_cg/comfyui").mkdir(parents=True, exist_ok=True)
+        nk = make_nuke()
+        with mock.patch.dict(sys.modules, {"nuke": nk}), mock.patch.object(farm, "POSIX", True):
+            for mod in ("comfyfarm_nuke", "comfyfarm_panel", "comfyfarm_node"):
+                sys.modules.pop(mod, None)
+            m = importlib.import_module("comfyfarm_node")
+            try:
+                def now(work, done):
+                    try:
+                        result, error = work(), None
+                    except Exception as e:  # noqa: BLE001
+                        result, error = None, e
+                    done(result, error)
+                with mock.patch.object(m, "_in_background", now), mock.patch.object(m, "track", lambda ids: None):
+                    wf = next(w for w in farm.workflows() if w["name"] == "nano_banana2_fal")
+                    self.assertEqual(m.image_params(wf), [])                    # no input arrow
+                    node = m.create_node(wf)
+                    node["p_prompt"].setValue("a red barn at dusk")
+                    node["p_output_path"].setValue(renders)
+                    m.submit(node)
+                    self.assertEqual(nk.messages, [])
+                    records = m._records(node)
+                    self.assertTrue(records, node["cf_note"].value())
+                    jid = records[-1]["id"]
+            finally:
+                for mod in ("comfyfarm_nuke", "comfyfarm_panel", "comfyfarm_node"):
+                    sys.modules.pop(mod, None)
+        j = self.wait_for(jid)
+        self.assertEqual(j["status"], "done", j.get("error"))
+        self.assertAlmostEqual(j["info"]["cost"]["amount"], 0.08)
+        self.assertEqual((j["spend"]["show"], j["spend"]["state"]), ("xyz", "charged"))
+        out = j["outputs"]
+        self.assertEqual((out["frames"], out["first"]), (1, 1001))
+        self.assertEqual(out["frame_pattern_posix"], f"{renders}/xyz.nanobananagen_v001.%04d.png")
+        self.assertEqual(png_size(out["frame_pattern"] % 1001), (1024, 1024))
+        said = (self.tmp / "mock_fal.out").read_text(errors="replace")
+        self.assertIn("POST /fal-ai/nano-banana-2 -> 200", said)
+
     def test_3_on_the_machines_tab(self):
         w = {x["name"]: x for x in farm.workers()}[GATEWAY]
         self.assertEqual((w["lanes"], w["max_inflight"]), ({"fal": 2}, 2))

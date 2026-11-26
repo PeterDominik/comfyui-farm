@@ -126,8 +126,8 @@ class TheEstimate(unittest.TestCase):
             PR.estimate(self.wf, {"resolution": "1K"}, {**TODAY, "currency": "EUR"}, "fal.ai")
 
     def test_money(self):
-        self.assertEqual([PR.money(x) for x in (0.08, 1.5, 0.0075, 0.1425, 41.2, 1234.5)],
-                         ["$0.08", "$1.50", "$0.0075", "$0.1425", "$41.20", "$1,234.50"])
+        self.assertEqual([PR.money(x) for x in (0.08, 1.5, 0.0075, 0.1425, 41.2, 1234.5, 0.000575, 0.0115)],
+                         ["$0.08", "$1.50", "$0.0075", "$0.1425", "$41.20", "$1,234.50", "$0.000575", "$0.0115"])
 
 
 class WhenPlanned(Manager):

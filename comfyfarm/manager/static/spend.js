@@ -12,12 +12,12 @@
 // it is given (the browser's confirm), so node runs them alone (tests/test_dashboard_spend.py).
 "use strict";
 
-// US dollars as people read them: $0.08, $1.50, $0.0075 (as manager/prices.py says them).
+// US dollars as people read them: $0.08, $1.50, $0.0075, $0.000575 (as manager/prices.py says them).
 function money(x) {
   x = Number(x) || 0;
   if (Math.abs(x - Math.round(x * 100) / 100) < 1e-9)
     return "$" + x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return "$" + x.toFixed(4).replace(/0+$/, "");
+  return "$" + x.toFixed(Math.abs(x) < 0.01 ? 6 : 4).replace(/0+$/, "");
 }
 
 // What a ledger row's state means, as the job's details say it.

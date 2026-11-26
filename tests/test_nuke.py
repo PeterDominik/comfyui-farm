@@ -574,7 +574,8 @@ class PanelLogic(unittest.TestCase):
         self.assertEqual(self.panel.PanelModel.yes_question(cost),
                          "About $6.00 at fal.ai: 75 images at 1K, $0.08 an image.\n\nShow rnd has $44.00 left of its "
                          "$50.00 cap after it.\n\nSubmit it for about $6.00?")
-        self.assertEqual([self.panel.money(x) for x in (0.08, 0.0075, 1234.5)], ["$0.08", "$0.0075", "$1,234.50"])
+        self.assertEqual([self.panel.money(x) for x in (0.08, 0.0075, 1234.5, 0.000575)],
+                         ["$0.08", "$0.0075", "$1,234.50", "$0.000575"])
         m = self.panel.PanelModel(client=FakeFarm(), user="peter")
         m.workflows = [WF]
         m.submit("wf", {"input": "/a.png"}, confirm_cost=6.0)

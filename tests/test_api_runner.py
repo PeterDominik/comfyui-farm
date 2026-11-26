@@ -24,11 +24,11 @@ from unittest import mock
 import yaml
 
 from comfyfarm.config import AgentConfig, Config, load_agent_config
-from comfyfarm.definitions import Definition, DefinitionRegistry
+from comfyfarm.definitions import Definition, DefinitionRegistry, ParamError
 from comfyfarm.manager.db import JobStore
 from comfyfarm.manager.desk import Desk
 from comfyfarm.manager.events import EventBus
-from comfyfarm.manager.farm import Farm
+from comfyfarm.manager.farm import Farm, FarmError
 
 try:   # the gateway talks to providers with httpx
     import httpx
@@ -700,6 +700,87 @@ class TheGateway(Tmp):
         uploads = [p for p in self.mock.files if "/out_" not in p]
         self.assertEqual([u.rpartition("/")[2] for u in body["image_urls"]], ["plate.png", "look.png"])
         self.assertEqual(len(uploads), 2)
+
+    def with_definitions(self, *names):
+        """More of the repo's fal.ai definitions on this farm, before its gateway starts."""
+        for n in names:
+            shutil.copytree(REPO / "workflows" / n, self.tmp / "workflows" / n)
+        self.farm.registry.reload()
+
+    def test_a_job_with_no_input_image(self):
+        """Decision 0068: text to image. Its Output folder says the show (the policy, the cap)
+        and names the result, frame 1001; nothing is uploaded."""
+        self.with_definitions("nano_banana2_fal")
+        (self.tmp / "shows" / "rnd" / "boards").mkdir(parents=True)
+        g = self.gateway()
+        folder = f"{self.root}/shows/rnd/boards"
+        jid = self.farm.submit("nano_banana2_fal", {"prompt": "a red barn at dusk", "output_path": folder}, "ann")["id"]
+        self.beat(g)
+        j = self.ended(jid)
+        self.assertEqual((j["info"]["show"], j["info"]["shot"]), ("rnd", None))
+        out = j["outputs"]
+        self.assertEqual((out["frames"], out["first"]), (1, 1001))
+        frame = Path(folder) / "rnd.nanobananagen_v001.1001.png"           # straight into the folder: no shot
+        self.assertEqual(Path(out["frame_pattern"] % 1001), frame)
+        self.assertTrue(frame.is_file())
+        body = next(iter(self.mock.requests.values()))["input"]
+        self.assertEqual(body, {"prompt": "a red barn at dusk", "aspect_ratio": "16:9", "resolution": "1K",
+                                "num_images": 1, "output_format": "png", "enable_web_search": False,
+                                "enable_image_search": False, "sync_mode": True})
+        self.assertEqual([c for c in self.mock.calls if c["path"] == "/files/upload"], [])
+        spend = self.store.spend_of(jid)
+        self.assertEqual((spend["show"], spend["state"], spend["amount"]), ("rnd", "charged", 0.08))
+        # The next run takes the next version; the seed is sent when given.
+        again = self.farm.submit("nano_banana2_fal", {"prompt": "a red barn at dawn", "output_path": folder,
+                                                      "seed": 7}, "ann")["id"]
+        self.beat(g)
+        self.assertEqual(Path(self.ended(again)["outputs"]["frame_pattern"] % 1001).name,
+                         "rnd.nanobananagen_v002.1001.png")
+        self.assertEqual(list(self.mock.requests.values())[-1]["input"]["seed"], 7)
+
+    def test_no_input_image_and_no_show(self):
+        self.with_definitions("nano_banana2_fal")
+        (self.tmp / "shows" / "qqq").mkdir()
+        with self.assertRaisesRegex(ParamError, "^Output folder is required.$"):
+            self.farm.plan("nano_banana2_fal", {"prompt": "a barn"})
+        with self.assertRaises(FarmError) as e:                             # show storage itself, in no show
+            self.farm.plan("nano_banana2_fal", {"prompt": "a barn", "output_path": f"{self.root}/shows"})
+        self.assertEqual(str(e.exception), f"Nano Banana 2 takes no input image, so its Output folder says which show "
+                                           f"the job is for, and {self.root}/shows isn't in a show's folder. Pick one "
+                                           f"on show storage, e.g. //server/share/shows/<show>/comfyui/renders.")
+        with self.assertRaises(FarmError) as e:                             # the folder's show is the policy's
+            self.farm.plan("nano_banana2_fal", {"prompt": "a barn", "output_path": f"{self.root}/shows/qqq/gen"})
+        self.assertIn("Show qqq isn't cleared to send work to fal.ai", str(e.exception))
+        # A shot's folder: named and filed after the shot, as an input from it would be.
+        shot = self.tmp / "shows" / "rnd" / "bpash" / "1545" / "movhistory"
+        shot.mkdir(parents=True)
+        plan = self.farm.plan("nano_banana2_fal", {"prompt": "a barn", "output_path": f"{shot.as_posix()}/gen"})
+        self.assertEqual((plan["show"], plan["seq_name"], plan["shot"]), ("rnd", "bpash", "bpash_1545"))
+        self.assertEqual((plan["out_dir"], plan["first_file"]),
+                         (f"{shot.as_posix()}/gen/bpash_1545", "bpash_1545.nanobananagen_v001.1001.png"))
+
+    def test_birefnet_one_image_by_the_compute_second(self):
+        """One image_url up, one `image` back; held at its estimate in compute seconds."""
+        self.with_definitions("birefnet_v2_fal")
+        g = self.gateway()
+        jid = self.farm.submit("birefnet_v2_fal", {"input": f"{self.root}/shows/plate.png", "mask_only": True,
+                                                   "output_path": f"{self.root}/shows/out"}, "ann", show="rnd")["id"]
+        cost = self.job(jid)["info"]["cost"]
+        self.assertEqual((cost["quantity"], cost["unit"], cost["amount"]), (20, "compute-second", 0.0115))
+        self.assertEqual(cost["text"], "About $0.0115 at fal.ai: 20 compute-seconds, $0.000575 a compute-second (the "
+                                       "price its definition was reviewed at; fal.ai's own isn't read yet).")
+        self.beat(g)
+        j = self.ended(jid)
+        self.assertEqual(j["outputs"]["frames"], 1)
+        body = next(iter(self.mock.requests.values()))["input"]
+        self.assertTrue(body["image_url"].startswith(BASE + "/files/b/"))
+        self.assertEqual({k: body[k] for k in ("mask_only", "output_mask", "model", "sync_mode")},
+                         {"mask_only": True, "output_mask": False, "model": "General Use (Light)", "sync_mode": True})
+        self.assertTrue(self.wait(g.runner.read_prices()))                    # fal.ai's unit is its words for it
+        self.assertEqual(self.desk.price(self.farm.registry.workflows["birefnet_v2_fal"])["unit"], "compute seconds")
+        later = self.farm.plan("birefnet_v2_fal", {"input": f"{self.root}/shows/plate.png",
+                                                   "output_path": f"{self.root}/shows/out"}, show="rnd")
+        self.assertEqual((later["cost"]["source"], later["cost"]["amount"]), ("provider", 0.0115))
 
     def test_what_fal_refuses_fails_the_job(self):
         g = self.gateway()

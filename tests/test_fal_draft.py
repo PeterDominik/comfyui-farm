@@ -147,16 +147,33 @@ class TheDraft(unittest.TestCase):
                                       endpoint="bytedance/some-video/text-to-video", category="text-to-video"),
                              {"unit_price": 0.1, "unit": "seconds", "currency": "USD"}, "2026-11-25")
         self.assertEqual(text_only.name, "bytedance_some_video_text_to_video_fal")
-        self.assertEqual(text_only.todo[:3], [
+        self.assertEqual(text_only.todo[:2], [
             "video_url: a video input, which the farm's fal.ai definitions don't take yet: left out",
-            "it takes no image: the farm's fal.ai definitions need an input image to name the job's outputs, until "
-            "text-only jobs come",
             "it returns a video, which the farm's fal.ai definitions don't bring back yet"])
         self.assertEqual(loaded(text_only.text)["cost"], {"unit": "second", "price": 0.1,
                                                           "quantity": {"param": "duration"}})
         self.assertEqual(loaded(text_only.text)["task"], "video")
         self.assertIn("writes: an API definition for fal.ai writes frames, e.g. writes: {frames: {ext: png}}",
                       FD.check(text_only.text, text_only.name))
+
+    def test_text_to_image(self):
+        """Decision 0068: no image in, so the Output folder is required: it says the job's show."""
+        d = FD.draft(described("fal-ai/nano-banana-pro"), PRICE, "2026-11-26")
+        y = loaded(d.text)
+        self.assertEqual((d.name, y["label"], y["task"]), ("nano_banana_pro_fal", "Nano Banana Pro", "image"))
+        self.assertEqual(list(y["params"])[:3], ["prompt", "seed", "aspect_ratio"])     # fal.ai's order
+        self.assertEqual(y["params"]["output_path"]["required"], True)
+        self.assertIn("with no input image, it says which show the job is for", y["params"]["output_path"]["help"])
+        self.assertEqual(y["runner"]["upload"], {})
+        self.assertNotIn("work_resolution", y)
+        self.assertIn("The prompt leaves Rodeo's network: it is sent to fal.ai.", y["description"])
+        self.assertFalse([t for t in d.todo if "image" in t.split(":")[0]], d.todo)   # nothing about a missing image
+        self.assertEqual(FD.check(d.text, d.name), [])
+        # Without the required folder the farm refuses it, saying why.
+        bare = d.text.replace("    required: true\n    help: >\n      Where the result goes",
+                              "    help: >\n      Where the result goes")
+        self.assertIn("no input: needs an output_folder param with required: true, which says the job's show "
+                      "(decision 0068)", FD.check(bare, d.name))
 
     def test_a_price_it_cant_read_or_count(self):
         unpriced = FD.draft(described(), None, "2026-11-25")
@@ -192,7 +209,8 @@ class TheReviewedDefinitions(unittest.TestCase):
                 continue
             found += 1
             with self.subTest(definition=name):
-                draft = loaded(FD.draft(described(endpoint), PRICE, "today").text)
+                price = dict(zip(("unit_price", "unit", "currency"), M.PRICES[endpoint]))
+                draft = loaded(FD.draft(described(endpoint), price, "today").text)
                 takes = set(M.MODELS[endpoint])
                 api = wf.api
                 for part in ("upload", "send"):
@@ -202,7 +220,7 @@ class TheReviewedDefinitions(unittest.TestCase):
                 self.assertLessEqual(set(wf.params), set(draft["params"]))
                 self.assertEqual(wf.cost["unit"], draft["cost"]["unit"])
                 self.assertEqual(wf.cost["price"], M.PRICES[endpoint][0])
-        self.assertGreaterEqual(found, 2)
+        self.assertGreaterEqual(found, 5)
 
 
 @unittest.skipIf(cli is None, "the command needs httpx")
@@ -289,7 +307,7 @@ class TheStandIn(unittest.TestCase):
             with self.subTest(endpoint=endpoint):
                 takes, gives, _ = FD.schemas(described(endpoint))
                 self.assertEqual(set(takes["properties"]), set(M.MODELS[endpoint]))
-                self.assertIn("images", gives["properties"])
+                self.assertIn(M.OUTPUT.get(endpoint, "images"), gives["properties"])
         api = {wf.api["endpoint"] for wf in ApiRegistry(REPO / "workflows").workflows.values()}
         self.assertEqual(api - set(M.MODELS), set())         # each reviewed definition runs on the stand-in
         self.assertEqual(api - set(M.PRICES), set())
