@@ -20,8 +20,9 @@ then each is charged at its price (PRICES, by resolution), as fal.ai would, and 
 its balance (--balance, $50).
 
 It is stricter than fal.ai: a field its model doesn't know is refused, so a typo in a
-definition shows here. Its models: fal-ai/nano-banana-2/edit and fal-ai/nano-banana-pro/edit
-(PNG only). To make a job go
+definition shows here. Its models (PNG only): Nano Banana 2 and Nano Banana Pro, each to make an
+image (fal-ai/nano-banana-2, fal-ai/nano-banana-pro) and to edit one (.../edit), and BiRefNet
+(fal-ai/birefnet/v2), priced by the compute second. To make a job go
 wrong, put in the prompt: MOCK_FAIL (the model fails), MOCK_POLICY (the content check
 refuses it), MOCK_SLOW (it runs a minute).
 
@@ -67,7 +68,42 @@ MODELS = {
         "resolution": ((ENUM, ("1K", "2K", "4K")), False), "limit_generations": (bool, False),
         "enable_web_search": (bool, False),
     },
+    # Text to image (fal.ai's pages, 26 November 2026), the plain fields: their conversation
+    # history, context parts and the like are left out.
+    "fal-ai/nano-banana-2": {
+        "prompt": (str, True), "num_images": (int, False), "seed": (int, False),
+        "aspect_ratio": ((ENUM, ("auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16",
+                                 "4:1", "1:4", "8:1", "1:8")), False),
+        "output_format": ((ENUM, ("jpeg", "png", "webp")), False),
+        "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5", "6")), False),
+        "sync_mode": (bool, False), "system_prompt": (str, False), "temperature": (float, False),
+        "top_p": (float, False), "thinking_level": ((ENUM, ("minimal", "high")), False),
+        "resolution": ((ENUM, ("0.5K", "1K", "2K", "4K")), False), "limit_generations": (bool, False),
+        "enable_web_search": (bool, False), "enable_image_search": (bool, False),
+    },
+    "fal-ai/nano-banana-pro": {
+        "prompt": (str, True), "num_images": (int, False), "seed": (int, False),
+        "aspect_ratio": ((ENUM, ("auto", "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16",
+                                 "4:1", "1:4", "8:1", "1:8")), False),
+        "output_format": ((ENUM, ("jpeg", "png", "webp")), False),
+        "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5", "6")), False),
+        "sync_mode": (bool, False), "system_prompt": (str, False), "temperature": (float, False),
+        "top_p": (float, False), "thinking_level": ((ENUM, ("high",)), False),
+        "resolution": ((ENUM, ("1K", "2K", "4K")), False), "limit_generations": (bool, False),
+        "enable_web_search": (bool, False),
+    },
+    # As fal.ai's model API described it to Peter's draft (25 November 2026). One image in, one out.
+    "fal-ai/birefnet/v2": {
+        "image_url": (str, True),
+        "model": ((ENUM, ("General Use (Light)", "General Use (Light 2K)", "General Use (Heavy)", "Matting",
+                          "Portrait", "General Use (Dynamic)")), False),
+        "operating_resolution": ((ENUM, ("1024x1024", "2048x2048", "2304x2304")), False),
+        "refine_foreground": (bool, False), "output_mask": (bool, False), "mask_only": (bool, False),
+        "sync_mode": (bool, False), "output_format": ((ENUM, ("webp", "png", "gif")), False),
+    },
 }
+# What each returns, when it isn't a list of images: BiRefNet's one image.
+OUTPUT = {"fal-ai/birefnet/v2": "image"}
 # What the model API says of each, beside its schema (fal.ai's model pages, 25 November 2026).
 ABOUT = {
     "fal-ai/nano-banana-2/edit": {"display_name": "Nano Banana 2", "category": "image-to-image",
@@ -76,21 +112,46 @@ ABOUT = {
     "fal-ai/nano-banana-pro/edit": {"display_name": "Nano Banana Pro", "category": "image-to-image",
                                     "license_type": "commercial", "status": "active",
                                     "description": "Google's state-of-the-art image editing model."},
+    "fal-ai/nano-banana-2": {"display_name": "Nano Banana 2", "category": "text-to-image",
+                             "license_type": "commercial", "status": "active",
+                             "description": "Google's fast image generation model."},
+    "fal-ai/nano-banana-pro": {"display_name": "Nano Banana Pro", "category": "text-to-image",
+                               "license_type": "commercial", "status": "active",
+                               "description": "Google's state-of-the-art image generation model."},
+    "fal-ai/birefnet/v2": {"display_name": "Birefnet Background Removal", "category": "image-to-image",
+                           "license_type": "commercial", "status": "active",
+                           "description": "bilateral reference framework (BiRefNet) for high-resolution dichotomous "
+                                          "image segmentation (DIS)"},
 }
 DEFAULTS = {"num_images": 1, "aspect_ratio": "auto", "output_format": "png", "resolution": "1K",
             "safety_tolerance": "4", "sync_mode": False, "enable_web_search": False, "enable_image_search": False,
-            "limit_generations": True, "system_prompt": "", "temperature": 1.0}
+            "limit_generations": True, "system_prompt": "", "temperature": 1.0, "top_p": 0.95,
+            "model": "General Use (Light)", "operating_resolution": "1024x1024", "refine_foreground": True,
+            "output_mask": False, "mask_only": False}
+# Where a model's default isn't the others': Nano Banana Pro makes squares unless told.
+DEFAULTS_BY = {"fal-ai/nano-banana-pro": {"aspect_ratio": "1:1", "thinking_level": "high"},
+               "fal-ai/nano-banana-2": {"thinking_level": "minimal"}}
 SAID = {"prompt": "The prompt for image editing.",
         "image_urls": "The URLs of the images to use for image-to-image generation or image editing.",
         "aspect_ratio": "The aspect ratio of the generated image.", "resolution": "The resolution of the image to "
-        "generate.", "seed": "The seed for the random number generator."}
+        "generate.", "seed": "The seed for the random number generator.",
+        "image_url": "URL of the image to remove background from",
+        "model": "Model to use for background removal.", "operating_resolution": "The resolution to operate on.",
+        "mask_only": "Whether to return only the segmentation mask without applying it to the image."}
+SAID_BY = {e: {"prompt": "The text prompt to generate an image from."}
+           for e in ("fal-ai/nano-banana-2", "fal-ai/nano-banana-pro")}
 SIDES = {"0.5K": 512, "1K": 1024, "2K": 2048, "4K": 4096}
 # Each model's price by resolution, as a multiple of its price at 1K (fal.ai's pages, 24 and 25 November).
 FACTORS = {"fal-ai/nano-banana-2/edit": {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0},
-           "fal-ai/nano-banana-pro/edit": {"1K": 1.0, "2K": 1.0, "4K": 2.0}}
+           "fal-ai/nano-banana-pro/edit": {"1K": 1.0, "2K": 1.0, "4K": 2.0},
+           "fal-ai/nano-banana-2": {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0},
+           "fal-ai/nano-banana-pro": {"1K": 1.0, "2K": 1.0, "4K": 2.0}}
 # What its pricing API says (fal.ai's pages): {endpoint: (unit price, unit, currency)}.
 PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "images", "USD"),      # "images", as fal.ai's pricing says it
-          "fal-ai/nano-banana-pro/edit": (0.15, "images", "USD")}
+          "fal-ai/nano-banana-pro/edit": (0.15, "images", "USD"),
+          "fal-ai/nano-banana-2": (0.08, "images", "USD"),
+          "fal-ai/nano-banana-pro": (0.15, "images", "USD"),
+          "fal-ai/birefnet/v2": (0.000575, "compute seconds", "USD")}     # Peter's draft, 25 November
 
 
 def openapi(endpoint: str) -> dict:
@@ -106,20 +167,24 @@ def openapi(endpoint: str) -> dict:
             s.update(type="array", items={"type": "string"})
         else:
             s["type"] = {str: "string", int: "integer", float: "number", bool: "boolean"}[kind]
-        if f in DEFAULTS:
-            s["default"] = DEFAULTS[f]
-        if f in SAID:
-            s["description"] = SAID[f]
+        defaults, said = {**DEFAULTS, **DEFAULTS_BY.get(endpoint, {})}, {**SAID, **SAID_BY.get(endpoint, {})}
+        if f in defaults:
+            s["default"] = defaults[f]
+        if f in said:
+            s["description"] = said[f]
         props[f] = s
         if req:
             required.append(f)
     ref = "#/components/schemas/"
+    gives = OUTPUT.get(endpoint, "images")
+    made = ({"image": {"$ref": ref + "ImageFile"}, "mask_image": {"$ref": ref + "ImageFile"}} if gives == "image" else
+            {"images": {"title": "Images", "type": "array", "items": {"$ref": ref + "ImageFile"}},
+             "description": {"title": "Description", "type": "string"}})
     return {"openapi": "3.0.4", "info": {"title": "Queue OpenAPI for " + endpoint, "version": "1.0.0"},
             "components": {"schemas": {
                 f"{base}Input": {"type": "object", "properties": props, "required": required},
-                f"{base}Output": {"type": "object", "required": ["images", "description"], "properties": {
-                    "images": {"title": "Images", "type": "array", "items": {"$ref": ref + "ImageFile"}},
-                    "description": {"title": "Description", "type": "string"}}},
+                f"{base}Output": {"type": "object", "required": [k for k in made if k != "mask_image"],
+                                  "properties": made},
                 "ImageFile": {"type": "object", "required": ["url"], "properties": {
                     "url": {"type": "string"}, "content_type": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                     "width": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
@@ -274,10 +339,13 @@ class MockFal:
         for field in sorted(set(data) - set(schema)):
             problems.append({"loc": ["body", field], "msg": "Not a field of this model (the stand-in is strict)",
                              "type": "extra_forbidden"})
-        for i, u in enumerate(data.get("image_urls") or [] if isinstance(data.get("image_urls"), list) else []):
+        urls = [("image_urls", i, u) for i, u in enumerate(data.get("image_urls") or []
+                                                         if isinstance(data.get("image_urls"), list) else [])]
+        urls += [("image_url", None, data["image_url"])] if isinstance(data.get("image_url"), str) else []
+        for field, i, u in urls:
             if not (isinstance(u, str) and (u.startswith("data:") or urlsplit(u).path in self.files)):
-                problems.append({"loc": ["body", "image_urls", i], "msg": "The stand-in can't download this file "
-                                 "(upload it to its CDN first)", "type": "file_download_error"})
+                problems.append({"loc": ["body", field] + ([] if i is None else [i]), "msg": "The stand-in can't "
+                                 "download this file (upload it to its CDN first)", "type": "file_download_error"})
         if data.get("output_format", "png") != "png":
             problems.append({"loc": ["body", "output_format"], "msg": "The stand-in makes PNGs only",
                              "type": "feature_not_supported"})
@@ -345,6 +413,8 @@ class MockFal:
             price, unit, _ = self.prices.get(r["endpoint"], (0.0, "image", "USD"))
             factor = FACTORS.get(r["endpoint"], {}).get(r["input"].get("resolution") or "1K", 1.0)
             quantity = factor * int(r["input"].get("num_images") or 1)
+            if "second" in unit:        # by the compute second: the time it ran, a second at least
+                quantity = max(float(r["run"]), 1.0)
             cost = round(price * quantity, 9) if self.bill else 0.0
             ended = r["wall"] + self.queue_seconds + r["run"]
             out.append({"request_id": rid, "endpoint_id": r["endpoint"], "at": ended,
@@ -400,7 +470,10 @@ class MockFal:
                     url = self.base + path
                 images.append({"url": url, "content_type": "image/png", "file_name": f"out_{i}.png",
                                "file_size": len(png), "width": side, "height": side})
-            r["made"] = {"images": images, "description": "A grey square, from the stand-in."}
+            if OUTPUT.get(r["endpoint"]) == "image":
+                r["made"] = {"image": images[0]}
+            else:
+                r["made"] = {"images": images, "description": "A grey square, from the stand-in."}
         return r["made"]
 
     # ---------------------------------------------------------------- serving it

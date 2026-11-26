@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 from comfyfarm import artifacts as A
 from comfyfarm.artifacts import base
-from comfyfarm.config import PathsConfig
+from comfyfarm.config import ConvertConfig, PathsConfig
 from comfyfarm.definitions import DefinitionRegistry, from_process
 
 REPO = Path(__file__).resolve().parent.parent
@@ -112,14 +112,16 @@ class Errors(unittest.TestCase):
         wf = SimpleNamespace(output_folder_param=None, tag="wan", frames_ext="png", textures=None)
         plan = {"wf": wf, "values": {}, "seq": None, "show": "xyz", "shot": "sh010", "seq_name": "sq01",
                 "source": "plate", "notes": []}
-        ctx = A.PlanContext(cfg=SimpleNamespace(paths=PathsConfig(frame_name=frame_name, validate_inputs=False)),
+        ctx = A.PlanContext(cfg=SimpleNamespace(paths=PathsConfig(frame_name=frame_name, validate_inputs=False),
+                                                convert=ConvertConfig()),
                             job_id="preview", scratch_root="/scratch", reserved=reserved)
         return A.by_kind("frames").plan(plan, ctx)
 
     def test_frames(self):
         plan = self.frames("{source}.{tag}_v{version:03d}.{frame:04d}.{ext}", lambda key: False)
+        # No input (decision 0068): from the studio's first frame.
         self.assertEqual((plan["out_dir"], plan["version"], plan["first_file"]),
-                         ("//server/share/shows/xyz/comfyui/renders/sh010", 1, "plate.wan_v001.0001.png"))
+                         ("//server/share/shows/xyz/comfyui/renders/sh010", 1, "plate.wan_v001.1001.png"))
         with self.assertRaises(A.PlanError) as e:
             self.frames("{source}.{tag}.{frame:04d}.{ext}", lambda key: True)
         self.assertEqual(e.exception.status, 409)

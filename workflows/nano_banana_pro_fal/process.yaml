@@ -1,0 +1,101 @@
+# Drafted by `comfyfarm fal draft fal-ai/nano-banana-pro` (decision 0065), then reviewed on
+# 26 November 2026 against fal.ai's page for the model: its price, what the artist may set, its
+# licence and its menu.
+#
+# An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
+# gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
+# The gateway sends it to fal.ai itself, which charges for it, only with providers.fal.live:
+# true in gateway.yaml (decision 0062); otherwise to the stand-in (tools/mock_fal.py).
+#
+# No input image (decision 0068): the Output folder says which show the job is for (its policy
+# and its cap), and the result is named after the folder's shot, else its show.
+
+id: nano_banana_pro_fal
+label: Nano Banana Pro
+description: >
+  Makes one image from a prompt, with Google's Nano Banana Pro at fal.ai: slower and dearer
+  than Nano Banana 2, for harder images (text in the picture, many details to get right). The
+  result is a PNG, frame 1001, in the Output folder. The prompt leaves Rodeo's network: it is
+  sent to fal.ai, which keeps neither the job nor its result in its request history.
+tag: nanobananaprogen           # in the output file names: <shot>.nanobananaprogen_vNNN.1001.png
+task: image                     # in the menus: fal.ai > Image > Nano Banana Pro
+provider: fal                   # providers/fal.yaml: off-site, through the gateway
+family: nano-banana-pro         # the same model at other providers, for comparing prices (later)
+class: interactive
+limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
+# No model weights on the farm: the model is Google's, run by fal.ai. Listed with fal.ai's terms
+# as its licence, as the Nano Banana edits are, so the policy's licence rules see what it uses.
+models: [{file: fal-ai/nano-banana-pro, licence: google-via-fal}]
+# What a job costs (decision 0059), from fal.ai's page for the model, reviewed 26 November 2026:
+# $0.15 an image, twice that at 4K. The manager estimates each job with fal.ai's price that day
+# (its pricing API, read by the gateway). Web search would add $0.015: it is fixed off below.
+cost:
+  unit: image
+  price: 0.15
+  quantity: 1                   # num_images, fixed below
+  by: {param: resolution, factors: {"1K": 1, "2K": 1, "4K": 2}}
+publish: false                  # not published through the pipeline during the pilot
+shotgrid: false                 # no input for a ShotGrid Version
+
+params:
+  prompt:
+    type: text
+    label: Prompt
+    required: true
+    help: >
+      What to make, in plain words: the subject, the framing, the light, any text to write in
+      the picture.
+
+  aspect_ratio:
+    type: choice
+    label: Aspect ratio
+    choices: ["21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
+    default: "16:9"
+    help: The shape of the result, width to height.
+
+  resolution:
+    type: choice
+    label: Resolution
+    choices: ["1K", "2K", "4K"]
+    default: "1K"
+    help: >
+      The size of the result on its longer side. fal.ai charges the same for 1K and 2K, and
+      twice as much for 4K.
+
+  seed:
+    type: int
+    label: Seed
+    min: 0
+    help: >
+      Optional: the same seed and prompt give much the same image again. Leave empty for a new
+      one each run.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    required: true
+    help: >
+      Where the result goes, on show storage, e.g.
+      /rdo/shows/<show>/_project_ref/_cg/comfyui/renders: with no input image, it says which
+      show the job is for. It is named after the folder's shot, else its show, as
+      <shot>.nanobananaprogen_vNNN.1001.png. Each run takes the next free version. Never inside
+      .published.
+
+writes:
+  frames: {ext: png}
+
+runner:
+  type: api
+  endpoint: fal-ai/nano-banana-pro
+  upload: {}
+  send: {prompt: prompt, aspect_ratio: aspect_ratio, resolution: resolution, seed: seed}
+  # Left to fal.ai's defaults: safety_tolerance, system_prompt, temperature, top_p,
+  # thinking_level and limit_generations. Never the artist's: one image a job, a PNG
+  # (writes.frames.ext), nothing looked up on the web, and the result in fal.ai's answer itself
+  # (sync_mode), so it is never a file on fal.ai's CDN, nor kept in the account's request
+  # history (decision 0062).
+  fixed:
+    num_images: 1
+    output_format: png
+    enable_web_search: false
+    sync_mode: true

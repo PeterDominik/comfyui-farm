@@ -89,8 +89,9 @@ def knob_specs(wf: dict) -> list[dict]:
             tip = ("Leave empty to use the Read or Write connected to the '" + p["name"] + "' input"
                    + (" (at the current frame)" if one else " (its file and frame range)")
                    + ". A path or a ShotGrid Version link here is used instead.") + ("\n\n" + tip if tip else "")
-        if kind == "folder":
-            tip = (tip + "\n\n" if tip else "") + (p.get("placeholder") or "Empty = the show's renders folder")
+        if kind == "folder":           # a required one says the show (decision 0068): it has no default
+            hint = p.get("placeholder") or ("" if p.get("required") else "Empty = the show's renders folder")
+            tip = "\n\n".join(x for x in (tip, hint) if x)
         if kind == "choice":
             spec["choices"] = [str(c) for c in p.get("choices") or []]
         for k in ("min", "max"):

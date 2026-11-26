@@ -1,0 +1,111 @@
+# Drafted by `comfyfarm fal draft fal-ai/birefnet/v2` (decision 0065), by Peter against fal.ai
+# itself on 25 November 2026, then reviewed on 26 November 2026 against fal.ai's page for the
+# model: its price, what the artist may set, its licence and its menu.
+#
+# An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
+# gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
+# The gateway sends it to fal.ai itself, which charges for it, only with providers.fal.live:
+# true in gateway.yaml (decision 0062); otherwise to the stand-in (tools/mock_fal.py).
+
+id: birefnet_v2_fal
+label: BiRefNet background removal
+description: >
+  Cuts the subject of one image out of its background, with BiRefNet at fal.ai: a PNG with the
+  background transparent, or the matte alone, the size of the input, numbered like the input
+  frame. Quick and very cheap, for a first matte or a still. The image leaves Rodeo's network:
+  it is sent to fal.ai, which keeps it an hour, and neither the job nor its result in its
+  request history.
+tag: birefnet                   # in the output file names: <source>.birefnet_vNNN.<frame>.png
+task: masking                   # in the menus: fal.ai > Masking > BiRefNet background removal
+provider: fal                   # providers/fal.yaml: off-site, through the gateway
+family: birefnet-v2             # the same model at other providers, for comparing prices (later)
+class: interactive
+limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
+# No model weights on the farm: BiRefNet (MIT) as fal.ai runs it, with fal.ai's licence type for
+# it, so the policy's licence rules see what it uses.
+models: [{file: fal-ai/birefnet/v2, licence: fal-commercial}]
+# What a job costs (decision 0059): fal.ai bills it by the compute second, $0.000575 each (its
+# pricing API, read by Peter's draft on 25 November 2026; its page rounds that to $0). A job is
+# held at 20 compute seconds, more than one image takes, so the estimate is never under what is
+# charged ($0.0115); fal.ai's bill then says what it was (decision 0061).
+cost:
+  unit: compute-second
+  price: 0.000575
+  quantity: 20
+publish: false                  # not published through the pipeline during the pilot
+shotgrid: false                 # not in ShotGrid's right-click menu during the pilot
+# No work_resolution: the input goes up at its own size, so the matte lines up with the plate.
+
+params:
+  # One image (takes: image). A sequence or movie must name its frame; the Nuke node uses
+  # the current frame.
+  input:
+    type: input
+    takes: image
+    label: Input image
+    required: true
+    primary: true
+    help: >
+      The image to cut out: a file, or a sequence or movie with the frame to use after it,
+      e.g. /rdo/shows/<show>/.../<shot>.plate.%04d.exr 1050. EXRs are converted with the
+      shot's OCIO look first.
+
+  mask_only:
+    type: bool
+    label: Matte only
+    default: false
+    help: >
+      The matte alone (white where the subject is), instead of the image with its background
+      made transparent. Quicker: the edges aren't refined.
+
+  model:
+    type: choice
+    label: Model
+    choices: ["General Use (Light)", "General Use (Light 2K)", "General Use (Heavy)",
+              "Matting", "Portrait", "General Use (Dynamic)"]
+    default: "General Use (Light)"
+    help: >
+      Which BiRefNet. Light is the original; Light 2K was trained on 2K images; Heavy is
+      slower and more accurate; Matting is for soft edges (hair, smoke); Portrait for people;
+      Dynamic takes any size up to 2304 pixels.
+
+  operating_resolution:
+    type: choice
+    label: Working size
+    choices: ["1024x1024", "2048x2048", "2304x2304"]
+    default: "1024x1024"
+    help: >
+      The size the model works at. Larger is more accurate on a large image, and slower.
+      2304x2304 is for the Dynamic model only.
+
+  refine_foreground:
+    type: bool
+    label: Refine edges
+    default: true
+    help: Cleans the subject's edges with the matte it found (not with Matte only).
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      The result goes into a folder named after the shot inside this one, as
+      <source>.birefnet_vNNN.<frame>.png. Each run takes the next free version. Leave empty
+      for the show's renders folder. Never inside .published.
+
+writes:
+  frames: {ext: png}
+
+runner:
+  type: api
+  endpoint: fal-ai/birefnet/v2
+  upload: {input: image_url}
+  send: {mask_only: mask_only, model: model, operating_resolution: operating_resolution,
+         refine_foreground: refine_foreground}
+  # Never the artist's: one image back (output_mask would add a second, which the farm doesn't
+  # bring back), a PNG (writes.frames.ext), and the result in fal.ai's answer itself
+  # (sync_mode), so it is never a file on fal.ai's CDN, nor kept in the account's request
+  # history (decision 0062).
+  fixed:
+    output_mask: false
+    output_format: png
+    sync_mode: true

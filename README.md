@@ -2419,12 +2419,19 @@ runner:
   is the first: the input and an optional reference, prompt, resolution and aspect ratio;
   one PNG, and no web or image search, fixed. `nano_banana_pro_edit_fal` is the same with
   Nano Banana Pro, at $0.15 an image, twice that at 4K (see *More fal.ai models*).
+- **Images from a prompt** (decision 0068). `nano_banana2_fal` and `nano_banana_pro_fal`
+  make an image from a prompt alone (fal.ai > Image > Nano Banana 2, Nano Banana Pro); see
+  *Jobs with no input image*. `birefnet_v2_fal` cuts one image's subject out of its
+  background, or gives its matte (fal.ai > Masking > BiRefNet background removal), for
+  $0.000575 a compute second.
 - **What it costs** (decision 0059). An API definition has a `cost` block, from its
   provider's page for the model, reviewed like the rest of the definition:
   - `unit`: the provider's billing unit (image);
   - `price`: one unit's price in US dollars when it was reviewed;
   - `quantity`: how many units a job is, a number or `{param: <a number param>}` (a
-    video's seconds), 1 if left out;
+    video's seconds), 1 if left out. A provider that bills by the compute second can't say
+    beforehand how many a job takes, so the definition holds more than one takes (BiRefNet:
+    20), and the provider's bill says what it was;
   - `by`: a choice param and a factor for each of its choices (Nano Banana 2: 0.75× at
     0.5K, 1.5× at 2K, 2× at 4K).
 
@@ -2520,6 +2527,24 @@ gateway reads its keys when it starts: restart it after changing them.
   prompt, `MOCK_FAIL` makes its model fail, `MOCK_POLICY` its content check refuse it and
   `MOCK_SLOW` it run a minute.
 
+#### Jobs with no input image
+
+A definition with no input (`type: input`), such as a model that makes an image from a prompt,
+has nothing to name its job's outputs or say its show (decision 0068). Its Output folder does:
+
+- **It is required** (`required: true` on the `output_folder` param; the farm refuses the
+  definition without it). The Nuke node has no input arrow, and its Output folder knob is
+  marked `*`.
+- **The show, sequence and shot** come from where the folder sits on show storage, read with
+  `paths.context_patterns` as an input's path is: `/rdo/shows/rnd/_project_ref/...` is the
+  rnd show, `/rdo/shows/raa/bpash/1545/movhistory/...` the shot bpash_1545. The show is what
+  the policy's rules and a paid job's cap see. A folder in no show is refused, saying so.
+- **Names:** `<shot>.<tag>_vNNN.1001.png` (the show's name when the folder has no shot),
+  numbered from 1001, the studio's first frame (`convert.movie.default_start`). Each run takes
+  the next free version. In a shot's folder the frames go into a folder named after the
+  shot, as `output_dir` says; a folder with no shot holds them itself.
+- Not in ShotGrid's right-click menu, which starts from a Version: `shotgrid: false`.
+
 #### More fal.ai models
 
 A new fal.ai model is one reviewed process.yaml in one pull request (decision 0065). Its first
@@ -2541,7 +2566,8 @@ What the draft makes of them:
 
 - Each image field (`..._url`, `..._urls`) is an input. The first is `input`, required, since
   the farm names a job's outputs after it; a field that takes several also gets an optional
-  `reference`.
+  `reference`. An endpoint that takes no image gets a required Output folder instead, which
+  says the job's show (*Jobs with no input image*).
 - The prompt is a text param, first after the inputs. A field with choices is a choice, a
   number a number with its range, a yes/no a checkbox, each with fal.ai's default and help, in
   fal.ai's order.
@@ -2568,7 +2594,6 @@ The review, before the pull request:
 
 fal.ai's endpoints the farm can't run yet are drafted too, with a `TODO` saying why:
 
-- one that takes no image (text to image or video);
 - one that takes a video or audio;
 - one that returns a video.
 

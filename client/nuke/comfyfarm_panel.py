@@ -90,10 +90,10 @@ def _about(s: float | None) -> str:
 
 
 def money(x: float) -> str:
-    """US dollars as people read them: $0.08, $1.50, $0.0075 (as the manager says them)."""
+    """US dollars as people read them: $0.08, $1.50, $0.0075, $0.000575 (as the manager says them)."""
     if abs(x - round(x, 2)) < 1e-9:
         return f"${x:,.2f}"
-    return "$" + f"{x:.4f}".rstrip("0")
+    return "$" + f"{x:.{6 if abs(x) < 0.01 else 4}f}".rstrip("0")
 
 
 def eta_text(plan_eta: dict | None) -> str:

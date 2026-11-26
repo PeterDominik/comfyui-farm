@@ -45,7 +45,8 @@ class Frames:
         dir_template = pc.output_dir
         if picked and not shot_ and "{shot" in dir_template:
             dir_template = "{root}"
-            plan["notes"].append("No shot in the input path, so the frames go straight into the output folder.")
+            where = "the input path" if seq else "the Output folder's path"
+            plan["notes"].append(f"No shot in {where}, so the frames go straight into the output folder.")
         versioned = "{version" in pc.frame_name or "{version" in dir_template
         exists = N.sequence_exists if pc.validate_inputs else (lambda _d, _p: False)
         base = {"source": source, "show": show_, "seq": seq_name, "shot": shot_, "tag": wf.tag,
@@ -66,7 +67,8 @@ class Frames:
         P.check_writable(out_dir, pc)
         plan.update(out_dir=out_dir, version=v, picked=bool(picked), output_key=key)
         plan["name_tokens"] = tokens
-        first = seq.first if seq and seq.first is not None else 1
+        # With no input (decision 0068), from the studio's first frame, as a movie without timecode.
+        first = seq.first if seq and seq.first is not None else (1 if seq else ctx.cfg.convert.movie.default_start)
         count = seq.frame_count if seq else None
         plan["first_frame"] = first
         plan["first_file"] = P.render(pc.frame_name, "file name", frame=first, **tokens)
