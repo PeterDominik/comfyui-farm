@@ -21,8 +21,9 @@ its balance (--balance, $50).
 
 It is stricter than fal.ai: a field its model doesn't know is refused, so a typo in a
 definition shows here. Its models (PNG only): Nano Banana 2 and Nano Banana Pro, each to make an
-image (fal-ai/nano-banana-2, fal-ai/nano-banana-pro) and to edit one (.../edit), and BiRefNet
-(fal-ai/birefnet/v2), priced by the compute second. To make a job go
+image (fal-ai/nano-banana-2, fal-ai/nano-banana-pro) and to edit one (.../edit), FLUX.2 [pro]
+(fal-ai/flux-2-pro), priced by the megapixel, and BiRefNet (fal-ai/birefnet/v2), by the compute
+second. To make a job go
 wrong, put in the prompt: MOCK_FAIL (the model fails), MOCK_POLICY (the content check
 refuses it), MOCK_SLOW (it runs a minute).
 
@@ -33,6 +34,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import re
 import struct
 import sys
@@ -46,6 +48,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ENUM = "enum"
+SIZE = "size"           # one of these presets, or {width, height} (fal.ai's image_size)
+PRESETS = {"square_hd": (1024, 1024), "square": (512, 512), "portrait_4_3": (768, 1024),
+           "portrait_16_9": (576, 1024), "landscape_4_3": (1024, 768), "landscape_16_9": (1024, 576)}
 MODELS = {
     "fal-ai/nano-banana-2/edit": {
         "prompt": (str, True), "image_urls": (list, True), "num_images": (int, False),
@@ -92,6 +97,13 @@ MODELS = {
         "resolution": ((ENUM, ("1K", "2K", "4K")), False), "limit_generations": (bool, False),
         "enable_web_search": (bool, False),
     },
+    # FLUX.2 [pro] from a prompt (fal.ai's page and Peter's draft, 26 November 2026): no
+    # num_images, an image_size preset or a width and height, JPEG unless told.
+    "fal-ai/flux-2-pro": {
+        "prompt": (str, True), "image_size": ((SIZE, tuple(PRESETS)), False), "seed": (int, False),
+        "safety_tolerance": ((ENUM, ("1", "2", "3", "4", "5")), False), "enable_safety_checker": (bool, False),
+        "output_format": ((ENUM, ("jpeg", "png")), False), "sync_mode": (bool, False),
+    },
     # As fal.ai's model API described it to Peter's draft (25 November 2026). One image in, one out.
     "fal-ai/birefnet/v2": {
         "image_url": (str, True),
@@ -118,6 +130,10 @@ ABOUT = {
     "fal-ai/nano-banana-pro": {"display_name": "Nano Banana Pro", "category": "text-to-image",
                                "license_type": "commercial", "status": "active",
                                "description": "Google's state-of-the-art image generation model."},
+    "fal-ai/flux-2-pro": {"display_name": "Flux 2 Pro", "category": "text-to-image", "license_type": "commercial",
+                          "status": "active", "description": "Image editing with FLUX.2 [pro] from Black Forest "
+                          "Labs. Ideal for high-quality image manipulation, style transfer, and sequential editing "
+                          "workflows."},
     "fal-ai/birefnet/v2": {"display_name": "Birefnet Background Removal", "category": "image-to-image",
                            "license_type": "commercial", "status": "active",
                            "description": "bilateral reference framework (BiRefNet) for high-resolution dichotomous "
@@ -130,6 +146,8 @@ DEFAULTS = {"num_images": 1, "aspect_ratio": "auto", "output_format": "png", "re
             "output_mask": False, "mask_only": False}
 # Where a model's default isn't the others': Nano Banana Pro makes squares unless told.
 DEFAULTS_BY = {"fal-ai/nano-banana-pro": {"aspect_ratio": "1:1", "thinking_level": "high"},
+               "fal-ai/flux-2-pro": {"image_size": "landscape_4_3", "output_format": "jpeg", "safety_tolerance": "2",
+                                     "enable_safety_checker": True},
                "fal-ai/nano-banana-2": {"thinking_level": "minimal"}}
 SAID = {"prompt": "The prompt for image editing.",
         "image_urls": "The URLs of the images to use for image-to-image generation or image editing.",
@@ -138,8 +156,10 @@ SAID = {"prompt": "The prompt for image editing.",
         "image_url": "URL of the image to remove background from",
         "model": "Model to use for background removal.", "operating_resolution": "The resolution to operate on.",
         "mask_only": "Whether to return only the segmentation mask without applying it to the image."}
-SAID_BY = {e: {"prompt": "The text prompt to generate an image from."}
-           for e in ("fal-ai/nano-banana-2", "fal-ai/nano-banana-pro")}
+SAID_BY = {**{e: {"prompt": "The text prompt to generate an image from."}
+              for e in ("fal-ai/nano-banana-2", "fal-ai/nano-banana-pro")},
+           "fal-ai/flux-2-pro": {"prompt": "The prompt to generate an image from.",
+                                 "seed": "The seed to use for the generation."}}
 SIDES = {"0.5K": 512, "1K": 1024, "2K": 2048, "4K": 4096}
 # Each model's price by resolution, as a multiple of its price at 1K (fal.ai's pages, 24 and 25 November).
 FACTORS = {"fal-ai/nano-banana-2/edit": {"0.5K": 0.75, "1K": 1.0, "2K": 1.5, "4K": 2.0},
@@ -151,7 +171,15 @@ PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "images", "USD"),      # "images",
           "fal-ai/nano-banana-pro/edit": (0.15, "images", "USD"),
           "fal-ai/nano-banana-2": (0.08, "images", "USD"),
           "fal-ai/nano-banana-pro": (0.15, "images", "USD"),
-          "fal-ai/birefnet/v2": (0.000575, "compute seconds", "USD")}     # Peter's draft, 25 November
+          "fal-ai/birefnet/v2": (0.000575, "compute seconds", "USD"),     # Peter's draft, 25 November
+          "fal-ai/flux-2-pro": (0.03, "processed megapixels", "USD")}      # Peter's draft, 26 November
+
+
+def _size(data: dict) -> tuple[int, int]:
+    """The width and height of what a job makes: its image_size, else its resolution's square."""
+    side = SIDES.get(data.get("resolution") or "1K", 1024)
+    size = data.get("image_size")
+    return (size["width"], size["height"]) if isinstance(size, dict) else PRESETS.get(size, (side, side))
 
 
 def openapi(endpoint: str) -> dict:
@@ -161,7 +189,10 @@ def openapi(endpoint: str) -> dict:
     props, required = {}, []
     for f, (kind, req) in MODELS[endpoint].items():
         s: dict = {"title": f.replace("_", " ").title()}
-        if isinstance(kind, tuple):
+        if isinstance(kind, tuple) and kind[0] == SIZE:
+            s["anyOf"] = [{"$ref": "#/components/schemas/ImageSize"},
+                          {"type": "string", "enum": list(kind[1])}]
+        elif isinstance(kind, tuple):
             s.update(type="string", enum=list(kind[1]))
         elif kind is list:
             s.update(type="array", items={"type": "string"})
@@ -185,6 +216,9 @@ def openapi(endpoint: str) -> dict:
                 f"{base}Input": {"type": "object", "properties": props, "required": required},
                 f"{base}Output": {"type": "object", "required": [k for k in made if k != "mask_image"],
                                   "properties": made},
+                "ImageSize": {"type": "object", "properties": {
+                    "width": {"title": "Width", "type": "integer", "default": 512, "exclusiveMaximum": 14142},
+                    "height": {"title": "Height", "type": "integer", "default": 512, "exclusiveMaximum": 14142}}},
                 "ImageFile": {"type": "object", "required": ["url"], "properties": {
                     "url": {"type": "string"}, "content_type": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                     "width": {"anyOf": [{"type": "integer"}, {"type": "null"}]}}}}},
@@ -328,7 +362,13 @@ class MockFal:
                     problems.append({"loc": ["body", field], "msg": "Field required", "type": "missing"})
                 continue
             v = data[field]
-            if isinstance(kind, tuple):
+            if isinstance(kind, tuple) and kind[0] == SIZE:
+                sized = isinstance(v, dict) and set(v) == {"width", "height"} and all(
+                    isinstance(x, int) and not isinstance(x, bool) and 0 < x < 14142 for x in v.values())
+                if v not in kind[1] and not sized:
+                    problems.append({"loc": ["body", field], "msg": f"Input should be one of {', '.join(kind[1])}, "
+                                     f"or a width and height", "type": "union"})
+            elif isinstance(kind, tuple):
                 if v not in kind[1]:
                     problems.append({"loc": ["body", field], "msg": f"Input should be one of {', '.join(kind[1])}",
                                      "type": "enum"})
@@ -415,6 +455,9 @@ class MockFal:
             quantity = factor * int(r["input"].get("num_images") or 1)
             if "second" in unit:        # by the compute second: the time it ran, a second at least
                 quantity = max(float(r["run"]), 1.0)
+            elif "megapixel" in unit:   # fal.ai's page: the first at the price, the rest at half, rounded up
+                w, h = _size(r["input"])
+                quantity = 1 + 0.5 * (math.ceil(w * h / 1048576) - 1)
             cost = round(price * quantity, 9) if self.bill else 0.0
             ended = r["wall"] + self.queue_seconds + r["run"]
             out.append({"request_id": rid, "endpoint_id": r["endpoint"], "at": ended,
@@ -458,10 +501,10 @@ class MockFal:
     def _made(self, r: dict) -> dict:
         if "made" not in r:
             data = r["input"]
-            side = SIDES.get(data.get("resolution") or "1K", 1024)
+            w, h = _size(data)
             images = []
             for i in range(int(data.get("num_images") or 1)):
-                png = grey_png(side, side)
+                png = grey_png(w, h)
                 if data.get("sync_mode"):
                     url = "data:image/png;base64," + base64.b64encode(png).decode()
                 else:
@@ -469,7 +512,7 @@ class MockFal:
                     self.files[path] = (png, "image/png")
                     url = self.base + path
                 images.append({"url": url, "content_type": "image/png", "file_name": f"out_{i}.png",
-                               "file_size": len(png), "width": side, "height": side})
+                               "file_size": len(png), "width": w, "height": h})
             if OUTPUT.get(r["endpoint"]) == "image":
                 r["made"] = {"image": images[0]}
             else:

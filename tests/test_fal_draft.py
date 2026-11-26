@@ -175,6 +175,19 @@ class TheDraft(unittest.TestCase):
         self.assertIn("no input: needs an output_folder param with required: true, which says the job's show "
                       "(decision 0068)", FD.check(bare, d.name))
 
+    def test_an_image_size_preset_or_a_width_and_height(self):
+        """fal.ai's image_size: a preset's name, or a width and height. The presets are a choice,
+        and the TODO says how to offer more (decision 0069)."""
+        d = FD.draft(described("fal-ai/flux-2-pro"), {"unit_price": 0.03, "unit": "processed megapixels",
+                                                      "currency": "USD"}, "2026-11-26")
+        size = loaded(d.text)["params"]["image_size"]
+        self.assertEqual((size["type"], size["choices"][0], size["default"]), ("choice", "square_hd", "landscape_4_3"))
+        self.assertIn("image_size: fal.ai also takes a width and height; to offer sizes past its presets, make the "
+                      "choices what the artist reads, and say what each sends under runner.values (decision 0069)",
+                      d.todo)
+        self.assertIn("cost: fal.ai bills it by processed megapixels: say how many a job is (cost.quantity)", d.todo)
+        self.assertEqual(FD.check(d.text, d.name), [])
+
     def test_a_price_it_cant_read_or_count(self):
         unpriced = FD.draft(described(), None, "2026-11-25")
         self.assertEqual(loaded(unpriced.text)["cost"]["price"], 0)
@@ -217,10 +230,11 @@ class TheReviewedDefinitions(unittest.TestCase):
                     self.assertLessEqual(set((api.get(part) or {}).values()), takes, part)
                 self.assertLessEqual(set(api.get("fixed") or {}), takes)
                 self.assertLessEqual(set(draft["runner"]["fixed"].items()), set(api["fixed"].items()))
-                self.assertLessEqual(set(wf.params), set(draft["params"]))
+                # A review may name a param for artists (FLUX's size): the fields it sends are the draft's.
+                self.assertLessEqual(set(api["send"].values()), set(draft["runner"]["send"].values()))
                 self.assertEqual(wf.cost["unit"], draft["cost"]["unit"])
                 self.assertEqual(wf.cost["price"], M.PRICES[endpoint][0])
-        self.assertGreaterEqual(found, 5)
+        self.assertGreaterEqual(found, 6)
 
 
 @unittest.skipIf(cli is None, "the command needs httpx")

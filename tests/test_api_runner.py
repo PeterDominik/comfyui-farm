@@ -374,6 +374,10 @@ class WhatIsSent(Tmp):
         self.assertEqual(one, {"image_url": "u1"})
         none = F.Adapter.body(wf.api, {"prompt": "x"}, {"input": ["u1"], "reference": []})
         self.assertEqual(none["image_urls"], ["u1"])
+        # A choice with a value (decision 0069) sends that value; the others send their text.
+        sized = {**wf.api, "values": {"resolution": {"2K": {"width": 2048, "height": 1152}}}}
+        body = F.Adapter.body(sized, {"prompt": "rain", "resolution": "2K", "aspect_ratio": "16:9"}, {})
+        self.assertEqual((body["resolution"], body["aspect_ratio"]), ({"width": 2048, "height": 1152}, "16:9"))
 
     def test_what_is_wrong_for_fal(self):
         def two_to_one(p):
@@ -781,6 +785,28 @@ class TheGateway(Tmp):
         later = self.farm.plan("birefnet_v2_fal", {"input": f"{self.root}/shows/plate.png",
                                                    "output_path": f"{self.root}/shows/out"}, show="rnd")
         self.assertEqual((later["cost"]["source"], later["cost"]["amount"]), ("provider", 0.0115))
+
+    def test_flux_a_size_as_its_width_and_height_by_the_megapixel(self):
+        """Decision 0069: the artist picks "2048 x 1152 (16:9)", fal.ai is sent its width and
+        height. Held at 3 megapixels at $0.03; fal.ai's bill (its page: $0.015 after the first)
+        then settles it at $0.06."""
+        self.with_definitions("flux2_pro_fal")
+        (self.tmp / "shows" / "rnd" / "boards").mkdir(parents=True)
+        g = self.gateway()
+        folder = f"{self.root}/shows/rnd/boards"
+        jid = self.farm.submit("flux2_pro_fal", {"prompt": "a lighthouse in fog", "output_path": folder}, "ann")["id"]
+        cost = self.job(jid)["info"]["cost"]
+        self.assertEqual((cost["quantity"], cost["factor"], cost["amount"]), (1, 3, 0.09))
+        self.beat(g)
+        j = self.ended(jid)
+        body = next(iter(self.mock.requests.values()))["input"]
+        self.assertEqual(body, {"prompt": "a lighthouse in fog", "image_size": {"width": 2048, "height": 1152},
+                                "output_format": "png", "sync_mode": True})
+        frame = Path(j["outputs"]["frame_pattern"] % 1001)
+        self.assertEqual(frame.name, "rnd.flux2pro_v001.1001.png")
+        self.assertEqual(png_size(frame), (2048, 1152))
+        self.assertEqual(self.mock.charges()[-1]["quantity"], 2.0)          # 1 + 0.5 x (3 - 1) at $0.03
+        self.assertEqual(self.store.spend_of(jid)["amount"], 0.09)          # held as estimated until the bill
 
     def test_what_fal_refuses_fails_the_job(self):
         g = self.gateway()

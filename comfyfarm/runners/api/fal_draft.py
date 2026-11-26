@@ -181,6 +181,13 @@ def fields(takes: dict, comps: dict) -> tuple[list[Field], dict, list[str], list
         elif s.get("type") in ("integer", "number"):
             out.append(Field(name, name, "int" if s["type"] == "integer" else "float", _label(name, s), _help(s),
                              name in required, s.get("default"), None, s.get("minimum"), s.get("maximum")))
+        elif _presets(s, comps):
+            # A preset's name, or a width and height (fal.ai's image_size): the presets as choices.
+            presets, other = _presets(s, comps)
+            default = s.get("default") if s.get("default") in presets else None
+            out.append(Field(name, name, "choice", _label(name, s), _help(s), name in required, default, presets))
+            todo.append(f"{name}: fal.ai also takes {other}; to offer sizes past its presets, make the choices "
+                        f"what the artist reads, and say what each sends under runner.values (decision 0069)")
         else:
             left.append(name)
     params: list[Field] = []
@@ -202,6 +209,23 @@ def fields(takes: dict, comps: dict) -> tuple[list[Field], dict, list[str], list
     # The prompt first, as an artist reads the form, then the rest in fal.ai's order.
     out = [f for f in out if f.kind == "text"] + [f for f in out if f.kind != "text"]
     return params + out, fixed, left, todo
+
+
+def _presets(s: dict, comps: dict) -> tuple[list, str] | None:
+    """(the names, what else it takes) of a field that is either one of a list of names or
+    something else (an image size's width and height), or None."""
+    options = s.get("anyOf") or s.get("oneOf")
+    if not isinstance(options, list):
+        return None
+    options = [_resolve(o, comps) for o in options if not (isinstance(o, dict) and o.get("type") == "null")]
+    names = [o for o in options if isinstance(o.get("enum"), list) and all(isinstance(x, str) for x in o["enum"])]
+    others = [o for o in options if o not in names]
+    if len(names) != 1 or not names[0]["enum"]:
+        return None
+    props = sorted((others[0].get("properties") or {}) if others else {})
+    if props == ["height", "width"]:
+        return list(names[0]["enum"]), "a width and height"
+    return list(names[0]["enum"]), (" and ".join(props) if props else "another form")
 
 
 def writes(gives: dict, comps: dict) -> tuple[dict, list[str]]:

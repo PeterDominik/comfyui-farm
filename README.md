@@ -2415,7 +2415,19 @@ runner:
 - **What is sent.** The fixed fields, each `send` param under its field, and each `upload`
   field: the URLs of its inputs, in the params' order. fal.ai names a field that takes
   several URLs `..._urls` (a list is sent) and one that takes one `..._url`. An empty param
-  or input isn't sent, so the provider uses its default. `workflows/nano_banana2_edit_fal`
+  or input isn't sent, so the provider uses its default. A choice param can send something
+  other than its text (decision 0069): `runner.values` gives what each of its choices sends,
+  for every choice, such as an image size's width and height:
+
+  ```yaml
+  send: {size: image_size}
+  values:
+    size:
+      "2048 x 1152 (16:9)": {width: 2048, height: 1152}
+      "2048 x 2048 (1:1)": {width: 2048, height: 2048}
+  ```
+
+  `workflows/nano_banana2_edit_fal`
   is the first: the input and an optional reference, prompt, resolution and aspect ratio;
   one PNG, and no web or image search, fixed. `nano_banana_pro_edit_fal` is the same with
   Nano Banana Pro, at $0.15 an image, twice that at 4K (see *More fal.ai models*).
@@ -2423,7 +2435,8 @@ runner:
   make an image from a prompt alone (fal.ai > Image > Nano Banana 2, Nano Banana Pro); see
   *Jobs with no input image*. `birefnet_v2_fal` cuts one image's subject out of its
   background, or gives its matte (fal.ai > Masking > BiRefNet background removal), for
-  $0.000575 a compute second.
+  $0.000575 a compute second. `flux2_pro_fal` is FLUX.2 [pro] from a prompt, at six sizes
+  up to 2048 x 2048 (fal.ai > Image > FLUX 2 Pro), by the megapixel.
 - **What it costs** (decision 0059). An API definition has a `cost` block, from its
   provider's page for the model, reviewed like the rest of the definition:
   - `unit`: the provider's billing unit (image);
@@ -2431,7 +2444,9 @@ runner:
   - `quantity`: how many units a job is, a number or `{param: <a number param>}` (a
     video's seconds), 1 if left out. A provider that bills by the compute second can't say
     beforehand how many a job takes, so the definition holds more than one takes (BiRefNet:
-    20), and the provider's bill says what it was;
+    20), and the provider's bill says what it was. By the megapixel, a size's factor is its
+    megapixels, rounded up (FLUX 2 Pro: 3 at 2048 x 1152), each at the full price, though
+    fal.ai charges those after the first at half: the estimate is never under the bill;
   - `by`: a choice param and a factor for each of its choices (Nano Banana 2: 0.75× at
     0.5K, 1.5× at 2K, 2× at 4K).
 
@@ -2570,7 +2585,9 @@ What the draft makes of them:
   says the job's show (*Jobs with no input image*).
 - The prompt is a text param, first after the inputs. A field with choices is a choice, a
   number a number with its range, a yes/no a checkbox, each with fal.ai's default and help, in
-  fal.ai's order.
+  fal.ai's order. A field that takes a preset's name or a width and height (`image_size`) is a
+  choice of the presets, with a TODO: to offer other sizes, name the choices for artists and
+  say what each sends under `runner.values`.
 - The label is fal.ai's name for the model, with what the endpoint does when the name doesn't
   say (`Nano Banana Pro edit`): a model's endpoints share one name.
 - What the farm decides is fixed, never the artist's: one image, a PNG, the result in fal.ai's

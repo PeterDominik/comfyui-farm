@@ -1,0 +1,105 @@
+# Drafted by `comfyfarm fal draft fal-ai/flux-2-pro` (decision 0065), by Peter against fal.ai
+# itself on 26 November 2026, then reviewed the same day against fal.ai's page for the model:
+# its price, what the artist may set, its licence and its menu.
+#
+# An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
+# gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
+# The gateway sends it to fal.ai itself, which charges for it, only with providers.fal.live:
+# true in gateway.yaml (decision 0062); otherwise to the stand-in (tools/mock_fal.py).
+#
+# No input image (decision 0068): the Output folder says which show the job is for (its policy
+# and its cap), and the result is named after the folder's shot, else its show.
+
+id: flux2_pro_fal
+label: FLUX 2 Pro
+description: >
+  Makes one image from a prompt, with Black Forest Labs' FLUX.2 [pro] at fal.ai: photographic,
+  and close to the prompt, up to 4 megapixels. The result is a PNG, frame 1001, in the Output
+  folder. The prompt leaves Rodeo's network: it is sent to fal.ai, which keeps neither the job
+  nor its result in its request history.
+tag: flux2pro                   # in the output file names: <shot>.flux2pro_vNNN.1001.png
+task: image                     # in the menus: fal.ai > Image > FLUX 2 Pro
+provider: fal                   # providers/fal.yaml: off-site, through the gateway
+family: flux-2-pro              # the same model at other providers, for comparing prices (later)
+class: interactive
+limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
+# No model weights on the farm: the model is Black Forest Labs', run by fal.ai, with fal.ai's
+# licence type for it, so the policy's licence rules see what it uses.
+models: [{file: fal-ai/flux-2-pro, licence: fal-commercial}]
+# What a job costs (decision 0059). fal.ai's pricing API says $0.03 a processed megapixel
+# (Peter's draft, 26 November 2026); its page charges the first megapixel at $0.03 and each
+# more at $0.015, rounded up. The estimate counts every megapixel at $0.03, so it is never
+# under what is charged: $0.03 at 1 megapixel up to $0.12 at 4 (fal.ai's bill says $0.075).
+cost:
+  unit: processed-megapixel
+  price: 0.03
+  quantity: 1                   # one image a job: the model makes one
+  by:
+    param: size
+    factors: {"1024 x 576 (16:9)": 1, "1024 x 1024 (1:1)": 1, "1536 x 1024 (3:2)": 2,
+              "2048 x 864 (2.37:1)": 2, "2048 x 1152 (16:9)": 3, "2048 x 2048 (1:1)": 4}
+publish: false                  # not published through the pipeline during the pilot
+shotgrid: false                 # no input for a ShotGrid Version
+
+params:
+  prompt:
+    type: text
+    label: Prompt
+    required: true
+    help: >
+      What to make, in plain words: the subject, the framing, the lens and the light. FLUX
+      follows a long, precise prompt closely.
+
+  size:
+    type: choice
+    label: Size
+    choices: ["1024 x 576 (16:9)", "1024 x 1024 (1:1)", "1536 x 1024 (3:2)", "2048 x 864 (2.37:1)",
+              "2048 x 1152 (16:9)", "2048 x 2048 (1:1)"]
+    default: "2048 x 1152 (16:9)"
+    help: >
+      The result's width and height in pixels. fal.ai charges by the megapixel: $0.03 for the
+      first and $0.015 for each more, so 2048 x 1152 is about $0.06.
+
+  seed:
+    type: int
+    label: Seed
+    min: 0
+    help: >
+      Optional: the same seed and prompt give much the same image again. Leave empty for a new
+      one each run.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    required: true
+    help: >
+      Where the result goes, on show storage, e.g.
+      /rdo/shows/<show>/_project_ref/_cg/comfyui/renders: with no input image, it says which
+      show the job is for. It is named after the folder's shot, else its show, as
+      <shot>.flux2pro_vNNN.1001.png. Each run takes the next free version. Never inside
+      .published.
+
+writes:
+  frames: {ext: png}
+
+runner:
+  type: api
+  endpoint: fal-ai/flux-2-pro
+  upload: {}
+  send: {prompt: prompt, size: image_size, seed: seed}
+  # What each size sends as fal.ai's image_size (decision 0069): its width and height, each a
+  # multiple of 16, 4 megapixels at most.
+  values:
+    size:
+      "1024 x 576 (16:9)": {width: 1024, height: 576}
+      "1024 x 1024 (1:1)": {width: 1024, height: 1024}
+      "1536 x 1024 (3:2)": {width: 1536, height: 1024}
+      "2048 x 864 (2.37:1)": {width: 2048, height: 864}
+      "2048 x 1152 (16:9)": {width: 2048, height: 1152}
+      "2048 x 2048 (1:1)": {width: 2048, height: 2048}
+  # Left to fal.ai's defaults: safety_tolerance and enable_safety_checker. Never the artist's:
+  # a PNG (writes.frames.ext), and the result in fal.ai's answer itself (sync_mode), so it is
+  # never a file on fal.ai's CDN, nor kept in the account's request history (decision 0062).
+  fixed:
+    output_format: png
+    sync_mode: true

@@ -507,3 +507,7 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   shot from its Output folder, which such a definition requires, and is named after the shot
   or the show, from frame 1001. Nano Banana 2 and Nano Banana Pro from a prompt, and BiRefNet
   background removal by the compute second, reviewed.
+  Its second half began with FLUX 2 Pro (0069), drafted live by Peter: billed by the processed
+  megapixel, at six sizes that `runner.values` sends as fal.ai's width and height. GPT Image 2
+  and Nano Banana 2.1 couldn't be drafted: fal.ai describes partner endpoints (`openai/`,
+  `google/`) in a form the draft tool doesn't read yet.

@@ -96,6 +96,12 @@ class AnApiDefinition(Tmp):
         self.assertEqual(wf.sequence_param, "input")
         again = self.definition(EDIT, "again")
         self.assertEqual(again.digest, wf.digest)
+        # What a choice sends (decision 0069), in the fingerprint: it changes what is sent.
+        sized = self.definition(edit(runner__values={"resolution": {"1K": {"width": 1024, "height": 1024},
+                                                                     "2K": {"width": 2048, "height": 2048}}}), "sized")
+        self.assertEqual((sized.problems, sized.api["values"]["resolution"]["2K"]),
+                         ([], {"width": 2048, "height": 2048}))
+        self.assertNotEqual(sized.digest, wf.digest)
 
     def test_what_is_wrong_with_its_runner_block(self):
         cases = {
@@ -121,6 +127,19 @@ class AnApiDefinition(Tmp):
             "runner.fixed.size: needs to be a value (text, a number, true or false, or a list of them)":
                 edit(runner__fixed={"size": {"w": 1}}),
             "runner.upload: needs to be a section, e.g. {input: image_urls}": edit(runner__upload=["input"]),
+            # runner.values (decision 0069): what each choice of a sent choice param sends.
+            "runner.values.prompt: only a choice param's choices have values":
+                edit(runner__values={"prompt": {"a": 1}}),
+            "runner.values.seed: no such parameter in params": edit(runner__values={"seed": {"1": 1}}),
+            "runner.values.resolution: no value for '2K'": edit(runner__values={"resolution": {"1K": "1024"}}),
+            "runner.values.resolution: '4K' isn't one of its choices":
+                edit(runner__values={"resolution": {"1K": "1", "2K": "2", "4K": "4"}}),
+            "runner.values.resolution: isn't sent (add it to runner.send)":
+                edit(runner__send={"prompt": "prompt"}, runner__values={"resolution": {"1K": 1, "2K": 2}}),
+            "runner.values.resolution.2K: needs to be a value (text, a number, true or false, or a list or section "
+            "of them)": edit(runner__values={"resolution": {"1K": 1, "2K": None}}),
+            "runner.values: needs to be a section, e.g. {size: {\"2048 x 1152\": {width: 2048, height: 1152}}}":
+                edit(runner__values=["resolution"]),
             "params.prompt: loader is ComfyUI wiring; an API definition sends them as its runner block's upload: "
             "and send: say": edit(params__prompt={"type": "text", "loader": "x"}),
             "writes.preview: own isn't something an API definition can do; true (the farm makes the preview movie of "

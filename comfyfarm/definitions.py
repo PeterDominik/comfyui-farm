@@ -171,12 +171,13 @@ def _writes_to_manifest(writes: dict, runner: dict) -> tuple[dict | None, dict |
     return outputs or None, textures, preview, kinds
 
 
-def _block_keys(runner: dict, what: str, keys: tuple, example: str) -> None:
-    """A process or API runner's block: no ComfyUI wiring, its own keys only, all of them."""
+def _block_keys(runner: dict, what: str, keys: tuple, example: str, optional: tuple = ()) -> None:
+    """A process or API runner's block: no ComfyUI wiring, its own keys only, all of them but
+    the optional ones."""
     comfy = sorted(k for k in runner if k in ("params", *RUNNER_SECTIONS))
     if comfy:
         raise ValueError(f"runner.{comfy[0]}: is ComfyUI wiring; {what} takes {' and '.join(keys)}")
-    unknown = sorted(set(runner) - {"type", *keys})
+    unknown = sorted(set(runner) - {"type", *keys, *optional})
     if unknown:
         raise ValueError(f"runner block: unknown key(s) {', '.join(unknown)} ({what} takes {' and '.join(keys)})")
     missing = [k for k in keys if k not in runner]
@@ -223,10 +224,12 @@ def _api_block(p: dict, runner: dict) -> dict:
     """An API runner's definition (decision 0055): as a process's, with its block under `api`.
     upload: {param: field} for the input params, uploaded to the provider and sent as the
     URLs of that field (several params to one field make a list, in the params' order);
-    send: {param: field} for the others; fixed: {field: value}, sent as they are."""
+    send: {param: field} for the others; fixed: {field: value}, sent as they are. values
+    (optional, decision 0069): {param: {choice: value}}, what a choice param's choices send
+    instead of their text, such as an image size as its width and height."""
     _block_keys(runner, "an API runner", API_KEYS,
                 "{type: api, endpoint: fal-ai/nano-banana-2/edit, upload: {input: image_urls}, "
-                "send: {prompt: prompt}, fixed: {num_images: 1}}")
+                "send: {prompt: prompt}, fixed: {num_images: 1}}", optional=("values",))
     m = _process_block(p, runner, kind="api")
     params = {name: spec or {} for name, spec in (p.get("params") or {}).items()}
     endpoint = runner["endpoint"]
@@ -266,8 +269,55 @@ def _api_block(p: dict, runner: dict) -> dict:
     clash = sorted(set(blocks["fixed"]) & (set(blocks["send"].values()) | set(blocks["upload"].values())))
     if clash:
         raise ValueError(f"runner.fixed.{clash[0]}: also sent from a param; a fixed field is never the artist's")
-    m["api"] = {"endpoint": endpoint, **blocks}
+    # Only when there are any, so the definitions without keep the fingerprint they had.
+    values = _api_values(runner.get("values"), params, blocks["send"])
+    m["api"] = {"endpoint": endpoint, **blocks, **({"values": values} if values else {})}
     return m
+
+
+def _plain(v, depth: int = 0) -> bool:
+    """A value a provider can be sent: text, a number, true or false, or a list or section of them."""
+    if isinstance(v, (str, int, float, bool)):
+        return True
+    if depth < 3 and isinstance(v, list):
+        return all(_plain(x, depth + 1) for x in v)
+    if depth < 3 and isinstance(v, dict):
+        return all(isinstance(k, str) and API_FIELD.fullmatch(k) and _plain(x, depth + 1) for k, x in v.items())
+    return False
+
+
+def _api_values(raw, params: dict, send: dict) -> dict:
+    """runner.values (decision 0069): for a choice param that is sent, what each of its choices
+    sends. Every choice has one, so the artist's pick never goes as its text by mistake."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("runner.values: needs to be a section, e.g. {size: {\"2048 x 1152\": {width: 2048, "
+                         "height: 1152}}}")
+    out = {}
+    for name, choices in raw.items():
+        spec = params.get(name)
+        if spec is None:
+            raise ValueError(f"runner.values.{name}: no such parameter in params")
+        if spec.get("type") != "choice":
+            raise ValueError(f"runner.values.{name}: only a choice param's choices have values")
+        if name not in send:
+            raise ValueError(f"runner.values.{name}: isn't sent (add it to runner.send)")
+        if not isinstance(choices, dict):
+            raise ValueError(f"runner.values.{name}: needs a value for each choice, e.g. {{\"2048 x 1152\": "
+                             f"{{width: 2048, height: 1152}}}}")
+        named = [str(c) for c in spec.get("choices") or []]
+        missing = [c for c in named if c not in {str(k) for k in choices}]
+        extra = [str(k) for k in choices if str(k) not in named]
+        if missing or extra:
+            raise ValueError(f"runner.values.{name}: " + (f"no value for {missing[0]!r}" if missing else
+                                                          f"{extra[0]!r} isn't one of its choices"))
+        for c, v in choices.items():
+            if not _plain(v):
+                raise ValueError(f"runner.values.{name}.{c}: needs to be a value (text, a number, true or false, or "
+                                 f"a list or section of them)")
+        out[name] = {str(c): v for c, v in choices.items()}
+    return out
 
 
 def runner_type(directory: Path) -> str | None:
