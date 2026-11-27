@@ -123,12 +123,14 @@ class FingerprintTests(Tmp):
 
     def test_the_fingerprints_are_the_ones_before_the_catalogue(self):
         """Those of main before decision 0054, as the pilot machines hold them (the definitions
-        there were then)."""
+        there were then). Changed on purpose since: decision 0070 had Wan 2.2 and the LTX
+        workflows list their models, which counts in a fingerprint (0044); CHORD and the GPU
+        test listed theirs already."""
         reg = DefinitionRegistry(REPO / "workflows")
         self.assertEqual({n: wf.digest for n, wf in reg.workflows.items() if n in BEFORE}, {
             "chord_pbr": "04bef8eb6e508071", "gpu_test": "264652bea4ae1a75",
-            "ltx25_alpha_gen": "3eabe6e35d9bd3b2", "ltx25_layout_render": "2bfa32bf1ad88243",
-            "sam3_ltx_alpha": "a21ab909f5f39aba", "wan22_i2i": "4eb3f5da88634457"})
+            "ltx25_alpha_gen": "a2b4e87cd264e1ec", "ltx25_layout_render": "1f060a9e4a98f8eb",
+            "sam3_ltx_alpha": "d80099f2dc9e1855", "wan22_i2i": "3b8711ca6c14acde"})
 
 
 class DefinitionPlaceTests(Tmp):

@@ -19,6 +19,19 @@ requires: {vram_gb: 32}
 # Published through Daiquiri's update_and_render_nuke (README: Publishing), like the other
 # frame workflows.
 
+# The weights it loads and their licence (decisions 0044, 0070). LTX-2.x needs a paid licence
+# Rodeo doesn't hold (refused on every show). SAM 3 is Meta's SAM License: commercial use with
+# conditions, cleared. ViTMatte's Composition-1k weights are Apache-2.0 but trained on Adobe's
+# Deep Image Matting set, whose terms are non-commercial: not cleared for production (the
+# project's masking licence check, 26 November 2026).
+models:
+  - {file: ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-video-vae-conv-bf16.safetensors, licence: ltx-2-community-license}
+  - {file: ltx-2.5-audio-vae-bf16.safetensors, licence: ltx-2-community-license}
+  - {file: LTX/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors, licence: ltx-2-community-license}
+  - {file: sam3/sam3.safetensors, licence: sam-license}
+  - {file: vitmatte/vitmatte-base-composition-1k, licence: apache-2.0-noncommercial-training-data}
+
 params:
   input:
     type: input

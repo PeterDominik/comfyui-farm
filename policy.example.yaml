@@ -43,15 +43,33 @@ shows:
 # or allows only some; licences are compared without case. `except` leaves out shows that
 # `shows` names: shows: ["*"] with except: [rnd*] is every job but R&D's. `check` lists
 # which licences each definition carries.
+#
+# Rodeo's (decision 0070, Peter, 26 November 2026). Rodeo uses no model that needs a licence it
+# doesn't hold, even through a provider's API. A model whose licence comes with using it
+# through a provider's API may go to production. A licence not cleared for production (CHORD's
+# research-only weights, ViTMatte's weights trained on non-commercial data) runs on rnd only.
+# A licence no definition carried before is refused on production until it is added here.
 licences:
-  - name: example-no-research-only
-    shows: [exmpl26*]
-    except: [exmpl2699]
-    deny: [ubisoft-machine-learning-license-research-only-copyleft]
-    reason: Research-only weights can't be used on client work
+  - name: production-cleared-licences
+    shows: ["*"]
+    except: [rnd]
+    allow:
+      - apache-2.0              # Wan 2.2, umT5, Gemma 4
+      - mit                     # BiRefNet and the like, run locally
+      - sam-license             # Meta's SAM 3: commercial use with conditions, no cap
+      - google-via-fal          # Google's models through fal.ai: licensed with the API's use
+      - fal-commercial          # fal.ai's licence type for a model it serves commercially
+    reason: Production shows use only models whose licence is cleared for Rodeo; the others run on rnd only
+
+  - name: no-licence-rodeo-lacks
+    shows: ["*"]
+    deny:
+      - ltx-2-community-license  # LTX-2.x: a paid licence from Lightricks at Rodeo's size
+    reason: LTX-2.x needs a paid licence from Lightricks for a company of Rodeo's size, which Rodeo doesn't hold
 
 # A definition that doesn't list its models, on a show a licence rule is for: allow or deny.
-unlisted_models: allow
+# Every definition in the repo lists them (models: [] when it loads none), so deny.
+unlisted_models: deny
 
 # Quotas: at most max_jobs submissions and/or max_frames frames (tiles, for textures) queued
 # or running at once, for the shows a rule names: each show its own count (per: show, the

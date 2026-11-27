@@ -16,6 +16,13 @@ task: image                     # in the menus: Provider > Task > Workflow (work
 # Images are used at their own size (no work_resolution): full plate frames take longer
 # and more GPU memory.
 
+# The weights it loads and their licence (decisions 0044, 0070), for the farm's policy: Wan 2.2
+# and its VAE (Wan-AI) and umT5 (Google) are Apache-2.0, cleared for production.
+models:
+  - {file: WAN/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors, licence: apache-2.0}
+  - {file: WAN/wan_2.1_vae.safetensors, licence: apache-2.0}
+  - {file: umt5_xxl_fp8_e4m3fn_scaled.safetensors, licence: apache-2.0}
+
 params:
   # One image (takes: image). A sequence or movie must name its frame; the Nuke panel fills
   # in the current frame.

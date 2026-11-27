@@ -57,7 +57,7 @@ class TheFile(unittest.TestCase):
         known = set(DefinitionRegistry(REPO / "workflows").workflows)
         pf = PO.parse((REPO / "policy.example.yaml").read_text(encoding="utf-8"), known)
         self.assertEqual((pf.version, pf.other_shows, pf.unknown_show, len(pf.shows), len(pf.licences),
-                          pf.unlisted_models, len(pf.quotas)), (1, "allow", "allow", 3, 1, "allow", 2))
+                          pf.unlisted_models, len(pf.quotas)), (1, "allow", "allow", 3, 2, "deny", 2))
         self.assertEqual([(r.name, r.shows, r.allow, r.deny) for r in pf.providers],
                          [("pilot-fal-on-rnd", ["rnd"], ["fal"], None),
                           ("example-no-python", ["exmpl2604"], None, ["python-local"])])
@@ -286,7 +286,9 @@ class Licences(unittest.TestCase):
         wfs = DefinitionRegistry(REPO / "workflows").workflows
         self.assertEqual((wfs["chord_pbr"].models_listed, wfs["chord_pbr"].models), (True, CHORD))
         self.assertEqual((wfs["gpu_test"].models_listed, wfs["gpu_test"].models), (True, []))
-        self.assertFalse(wfs["wan22_i2i"].models_listed)
+        # Every definition in the repo lists them since decision 0070 (tests/test_licences.py).
+        self.assertEqual((wfs["wan22_i2i"].models_listed, [m["licence"] for m in wfs["wan22_i2i"].models]),
+                         (True, ["apache-2.0"] * 3))
 
     def test_notes_for_the_admin(self):
         from comfyfarm.cli import model_notes
@@ -670,7 +672,7 @@ class WhenPlanned(unittest.TestCase):
         self.assertEqual(v["quotas_now"], {"three": [{"for": "xyz", "jobs": 1, "frames": 1}]})
         models = {d["name"]: d["models"] for d in v["definitions"]}
         self.assertEqual(models["chord_pbr"][0]["file"], "chord_v1.safetensors")
-        self.assertIsNone(models["wan22_i2i"])                              # doesn't list them
+        self.assertEqual(models["wan22_i2i"][0]["licence"], "apache-2.0")
 
     def test_what_is_queued_one_entry_per_submission(self):
         info = {"show": "xyz"}
