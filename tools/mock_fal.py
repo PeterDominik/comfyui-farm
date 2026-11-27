@@ -23,8 +23,8 @@ It is stricter than fal.ai: a field its model doesn't know is refused, so a typo
 definition shows here. Its models (PNG only): Nano Banana 2 and Nano Banana Pro, each to make an
 image (fal-ai/nano-banana-2, fal-ai/nano-banana-pro) and to edit one (.../edit), FLUX.2 [pro]
 (fal-ai/flux-2-pro), priced by the megapixel, BiRefNet (fal-ai/birefnet/v2), by the compute
-second, and, described but not priced yet, GPT Image 2 (openai/gpt-image-2, and its /edit) and
-Nano Banana 2.1 (google/nano-banana-2.1). To make a job go
+second, and GPT Image 2 (openai/gpt-image-2, and its /edit) and Nano Banana 2.1
+(google/nano-banana-2.1), by the token: its pricing says $1 a unit for those, as fal.ai's does. To make a job go
 wrong, put in the prompt: MOCK_FAIL (the model fails), MOCK_POLICY (the content check
 refuses it), MOCK_SLOW (it runs a minute).
 
@@ -215,7 +215,25 @@ PRICES = {"fal-ai/nano-banana-2/edit": (0.08, "images", "USD"),      # "images",
           "fal-ai/nano-banana-2": (0.08, "images", "USD"),
           "fal-ai/nano-banana-pro": (0.15, "images", "USD"),
           "fal-ai/birefnet/v2": (0.000575, "compute seconds", "USD"),     # Peter's draft, 25 November
-          "fal-ai/flux-2-pro": (0.03, "processed megapixels", "USD")}      # Peter's draft, 26 November
+          "fal-ai/flux-2-pro": (0.03, "processed megapixels", "USD"),      # Peter's draft, 26 November
+          # Billed by the token: fal.ai's pricing API says $1 a "unit" (Peter's drafts, 27 November).
+          "openai/gpt-image-2": (1.0, "unit", "USD"),
+          "openai/gpt-image-2/edit": (1.0, "unit", "USD"),
+          "google/nano-banana-2.1": (1.0, "unit", "USD")}
+
+
+def token_cost(endpoint: str, data: dict) -> float | None:
+    """What a job billed by the token costs, in dollars, as fal.ai's pages price its tokens
+    (27 November 2026), or None for a model that isn't. GPT Image 2: 7,024 output image tokens
+    for a high-quality 1024 x 1024, in proportion to the area, at $30 a million. Nano Banana 2.1:
+    1,120, 1,680 or 3,780 at 1K, 2K or 4K, at $35.294 a million."""
+    if endpoint.startswith("openai/gpt-image-2"):
+        w, h = _size(data)
+        quality = {"low": 196 / 7024, "medium": 1756 / 7024}.get(data.get("quality") or "high", 1.0)
+        return round(7024 * quality * (w * h / 1048576) * 30e-6, 6)
+    if endpoint == "google/nano-banana-2.1":
+        return round({"1K": 1120, "2K": 1680, "4K": 3780}.get(data.get("resolution") or "1K", 1120) * 35.294e-6, 6)
+    return None
 
 
 def _size(data: dict) -> tuple[int, int]:
@@ -504,6 +522,8 @@ class MockFal:
             elif "megapixel" in unit:   # fal.ai's page: the first at the price, the rest at half, rounded up
                 w, h = _size(r["input"])
                 quantity = 1 + 0.5 * (math.ceil(w * h / 1048576) - 1)
+            elif token_cost(r["endpoint"], r["input"]) is not None:     # its dollars, as units at $1
+                quantity = token_cost(r["endpoint"], r["input"])
             cost = round(price * quantity, 9) if self.bill else 0.0
             ended = r["wall"] + self.queue_seconds + r["run"]
             out.append({"request_id": rid, "endpoint_id": r["endpoint"], "at": ended,

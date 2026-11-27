@@ -46,7 +46,10 @@ class TheCostBlock(Tmp):
             "cost.unit: the provider's billing unit, as its pricing says, e.g. image": {"cost__unit": "Image s"},
             "cost.currency: the farm's ledger is in US dollars (USD); a price in another currency isn't "
             "converted": {"cost__currency": "EUR"},
-            "cost: per isn't something a cost has (unit, price, currency, quantity, by)": {"cost__per": 1},
+            "cost: per isn't something a cost has (unit, price, currency, quantity, by, provider_price)":
+                {"cost__per": 1},
+            "cost.provider_price: true (the estimate uses the provider's price that day) or false (its pricing "
+            "doesn't price a job, so the reviewed one; decision 0071)": {"cost__provider_price": "no"},
             "cost.quantity: a number of units, 1 or more, or {param: <a number param>}": {"cost__quantity": 0},
             "cost.quantity: a number of units, or {param: <a number param>} (e.g. a video's seconds)":
                 {"cost__quantity": {"param": "prompt"}},
@@ -124,6 +127,36 @@ class TheEstimate(unittest.TestCase):
                                            "prices it per image: the definition needs reviewing before it runs again.")
         with self.assertRaisesRegex(PR.PriceError, "now prices Nano Banana 2 edit in EUR"):
             PR.estimate(self.wf, {"resolution": "1K"}, {**TODAY, "currency": "EUR"}, "fal.ai")
+
+    def test_a_price_by_the_token(self):
+        """Decision 0071: fal.ai's pricing says "$1 a unit" of GPT Image 2 and Nano Banana 2.1
+        (Peter's drafts, 27 November). Their definitions say not to read it."""
+        gpt = Definition(REPO / "workflows" / "gpt_image2_fal")
+        unit = {"unit_price": 1.0, "unit": "unit", "currency": "USD", "at": 1795622400.0}
+        e = PR.estimate(gpt, {"size": "2048 x 1152 (16:9)"}, unit, "fal.ai")
+        self.assertEqual((e["amount"], e["source"], e["unit_price"], e["factor"]), (0.495, "definition", 0.22, 2.25))
+        self.assertEqual(e["text"], "About $0.495 at fal.ai: 1 image at 2048 x 1152 (16:9), $0.22 an image, ×2.25 at "
+                                    "2048 x 1152 (16:9) (the price its definition was reviewed at, by the token; "
+                                    "fal.ai's pricing doesn't price a job).")
+        self.assertIsNone(PR.drift_note(gpt, e, "fal.ai"))
+        self.assertEqual(PR.estimate(gpt, {"size": "3840 x 2160 (16:9)"}, None, "fal.ai")["amount"], 1.76)
+        nano = Definition(REPO / "workflows" / "nano_banana2_1_fal")
+        self.assertEqual([PR.estimate(nano, {"resolution": r}, unit, "fal.ai")["amount"] for r in ("1K", "2K", "4K")],
+                         [0.06, 0.084, 0.162])
+        # Without it, fal.ai's "unit" isn't the definition's: refused, as any other unit.
+        with self.assertRaisesRegex(PR.PriceError, "now bills GPT Image 2 per unit, and its definition prices it per "
+                                                   "image"):
+            PR.estimate(Definition(self.read_without(gpt, "provider_price")), {}, unit, "fal.ai")
+
+    def read_without(self, wf, key: str) -> Path:
+        import shutil
+        import tempfile
+        folder = Path(tempfile.mkdtemp()) / wf.name
+        self.addCleanup(shutil.rmtree, folder.parent, True)
+        shutil.copytree(REPO / "workflows" / wf.name, folder)
+        text = (folder / "process.yaml").read_text(encoding="utf-8")
+        (folder / "process.yaml").write_text(text.replace(f"  {key}: false\n", ""), encoding="utf-8")
+        return folder
 
     def test_money(self):
         self.assertEqual([PR.money(x) for x in (0.08, 1.5, 0.0075, 0.1425, 41.2, 1234.5, 0.000575, 0.0115)],

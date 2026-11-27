@@ -1,0 +1,141 @@
+# Drafted by `comfyfarm fal draft openai/gpt-image-2/edit` (decision 0065), by Peter against
+# fal.ai itself on 27 November 2026, then reviewed the same day against fal.ai's page for the
+# model: its price, what the artist may set, its licence and its menu.
+#
+# An API definition (decisions 0055, 0056): the job runs at fal.ai, sent by the farm's
+# gateway, never on a farm GPU. Full reference: "API definitions and the gateway" in README.md.
+# The gateway sends it to fal.ai itself, which charges for it, only with providers.fal.live:
+# true in gateway.yaml (decision 0062); otherwise to the stand-in (tools/mock_fal.py).
+
+id: gpt_image2_edit_fal
+label: GPT Image 2 edit
+description: >
+  Edits one image from a prompt, with OpenAI's GPT Image 2 at fal.ai: an optional second image
+  the prompt can refer to, and an optional mask saying where to change it. The result is a
+  PNG, numbered like the input frame. The images and the prompt leave Rodeo's network: they
+  are sent to fal.ai, which keeps the images an hour, and neither the job nor its result in
+  its request history.
+tag: gptimage2edit              # in the output file names: <source>.gptimage2edit_vNNN.<frame>.png
+task: image                     # in the menus: fal.ai > Image > GPT Image 2 edit
+provider: fal                   # providers/fal.yaml: off-site, through the gateway
+family: gpt-image-2-edit        # the same model at other providers, for comparing prices (later)
+class: interactive
+limits: {max_minutes: 10}       # at fal.ai, queue included; then it is cancelled there
+# No model weights on the farm: the model is OpenAI's, run by fal.ai, with fal.ai's licence
+# type for it: its use through the API is licensed (decision 0070).
+models: [{file: openai/gpt-image-2/edit, licence: fal-commercial}]
+# What a job costs (decisions 0059, 0071), by the token as GPT Image 2 from a prompt
+# (gpt_image2_fal), plus the images sent: $8 a million input image tokens. Its pricing API says
+# "$1 a unit", which prices no job, so the estimate is this reviewed price: $0.22 for the
+# result at high quality and 1024 x 1024, and $0.08 for its input images, by size. "Same as the
+# input" is held as 2048 x 2048, the largest an input is sent at (work_resolution). Lower
+# quality is held at the high price; fal.ai's bill settles what it was (decision 0061).
+cost:
+  unit: image
+  price: 0.30
+  quantity: 1                   # num_images, fixed below
+  provider_price: false
+  by:
+    param: size
+    factors: {"Same as the input": 3.2, "1024 x 1024 (1:1)": 1, "1536 x 1024 (3:2)": 1.4,
+              "2048 x 864 (2.37:1)": 1.6, "2048 x 1152 (16:9)": 2, "2048 x 2048 (1:1)": 3.2,
+              "3840 x 2160 (16:9)": 6.2}
+publish: false                  # not published through the pipeline during the pilot
+shotgrid: false                 # not in ShotGrid's right-click menu during the pilot
+work_resolution: 2048           # inputs over this are scaled down first: a smaller upload is quicker
+
+params:
+  # One image (takes: image). A sequence or movie must name its frame; the Nuke node uses
+  # the current frame.
+  input:
+    type: input
+    takes: image
+    label: Input image
+    required: true
+    primary: true
+    help: >
+      The image to edit: a file, or a sequence or movie with the frame to use after it, e.g.
+      /rdo/shows/<show>/.../<shot>.plate.%04d.exr 1050. EXRs are converted with the shot's
+      OCIO look first, and images over 2048 pixels are scaled down.
+
+  reference:
+    type: input
+    takes: image
+    label: Reference image
+    help: Optional, a second image the prompt can refer to ("the jacket in the second image").
+
+  mask:
+    type: input
+    takes: image
+    label: Mask
+    help: >
+      Optional, a black-and-white PNG the size of the input: white where to change the image,
+      black where to keep it. Without one the model may change any of it.
+
+  prompt:
+    type: text
+    label: Prompt
+    required: true
+    help: What to change, in plain words, e.g. "replace the sky with a heavy storm".
+
+  size:
+    type: choice
+    label: Size
+    choices: ["Same as the input", "1024 x 1024 (1:1)", "1536 x 1024 (3:2)", "2048 x 864 (2.37:1)",
+              "2048 x 1152 (16:9)", "2048 x 2048 (1:1)", "3840 x 2160 (16:9)"]
+    default: "Same as the input"
+    help: >
+      The result's width and height in pixels; by default the input's shape. fal.ai bills by
+      the token, and a larger image takes more.
+
+  quality:
+    type: choice
+    label: Quality
+    choices: [low, medium, high]
+    default: high
+    help: >
+      High for finished images. Medium costs about a quarter of high and low about a
+      thirtieth, for trying prompts out. The estimate always holds the high price; fal.ai's
+      bill says what it was.
+
+  background:
+    type: choice
+    label: Background
+    choices: [auto, opaque, transparent]
+    default: auto
+    help: Transparent gives a PNG with an alpha channel. Auto lets the model choose.
+
+  output_path:
+    type: output_folder
+    label: Output folder
+    help: >
+      The result goes into a folder named after the shot inside this one, as
+      <source>.gptimage2edit_vNNN.<frame>.png. Each run takes the next free version. Leave
+      empty for the show's renders folder. Never inside .published.
+
+writes:
+  frames: {ext: png}
+
+runner:
+  type: api
+  endpoint: openai/gpt-image-2/edit
+  upload: {input: image_urls, reference: image_urls, mask: mask_url}
+  send: {prompt: prompt, size: image_size, quality: quality, background: background}
+  # What each size sends as fal.ai's image_size (decision 0069).
+  values:
+    size:
+      "Same as the input": auto
+      "1024 x 1024 (1:1)": {width: 1024, height: 1024}
+      "1536 x 1024 (3:2)": {width: 1536, height: 1024}
+      "2048 x 864 (2.37:1)": {width: 2048, height: 864}
+      "2048 x 1152 (16:9)": {width: 2048, height: 1152}
+      "2048 x 2048 (1:1)": {width: 2048, height: 2048}
+      "3840 x 2160 (16:9)": {width: 3840, height: 2160}
+  # Left to fal.ai's defaults: output_compression (a JPEG's) and enable_safety_checker. Never
+  # the artist's: one image a job, a PNG (writes.frames.ext), and the result in fal.ai's answer
+  # itself (sync_mode), so it is never a file on fal.ai's CDN, nor kept in the account's request
+  # history (decision 0062).
+  fixed:
+    num_images: 1
+    output_format: png
+    sync_mode: true

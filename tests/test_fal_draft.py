@@ -274,8 +274,12 @@ class TheReviewedDefinitions(unittest.TestCase):
                 # A review may name a param for artists (FLUX's size): the fields it sends are the draft's.
                 self.assertLessEqual(set(api["send"].values()), set(draft["runner"]["send"].values()))
                 self.assertEqual(wf.cost["unit"], draft["cost"]["unit"])
-                self.assertEqual(wf.cost["price"], M.PRICES[endpoint][0])
-        self.assertGreaterEqual(found, 6)
+                if wf.cost.get("provider_price") is False:      # billed by the token (decision 0071)
+                    self.assertIs(draft["cost"]["provider_price"], False)
+                    self.assertGreater(wf.cost["price"], 0)
+                else:
+                    self.assertEqual(wf.cost["price"], M.PRICES[endpoint][0])
+        self.assertGreaterEqual(found, 9)
 
 
 @unittest.skipIf(cli is None, "the command needs httpx")
@@ -353,7 +357,13 @@ class TheCommand(unittest.TestCase):
                 code, out, err = self.run_it(endpoint)
                 self.assertEqual(code, 0, err)
                 self.assertEqual(loaded(out)["runner"]["endpoint"], endpoint)
-                self.assertIn("cost.price: the price of one unit in US dollars", err)    # the stand-in has none
+                # Billed by the token: "$1 a unit", as fal.ai's pricing said to Peter (decision 0071).
+                self.assertIn("cost: fal.ai's pricing API says $1 a unit, which prices no job (it bills by the "
+                              "token): work out a job's price from the model's page, and what changes it (cost.by), "
+                              "with provider_price: false (decision 0071)", " ".join(err.split()))
+                self.assertEqual(loaded(out)["cost"], {"unit": "image", "price": 0, "quantity": 1,
+                                                       "provider_price": False})
+                self.assertIn("cost.price: the price of one unit in US dollars", err)    # until it's written
 
     def test_its_price_unread_is_a_todo_not_a_stop(self):
         self.mock.prices.pop(PRO)

@@ -808,6 +808,50 @@ class TheGateway(Tmp):
         self.assertEqual(self.mock.charges()[-1]["quantity"], 2.0)          # 1 + 0.5 x (3 - 1) at $0.03
         self.assertEqual(self.store.spend_of(jid)["amount"], 0.09)          # held as estimated until the bill
 
+    def test_by_the_token_gpt_image_2_and_nano_banana_2_1(self):
+        """Decision 0071: fal.ai's pricing says "$1 a unit" of them; each is held at its reviewed
+        price, and the stand-in's bill charges its tokens as fal.ai's pages price them."""
+        self.with_definitions("gpt_image2_fal", "nano_banana2_1_fal")
+        (self.tmp / "shows" / "rnd" / "boards").mkdir(parents=True)
+        g = self.gateway()
+        self.assertTrue(self.wait(g.runner.read_prices()))
+        self.assertEqual(self.desk.price(self.farm.registry.workflows["gpt_image2_fal"])["unit"], "unit")
+        folder = f"{self.root}/shows/rnd/boards"
+        gpt = self.farm.submit("gpt_image2_fal", {"prompt": "a neon sign that says OPEN", "output_path": folder,
+                                                  "background": "transparent"}, "ann")["id"]
+        nano = self.farm.submit("nano_banana2_1_fal", {"prompt": "a misty forest", "output_path": folder,
+                                                       "resolution": "2K"}, "ann")["id"]
+        self.assertEqual([self.job(j)["info"]["cost"]["amount"] for j in (gpt, nano)], [0.495, 0.084])
+        self.assertEqual(self.job(gpt)["info"]["cost"]["source"], "definition")
+        self.beat(g)
+        ended = [self.ended(gpt)]
+        self.beat(g)                                    # the lane takes the next once one is done
+        ended.append(self.ended(nano))
+        sent = {r["endpoint"]: r["input"] for r in self.mock.requests.values()}
+        self.assertEqual(sent["openai/gpt-image-2"], {"prompt": "a neon sign that says OPEN",
+                                                      "image_size": {"width": 2048, "height": 1152},
+                                                      "quality": "high", "background": "transparent",
+                                                      "num_images": 1, "output_format": "png", "sync_mode": True})
+        self.assertEqual(sent["google/nano-banana-2.1"]["resolution"], "2K")
+        names = sorted(Path(j["outputs"]["frame_pattern"] % 1001).name for j in ended)
+        self.assertEqual(names, ["rnd.gptimage2_v001.1001.png", "rnd.nanobanana21gen_v001.1001.png"])
+        billed = {c["endpoint_id"]: c["cost_total"] for c in self.mock.charges()}
+        self.assertLess(billed["openai/gpt-image-2"], 0.495)                # the hold is never under the bill
+        self.assertLess(billed["google/nano-banana-2.1"], 0.084)
+
+    def test_gpt_image_2_edit_with_a_mask_the_inputs_size(self):
+        self.with_definitions("gpt_image2_edit_fal")
+        g = self.gateway()
+        values = {"input": f"{self.root}/shows/plate.png", "mask": f"{self.root}/shows/plate.png",
+                  "prompt": "replace the sky with a storm", "output_path": f"{self.root}/shows/out"}
+        jid = self.farm.submit("gpt_image2_edit_fal", values, "ann", show="rnd")["id"]
+        self.assertEqual(self.job(jid)["info"]["cost"]["amount"], 0.96)     # held as 2048 x 2048
+        self.beat(g)
+        self.ended(jid)
+        body = next(iter(self.mock.requests.values()))["input"]
+        self.assertEqual((len(body["image_urls"]), body["mask_url"].startswith(BASE), body["image_size"]),
+                         (1, True, "auto"))
+
     def test_what_fal_refuses_fails_the_job(self):
         g = self.gateway()
         failed, flagged = self.submit("MOCK_FAIL"), self.submit("MOCK_POLICY")
