@@ -535,3 +535,8 @@ Still open: which Griptape workflow step 8 tries, and whether it calls outside s
   workflows', SAM 3's and ViTMatte's, added), and `policy.example.yaml` holds Rodeo's rules:
   production shows only cleared licences, the rest on `rnd` only, LTX-2.x on no show, and a
   definition without its models refused. `tests/test_licences.py` keeps every licence decided.
+
+  Step 9's image models finished (0071): Peter's drafts showed fal.ai's pricing API gives "$1
+  a unit" for the token-billed ones, so `cost.provider_price: false` holds a job at its
+  reviewed price. GPT Image 2, its edit and Nano Banana 2.1, reviewed. Next: the ComfyUI Local
+  masking menu (item 3 of 26 November's order).

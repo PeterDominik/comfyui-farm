@@ -67,7 +67,10 @@ def estimate(wf, values: dict, price: dict | None = None, provider: str | None =
     reviewed = float(c["price"])
     unit = c["unit"]
     unit_price, source, read_at = reviewed, "definition", None
-    if price:
+    # A model billed by the token: fal.ai's pricing API says "$1 a unit" of it, which prices no
+    # job (decision 0071), so its definition says so and the reviewed price is the estimate.
+    unread = c.get("provider_price") is False
+    if price and not unread:
         if (price.get("currency") or "USD") != "USD":
             raise PriceError(f"{who} now prices {wf.label} in {price.get('currency')}, and the farm's ledger is in "
                              f"US dollars: its definition needs reviewing before it runs again.")
@@ -85,7 +88,8 @@ def estimate(wf, values: dict, price: dict | None = None, provider: str | None =
     units = f"{quantity:g} {unit}{'' if quantity == 1 else 's'}" + (f" at {choice}" if by else "")
     rate = f"{money(unit_price)} {per(unit)}" + (f", ×{factor:g} at {choice}" if by and factor != 1 else "")
     said = (f"{who}'s price, read {_when(read_at)}" if source == "provider"
-            else f"the price its definition was reviewed at; {who}'s own isn't read yet")
+            else f"the price its definition was reviewed at, by the token; {who}'s pricing doesn't price a job"
+            if unread else f"the price its definition was reviewed at; {who}'s own isn't read yet")
     return {"amount": amount, "currency": "USD", "quantity": quantity, "unit": unit, "unit_price": unit_price,
             "factor": factor, "by": choice, "reviewed": reviewed, "source": source, "read_at": read_at,
             "drift": round(drift, 4),

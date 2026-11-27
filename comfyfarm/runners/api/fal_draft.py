@@ -363,7 +363,15 @@ def draft(model: dict, price: dict | None, today: str) -> Draft:
 
     # Its cost: the pricing API's price and unit; quantity 1 image (num_images is fixed), or a
     # video's seconds when it has a duration param.
-    if price and price.get("currency", "USD") == "USD" and price.get("unit_price"):
+    if price and _unit(price.get("unit") or "") == "unit":
+        # A model billed by the token: fal.ai's pricing API says "$1 a unit", which prices no job
+        # (decision 0071). The reviewed price, from the model's page, is the estimate.
+        cost = ["  unit: image", "  price: 0                      # the farm refuses 0: write the reviewed price",
+                "  quantity: 1", "  provider_price: false         # fal.ai's pricing says $1 a unit: no job's price"]
+        todo.append(f"cost: fal.ai's pricing API says ${float(price.get('unit_price') or 0):g} a unit, which "
+                    f"prices no job (it bills by the token): work out a job's price from the model's page, and "
+                    f"what changes it (cost.by), with provider_price: false (decision 0071)")
+    elif price and price.get("currency", "USD") == "USD" and price.get("unit_price"):
         unit, amount = _unit(price.get("unit") or ""), float(price["unit_price"])
         cost = [f"  unit: {_q(unit)}", f"  price: {amount:g}"]
         if unit == "second" and any(f.param == "duration" and f.kind in ("int", "float") for f in params):

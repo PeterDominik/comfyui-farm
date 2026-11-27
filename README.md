@@ -2444,7 +2444,10 @@ runner:
   *Jobs with no input image*. `birefnet_v2_fal` cuts one image's subject out of its
   background, or gives its matte (fal.ai > Masking > BiRefNet background removal), for
   $0.000575 a compute second. `flux2_pro_fal` is FLUX.2 [pro] from a prompt, at six sizes
-  up to 2048 x 2048 (fal.ai > Image > FLUX 2 Pro), by the megapixel.
+  up to 2048 x 2048 (fal.ai > Image > FLUX 2 Pro), by the megapixel. By the token (decision
+  0071): `gpt_image2_fal` and `gpt_image2_edit_fal`, OpenAI's GPT Image 2 from a prompt and
+  as an edit with an optional mask, at sizes up to 3840 x 2160; `nano_banana2_1_fal`, Nano
+  Banana 2.1 from a prompt, about half Nano Banana 2's price.
 - **What it costs** (decision 0059). An API definition has a `cost` block, from its
   provider's page for the model, reviewed like the rest of the definition:
   - `unit`: the provider's billing unit (image);
@@ -2456,7 +2459,11 @@ runner:
     megapixels, rounded up (FLUX 2 Pro: 3 at 2048 x 1152), each at the full price, though
     fal.ai charges those after the first at half: the estimate is never under the bill;
   - `by`: a choice param and a factor for each of its choices (Nano Banana 2: 0.75× at
-    0.5K, 1.5× at 2K, 2× at 4K).
+    0.5K, 1.5× at 2K, 2× at 4K);
+  - `provider_price: false` (decision 0071) for a model billed by the token, which fal.ai's
+    pricing API prices at "$1 a unit": that prices no job, so the estimate is the reviewed
+    price, worked out from the model's page (GPT Image 2: $0.22 an image at high quality and
+    1024 x 1024, by size), never under what is charged. The bill settles it.
 
   The gateway reads each provider's prices every `gateway.prices_hours` (a day), from its
   pricing API, and sends them with what it can run. When a job is planned, the manager

@@ -76,3 +76,4 @@ record that names the one it replaces. `tests/test_docs.py` checks this index.
 | [0068](0068-jobs-with-no-input-image.md) | Jobs with no input image: the Output folder says the show and names the result | accepted |
 | [0069](0069-what-a-choice-sends.md) | What a choice sends: runner.values, and FLUX 2 Pro by the megapixel | accepted |
 | [0070](0070-licences-cleared-for-production.md) | Licences cleared for production: every model listed, the rest on rnd only | accepted |
+| [0071](0071-a-price-by-the-token.md) | A price by the token: the reviewed one, never fal.ai's "$1 a unit" | accepted |

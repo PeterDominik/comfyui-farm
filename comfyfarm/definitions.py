@@ -43,7 +43,7 @@ HEAD_ONLY = ("version", "class", "targets", "limits", "models", "eval", "cost")
 # What a job costs at an outside provider (decision 0059): its billing unit, the price of one as
 # reviewed, how many units a job is and what scales the price. Left out of the fingerprint: a
 # price is the manager's business and doesn't change what runs.
-COST_KEYS = ("unit", "price", "currency", "quantity", "by")
+COST_KEYS = ("unit", "price", "currency", "quantity", "by", "provider_price")
 # Where it sits in the menus, Provider > Task > Workflow (catalog.py, decision 0054). Left out
 # of the fingerprint: they don't change what runs.
 CATALOGUE_KEYS = ("task", "provider", "family", "hidden")
@@ -808,6 +808,9 @@ class Definition:
         if c.get("currency", "USD") != "USD":
             problems.append("cost.currency: the farm's ledger is in US dollars (USD); a price in another currency "
                             "isn't converted")
+        if not isinstance(c.get("provider_price", True), bool):
+            problems.append("cost.provider_price: true (the estimate uses the provider's price that day) or false "
+                            "(its pricing doesn't price a job, so the reviewed one; decision 0071)")
         q = c.get("quantity", 1)
         if isinstance(q, dict):
             p = self.params.get(q.get("param") or "") if set(q) == {"param"} else None
