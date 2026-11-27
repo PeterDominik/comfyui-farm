@@ -2571,23 +2571,25 @@ env -u PYTHONPATH -u PYTHONHOME "$(cat run/python)" -m comfyfarm fal draft fal-a
 ```
 
 prints the draft, or writes it into `workflows/<name>/process.yaml` (never over a folder that
-is there). The endpoint is its id on its page at `fal.ai/models`. It reads fal.ai the way the
-gateway does, with `gateway.yaml` (`--gateway` for another file): its requests key, and fal.ai
-itself only with `live: true`, otherwise the stand-in, which describes its own models. It asks
-two free questions, never a job: the model API's description of the endpoint (its name,
+is there). The endpoint is its id on its page at `fal.ai/models`: the maker's name for a model
+fal.ai runs for its maker (`openai/gpt-image-2`, `google/nano-banana-2.1`), though fal.ai's
+schema files those under `fal-ai/`. It reads fal.ai the way the gateway does, with
+`gateway.yaml` (`--gateway` for another file): its requests key, and fal.ai itself only with
+`live: true`, otherwise the stand-in, which describes its own models. It asks two free
+questions, never a job: the model API's description of the endpoint (its name,
 category, licence type, and an OpenAPI schema of what it takes and returns), and its price.
 
 What the draft makes of them:
 
-- Each image field (`..._url`, `..._urls`) is an input. The first is `input`, required, since
-  the farm names a job's outputs after it; a field that takes several also gets an optional
-  `reference`. An endpoint that takes no image gets a required Output folder instead, which
-  says the job's show (*Jobs with no input image*).
-- The prompt is a text param, first after the inputs. A field with choices is a choice, a
-  number a number with its range, a yes/no a checkbox, each with fal.ai's default and help, in
-  fal.ai's order. A field that takes a preset's name or a width and height (`image_size`) is a
-  choice of the presets, with a TODO: to offer other sizes, name the choices for artists and
-  say what each sends under `runner.values`.
+- Each image field (`..._url`, `..._urls`) is an input. The first, or the one fal.ai requires,
+  is `input`, required, since the farm names a job's outputs after it; a field that takes
+  several also gets an optional `reference`. An endpoint that takes no image gets a required
+  Output folder instead, which says the job's show (*Jobs with no input image*).
+- The prompt is a text param, first after the inputs. A field with choices is a choice, a number
+  a number with its range, a yes/no a checkbox, each with fal.ai's default and help, in fal.ai's
+  order (its form's, when the schema gives one). A field that takes a preset's name or a width
+  and height (`image_size`) is a choice of the presets, with a TODO: to offer other sizes, name
+  the choices for artists and say what each sends under `runner.values`.
 - The label is fal.ai's name for the model, with what the endpoint does when the name doesn't
   say (`Nano Banana Pro edit`): a model's endpoints share one name.
 - What the farm decides is fixed, never the artist's: one image, a PNG, the result in fal.ai's

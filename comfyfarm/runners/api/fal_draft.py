@@ -108,18 +108,34 @@ def schemas(model: dict) -> tuple[dict, dict, dict]:
         raise DraftError(f"fal.ai gave no schema for {endpoint}" + (f": {why}" if why else ""))
     comps = (api.get("components") or {}).get("schemas") or {}
     paths = api["paths"]
+    filed = filed_as(endpoint, paths)
 
     def body(path: str, method: str, where: tuple) -> dict:
         node = (paths.get(path) or {}).get(method) or {}
         for k in where:
             node = node.get(k) if isinstance(node, dict) else None
         if not isinstance(node, dict):
-            raise DraftError(f"{endpoint}'s schema has no {method.upper()} {path} with a JSON body")
+            posts = sorted(p for p, ops in paths.items() if isinstance(ops, dict) and "post" in ops)
+            raise DraftError(f"{endpoint}'s schema has no {method.upper()} {path} with a JSON body"
+                             + (f" (it describes POST {', '.join(posts)})" if posts else ""))
         return _resolve(node, comps)
-    takes = body(f"/{endpoint}", "post", ("requestBody", "content", "application/json", "schema"))
-    gives = body(f"/{endpoint}/requests/{{request_id}}", "get",
+    takes = body(f"/{filed}", "post", ("requestBody", "content", "application/json", "schema"))
+    gives = body(f"/{filed}/requests/{{request_id}}", "get",
                  ("responses", "200", "content", "application/json", "schema"))
     return takes, gives, comps
+
+
+def filed_as(endpoint: str, paths: dict) -> str:
+    """The name fal.ai's schema files an endpoint under: its own, or, for a model fal.ai runs
+    for its maker (openai/gpt-image-2, google/nano-banana-2.1), fal.ai's own owner with the
+    same app and path (fal-ai/gpt-image-2), as its model API described them on 26 November
+    2026. Jobs still go to the endpoint's own name, as fal.ai's clients send them."""
+    if f"/{endpoint}" in paths or "/" not in endpoint:
+        return endpoint
+    rest = endpoint.split("/", 1)[1]
+    named = [p[1:] for p, ops in paths.items()
+             if isinstance(ops, dict) and "post" in ops and p.count("/") >= 2 and p.split("/", 2)[2] == rest]
+    return named[0] if len(named) == 1 else endpoint
 
 
 def _media(name: str) -> str | None:
@@ -146,6 +162,9 @@ def fields(takes: dict, comps: dict) -> tuple[list[Field], dict, list[str], list
     """The definition's params from what the endpoint takes: (params, fixed fields, fields left
     to fal.ai's defaults, TODO lines)."""
     props = takes.get("properties") or {}
+    # fal.ai's own order for its form, when the schema gives one (x-fal-order-properties).
+    order = [k for k in takes.get("x-fal-order-properties") or [] if k in props]
+    props = {k: props[k] for k in order + [k for k in props if k not in order]}
     required = set(takes.get("required") or [])
     out: list[Field] = []
     fixed: dict = {}
@@ -191,6 +210,8 @@ def fields(takes: dict, comps: dict) -> tuple[list[Field], dict, list[str], list
         else:
             left.append(name)
     params: list[Field] = []
+    # A field fal.ai requires is the input (GPT Image 2 edit's image_urls, not its mask_url).
+    images = [x for x in images if x[0] in required] + [x for x in images if x[0] not in required]
     for i, (name, s) in enumerate(images):
         many = s.get("type") == "array"
         if i == 0:
